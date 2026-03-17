@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 
-def parse_tiledata(path: Path) -> dict[int, dict]:
+def parse_tiledata(path: Path) -> tuple[dict[int, int], dict[int, dict]]:
     """Parse tiledata.mul (High Seas format, 8-byte flags).
 
     Layout:
@@ -26,12 +26,18 @@ def parse_tiledata(path: Path) -> dict[int, dict]:
     data = path.read_bytes()
     pos = 0
 
-    # Skip land tiles: 512 groups
+    # Parse land tiles: 512 groups
     LAND_GROUPS = 512
     LAND_TILE_SIZE = 30  # flags(8) + texture(2) + name(20)
+    land: dict[int, int] = {}  # tile_id → flags
+    land_id = 0
     for _ in range(LAND_GROUPS):
         pos += 4  # group header
-        pos += 32 * LAND_TILE_SIZE
+        for _ in range(32):
+            flags = struct.unpack_from("<Q", data, pos)[0]
+            land[land_id] = flags
+            pos += LAND_TILE_SIZE
+            land_id += 1
 
     # Parse item tiles
     ITEM_TILE_SIZE = 41  # flags(8) + weight(1) + quality(1) + misc(2) + unk2(1) + quantity(1) + anim(2) + unk3(1) + hue(1) + stackoff(2) + height(1) + name(20)
@@ -58,7 +64,7 @@ def parse_tiledata(path: Path) -> dict[int, dict]:
             pos += ITEM_TILE_SIZE
             graphic_id += 1
 
-    return items
+    return land, items
 
 
 def parse_cliloc(path: Path) -> dict[int, str]:
@@ -99,7 +105,13 @@ def main() -> None:
     tiledata_path = resource_dir / "tiledata.mul"
     if tiledata_path.exists():
         print(f"Parsing {tiledata_path} ...")
-        items = parse_tiledata(tiledata_path)
+        land, items = parse_tiledata(tiledata_path)
+
+        out = output_dir / "tiledata_land.json"
+        with open(out, "w") as f:
+            json.dump(land, f, indent=1, ensure_ascii=False)
+        print(f"  → {out} ({len(land)} land tiles)")
+
         out = output_dir / "tiledata_items.json"
         with open(out, "w") as f:
             json.dump(items, f, indent=1, ensure_ascii=False)
