@@ -82,7 +82,14 @@ class Brain:
 
     def _poll_events(self) -> None:
         events = self.context.perception.poll_events()
+        my_serial = self.context.perception.self_state.serial
         for event in events:
             if event.type == GameEventType.SPEECH_HEARD:
+                serial = event.data.get("serial", 0)
+                # Skip own speech and system messages
+                if serial == my_serial or serial == 0xFFFFFFFF:
+                    continue
+                if event.data.get("name", "").lower() == "system":
+                    continue
                 pending = self.context.blackboard.setdefault("pending_speech", [])
                 pending.append(event.data)

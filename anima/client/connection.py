@@ -282,6 +282,7 @@ class UoConnection:
         got_login_complete = False
         play_sent = False
         delete_sent = False
+        pre_login_buffer: list[tuple[int, bytes]] = []  # packets before 0x1B
         deadline = asyncio.get_event_loop().time() + self._timeout
 
         while asyncio.get_event_loop().time() < deadline:
@@ -402,6 +403,16 @@ class UoConnection:
                     body=f"0x{body:04X}",
                 )
 
+                # Replay buffered pre-0x1B packets now that serial is known
+                if packet_handler is not None and pre_login_buffer:
+                    logger.info(
+                        "login_replay_buffered",
+                        count=len(pre_login_buffer),
+                    )
+                    for buf_id, buf_data in pre_login_buffer:
+                        packet_handler.dispatch(buf_id, buf_data)
+                    pre_login_buffer.clear()
+
             elif packet_id == 0x55:
                 # LoginComplete
                 got_login_complete = True
@@ -428,6 +439,10 @@ class UoConnection:
                         packet_id=f"0x{packet_id:02X}",
                         size=len(data),
                     )
+
+            elif play_sent and packet_handler is not None:
+                # Before LoginConfirm — buffer for replay after serial is known
+                pre_login_buffer.append((packet_id, data))
 
             else:
                 logger.debug(

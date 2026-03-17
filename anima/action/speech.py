@@ -40,8 +40,10 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     speaker = speech.get("name", "someone")
     serial = speech.get("serial", 0)
 
-    # Don't respond to our own speech
+    # Don't respond to our own speech or system messages
     if serial == ctx.perception.self_state.serial:
+        return Status.FAILURE
+    if serial == 0xFFFFFFFF or speaker.lower() == "system":
         return Status.FAILURE
 
     # Choose response based on content
