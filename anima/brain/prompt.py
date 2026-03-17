@@ -46,6 +46,10 @@ Rules:
 - Keep responses to 1 short sentence."""
 
 
+def _detect_korean(text: str) -> bool:
+    return any("\uac00" <= c <= "\ud7a3" for c in text)
+
+
 def build_speech_messages(
     ctx: BrainContext,
     speaker: str,
@@ -57,6 +61,16 @@ def build_speech_messages(
     so think_speak monologue doesn't pollute the context.
     """
     system = build_system_prompt(ctx)
+
+    # Enforce language matching based on input
+    if _detect_korean(text):
+        system += (
+            "\n\nIMPORTANT: The player is speaking Korean."
+            " You MUST reply in Korean only. 반드시 한국어로만 대답하세요."
+        )
+    else:
+        system += "\n\nIMPORTANT: Reply in English only."
+
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
 
     # Get conversation history from blackboard
