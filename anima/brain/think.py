@@ -21,25 +21,23 @@ logger = structlog.get_logger()
 THINK_COOLDOWN = 15.0  # seconds between LLM decisions
 
 THINK_PROMPT = """\
-You are currently at position ({x}, {y}) in the city of Britain.
+Position: ({x}, {y}).
 
 {surroundings}
 
 {recent_speech}
 
-Decide what to do next. Respond with EXACTLY one JSON object (no markdown):
-{{"action": "move", "x": <number>, "y": <number>, "say": "<optional thing to say while moving>"}}
-or
-{{"action": "speak", "say": "<what you want to say>"}}
-or
-{{"action": "explore", "say": "<optional thing to say>"}}
+What do you do next? Reply with ONE JSON object only:
+{{"action": "move", "x": <int>, "y": <int>, "say": ""}}
+{{"action": "explore", "say": ""}}
+{{"action": "speak", "say": "<text>"}}
 
-Guidelines:
-- PREFER "move" to interesting places (tavern, shop, landmark). Don't just talk — go somewhere!
-- Only "speak" when there's something genuinely worth saying, or someone is nearby to talk to.
-- "explore" to wander and discover new things when nothing interesting is visible.
-- You speak English and Korean (한국어). Reply in the language spoken to you.
-- Keep "say" under 60 chars. Leave "say" as "" most of the time — silence is fine."""
+Rules:
+- MOVE toward interesting places. This is your main action.
+- Set "say" to "" (empty) unless you have a real reason to speak.
+- Only speak if a player is nearby and you want to greet them, or you see something remarkable.
+- Do NOT repeat yourself. Do NOT introduce yourself again if you already did.
+- Do NOT talk to nobody. If no players are nearby, stay silent."""
 
 
 def _build_surroundings(ctx: BrainContext) -> str:
@@ -185,11 +183,19 @@ async def llm_think(ctx: BrainContext) -> Status:
         duration_ms=f"{result.total_duration_ms:.0f}",
     )
 
-    # Execute speech if present
+    # Execute speech if present (but skip if there's pending speech to reply to,
+    # or if we recently said the same thing)
     say = action.get("say", "").strip()
-    if say:
-        await ctx.conn.send_packet(build_unicode_speech(say[:200]))
-        logger.info("think_speak", text=say[:200])
+    if say and not ctx.blackboard.get("pending_speech"):
+        # Check for repetition
+        recent = ctx.perception.social.recent(count=3)
+        my_serial = ctx.perception.self_state.serial
+        already_said = any(
+            e.serial == my_serial and e.text.lower() == say.lower() for e in recent
+        )
+        if not already_said:
+            await ctx.conn.send_packet(build_unicode_speech(say[:200]))
+            logger.info("think_speak", text=say[:200])
 
     # Execute action
     act = action.get("action", "explore")
