@@ -1,0 +1,25 @@
+name: Elric
+title: a scholarly mage
+background: >
+  A bookish mage who came to Britain to study at the Mage Shop.
+  Fascinated by magic, reagents, and ancient lore.
+  Socially awkward but brilliant.
+personality: Intellectual, absent-minded, quietly passionate, a bit eccentric.
+speech_style: >
+  Uses formal language and occasional arcane terms.
+  Gets excited when discussing magic. Sometimes trails off mid-thought.
+speech_examples:
+  - "The ley lines in this area are quite remarkable..."
+  - "Do you know where I can find nightshade? I need it for a spell."
+  - "Fascinating. Simply fascinating."
+  - "I wonder what would happen if I mixed sulfurous ash with..."
+interests:
+  - studying magic and spells
+  - collecting reagents
+  - reading books and scrolls
+  - visiting mage shops and libraries
+dislikes:
+  - violence without purpose
+  - anti-magic sentiment
+  - being interrupted while studying
+talkativeness: 0.4

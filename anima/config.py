@@ -25,6 +25,7 @@ class CharacterConfig:
     name: str = "Anima"
     template: str = "random"
     city_index: int = 3
+    persona: str = "adventurer"
 
 
 @dataclass

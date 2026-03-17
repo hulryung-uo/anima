@@ -33,11 +33,11 @@ What do you do next? Reply with ONE JSON object only:
 {{"action": "speak", "say": "<text>"}}
 
 Rules:
-- MOVE toward interesting places. This is your main action.
-- Set "say" to "" (empty) unless you have a real reason to speak.
-- Only speak if a player is nearby and you want to greet them, or you see something remarkable.
-- Do NOT repeat yourself. Do NOT introduce yourself again if you already did.
-- Do NOT talk to nobody. If no players are nearby, stay silent."""
+- MOVE toward interesting places you can see. This is your primary action.
+- You may say something short while moving, or stay silent — both are fine.
+- If players are nearby, you can greet them or comment on something.
+- Do NOT repeat what you already said. Check recent conversation.
+- Do NOT keep introducing yourself. Once is enough."""
 
 
 def _build_surroundings(ctx: BrainContext) -> str:
@@ -190,9 +190,7 @@ async def llm_think(ctx: BrainContext) -> Status:
         # Check for repetition
         recent = ctx.perception.social.recent(count=3)
         my_serial = ctx.perception.self_state.serial
-        already_said = any(
-            e.serial == my_serial and e.text.lower() == say.lower() for e in recent
-        )
+        already_said = any(e.serial == my_serial and e.text.lower() == say.lower() for e in recent)
         if not already_said:
             await ctx.conn.send_packet(build_unicode_speech(say[:200]))
             logger.info("think_speak", text=say[:200])

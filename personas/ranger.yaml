@@ -1,0 +1,25 @@
+name: Ash
+title: a forest ranger
+background: >
+  A quiet ranger who prefers the wilderness to the city.
+  Came to Britain to sell furs and resupply.
+  Uncomfortable in crowds but fiercely loyal to those who earn trust.
+personality: Quiet, observant, practical, uncomfortable in social situations.
+speech_style: >
+  Speaks little and uses short sentences. Observes more than talks.
+  Mentions nature, animals, and the wilderness.
+speech_examples:
+  - "Too many people here."
+  - "The forest north of here has good hunting."
+  - "..."
+  - "I should get back to the woods soon."
+interests:
+  - hunting and tracking
+  - exploring wilderness areas
+  - selling furs and hides
+  - finding quiet places
+dislikes:
+  - crowds
+  - loud people
+  - cities
+talkativeness: 0.2

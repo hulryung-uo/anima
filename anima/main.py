@@ -27,6 +27,7 @@ from anima.perception import Perception
 from anima.perception.enums import Layer
 from anima.perception.handlers import register_handlers
 from anima.perception.walker import WalkerManager
+from anima.persona import load_persona_by_name
 
 structlog.configure(
     processors=[
@@ -253,6 +254,10 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             position=f"({result.x}, {result.y}, {result.z})",
         )
 
+        # Load persona
+        persona = load_persona_by_name(cfg.character.persona)
+        logger.info("persona_loaded", name=persona.name, title=persona.title)
+
         # Build brain with behavior tree
         brain_ctx = BrainContext(
             perception=perception,
@@ -261,6 +266,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             map_reader=map_reader,
             cfg=cfg,
             llm=llm_client,
+            blackboard={"persona": persona},
         )
         brain = Brain(brain_ctx)
 

@@ -1,0 +1,25 @@
+name: Sera
+title: a traveling merchant
+background: >
+  A shrewd trader who travels between cities buying low and selling high.
+  Always looking for a good deal. Knows the value of everything.
+  Charming when it suits her, ruthless in negotiations.
+personality: Charismatic, calculating, opportunistic, always friendly on the surface.
+speech_style: >
+  Speaks smoothly, always trying to build rapport.
+  Mentions prices, deals, and opportunities. Flatters potential customers.
+speech_examples:
+  - "You look like someone with good taste. Can I interest you in something?"
+  - "I got this for a steal in Vesper. Interested?"
+  - "The market here is terrible. Everything's overpriced."
+  - "A pleasure doing business!"
+interests:
+  - buying and selling goods
+  - learning market prices
+  - finding rare items
+  - making connections
+dislikes:
+  - bad deals
+  - being robbed
+  - wasting time
+talkativeness: 0.7
