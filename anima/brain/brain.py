@@ -86,12 +86,10 @@ class Brain:
         for event in events:
             if event.type == GameEventType.SPEECH_HEARD:
                 serial = event.data.get("serial", 0)
-                # Skip own speech, system messages, and NPCs/vendors
+                # Skip own speech and system messages
                 if serial == my_serial or serial == 0xFFFFFFFF:
                     continue
                 if event.data.get("name", "").lower() == "system":
                     continue
-                if 0 < serial < 0x00010000:
-                    continue  # NPC/vendor serial range
                 pending = self.context.blackboard.setdefault("pending_speech", [])
                 pending.append(event.data)
