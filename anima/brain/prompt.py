@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from anima.brain.behavior_tree import BrainContext
 
+MAX_CONVERSATION_HISTORY = 20
+
 
 def build_system_prompt(ctx: BrainContext) -> str:
     """Build the system prompt from persona + world context."""
@@ -49,19 +51,35 @@ def build_speech_messages(
     speaker: str,
     text: str,
 ) -> list[dict[str, str]]:
-    """Build message list for responding to speech."""
-    system = build_system_prompt(ctx)
+    """Build message list for responding to speech.
 
+    Uses a dedicated conversation history in the blackboard
+    so think_speak monologue doesn't pollute the context.
+    """
+    system = build_system_prompt(ctx)
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
 
-    # Recent conversation history
-    recent = ctx.perception.social.recent(count=5)
-    my_serial = ctx.perception.self_state.serial
-    for entry in recent:
-        if entry.serial == my_serial:
-            messages.append({"role": "assistant", "content": entry.text})
-        elif entry.name.lower() != "system" and entry.serial != 0xFFFFFFFF:
-            messages.append({"role": "user", "content": f"{entry.name}: {entry.text}"})
+    # Get conversation history from blackboard
+    history: list[dict[str, str]] = ctx.blackboard.get("conversation_history", [])
+    for msg in history:
+        messages.append(msg)
 
+    # Add the current speech
     messages.append({"role": "user", "content": f"{speaker}: {text}"})
     return messages
+
+
+def record_conversation(ctx: BrainContext, role: str, content: str) -> None:
+    """Record a message in the conversation history.
+
+    Call this after receiving player speech (role='user')
+    and after Anima responds (role='assistant').
+    """
+    history: list[dict[str, str]] = ctx.blackboard.setdefault(
+        "conversation_history", []
+    )
+    history.append({"role": role, "content": content})
+
+    # Keep history bounded
+    if len(history) > MAX_CONVERSATION_HISTORY:
+        del history[: len(history) - MAX_CONVERSATION_HISTORY]
