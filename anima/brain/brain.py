@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import structlog
 
-from anima.action.movement import wander_action
 from anima.action.speech import respond_to_speech
 from anima.brain.behavior_tree import (
     Action,
@@ -15,6 +14,7 @@ from anima.brain.behavior_tree import (
     Sequence,
     Status,
 )
+from anima.brain.think import llm_think
 from anima.perception.event_stream import GameEventType
 
 logger = structlog.get_logger()
@@ -44,7 +44,7 @@ def build_default_tree() -> Node:
     Selector
     +-- Sequence [Survival] -- HP<30% -> flee
     +-- Sequence [Social]   -- speech heard -> respond
-    +-- Action [Wander]     -- smart wander via pathfinding
+    +-- Action [Think]      -- LLM decides: move, speak, explore
     """
     return Selector(
         "root",
@@ -63,7 +63,7 @@ def build_default_tree() -> Node:
                     Action("respond", respond_to_speech),
                 ],
             ),
-            Action("wander", wander_action),
+            Action("think", llm_think),
         ],
     )
 

@@ -65,7 +65,9 @@ class WalkerManager:
 
     def deny_walk(self, seq: int, x: int, y: int, z: int, direction: int) -> None:
         self.steps_count = 0
-        self.walking_failed = False  # allow retry
+        self.walking_failed = False
+        # Brief cooldown after deny to prevent rapid re-attempts
+        self.last_step_time = asyncio.get_event_loop().time() * 1000 + WALK_DELAY_MS
         self.sync_position(x, y, z, direction)
         self._events.emit(
             GameEventType.WALK_DENIED,
