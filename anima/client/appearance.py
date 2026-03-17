@@ -168,8 +168,6 @@ def build_create_character(appearance: CharacterAppearance, slot: int = 0) -> by
     w.write_u32(0x00000001)  # unknown (ClassicUO sends 1)
     w.write_u32(0x00000000)  # login count
 
-    w.write_zeros(30)        # old password field (unused)
-
     w.write_u8(0)            # profession (0 = custom)
     w.write_zeros(15)        # reserved
 
@@ -201,6 +199,7 @@ def build_create_character(appearance: CharacterAppearance, slot: int = 0) -> by
 
     # City & slot
     w.write_u16(appearance.city_index)
+    w.write_zeros(2)         # padding
     w.write_u16(slot)
     w.write_u32(0x7F000001)  # client IP
 

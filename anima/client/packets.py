@@ -95,6 +95,16 @@ def build_game_login(auth_key: int, username: str, password: str) -> bytes:
     return w.to_bytes()
 
 
+def build_delete_character(password: str, slot: int, client_ip: int = 0x7F000001) -> bytes:
+    """Build DeleteCharacter packet (0x83, 39 bytes)."""
+    w = PacketWriter()
+    w.write_u8(0x83)
+    w.write_ascii(password, 30)
+    w.write_u32(slot)
+    w.write_u32(client_ip)
+    return w.to_bytes()
+
+
 def build_play_character(name: str = "", slot: int = 0, client_ip: int = 0x7F000001) -> bytes:
     """Build PlayCharacter packet (0x5D, 73 bytes)."""
     w = PacketWriter()

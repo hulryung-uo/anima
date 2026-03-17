@@ -8,10 +8,16 @@ from dataclasses import dataclass
 
 import structlog
 
+from anima.client.appearance import (
+    TEMPLATES,
+    CharacterAppearance,
+    build_create_character,
+)
 from anima.client.codec import PacketReader, huffman_decompress_one
 from anima.client.packets import (
     build_account_login,
     build_client_version,
+    build_delete_character,
     build_game_login,
     build_play_character,
     build_seed,
@@ -41,12 +47,13 @@ class UoConnection:
     (including Huffman decompression in game mode).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, timeout: float = 10.0) -> None:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._game_mode = False
         self._recv_buffer = bytearray()       # decompressed packet bytes
         self._compressed_buffer = bytearray()  # raw compressed bytes from TCP
+        self._timeout = timeout
 
     @property
     def connected(self) -> bool:
@@ -55,7 +62,7 @@ class UoConnection:
     async def _connect(self, host: str, port: int) -> None:
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(host, port),
-            timeout=DEFAULT_TIMEOUT,
+            timeout=self._timeout,
         )
         self._recv_buffer.clear()
         logger.info("tcp_connected", host=host, port=port)
@@ -80,14 +87,16 @@ class UoConnection:
         await self._send_raw(data)
         logger.debug("packet_sent", packet_id=f"0x{data[0]:02X}", size=len(data))
 
-    async def _read_bytes(self, n: int, timeout: float = DEFAULT_TIMEOUT) -> bytes:
+    async def _read_bytes(self, n: int, timeout: float = 0) -> bytes:
         """Read exactly n bytes from the socket."""
+        timeout = timeout or self._timeout
         assert self._reader is not None
         data = await asyncio.wait_for(self._reader.readexactly(n), timeout=timeout)
         return data
 
-    async def _recv_raw_packet(self, timeout: float = DEFAULT_TIMEOUT) -> tuple[int, bytes]:
+    async def _recv_raw_packet(self, timeout: float = 0) -> tuple[int, bytes]:
         """Receive one raw (uncompressed) packet. Returns (packet_id, full_packet_bytes)."""
+        timeout = timeout or self._timeout
         assert self._reader is not None
 
         # Read packet ID (1 byte)
@@ -118,13 +127,14 @@ class UoConnection:
             logger.warning("unknown_packet", packet_id=f"0x{packet_id:02X}")
             return packet_id, id_byte
 
-    async def _recv_game_packet(self, timeout: float = DEFAULT_TIMEOUT) -> tuple[int, bytes]:
+    async def _recv_game_packet(self, timeout: float = 0) -> tuple[int, bytes]:
         """Receive one game-mode packet (Huffman compressed).
 
         Each server packet is independently Huffman compressed with its own
         terminal symbol. Compressed data for a single packet may span multiple
         TCP reads, so we maintain a compressed buffer across calls.
         """
+        timeout = timeout or self._timeout
         assert self._reader is not None
 
         while True:
@@ -177,8 +187,9 @@ class UoConnection:
 
             self._compressed_buffer.extend(data)
 
-    async def recv_packet(self, timeout: float = DEFAULT_TIMEOUT) -> tuple[int, bytes]:
+    async def recv_packet(self, timeout: float = 0) -> tuple[int, bytes]:
         """Receive one packet (handles both login and game mode)."""
+        timeout = timeout or self._timeout
         if self._game_mode:
             return await self._recv_game_packet(timeout)
         else:
@@ -191,6 +202,10 @@ class UoConnection:
         username: str,
         password: str,
         character_slot: int = 0,
+        character_name: str = "",
+        character_template: str = "random",
+        character_city: int = 3,
+        delete_existing: bool = False,
     ) -> LoginResult:
         """Complete the full two-phase UO login flow.
 
@@ -261,7 +276,8 @@ class UoConnection:
         login_result: LoginResult | None = None
         got_login_complete = False
         play_sent = False
-        deadline = asyncio.get_event_loop().time() + DEFAULT_TIMEOUT
+        delete_sent = False
+        deadline = asyncio.get_event_loop().time() + self._timeout
 
         while asyncio.get_event_loop().time() < deadline:
             remaining_time = deadline - asyncio.get_event_loop().time()
@@ -278,8 +294,8 @@ class UoConnection:
                 reason = reader.read_u8()
                 raise ConnectionError(f"Game login denied (reason={reason})")
 
-            if packet_id == 0xA9 and not play_sent:
-                # CharacterList — parse first occupied slot and send PlayCharacter
+            if packet_id in (0xA9, 0x86) and not play_sent:
+                # CharacterList — parse slots to find a character
                 reader = PacketReader(data[3:])  # skip id + length
                 char_count = reader.read_u8()
                 char_name = ""
@@ -290,17 +306,55 @@ class UoConnection:
                     if i == character_slot and name:
                         char_name = name
                     elif not char_name and name:
-                        # Fallback: use first occupied slot
                         char_name = name
                         char_slot = i
 
-                logger.info(
-                    "login_character_list_received",
-                    character=char_name or "(none)",
-                    slot=char_slot,
-                )
-                play_data = build_play_character(name=char_name, slot=char_slot)
-                await self.send_packet(play_data)
+                if char_name and delete_existing and not delete_sent:
+                    # Delete existing character first
+                    delete_sent = True
+                    logger.info(
+                        "login_deleting_character",
+                        character=char_name,
+                        slot=char_slot,
+                    )
+                    del_data = build_delete_character(
+                        password, char_slot,
+                    )
+                    await self.send_packet(del_data)
+                    # Server will re-send char list (0x86)
+                    char_name = ""
+                    continue
+
+                if char_name:
+                    logger.info(
+                        "login_playing_character",
+                        character=char_name,
+                        slot=char_slot,
+                    )
+                    play_data = build_play_character(
+                        name=char_name, slot=char_slot,
+                    )
+                    await self.send_packet(play_data)
+                else:
+                    # No characters — create one
+                    name = character_name or "Anima"
+                    if character_template in TEMPLATES:
+                        appearance = TEMPLATES[character_template]
+                        appearance.name = name
+                        appearance.city_index = character_city
+                    else:
+                        appearance = CharacterAppearance.random(
+                            name=name,
+                            city_index=character_city,
+                        )
+                    logger.info(
+                        "login_creating_character",
+                        name=appearance.name,
+                        female=appearance.female,
+                        city=character_city,
+                    )
+                    create_data = build_create_character(appearance, slot=0)
+                    await self.send_packet(create_data)
                 play_sent = True
 
             elif packet_id == 0x1B:

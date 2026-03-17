@@ -5,13 +5,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
-import struct
 
 import structlog
 
-from anima.client.codec import PacketReader
 from anima.client.connection import UoConnection
-from anima.client.packets import build_ping, build_walk_request, get_packet_length
+from anima.data import item_name
+from anima.client.handler import PacketHandler
+from anima.client.packets import (
+    build_double_click,
+    build_ping,
+    build_status_request,
+    build_walk_request,
+)
+from anima.config import Config, load_config
+from anima.perception import Perception
+from anima.perception.enums import Layer
+from anima.perception.handlers import register_handlers
+from anima.perception.walker import WalkerManager
 
 structlog.configure(
     processors=[
@@ -23,92 +33,12 @@ logger = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
-# Simple WalkerManager (mirrors ClassicUO's WalkerManager)
-# ---------------------------------------------------------------------------
-
-MAX_STEP_COUNT = 5
-MAX_FAST_WALK_STACK_SIZE = 5
-TURN_DELAY_MS = 100
-WALK_DELAY_MS = 400
-RUN_DELAY_MS = 200
-
-
-class WalkerManager:
-    def __init__(self) -> None:
-        self.walk_sequence: int = 0
-        self.steps_count: int = 0
-        self.walking_failed: bool = False
-        self.last_step_time: float = 0.0
-        self.fast_walk_keys: list[int] = [0] * MAX_FAST_WALK_STACK_SIZE
-        self.player_x: int = 0
-        self.player_y: int = 0
-        self.player_z: int = 0
-        self.player_direction: int = 0
-
-    def reset(self) -> None:
-        self.steps_count = 0
-        self.walk_sequence = 0
-        self.walking_failed = False
-        self.last_step_time = 0.0
-
-    def set_fast_walk_keys(self, keys: list[int]) -> None:
-        """Server sent 0xBF subcmd 0x01 — replace all keys."""
-        for i in range(min(len(keys), MAX_FAST_WALK_STACK_SIZE)):
-            self.fast_walk_keys[i] = keys[i]
-
-    def add_fast_walk_key(self, key: int) -> None:
-        """Server sent 0xBF subcmd 0x02 — add one key."""
-        for i in range(MAX_FAST_WALK_STACK_SIZE):
-            if self.fast_walk_keys[i] == 0:
-                self.fast_walk_keys[i] = key
-                break
-
-    def pop_fast_walk_key(self) -> int:
-        """Get and consume next fastwalk key (0 if none available)."""
-        for i in range(MAX_FAST_WALK_STACK_SIZE):
-            key = self.fast_walk_keys[i]
-            if key != 0:
-                self.fast_walk_keys[i] = 0
-                return key
-        return 0
-
-    def next_sequence(self) -> int:
-        seq = self.walk_sequence
-        if self.walk_sequence == 0xFF:
-            self.walk_sequence = 1
-        else:
-            self.walk_sequence += 1
-        return seq
-
-    def confirm_walk(self, seq: int) -> None:
-        if self.steps_count > 0:
-            self.steps_count -= 1
-
-    def deny_walk(self, seq: int, x: int, y: int, z: int) -> None:
-        self.steps_count = 0
-        self.player_x = x
-        self.player_y = y
-        self.player_z = z
-        self.walking_failed = False  # allow retry
-
-    def can_walk(self) -> bool:
-        now = asyncio.get_event_loop().time() * 1000
-        return (
-            not self.walking_failed
-            and self.steps_count < MAX_STEP_COUNT
-            and now >= self.last_step_time
-        )
-
-
-walker = WalkerManager()
-
-
-# ---------------------------------------------------------------------------
 # Packet receive loop
 # ---------------------------------------------------------------------------
 
-async def recv_loop(conn: UoConnection) -> None:
-    """Receive and process all game packets."""
+
+async def recv_loop(conn: UoConnection, handler: PacketHandler) -> None:
+    """Receive and dispatch all game packets."""
     while conn.connected:
         try:
             packet_id, data = await conn.recv_packet(timeout=1.0)
@@ -118,99 +48,102 @@ async def recv_loop(conn: UoConnection) -> None:
             logger.error("connection_lost")
             break
 
-        if packet_id == 0xBF and len(data) >= 5:
-            # GeneralInfo — check for fastwalk keys
-            subcmd = struct.unpack(">H", data[3:5])[0]
-            if subcmd == 0x01 and len(data) >= 29:
-                # Set 6 fastwalk keys
-                keys = []
-                for i in range(6):
-                    off = 5 + i * 4
-                    keys.append(struct.unpack(">I", data[off : off + 4])[0])
-                walker.set_fast_walk_keys(keys)
-                logger.info("fastwalk_keys_set", keys=[f"0x{k:08X}" for k in keys[:5]])
-            elif subcmd == 0x02 and len(data) >= 9:
-                key = struct.unpack(">I", data[5:9])[0]
-                walker.add_fast_walk_key(key)
-                logger.debug("fastwalk_key_added", key=f"0x{key:08X}")
-
-        elif packet_id == 0x20:  # MobileUpdate
-            r = PacketReader(data[1:])
-            serial = r.read_u32()
-            r.skip(3)  # graphic + graphic_inc
-            r.skip(2)  # hue
-            r.skip(1)  # flags
-            x = r.read_u16()
-            y = r.read_u16()
-            r.skip(2)  # server_id
-            direction = r.read_u8() & 0x07
-            z = r.read_i8()
-            # Update walker state (like ClassicUO: 0x20 resets walker)
-            walker.player_x = x
-            walker.player_y = y
-            walker.player_z = z
-            walker.player_direction = direction
-            walker.walking_failed = False
-            walker.steps_count = 0
-            logger.debug("player_update", pos=f"({x},{y},{z})", dir=direction)
-
-        elif packet_id == 0x21:  # DenyWalk
-            r = PacketReader(data[1:])
-            seq = r.read_u8()
-            x = r.read_u16()
-            y = r.read_u16()
-            direction = r.read_u8() & 0x07
-            z = r.read_i8()
-            walker.deny_walk(seq, x, y, z)
-            walker.player_direction = direction
-            logger.info("walk_denied", seq=seq, pos=f"({x},{y},{z})")
-
-        elif packet_id == 0x22:  # ConfirmWalk
-            r = PacketReader(data[1:])
-            seq = r.read_u8()
-            walker.confirm_walk(seq)
-            logger.info("walk_confirmed", seq=seq)
-
-        elif packet_id == 0x1C:  # ASCII Talk
-            if len(data) > 8:
-                r = PacketReader(data[3:])  # variable: skip id + length
-                serial = r.read_u32()
-                r.skip(2)  # graphic
-                msg_type = r.read_u8()
-                r.skip(4)  # hue, font
-                name = r.read_ascii(30)
-                text = r.read_ascii_remaining()
-                logger.info("speech", name=name, text=text, type=msg_type)
-
-        elif packet_id == 0xAE:  # Unicode Talk
-            if len(data) > 48:
-                r = PacketReader(data[3:])
-                serial = r.read_u32()
-                r.skip(2)  # graphic
-                msg_type = r.read_u8()
-                r.skip(4)  # hue, font
-                lang = r.read_ascii(4)
-                name = r.read_ascii(30)
-                text = r.read_unicode_remaining()
-                logger.info("speech", name=name, text=text, lang=lang, type=msg_type)
-
-        elif packet_id == 0x73:  # Ping
+        # Ping is protocol-level — handle inline (requires I/O)
+        if packet_id == 0x73:
             await conn.send_packet(build_ping(data[1] if len(data) > 1 else 0))
+            continue
 
-        elif packet_id in (0x1D, 0x77, 0x78, 0x2E, 0x4E, 0x4F, 0x6D, 0xBC, 0x55):
-            pass  # common packets, skip logging
+        # Dispatch to perception handlers
+        if not handler.dispatch(packet_id, data):
+            logger.debug(
+                "packet_unhandled",
+                packet_id=f"0x{packet_id:02X}",
+                size=len(data),
+            )
 
-        else:
-            logger.debug("packet_recv", packet_id=f"0x{packet_id:02X}", size=len(data))
+
+# ---------------------------------------------------------------------------
+# Startup: inspect self
+# ---------------------------------------------------------------------------
+
+
+async def inspect_self(conn: UoConnection, perception: Perception) -> None:
+    """Request own stats and open backpack to discover equipment/items."""
+    serial = perception.self_state.serial
+
+    await asyncio.sleep(1.0)  # let initial packets settle
+
+    # Request full stats
+    await conn.send_packet(build_status_request(4, serial))
+
+    # Double-click self to trigger paperdoll / equipment packets
+    await conn.send_packet(build_double_click(serial))
+
+    # Find and open backpack
+    backpack_serial = perception.self_state.equipment.get(Layer.BACKPACK)
+    if backpack_serial:
+        await conn.send_packet(build_double_click(backpack_serial))
+
+    await asyncio.sleep(2.0)  # wait for responses
+
+    # Try again if backpack wasn't known yet
+    if not backpack_serial:
+        backpack_serial = perception.self_state.equipment.get(Layer.BACKPACK)
+        if backpack_serial:
+            await conn.send_packet(build_double_click(backpack_serial))
+            await asyncio.sleep(1.0)
+
+    # Log equipment
+    ss = perception.self_state
+    for layer, item_serial in sorted(ss.equipment.items()):
+        if layer not in Layer.__members__.values():
+            continue
+        item = perception.world.items.get(item_serial)
+        graphic = item.graphic if item else 0
+        name = item_name(graphic) if graphic else ""
+        logger.info(
+            "equipped",
+            slot=Layer(layer).name.lower(),
+            name=name or f"0x{graphic:04X}",
+            serial=f"0x{item_serial:08X}",
+        )
+
+    # Log backpack contents
+    if backpack_serial:
+        backpack_items = [
+            item for item in perception.world.items.values()
+            if item.container == backpack_serial
+        ]
+        for item in backpack_items:
+            name = item_name(item.graphic)
+            logger.info(
+                "backpack_item",
+                name=name or f"0x{item.graphic:04X}",
+                amount=item.amount,
+                serial=f"0x{item.serial:08X}",
+            )
+        if not backpack_items:
+            logger.info("backpack_empty")
+    else:
+        logger.info("backpack_not_found")
 
 
 # ---------------------------------------------------------------------------
 # Walk loop
 # ---------------------------------------------------------------------------
 
-async def wander_loop(conn: UoConnection) -> None:
+
+async def wander_loop(
+    conn: UoConnection,
+    walker: WalkerManager,
+    perception: Perception,
+    cfg: Config,
+) -> None:
     """Walk in random directions with proper turn-then-move logic."""
     from anima.client.packets import build_unicode_speech
+
+    turn_delay = cfg.movement.turn_delay_ms
+    walk_delay = cfg.movement.walk_delay_ms
 
     await asyncio.sleep(2.0)  # wait for world to load and fastwalk keys
 
@@ -229,27 +162,29 @@ async def wander_loop(conn: UoConnection) -> None:
         if random.random() < 0.2:
             direction = random.randint(0, 7)
 
-        # If facing different direction, turn first (100ms)
-        current_dir = walker.player_direction
+        # If facing different direction, turn first
+        current_dir = perception.self_state.direction
         if current_dir != direction:
-            # Turn: send walk packet with new direction but no actual movement
             seq = walker.next_sequence()
             fastwalk = walker.pop_fast_walk_key()
             pkt = build_walk_request(direction, seq, fastwalk)
             await conn.send_packet(pkt)
             walker.steps_count += 1
-            walker.last_step_time = asyncio.get_event_loop().time() * 1000 + TURN_DELAY_MS
-            walker.player_direction = direction
-            logger.debug("turn", dir=direction, seq=seq, fwk=f"0x{fastwalk:08X}")
+            walker.last_step_time = (
+                asyncio.get_event_loop().time() * 1000 + turn_delay
+            )
+            perception.self_state.direction = direction
+            logger.debug("turn", dir=direction, seq=seq)
         else:
-            # Walk forward
             seq = walker.next_sequence()
             fastwalk = walker.pop_fast_walk_key()
             pkt = build_walk_request(direction, seq, fastwalk)
             await conn.send_packet(pkt)
             walker.steps_count += 1
-            walker.last_step_time = asyncio.get_event_loop().time() * 1000 + WALK_DELAY_MS
-            logger.debug("walk", dir=direction, seq=seq, fwk=f"0x{fastwalk:08X}")
+            walker.last_step_time = (
+                asyncio.get_event_loop().time() * 1000 + walk_delay
+            )
+            logger.debug("walk", dir=direction, seq=seq)
 
         await asyncio.sleep(0.1)  # small yield
 
@@ -258,15 +193,36 @@ async def wander_loop(conn: UoConnection) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-async def run(host: str, port: int, username: str, password: str) -> None:
-    conn = UoConnection()
+
+async def run(cfg: Config, delete_existing: bool = False) -> None:
+    conn = UoConnection(timeout=cfg.client.connection_timeout)
 
     try:
-        result = await conn.login(host, port, username, password)
-        walker.player_x = result.x
-        walker.player_y = result.y
-        walker.player_z = result.z
-        walker.player_direction = result.direction
+        result = await conn.login(
+            cfg.server.host,
+            cfg.server.port,
+            cfg.account.username,
+            cfg.account.password,
+            character_name=cfg.character.name,
+            character_template=cfg.character.template,
+            character_city=cfg.character.city_index,
+            delete_existing=delete_existing,
+        )
+
+        # Build perception layer
+        perception = Perception(player_serial=result.serial)
+        perception.self_state.x = result.x
+        perception.self_state.y = result.y
+        perception.self_state.z = result.z
+        perception.self_state.direction = result.direction
+        perception.self_state.body = result.body
+
+        walker = WalkerManager(perception.self_state, perception.events)
+
+        # Build packet handler dispatch
+        pkt_handler = PacketHandler()
+        register_handlers(pkt_handler, perception, walker)
+
         logger.info(
             "agent_ready",
             serial=f"0x{result.serial:08X}",
@@ -274,8 +230,9 @@ async def run(host: str, port: int, username: str, password: str) -> None:
         )
 
         await asyncio.gather(
-            recv_loop(conn),
-            wander_loop(conn),
+            recv_loop(conn, pkt_handler),
+            inspect_self(conn, perception),
+            wander_loop(conn, walker, perception, cfg),
         )
     except ConnectionError as e:
         logger.error("connection_error", error=str(e))
@@ -285,13 +242,27 @@ async def run(host: str, port: int, username: str, password: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Anima — UO AI Player")
-    parser.add_argument("--host", default="127.0.0.1", help="Server host")
-    parser.add_argument("--port", type=int, default=2593, help="Server port")
-    parser.add_argument("--user", default="admin", help="Account username")
-    parser.add_argument("--pass", dest="password", default="admin", help="Account password")
+    parser.add_argument("--config", default=None, help="Path to config.yaml")
+    parser.add_argument("--host", default=None, help="Server host")
+    parser.add_argument("--port", type=int, default=None, help="Server port")
+    parser.add_argument("--user", default=None, help="Account username")
+    parser.add_argument("--pass", dest="password", default=None, help="Account password")
+    parser.add_argument("--recreate", action="store_true", help="Delete existing character and recreate")
     args = parser.parse_args()
 
-    asyncio.run(run(args.host, args.port, args.user, args.password))
+    cfg = load_config(args.config)
+
+    # CLI args override config file
+    if args.host:
+        cfg.server.host = args.host
+    if args.port:
+        cfg.server.port = args.port
+    if args.user:
+        cfg.account.username = args.user
+    if args.password:
+        cfg.account.password = args.password
+
+    asyncio.run(run(cfg, delete_existing=args.recreate))
 
 
 if __name__ == "__main__":
