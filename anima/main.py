@@ -29,6 +29,11 @@ from anima.perception.enums import Layer
 from anima.perception.handlers import register_handlers
 from anima.perception.walker import WalkerManager
 from anima.persona import load_persona_by_name
+from anima.skills.base import SkillRegistry
+from anima.skills.combat.healing import HealSelf
+from anima.skills.combat.melee import MeleeAttack
+from anima.skills.gathering.mine import MineOre
+from anima.skills.trade.vendor import BuyFromNpc, SellToNpc
 
 structlog.configure(
     processors=[
@@ -270,6 +275,15 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             forum_client = TavernForumClient(cfg.forum.base_url, cfg.forum.api_key)
             logger.info("forum_client_ready", base_url=cfg.forum.base_url)
 
+        # Build skill registry
+        skill_registry = SkillRegistry()
+        skill_registry.register(HealSelf())
+        skill_registry.register(MeleeAttack())
+        skill_registry.register(MineOre())
+        skill_registry.register(BuyFromNpc())
+        skill_registry.register(SellToNpc())
+        logger.info("skills_registered", count=len(skill_registry.all_skills))
+
         # Build brain with behavior tree
         brain_ctx = BrainContext(
             perception=perception,
@@ -282,6 +296,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             blackboard={
                 "persona": persona,
                 "forum_client": forum_client,
+                "skill_registry": skill_registry,
             },
         )
         brain = Brain(brain_ctx)

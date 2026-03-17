@@ -22,6 +22,9 @@ from anima.skills.forum_action import forum_read_action, forum_write_action
 
 logger = structlog.get_logger()
 
+# Cooldown between skill executions (seconds)
+SKILL_COOLDOWN = 10.0
+
 
 def _has_low_hp(ctx: BrainContext) -> bool:
     return ctx.perception.self_state.hp_percent < 30.0
@@ -35,6 +38,10 @@ def _has_forum(ctx: BrainContext) -> bool:
     return ctx.blackboard.get("forum_client") is not None
 
 
+def _has_skill_registry(ctx: BrainContext) -> bool:
+    return ctx.blackboard.get("skill_registry") is not None
+
+
 async def _flee_action(ctx: BrainContext) -> Status:
     """Placeholder flee action — just log for now."""
     logger.warning(
@@ -45,14 +52,69 @@ async def _flee_action(ctx: BrainContext) -> Status:
     return Status.SUCCESS
 
 
+async def _skill_action(ctx: BrainContext) -> Status:
+    """Select and execute a skill using the Q-learning selector."""
+    from anima.skills.base import SkillRegistry
+    from anima.skills.selector import SkillSelector
+
+    now = time.time()
+    last_skill = ctx.blackboard.get("last_skill_time", 0.0)
+    if now - last_skill < SKILL_COOLDOWN:
+        return Status.FAILURE
+
+    registry: SkillRegistry | None = ctx.blackboard.get("skill_registry")
+    if registry is None or ctx.memory_db is None:
+        return Status.FAILURE
+
+    agent_name = _agent_name(ctx)
+    available = await registry.available_skills(ctx)
+    if not available:
+        return Status.FAILURE
+
+    selector = SkillSelector(ctx.memory_db)
+    skill = await selector.select(ctx, available, agent_name)
+    if skill is None:
+        return Status.FAILURE
+
+    logger.info("skill_executing", skill=skill.name, category=skill.category)
+    ctx.blackboard["last_skill_time"] = now
+
+    result = await skill.execute(ctx)
+
+    # Update Q-values
+    next_available = await registry.available_skills(ctx)
+    await selector.update(ctx, skill, result, agent_name, next_available)
+
+    # Record episode in memory
+    if ctx.memory_db:
+        await ctx.memory_db.record_episode(
+            agent_name=agent_name,
+            location_x=ctx.perception.self_state.x,
+            location_y=ctx.perception.self_state.y,
+            action=skill.name,
+            target=result.message[:50],
+            outcome="success" if result.success else "failure",
+            reward=result.reward,
+            summary=result.message,
+        )
+
+    return Status.SUCCESS if result.success else Status.FAILURE
+
+
+def _agent_name(ctx: BrainContext) -> str:
+    persona = ctx.blackboard.get("persona")
+    return persona.name if persona else "Anima"
+
+
 def build_default_tree() -> Node:
     """Build the default behavior tree.
 
     Selector
-    +-- Sequence [Survival] -- HP<30% -> flee
-    +-- Sequence [Social]   -- speech heard -> respond
-    +-- Sequence [Forum]    -- forum enabled -> read/write posts
-    +-- Action [Think]      -- LLM decides: move, speak, explore
+    +-- Sequence [Survival]  -- HP<30% -> flee
+    +-- Sequence [Social]    -- speech heard -> respond
+    +-- Sequence [Forum]     -- forum enabled -> read/write posts
+    +-- Sequence [SkillExec] -- skill registry -> Q-select + execute
+    +-- Action [Think]       -- LLM decides: move, speak, explore
     """
     return Selector(
         "root",
@@ -82,6 +144,13 @@ def build_default_tree() -> Node:
                             Action("forum_read", forum_read_action),
                         ],
                     ),
+                ],
+            ),
+            Sequence(
+                "skill_exec",
+                [
+                    Condition("has_skills", _has_skill_registry),
+                    Action("skill_select", _skill_action),
                 ],
             ),
             Action("think", llm_think),
