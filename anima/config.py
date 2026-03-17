@@ -41,12 +41,18 @@ class MovementConfig:
 
 
 @dataclass
+class MapConfig:
+    resource_dir: str = "~/dev/uo/uo-resource"
+
+
+@dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     account: AccountConfig = field(default_factory=AccountConfig)
     character: CharacterConfig = field(default_factory=CharacterConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
     movement: MovementConfig = field(default_factory=MovementConfig)
+    map: MapConfig = field(default_factory=MapConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -88,5 +94,10 @@ def load_config(path: str | Path | None = None) -> Config:
         for k, v in raw["movement"].items():
             if hasattr(cfg.movement, k):
                 setattr(cfg.movement, k, v)
+
+    if "map" in raw:
+        for k, v in raw["map"].items():
+            if hasattr(cfg.map, k):
+                setattr(cfg.map, k, v)
 
     return cfg

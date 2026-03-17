@@ -1,24 +1,27 @@
-"""Anima entry point — connect to servuo and walk around."""
+"""Anima entry point — connect to servuo and run the behavior tree brain."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import random
+from pathlib import Path
 
 import structlog
 
+from anima.brain.behavior_tree import BrainContext
+from anima.brain.brain import Brain
 from anima.client.connection import UoConnection
-from anima.data import item_name
 from anima.client.handler import PacketHandler
 from anima.client.packets import (
     build_double_click,
     build_opl_request,
     build_ping,
     build_status_request,
-    build_walk_request,
+    build_unicode_speech,
 )
 from anima.config import Config, load_config
+from anima.data import item_name
+from anima.map import MapReader
 from anima.perception import Perception
 from anima.perception.enums import Layer
 from anima.perception.handlers import register_handlers
@@ -112,8 +115,7 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
     # Log backpack contents
     if backpack_serial:
         backpack_items = [
-            item for item in perception.world.items.values()
-            if item.container == backpack_serial
+            item for item in perception.world.items.values() if item.container == backpack_serial
         ]
         for item in backpack_items:
             name = item_name(item.graphic)
@@ -176,64 +178,21 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Walk loop
+# Brain loop
 # ---------------------------------------------------------------------------
 
 
-async def wander_loop(
-    conn: UoConnection,
-    walker: WalkerManager,
-    perception: Perception,
-    cfg: Config,
-) -> None:
-    """Walk in random directions with proper turn-then-move logic."""
-    from anima.client.packets import build_unicode_speech
+async def brain_loop(brain: Brain) -> None:
+    """Run the behavior tree brain at ~5Hz after initial settle time."""
+    await asyncio.sleep(3.0)  # wait for world to load and fastwalk keys
 
-    turn_delay = cfg.movement.turn_delay_ms
-    walk_delay = cfg.movement.walk_delay_ms
-
-    await asyncio.sleep(2.0)  # wait for world to load and fastwalk keys
-
-    # Say hello
-    await conn.send_packet(build_unicode_speech("Hello from Anima!"))
+    # Say hello on connect
+    await brain.context.conn.send_packet(build_unicode_speech("Hello from Anima!"))
     logger.info("speech_sent", text="Hello from Anima!")
 
-    direction = random.randint(0, 7)
-
-    while conn.connected:
-        if not walker.can_walk():
-            await asyncio.sleep(0.05)
-            continue
-
-        # Occasionally change target direction
-        if random.random() < 0.2:
-            direction = random.randint(0, 7)
-
-        # If facing different direction, turn first
-        current_dir = perception.self_state.direction
-        if current_dir != direction:
-            seq = walker.next_sequence()
-            fastwalk = walker.pop_fast_walk_key()
-            pkt = build_walk_request(direction, seq, fastwalk)
-            await conn.send_packet(pkt)
-            walker.steps_count += 1
-            walker.last_step_time = (
-                asyncio.get_event_loop().time() * 1000 + turn_delay
-            )
-            perception.self_state.direction = direction
-            logger.debug("turn", dir=direction, seq=seq)
-        else:
-            seq = walker.next_sequence()
-            fastwalk = walker.pop_fast_walk_key()
-            pkt = build_walk_request(direction, seq, fastwalk)
-            await conn.send_packet(pkt)
-            walker.steps_count += 1
-            walker.last_step_time = (
-                asyncio.get_event_loop().time() * 1000 + walk_delay
-            )
-            logger.debug("walk", dir=direction, seq=seq)
-
-        await asyncio.sleep(0.1)  # small yield
+    while brain.context.conn.connected:
+        await brain.tick()
+        await asyncio.sleep(0.2)  # 200ms tick
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +204,13 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
     conn = UoConnection(timeout=cfg.client.connection_timeout)
 
     try:
+        # Build perception + handlers BEFORE login so login-phase
+        # world-state packets (0x78, 0xF3, 0xDC, 0xBF, etc.) are captured.
+        perception = Perception(player_serial=0)
+        walker = WalkerManager(perception.self_state, perception.events)
+        pkt_handler = PacketHandler()
+        register_handlers(pkt_handler, perception, walker)
+
         result = await conn.login(
             cfg.server.host,
             cfg.server.port,
@@ -254,21 +220,22 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             character_template=cfg.character.template,
             character_city=cfg.character.city_index,
             delete_existing=delete_existing,
+            packet_handler=pkt_handler,
+            perception=perception,
         )
 
-        # Build perception layer
-        perception = Perception(player_serial=result.serial)
-        perception.self_state.x = result.x
-        perception.self_state.y = result.y
-        perception.self_state.z = result.z
-        perception.self_state.direction = result.direction
-        perception.self_state.body = result.body
+        # login() already synced perception via the 0x1B handler,
+        # but ensure serial is set in case perception wasn't passed
+        perception.self_state.serial = result.serial
 
-        walker = WalkerManager(perception.self_state, perception.events)
-
-        # Build packet handler dispatch
-        pkt_handler = PacketHandler()
-        register_handlers(pkt_handler, perception, walker)
+        # Load map reader for pathfinding
+        resource_dir = Path(cfg.map.resource_dir).expanduser()
+        map_reader: MapReader | None = None
+        if resource_dir.exists():
+            map_reader = MapReader(resource_dir)
+            logger.info("map_reader_loaded", resource_dir=str(resource_dir))
+        else:
+            logger.warning("map_resource_dir_not_found", path=str(resource_dir))
 
         logger.info(
             "agent_ready",
@@ -276,10 +243,20 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             position=f"({result.x}, {result.y}, {result.z})",
         )
 
+        # Build brain with behavior tree
+        brain_ctx = BrainContext(
+            perception=perception,
+            conn=conn,
+            walker=walker,
+            map_reader=map_reader,
+            cfg=cfg,
+        )
+        brain = Brain(brain_ctx)
+
         await asyncio.gather(
             recv_loop(conn, pkt_handler),
             inspect_self(conn, perception),
-            wander_loop(conn, walker, perception, cfg),
+            brain_loop(brain),
         )
     except ConnectionError as e:
         logger.error("connection_error", error=str(e))
@@ -294,7 +271,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=None, help="Server port")
     parser.add_argument("--user", default=None, help="Account username")
     parser.add_argument("--pass", dest="password", default=None, help="Account password")
-    parser.add_argument("--recreate", action="store_true", help="Delete existing character and recreate")
+    parser.add_argument(
+        "--recreate", action="store_true", help="Delete existing character and recreate"
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)

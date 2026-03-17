@@ -24,3 +24,6 @@ movement:
   walk_delay_ms: 400
   run_delay_ms: 200
   turn_delay_ms: 100
+
+map:
+  resource_dir: ~/dev/uo/uo-resource

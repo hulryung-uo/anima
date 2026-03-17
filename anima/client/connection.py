@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 import struct
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    from anima.perception import Perception
 
 from anima.client.appearance import (
     TEMPLATES,
@@ -14,6 +18,7 @@ from anima.client.appearance import (
     build_create_character,
 )
 from anima.client.codec import PacketReader, huffman_decompress_one
+from anima.client.handler import PacketHandler
 from anima.client.packets import (
     build_account_login,
     build_client_version,
@@ -51,7 +56,7 @@ class UoConnection:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._game_mode = False
-        self._recv_buffer = bytearray()       # decompressed packet bytes
+        self._recv_buffer = bytearray()  # decompressed packet bytes
         self._compressed_buffer = bytearray()  # raw compressed bytes from TCP
         self._timeout = timeout
 
@@ -165,9 +170,7 @@ class UoConnection:
 
             # Try to decompress one packet from the compressed buffer
             if len(self._compressed_buffer) > 0:
-                decompressed, consumed = huffman_decompress_one(
-                    bytes(self._compressed_buffer)
-                )
+                decompressed, consumed = huffman_decompress_one(bytes(self._compressed_buffer))
                 if decompressed is not None and consumed > 0:
                     del self._compressed_buffer[:consumed]
                     self._recv_buffer.extend(decompressed)
@@ -206,6 +209,8 @@ class UoConnection:
         character_template: str = "random",
         character_city: int = 3,
         delete_existing: bool = False,
+        packet_handler: PacketHandler | None = None,
+        perception: Perception | None = None,
     ) -> LoginResult:
         """Complete the full two-phase UO login flow.
 
@@ -318,7 +323,8 @@ class UoConnection:
                         slot=char_slot,
                     )
                     del_data = build_delete_character(
-                        password, char_slot,
+                        password,
+                        char_slot,
                     )
                     await self.send_packet(del_data)
                     # Server will re-send char list (0x86)
@@ -332,7 +338,8 @@ class UoConnection:
                         slot=char_slot,
                     )
                     play_data = build_play_character(
-                        name=char_name, slot=char_slot,
+                        name=char_name,
+                        slot=char_slot,
                     )
                     await self.send_packet(play_data)
                 else:
@@ -378,6 +385,16 @@ class UoConnection:
                     direction=direction,
                     body=body,
                 )
+
+                # Sync perception immediately so handlers have correct serial
+                if perception is not None:
+                    perception.self_state.serial = serial
+                    perception.self_state.x = x
+                    perception.self_state.y = y
+                    perception.self_state.z = z
+                    perception.self_state.direction = direction
+                    perception.self_state.body = body
+
                 logger.info(
                     "login_confirmed",
                     serial=f"0x{serial:08X}",
@@ -401,6 +418,16 @@ class UoConnection:
                 reader = PacketReader(data[1:])
                 flags = reader.read_u32() if len(data) > 5 else reader.read_u16()
                 logger.debug("supported_features", flags=f"0x{flags:04X}")
+
+            elif login_result is not None and packet_handler is not None:
+                # After LoginConfirm, dispatch world-state packets
+                # through the handler instead of ignoring them
+                if not packet_handler.dispatch(packet_id, data):
+                    logger.debug(
+                        "login_packet_unhandled",
+                        packet_id=f"0x{packet_id:02X}",
+                        size=len(data),
+                    )
 
             else:
                 logger.debug(

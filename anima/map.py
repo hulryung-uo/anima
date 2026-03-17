@@ -68,8 +68,8 @@ class TileInfo:
         if self.land.impassable:
             return False
         for s in self.statics:
-            if s.impassable:
-                return True  # actually means blocked
+            if s.impassable and not s.surface:
+                return False
         return True
 
     @property
