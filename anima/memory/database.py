@@ -127,6 +127,31 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_agent ON knowledge(agent_name);
 CREATE INDEX IF NOT EXISTS idx_relationships_agent ON relationships(agent_name, entity_serial);
 CREATE INDEX IF NOT EXISTS idx_action_stats_agent
     ON action_stats(agent_name, context_pattern, action);
+
+CREATE TABLE IF NOT EXISTS q_values (
+    id INTEGER PRIMARY KEY,
+    agent_name TEXT NOT NULL,
+    state_key TEXT NOT NULL,
+    action TEXT NOT NULL,
+    q_value REAL NOT NULL DEFAULT 0.0,
+    visit_count INTEGER NOT NULL DEFAULT 0,
+    last_updated REAL NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_q_values_lookup
+    ON q_values(agent_name, state_key, action);
+
+CREATE TABLE IF NOT EXISTS location_values (
+    id INTEGER PRIMARY KEY,
+    agent_name TEXT NOT NULL,
+    region_x INTEGER NOT NULL,
+    region_y INTEGER NOT NULL,
+    activity TEXT NOT NULL,
+    total_reward REAL NOT NULL DEFAULT 0.0,
+    visit_count INTEGER NOT NULL DEFAULT 0,
+    last_visited REAL NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_location_values_lookup
+    ON location_values(agent_name, region_x, region_y, activity);
 """
 
 
@@ -186,8 +211,16 @@ class MemoryDB:
                 action, target, outcome, reward, context, summary)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                agent_name, now, location_x, location_y,
-                action, target, outcome, reward, ctx_json, summary,
+                agent_name,
+                now,
+                location_x,
+                location_y,
+                action,
+                target,
+                outcome,
+                reward,
+                ctx_json,
+                summary,
             ),
         )
         await self.db.commit()
@@ -299,9 +332,7 @@ class MemoryDB:
     # Relationships
     # -------------------------------------------------------------------
 
-    async def get_relationship(
-        self, agent_name: str, entity_serial: int
-    ) -> Relationship | None:
+    async def get_relationship(self, agent_name: str, entity_serial: int) -> Relationship | None:
         rows = await self.db.execute_fetchall(
             "SELECT * FROM relationships WHERE agent_name = ? AND entity_serial = ?",
             (agent_name, entity_serial),
@@ -338,9 +369,14 @@ class MemoryDB:
                        last_interaction = ?, notes = ?
                    WHERE agent_name = ? AND entity_serial = ?""",
                 (
-                    entity_name, new_disp, new_trust, new_count,
-                    now, json.dumps(notes),
-                    agent_name, entity_serial,
+                    entity_name,
+                    new_disp,
+                    new_trust,
+                    new_count,
+                    now,
+                    json.dumps(notes),
+                    agent_name,
+                    entity_serial,
                 ),
             )
         else:
@@ -355,8 +391,13 @@ class MemoryDB:
                     interaction_count, last_interaction, notes)
                    VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
                 (
-                    agent_name, entity_serial, entity_name, disp, trust,
-                    now, json.dumps(notes_dict),
+                    agent_name,
+                    entity_serial,
+                    entity_name,
+                    disp,
+                    trust,
+                    now,
+                    json.dumps(notes_dict),
                 ),
             )
         await self.db.commit()
@@ -412,16 +453,18 @@ class MemoryDB:
                     successes, failures, total_reward, last_updated)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    agent_name, context_pattern, action,
-                    1 if success else 0, 0 if success else 1,
-                    reward, now,
+                    agent_name,
+                    context_pattern,
+                    action,
+                    1 if success else 0,
+                    0 if success else 1,
+                    reward,
+                    now,
                 ),
             )
         await self.db.commit()
 
-    async def get_action_stats(
-        self, agent_name: str, context_pattern: str
-    ) -> list[ActionStat]:
+    async def get_action_stats(self, agent_name: str, context_pattern: str) -> list[ActionStat]:
         """Get success rates for all actions in a given context."""
         rows = await self.db.execute_fetchall(
             """SELECT * FROM action_stats
@@ -438,6 +481,114 @@ class MemoryDB:
             (agent_name,),
         )
         return [_row_to_action_stat(r) for r in rows]
+
+    # -------------------------------------------------------------------
+    # Q-values
+    # -------------------------------------------------------------------
+
+    async def get_q_value(self, agent_name: str, state_key: str, action: str) -> float:
+        """Get Q-value for a (state, action) pair. Returns 0.0 if not found."""
+        cursor = await self.db.execute(
+            """SELECT q_value FROM q_values
+               WHERE agent_name = ? AND state_key = ? AND action = ?""",
+            (agent_name, state_key, action),
+        )
+        row = await cursor.fetchone()
+        return row["q_value"] if row else 0.0
+
+    async def get_q_values(self, agent_name: str, state_key: str) -> dict[str, tuple[float, int]]:
+        """Get all Q-values for a state. Returns {action: (q_value, visit_count)}."""
+        rows = await self.db.execute_fetchall(
+            """SELECT action, q_value, visit_count FROM q_values
+               WHERE agent_name = ? AND state_key = ?""",
+            (agent_name, state_key),
+        )
+        return {r["action"]: (r["q_value"], r["visit_count"]) for r in rows}
+
+    async def update_q_value(
+        self,
+        agent_name: str,
+        state_key: str,
+        action: str,
+        q_value: float,
+        visit_count: int,
+    ) -> None:
+        """Upsert a Q-value entry."""
+        now = time.time()
+        await self.db.execute(
+            """INSERT INTO q_values
+               (agent_name, state_key, action, q_value, visit_count, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(agent_name, state_key, action) DO UPDATE SET
+                   q_value = excluded.q_value,
+                   visit_count = excluded.visit_count,
+                   last_updated = excluded.last_updated""",
+            (agent_name, state_key, action, q_value, visit_count, now),
+        )
+        await self.db.commit()
+
+    # -------------------------------------------------------------------
+    # Location values
+    # -------------------------------------------------------------------
+
+    async def update_location_value(
+        self,
+        agent_name: str,
+        region_x: int,
+        region_y: int,
+        activity: str,
+        reward: float,
+    ) -> None:
+        """Record activity reward at a map region.
+
+        Increments visit_count and adds to total_reward.
+        """
+        now = time.time()
+        await self.db.execute(
+            """INSERT INTO location_values
+               (agent_name, region_x, region_y, activity, total_reward, visit_count, last_visited)
+               VALUES (?, ?, ?, ?, ?, 1, ?)
+               ON CONFLICT(agent_name, region_x, region_y, activity) DO UPDATE SET
+                   total_reward = location_values.total_reward + excluded.total_reward,
+                   visit_count = location_values.visit_count + 1,
+                   last_visited = excluded.last_visited""",
+            (agent_name, region_x, region_y, activity, reward, now),
+        )
+        await self.db.commit()
+
+    async def get_location_values(
+        self, agent_name: str, region_x: int, region_y: int
+    ) -> list[tuple[str, float, int]]:
+        """Get all activity values for a region.
+
+        Returns [(activity, total_reward, visit_count), ...].
+        """
+        rows = await self.db.execute_fetchall(
+            """SELECT activity, total_reward, visit_count FROM location_values
+               WHERE agent_name = ? AND region_x = ? AND region_y = ?
+               ORDER BY total_reward DESC""",
+            (agent_name, region_x, region_y),
+        )
+        return [(r["activity"], r["total_reward"], r["visit_count"]) for r in rows]
+
+    async def get_best_locations(
+        self, agent_name: str, activity: str, limit: int = 5
+    ) -> list[tuple[int, int, float, int]]:
+        """Get top locations for an activity.
+
+        Returns [(region_x, region_y, avg_reward, visit_count), ...].
+        """
+        rows = await self.db.execute_fetchall(
+            """SELECT region_x, region_y,
+                      total_reward / visit_count AS avg_reward,
+                      visit_count
+               FROM location_values
+               WHERE agent_name = ? AND activity = ?
+               ORDER BY avg_reward DESC
+               LIMIT ?""",
+            (agent_name, activity, limit),
+        )
+        return [(r["region_x"], r["region_y"], r["avg_reward"], r["visit_count"]) for r in rows]
 
 
 # ---------------------------------------------------------------------------
