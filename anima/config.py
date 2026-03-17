@@ -55,6 +55,22 @@ class LLMConfig:
 
 
 @dataclass
+class MemoryConfig:
+    db_path: str = "data/anima.db"
+    max_episodes: int = 10000
+    retrieval_count: int = 5
+
+
+@dataclass
+class ForumConfig:
+    enabled: bool = False
+    base_url: str = "https://www.uotavern.com/api"
+    api_key: str = ""
+    post_interval: int = 3600
+    read_interval: int = 1800
+
+
+@dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     account: AccountConfig = field(default_factory=AccountConfig)
@@ -63,6 +79,8 @@ class Config:
     movement: MovementConfig = field(default_factory=MovementConfig)
     map: MapConfig = field(default_factory=MapConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    forum: ForumConfig = field(default_factory=ForumConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -114,5 +132,15 @@ def load_config(path: str | Path | None = None) -> Config:
         for k, v in raw["llm"].items():
             if hasattr(cfg.llm, k):
                 setattr(cfg.llm, k, v)
+
+    if "memory" in raw:
+        for k, v in raw["memory"].items():
+            if hasattr(cfg.memory, k):
+                setattr(cfg.memory, k, v)
+
+    if "forum" in raw:
+        for k, v in raw["forum"].items():
+            if hasattr(cfg.forum, k):
+                setattr(cfg.forum, k, v)
 
     return cfg

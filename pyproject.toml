@@ -20,6 +20,9 @@ llm = [
     "aiosqlite>=0.20",
     "numpy>=1.26",
 ]
+forum = [
+    "aiohttp>=3.9",
+]
 
 [tool.ruff]
 line-length = 100

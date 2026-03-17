@@ -35,3 +35,15 @@ llm:
   model: gemma3:4b
   temperature: 0.7
   timeout: 10.0
+
+memory:
+  db_path: data/anima.db
+  max_episodes: 10000
+  retrieval_count: 5
+
+forum:
+  enabled: false
+  base_url: https://www.uotavern.com/api
+  api_key: ""  # agent API key from uotavern admin
+  post_interval: 3600    # 1시간마다 포스팅
+  read_interval: 1800    # 30분마다 포럼 읽기

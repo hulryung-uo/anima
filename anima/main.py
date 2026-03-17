@@ -23,6 +23,7 @@ from anima.client.packets import (
 from anima.config import Config, load_config
 from anima.data import item_name
 from anima.map import MapReader
+from anima.memory.database import MemoryDB
 from anima.perception import Perception
 from anima.perception.enums import Layer
 from anima.perception.handlers import register_handlers
@@ -254,9 +255,20 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             position=f"({result.x}, {result.y}, {result.z})",
         )
 
+        # Initialize memory database
+        memory_db = MemoryDB(cfg.memory.db_path)
+        await memory_db.init()
+
         # Load persona
         persona = load_persona_by_name(cfg.character.persona)
         logger.info("persona_loaded", name=persona.name, title=persona.title)
+
+        # Initialize forum client if enabled
+        forum_client = None
+        if cfg.forum.enabled and cfg.forum.api_key:
+            from anima.skills.tavern_client import TavernForumClient
+            forum_client = TavernForumClient(cfg.forum.base_url, cfg.forum.api_key)
+            logger.info("forum_client_ready", base_url=cfg.forum.base_url)
 
         # Build brain with behavior tree
         brain_ctx = BrainContext(
@@ -266,15 +278,22 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             map_reader=map_reader,
             cfg=cfg,
             llm=llm_client,
-            blackboard={"persona": persona},
+            memory_db=memory_db,
+            blackboard={
+                "persona": persona,
+                "forum_client": forum_client,
+            },
         )
         brain = Brain(brain_ctx)
 
-        await asyncio.gather(
-            recv_loop(conn, pkt_handler),
-            inspect_self(conn, perception),
-            brain_loop(brain),
-        )
+        try:
+            await asyncio.gather(
+                recv_loop(conn, pkt_handler),
+                inspect_self(conn, perception),
+                brain_loop(brain),
+            )
+        finally:
+            await memory_db.close()
     except ConnectionError as e:
         logger.error("connection_error", error=str(e))
     except KeyboardInterrupt:
