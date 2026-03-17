@@ -18,6 +18,7 @@ from anima.brain.behavior_tree import (
 )
 from anima.brain.think import llm_think
 from anima.perception.event_stream import GameEventType
+from anima.skills.forum_action import forum_read_action, forum_write_action
 
 logger = structlog.get_logger()
 
@@ -28,6 +29,10 @@ def _has_low_hp(ctx: BrainContext) -> bool:
 
 def _has_pending_speech(ctx: BrainContext) -> bool:
     return bool(ctx.blackboard.get("pending_speech"))
+
+
+def _has_forum(ctx: BrainContext) -> bool:
+    return ctx.blackboard.get("forum_client") is not None
 
 
 async def _flee_action(ctx: BrainContext) -> Status:
@@ -46,6 +51,7 @@ def build_default_tree() -> Node:
     Selector
     +-- Sequence [Survival] -- HP<30% -> flee
     +-- Sequence [Social]   -- speech heard -> respond
+    +-- Sequence [Forum]    -- forum enabled -> read/write posts
     +-- Action [Think]      -- LLM decides: move, speak, explore
     """
     return Selector(
@@ -63,6 +69,19 @@ def build_default_tree() -> Node:
                 [
                     Condition("speech_pending", _has_pending_speech),
                     Action("respond", respond_to_speech),
+                ],
+            ),
+            Sequence(
+                "forum",
+                [
+                    Condition("has_forum", _has_forum),
+                    Selector(
+                        "forum_ops",
+                        [
+                            Action("forum_write", forum_write_action),
+                            Action("forum_read", forum_read_action),
+                        ],
+                    ),
                 ],
             ),
             Action("think", llm_think),
