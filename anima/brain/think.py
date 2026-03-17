@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 THINK_COOLDOWN = 15.0  # seconds between LLM decisions
+CONVERSATION_TIMEOUT = 10.0  # seconds of silence before resuming exploration
 
 THINK_PROMPT = """\
 Position: ({x}, {y}).
@@ -125,6 +126,13 @@ async def llm_think(ctx: BrainContext) -> Status:
 
     now = time.time()
     last_think = ctx.blackboard.get("last_think_time", 0.0)
+
+    # If in active conversation, pause exploration and just wait
+    last_player_speech = ctx.blackboard.get("last_player_speech", 0.0)
+    in_conversation = (now - last_player_speech) < CONVERSATION_TIMEOUT
+    if in_conversation and not ctx.blackboard.get("pending_speech"):
+        # Conversation active but no pending reply — just wait, don't wander
+        return Status.SUCCESS
 
     # If we have a pending move target, keep walking toward it
     move_target = ctx.blackboard.get("move_target")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import structlog
 
 from anima.action.speech import respond_to_speech
@@ -93,3 +95,5 @@ class Brain:
                     continue
                 pending = self.context.blackboard.setdefault("pending_speech", [])
                 pending.append(event.data)
+                # Track last time someone spoke to us
+                self.context.blackboard["last_player_speech"] = time.time()
