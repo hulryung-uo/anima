@@ -10,6 +10,7 @@ import structlog
 
 from anima.brain.behavior_tree import BrainContext
 from anima.brain.brain import Brain
+from anima.brain.llm import LLMClient
 from anima.client.connection import UoConnection
 from anima.client.handler import PacketHandler
 from anima.client.packets import (
@@ -237,6 +238,15 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         else:
             logger.warning("map_resource_dir_not_found", path=str(resource_dir))
 
+        # Initialize LLM client
+        llm_client = LLMClient(
+            base_url=cfg.llm.base_url,
+            model=cfg.llm.model,
+            temperature=cfg.llm.temperature,
+            timeout=cfg.llm.timeout,
+        )
+        logger.info("llm_client_ready", model=cfg.llm.model, base_url=cfg.llm.base_url)
+
         logger.info(
             "agent_ready",
             serial=f"0x{result.serial:08X}",
@@ -250,6 +260,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             walker=walker,
             map_reader=map_reader,
             cfg=cfg,
+            llm=llm_client,
         )
         brain = Brain(brain_ctx)
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
+from anima.brain.llm import LLMClient
 from anima.client.connection import UoConnection
 from anima.config import Config
 from anima.map import MapReader
@@ -30,6 +31,7 @@ class BrainContext:
     walker: WalkerManager
     map_reader: MapReader | None
     cfg: Config
+    llm: LLMClient | None = None
     blackboard: dict[str, Any] = field(default_factory=dict)
 
 

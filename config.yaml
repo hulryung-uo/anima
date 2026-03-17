@@ -27,3 +27,9 @@ movement:
 
 map:
   resource_dir: ~/dev/uo/uo-resource
+
+llm:
+  base_url: http://localhost:11434
+  model: gemma3:4b
+  temperature: 0.7
+  timeout: 10.0

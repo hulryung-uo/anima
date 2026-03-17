@@ -46,6 +46,14 @@ class MapConfig:
 
 
 @dataclass
+class LLMConfig:
+    base_url: str = "http://localhost:11434"
+    model: str = "gemma3:4b"
+    temperature: float = 0.7
+    timeout: float = 10.0
+
+
+@dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     account: AccountConfig = field(default_factory=AccountConfig)
@@ -53,6 +61,7 @@ class Config:
     client: ClientConfig = field(default_factory=ClientConfig)
     movement: MovementConfig = field(default_factory=MovementConfig)
     map: MapConfig = field(default_factory=MapConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -99,5 +108,10 @@ def load_config(path: str | Path | None = None) -> Config:
         for k, v in raw["map"].items():
             if hasattr(cfg.map, k):
                 setattr(cfg.map, k, v)
+
+    if "llm" in raw:
+        for k, v in raw["llm"].items():
+            if hasattr(cfg.llm, k):
+                setattr(cfg.llm, k, v)
 
     return cfg
