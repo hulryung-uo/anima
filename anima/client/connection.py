@@ -8,9 +8,10 @@ from dataclasses import dataclass
 
 import structlog
 
-from anima.client.codec import PacketReader, huffman_decompress
+from anima.client.codec import PacketReader, huffman_decompress_one
 from anima.client.packets import (
     build_account_login,
+    build_client_version,
     build_game_login,
     build_play_character,
     build_seed,
@@ -44,7 +45,8 @@ class UoConnection:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._game_mode = False
-        self._recv_buffer = bytearray()
+        self._recv_buffer = bytearray()       # decompressed packet bytes
+        self._compressed_buffer = bytearray()  # raw compressed bytes from TCP
 
     @property
     def connected(self) -> bool:
@@ -117,35 +119,33 @@ class UoConnection:
             return packet_id, id_byte
 
     async def _recv_game_packet(self, timeout: float = DEFAULT_TIMEOUT) -> tuple[int, bytes]:
-        """Receive one game-mode packet (Huffman compressed)."""
+        """Receive one game-mode packet (Huffman compressed).
+
+        Each server packet is independently Huffman compressed with its own
+        terminal symbol. Compressed data for a single packet may span multiple
+        TCP reads, so we maintain a compressed buffer across calls.
+        """
         assert self._reader is not None
 
-        # In game mode, server sends Huffman-compressed data.
-        # We need to read compressed bytes and decompress to find packet boundaries.
-        # Strategy: read available data, decompress, parse packets from decompressed buffer.
-
         while True:
-            # Try to parse a packet from the decompressed buffer
+            # Try to parse a complete packet from the decompressed buffer
             if len(self._recv_buffer) > 0:
                 packet_id = self._recv_buffer[0]
                 length = get_packet_length(packet_id)
 
                 if length > 0:
-                    # Fixed-length packet
                     if len(self._recv_buffer) >= length:
                         packet_data = bytes(self._recv_buffer[:length])
                         del self._recv_buffer[:length]
                         return packet_id, packet_data
                 elif length == 0:
-                    # Variable-length packet
                     if len(self._recv_buffer) >= 3:
                         total_len = struct.unpack(">H", self._recv_buffer[1:3])[0]
-                        if len(self._recv_buffer) >= total_len:
+                        if total_len >= 3 and len(self._recv_buffer) >= total_len:
                             packet_data = bytes(self._recv_buffer[:total_len])
                             del self._recv_buffer[:total_len]
                             return packet_id, packet_data
                 else:
-                    # Unknown packet — skip 1 byte
                     logger.warning(
                         "unknown_game_packet",
                         packet_id=f"0x{packet_id:02X}",
@@ -153,25 +153,29 @@ class UoConnection:
                     del self._recv_buffer[:1]
                     continue
 
-            # Need more data — read compressed chunk and decompress
+            # Try to decompress one packet from the compressed buffer
+            if len(self._compressed_buffer) > 0:
+                decompressed, consumed = huffman_decompress_one(
+                    bytes(self._compressed_buffer)
+                )
+                if decompressed is not None and consumed > 0:
+                    del self._compressed_buffer[:consumed]
+                    self._recv_buffer.extend(decompressed)
+                    continue  # go back and try to parse
+                # decompressed is None → need more TCP data to complete this packet
+
+            # Need more data from TCP
             try:
-                compressed = await asyncio.wait_for(
+                data = await asyncio.wait_for(
                     self._reader.read(4096),
                     timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 raise
-            if not compressed:
+            if not data:
                 raise ConnectionError("Connection closed by server")
 
-            # Decompress and append to buffer
-            # We decompress with a generous output_len and let the buffer accumulate
-            try:
-                decompressed = huffman_decompress(compressed, len(compressed) * 4)
-                self._recv_buffer.extend(decompressed)
-            except ValueError as e:
-                logger.error("huffman_error", error=str(e), compressed_len=len(compressed))
-                raise
+            self._compressed_buffer.extend(data)
 
     async def recv_packet(self, timeout: float = DEFAULT_TIMEOUT) -> tuple[int, bytes]:
         """Receive one packet (handles both login and game mode)."""
@@ -332,6 +336,11 @@ class UoConnection:
                 got_login_complete = True
                 logger.info("login_complete")
                 break
+
+            elif packet_id == 0xBD:
+                # ClientVersion request — respond with our version
+                await self.send_packet(build_client_version("7.0.102.3"))
+                logger.debug("client_version_sent")
 
             elif packet_id == 0xB9:
                 # SupportedFeatures — log and continue

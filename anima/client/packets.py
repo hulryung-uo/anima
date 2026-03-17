@@ -12,135 +12,36 @@ from anima.client.codec import PacketWriter
 # ---------------------------------------------------------------------------
 
 PACKET_LENGTHS: dict[int, int] = {
-    0x00: 104,  # CreateCharacter
-    0x01: 5,    # Disconnect
-    0x02: 7,    # MovementRequest
-    0x03: 0,    # AsciiSpeech (variable)
-    0x04: 2,    # GodMode
-    0x05: 5,    # Attack
-    0x06: 5,    # DoubleClick
-    0x07: 7,    # PickUpItem
-    0x08: 15,   # DropItem
-    0x09: 5,    # SingleClick
-    0x0A: 11,   # Edit
-    0x0B: 7,    # Damage
-    0x11: 0,    # CharacterStatus (variable)
-    0x12: 0,    # TextCommand (variable)
-    0x13: 10,   # EquipItem
-    0x14: 6,    # ChangeZ
-    0x17: 0,    # HealthbarColor (variable)
-    0x1A: 0,    # WorldItem (variable)
-    0x1B: 37,   # LoginConfirm
-    0x1C: 0,    # Talk (variable)
-    0x1D: 5,    # DeleteObject
-    0x1E: 0,    # MapPatch (variable)
-    0x20: 19,   # MobileUpdate
-    0x21: 8,    # DenyWalk
-    0x22: 3,    # ConfirmWalk
-    0x23: 26,   # DragAnimation
-    0x24: 9,    # OpenContainer
-    0x25: 21,   # ContainerItem
-    0x26: 0,    # ContainerItemKR (variable)
-    0x27: 2,    # PickUpRejected
-    0x28: 5,    # DropAccepted
-    0x29: 1,    # DropRejected
-    0x2C: 2,    # DeathAnimation
-    0x2E: 15,   # EquipmentUpdate
-    0x2F: 10,   # Swing
-    0x34: 10,   # StatusRequest
-    0x36: 0,    # WarModeOld (variable)
-    0x3A: 0,    # SkillUpdate (variable)
-    0x3B: 0,    # BuyItems (variable)
-    0x3C: 0,    # ContainerItems (variable)
-    0x47: 11,   # PlayMidi
-    0x48: 73,   # MapInfo
-    0x4E: 6,    # PersonalLightLevel
-    0x4F: 2,    # GlobalLightLevel
-    0x54: 12,   # PlaySound
-    0x55: 1,    # LoginComplete
-    0x56: 11,   # MapEdit
-    0x57: 110,  # UpdateRegion
-    0x58: 106,  # NewRegion
-    0x5B: 4,    # CurrentTime
-    0x5D: 73,   # PlayCharacter
-    0x65: 4,    # Weather
-    0x66: 0,    # BookPages (variable)
-    0x6C: 19,   # TargetResponse
-    0x6D: 3,    # PlayMusic
-    0x6E: 14,   # MobileAnimation
-    0x6F: 0,    # SecureTrade (variable)
-    0x71: 0,    # BulletinBoard (variable)
-    0x72: 5,    # WarMode
-    0x73: 2,    # Ping
-    0x74: 0,    # VendorBuyList (variable)
-    0x75: 35,   # RenameRequest
-    0x77: 17,   # MobileMoving
-    0x78: 0,    # MobileIncoming (variable)
-    0x7D: 13,   # MenuResponse
-    0x80: 62,   # AccountLogin
-    0x82: 2,    # LoginDenied
-    0x83: 39,   # CharacterDelete
-    0x85: 2,    # CharacterDeleteResult
-    0x86: 0,    # UpdateCharacterList (variable)
-    0x88: 66,   # DisplayPaperdoll
-    0x8C: 11,   # ServerRedirect
-    0x90: 19,   # MapDisplay
-    0x91: 65,   # GameLogin
-    0x93: 99,   # BookHeaderOld
-    0x95: 9,    # HueSelection
-    0x98: 0,    # MobileName (variable)
-    0x9A: 0,    # AsciiPromptReply (variable)
-    0x9B: 258,  # HelpRequest
-    0x9E: 0,    # SellList (variable)
-    0x9F: 0,    # SellReply (variable)
-    0xA0: 3,    # ServerSelect
-    0xA1: 9,    # UpdateHitpoints
-    0xA2: 9,    # UpdateMana
-    0xA3: 9,    # UpdateStamina
-    0xA4: 149,  # SystemInfo
-    0xA7: 4,    # RequestScrollWindow
-    0xA8: 0,    # ServerList (variable)
-    0xA9: 0,    # CharacterList (variable)
-    0xAA: 5,    # AttackCharacter
-    0xAD: 0,    # UnicodeSpeech (variable)
-    0xAE: 0,    # UnicodeTalk (variable)
-    0xAF: 13,   # DisplayDeath
-    0xB0: 0,    # DisplayGump (variable)
-    0xB1: 0,    # GumpResponse (variable)
-    0xB5: 64,   # ChatOpen
-    0xB6: 9,    # ObjectHelp
-    0xB8: 0,    # ProfileReq (variable)
-    0xB9: 5,    # SupportedFeatures
-    0xBB: 9,    # AccountID
-    0xBC: 3,    # SeasonChange
-    0xBD: 0,    # ClientVersion (variable)
-    0xBE: 0,    # AssistVersion (variable)
-    0xBF: 0,    # GeneralInfo (variable)
-    0xC0: 36,   # GraphicalEffect
-    0xC1: 0,    # MessageLocalized (variable)
-    0xC2: 0,    # UnicodeSpeechPrompt (variable)
-    0xC8: 2,    # ClientViewRange
-    0xCC: 0,    # MessageLocalizedAffix (variable)
-    0xCF: 0,    # AccountLogin2 (variable)
-    0xD0: 0,    # ConfigurationFile (variable)
-    0xD1: 2,    # Logout
-    0xD4: 0,    # BookHeaderNew (variable)
-    0xD6: 0,    # OPLData (variable)
-    0xD7: 0,    # EncodedCommand (variable)
-    0xD9: 0,    # HardwareInfo (variable)
-    0xDF: 0,    # BuffDebuff (variable)
-    0xE1: 0,    # ClientType (variable)
-    0xE2: 10,   # NewCharacterAnimation
-    0xEC: 0,    # EquipMacro (variable)
-    0xED: 0,    # UnequipMacro (variable)
-    0xEF: 21,   # Seed
-    0xF0: 0,    # Krrios (variable)
-    0xF1: 0,    # FreeshardListReq (variable)
-    0xF3: 26,   # ObjectInfoSA
-    0xF4: 0,    # CrashReport (variable)
-    0xF5: 21,   # MapDiffRequest
-    0xF8: 106,  # CreateCharacter70
-    0xFB: 2,    # ShowPublicHouseContent
+    # Complete packet length table based on ClassicUO PacketsTable.cs
+    # >0 = fixed length (including ID byte), 0 = variable (bytes 1-2 = BE u16 length)
+    0x00: 104, 0x01: 5,   0x02: 7,   0x03: 0,   0x04: 2,   0x05: 5,   0x06: 5,   0x07: 7,
+    0x08: 15,  0x09: 5,   0x0A: 11,  0x0B: 7,   0x0C: 0,   0x0D: 3,   0x0E: 0,   0x0F: 61,
+    0x10: 0,   0x11: 0,   0x12: 0,   0x13: 10,  0x14: 6,   0x15: 9,   0x16: 1,   0x17: 0,
+    0x18: 0,   0x19: 0,   0x1A: 0,   0x1B: 37,  0x1C: 0,   0x1D: 5,   0x1E: 4,   0x1F: 8,
+    0x20: 19,  0x21: 8,   0x22: 3,   0x23: 26,  0x24: 9,   0x25: 21,  0x26: 0,   0x27: 2,
+    0x28: 5,   0x29: 1,   0x2A: 5,   0x2B: 2,   0x2C: 2,   0x2D: 17,  0x2E: 15,  0x2F: 10,
+    0x30: 5,   0x31: 1,   0x32: 2,   0x33: 0,   0x34: 10,  0x35: 0,   0x36: 0,   0x37: 8,
+    0x38: 7,   0x39: 0,   0x3A: 0,   0x3B: 0,   0x3C: 0,   0x3E: 37,  0x3F: 0,
+    0x40: 0,   0x41: 0,   0x42: 0,   0x43: 0,   0x44: 0,   0x45: 5,   0x46: 0,   0x47: 11,
+    0x48: 73,  0x49: 63,  0x4E: 6,   0x4F: 2,
+    0x54: 12,  0x55: 1,   0x56: 11,  0x57: 110, 0x58: 106, 0x5B: 4,   0x5D: 73,
+    0x65: 4,   0x66: 0,   0x6C: 19,  0x6D: 3,   0x6E: 14,  0x6F: 0,   0x70: 28,
+    0x71: 0,   0x72: 5,   0x73: 2,   0x74: 0,   0x75: 35,  0x76: 16,  0x77: 17,  0x78: 0,
+    0x7C: 0,   0x7D: 13,
+    0x80: 62,  0x82: 2,   0x83: 39,  0x85: 2,   0x86: 0,   0x88: 66,  0x89: 0,
+    0x8C: 11,  0x90: 19,  0x91: 65,  0x93: 99,  0x95: 9,   0x97: 2,   0x98: 0,
+    0x99: 0,   0x9A: 0,   0x9B: 258, 0x9E: 0,   0x9F: 0,
+    0xA0: 3,   0xA1: 9,   0xA2: 9,   0xA3: 9,   0xA4: 149, 0xA5: 0,   0xA6: 0,
+    0xA7: 4,   0xA8: 0,   0xA9: 0,   0xAA: 5,   0xAB: 0,   0xAD: 0,   0xAE: 0,
+    0xAF: 13,  0xB0: 0,   0xB1: 0,   0xB2: 0,   0xB5: 64,  0xB6: 9,   0xB7: 0,
+    0xB8: 0,   0xB9: 5,   0xBA: 6,   0xBB: 9,   0xBC: 3,   0xBD: 0,   0xBE: 0,
+    0xBF: 0,   0xC0: 36,  0xC1: 0,   0xC2: 0,   0xC4: 6,   0xC7: 49,  0xC8: 2,
+    0xCA: 6,   0xCB: 7,   0xCC: 0,   0xCF: 0,   0xD0: 0,   0xD1: 2,   0xD2: 25,
+    0xD3: 0,   0xD4: 0,   0xD6: 0,   0xD7: 0,   0xD8: 0,   0xD9: 0,   0xDB: 0,
+    0xDC: 9,   0xDD: 0,   0xDE: 0,   0xDF: 0,
+    0xE1: 0,   0xE2: 10,  0xE3: 0,   0xE5: 0,   0xE6: 5,
+    0xEC: 0,   0xED: 0,   0xEF: 21,  0xF0: 0,   0xF1: 0,   0xF3: 26,  0xF4: 0,
+    0xF5: 21,  0xF6: 0,   0xF7: 0,   0xF8: 106, 0xFB: 2,   0xFD: 2,
 }
 
 

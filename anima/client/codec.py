@@ -89,15 +89,19 @@ def _extract_bits(data: bytes, bit_offset: int, num_bits: int) -> int:
     return result
 
 
-def huffman_decompress_one(data: bytes, offset: int = 0) -> tuple[bytes, int]:
+def huffman_decompress_one(data: bytes, offset: int = 0) -> tuple[bytes | None, int]:
     """Decompress one Huffman-encoded packet from the data stream.
 
     Each server packet is independently compressed with its own terminal symbol.
     Returns (decompressed_bytes, bytes_consumed) so the caller can continue
     decompressing subsequent packets from the remaining data.
+
+    Returns (None, 0) if the data doesn't contain a complete compressed packet
+    (no terminal symbol found), meaning more TCP data is needed.
     """
     decode_table = _get_decode_table()
     output = bytearray()
+    found_terminal = False
 
     bit_pos = offset * 8
     total_bits = len(data) * 8
@@ -114,14 +118,20 @@ def huffman_decompress_one(data: bytes, offset: int = 0) -> tuple[bytes, int]:
 
         symbol, code_len = decode_table[window]
         if code_len == 0 or symbol == 0xFFFF:
-            raise ValueError(f"No matching Huffman code at bit position {bit_pos}")
+            # Could be truncated data — need more bytes
+            break
 
         bit_pos += code_len
 
         if symbol == 256:  # terminal
+            found_terminal = True
             break
 
         output.append(symbol)
+
+    if not found_terminal:
+        # Incomplete compressed packet — need more TCP data
+        return None, 0
 
     # Round up to next byte boundary
     bytes_consumed = (bit_pos + 7) // 8 - offset
@@ -138,11 +148,8 @@ def huffman_decompress(data: bytes, output_len: int) -> bytes:
     offset = 0
 
     while offset < len(data) and len(output) < output_len:
-        try:
-            chunk, consumed = huffman_decompress_one(data, offset)
-        except ValueError:
-            break
-        if not chunk and consumed == 0:
+        chunk, consumed = huffman_decompress_one(data, offset)
+        if chunk is None or consumed == 0:
             break
         output.extend(chunk)
         offset += consumed
