@@ -11,6 +11,7 @@ import structlog
 
 from anima.client.codec import PacketReader
 from anima.client.handler import PacketHandler
+from anima.data import cliloc_text
 from anima.perception import Perception
 from anima.perception.enums import Direction, Lock, MobileFlags, NotorietyFlag
 from anima.perception.event_stream import GameEventType
@@ -572,3 +573,78 @@ def register_handlers(
             logger.debug("fastwalk_key_added", key=f"0x{key:08X}")
 
     handler.register(0xBF, handle_general_info)
+
+    # ------------------------------------------------------------------
+    # OPL (Object Property List) packets
+    # ------------------------------------------------------------------
+
+    def handle_opl_info(packet_id: int, data: bytes) -> None:
+        """0xDC OPLInfo — entity has properties available (9 bytes).
+
+        We just record the revision hash; the actual OPL data
+        comes via 0xD6 when we request it.
+        """
+        if len(data) < 9:
+            return
+        r = PacketReader(data[1:])
+        serial = r.read_u32()
+        revision = r.read_u32()
+        # Store revision so we know OPL exists for this entity
+        p.world.opl_revisions[serial] = revision
+
+    handler.register(0xDC, handle_opl_info)
+
+    def handle_mega_cliloc(packet_id: int, data: bytes) -> None:
+        """0xD6 MegaCliloc — full OPL property list for an entity."""
+        import re
+
+        if len(data) < 15:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        r.skip(2)  # unknown (0x0001)
+        serial = r.read_u32()
+        r.skip(2)  # unknown
+        r.skip(4)  # list_id / hash
+
+        properties: list[str] = []
+        while r.remaining >= 4:
+            cliloc_num = r.read_u32()
+            if cliloc_num == 0:
+                break
+            if r.remaining < 2:
+                break
+            text_len = r.read_u16()  # byte length of unicode args
+            args = ""
+            if text_len > 0 and r.remaining >= text_len:
+                raw = data[3 + r.position : 3 + r.position + text_len]
+                args = raw.decode("utf-16-le", errors="replace")
+                r.skip(text_len)
+            elif text_len > 0:
+                break  # not enough data
+
+            base_text = cliloc_text(cliloc_num)
+            if base_text and args:
+                parts = args.split("\t")
+                text = base_text
+                for i, part in enumerate(parts):
+                    text = re.sub(rf"~{i + 1}_[^~]*~", part, text, count=1)
+                properties.append(text)
+            elif base_text:
+                properties.append(base_text)
+            elif args:
+                properties.append(args)
+
+        # Apply to mobile or item
+        name = properties[0] if properties else ""
+        mob = p.world.mobiles.get(serial)
+        if mob is not None:
+            mob.properties = properties
+            if name and not mob.name:
+                mob.name = name
+        item = p.world.items.get(serial)
+        if item is not None:
+            item.properties = properties
+            if name and not item.name:
+                item.name = name
+
+    handler.register(0xD6, handle_mega_cliloc)

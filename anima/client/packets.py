@@ -220,3 +220,19 @@ def build_client_version(version: str) -> bytes:
     data[1] = (length >> 8) & 0xFF
     data[2] = length & 0xFF
     return bytes(data)
+
+
+def build_opl_request(serial: int) -> bytes:
+    """Build MegaCliloc batch request (0xD6, variable).
+
+    Requests OPL (Object Property List) for one or more serials.
+    """
+    w = PacketWriter()
+    w.write_u8(0xD6)
+    w.write_u16(0)  # length placeholder
+    w.write_u32(serial)
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)

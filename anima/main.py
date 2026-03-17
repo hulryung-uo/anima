@@ -13,6 +13,7 @@ from anima.data import item_name
 from anima.client.handler import PacketHandler
 from anima.client.packets import (
     build_double_click,
+    build_opl_request,
     build_ping,
     build_status_request,
     build_walk_request,
@@ -126,6 +127,52 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
             logger.info("backpack_empty")
     else:
         logger.info("backpack_not_found")
+
+    # --- Request OPL for all known entities ---
+    sx, sy = ss.x, ss.y
+    opl_serials = list(perception.world.opl_revisions.keys())
+    for s in opl_serials:
+        await conn.send_packet(build_opl_request(s))
+    if opl_serials:
+        await asyncio.sleep(1.5)
+
+    # --- Nearby mobiles ---
+    mobiles = perception.world.nearby_mobiles(sx, sy, distance=18)
+    if mobiles:
+        for mob in mobiles:
+            notoriety = mob.notoriety.name.lower() if mob.notoriety else "unknown"
+            dx, dy = mob.x - sx, mob.y - sy
+            props = ", ".join(mob.properties[1:]) if len(mob.properties) > 1 else ""
+            logger.info(
+                "nearby_mobile",
+                name=mob.name or f"body=0x{mob.body:04X}",
+                serial=f"0x{mob.serial:08X}",
+                pos=f"({mob.x},{mob.y},{mob.z})",
+                dist=f"({dx:+d},{dy:+d})",
+                notoriety=notoriety,
+                props=props or None,
+            )
+    else:
+        logger.info("no_nearby_mobiles")
+
+    # --- Nearby ground items ---
+    ground_items = perception.world.nearby_items(sx, sy, distance=18)
+    if ground_items:
+        for item in ground_items:
+            name = item.name or item_name(item.graphic)
+            dx, dy = item.x - sx, item.y - sy
+            props = ", ".join(item.properties[1:]) if len(item.properties) > 1 else ""
+            logger.info(
+                "nearby_item",
+                name=name or f"0x{item.graphic:04X}",
+                serial=f"0x{item.serial:08X}",
+                pos=f"({item.x},{item.y},{item.z})",
+                dist=f"({dx:+d},{dy:+d})",
+                amount=item.amount,
+                props=props or None,
+            )
+    else:
+        logger.info("no_nearby_ground_items")
 
 
 # ---------------------------------------------------------------------------

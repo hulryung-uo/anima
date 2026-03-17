@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from anima.perception.enums import Direction, MobileFlags, NotorietyFlag
 
@@ -21,6 +21,7 @@ class MobileInfo:
     name: str = ""
     hits_max: int = 0
     hits: int = 0
+    properties: list[str] = field(default_factory=list)  # OPL tooltip lines
 
     @property
     def is_dead(self) -> bool:
@@ -39,6 +40,7 @@ class ItemInfo:
     container: int = 0  # 0 = on ground, else parent serial
     layer: int = 0
     name: str = ""
+    properties: list[str] = field(default_factory=list)  # OPL tooltip lines
 
 
 class WorldState:
@@ -47,6 +49,7 @@ class WorldState:
     def __init__(self) -> None:
         self.mobiles: dict[int, MobileInfo] = {}
         self.items: dict[int, ItemInfo] = {}
+        self.opl_revisions: dict[int, int] = {}  # serial → revision hash
 
     def get_or_create_mobile(self, serial: int) -> MobileInfo:
         if serial not in self.mobiles:
