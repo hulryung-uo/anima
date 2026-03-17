@@ -256,6 +256,7 @@ class UoConnection:
         # Receive packets until LoginConfirm (0x1B) and LoginComplete (0x55)
         login_result: LoginResult | None = None
         got_login_complete = False
+        play_sent = False
         deadline = asyncio.get_event_loop().time() + DEFAULT_TIMEOUT
 
         while asyncio.get_event_loop().time() < deadline:
@@ -273,11 +274,30 @@ class UoConnection:
                 reason = reader.read_u8()
                 raise ConnectionError(f"Game login denied (reason={reason})")
 
-            if packet_id == 0xA9:
-                # CharacterList — send PlayCharacter
-                logger.info("login_character_list_received")
-                play_data = build_play_character(slot=character_slot)
+            if packet_id == 0xA9 and not play_sent:
+                # CharacterList — parse first occupied slot and send PlayCharacter
+                reader = PacketReader(data[3:])  # skip id + length
+                char_count = reader.read_u8()
+                char_name = ""
+                char_slot = character_slot
+                for i in range(char_count):
+                    name = reader.read_ascii(30)
+                    reader.skip(30)  # password field
+                    if i == character_slot and name:
+                        char_name = name
+                    elif not char_name and name:
+                        # Fallback: use first occupied slot
+                        char_name = name
+                        char_slot = i
+
+                logger.info(
+                    "login_character_list_received",
+                    character=char_name or "(none)",
+                    slot=char_slot,
+                )
+                play_data = build_play_character(name=char_name, slot=char_slot)
                 await self.send_packet(play_data)
+                play_sent = True
 
             elif packet_id == 0x1B:
                 # LoginConfirm

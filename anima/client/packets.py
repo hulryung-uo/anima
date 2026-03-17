@@ -33,12 +33,14 @@ PACKET_LENGTHS: dict[int, int] = {
     0x1B: 37,   # LoginConfirm
     0x1C: 0,    # Talk (variable)
     0x1D: 5,    # DeleteObject
+    0x1E: 0,    # MapPatch (variable)
     0x20: 19,   # MobileUpdate
     0x21: 8,    # DenyWalk
     0x22: 3,    # ConfirmWalk
     0x23: 26,   # DragAnimation
     0x24: 9,    # OpenContainer
     0x25: 21,   # ContainerItem
+    0x26: 0,    # ContainerItemKR (variable)
     0x27: 2,    # PickUpRejected
     0x28: 5,    # DropAccepted
     0x29: 1,    # DropRejected
@@ -46,8 +48,10 @@ PACKET_LENGTHS: dict[int, int] = {
     0x2E: 15,   # EquipmentUpdate
     0x2F: 10,   # Swing
     0x34: 10,   # StatusRequest
+    0x36: 0,    # WarModeOld (variable)
     0x3A: 0,    # SkillUpdate (variable)
     0x3B: 0,    # BuyItems (variable)
+    0x3C: 0,    # ContainerItems (variable)
     0x47: 11,   # PlayMidi
     0x48: 73,   # MapInfo
     0x4E: 6,    # PersonalLightLevel

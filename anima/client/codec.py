@@ -89,15 +89,20 @@ def _extract_bits(data: bytes, bit_offset: int, num_bits: int) -> int:
     return result
 
 
-def huffman_decompress(data: bytes, output_len: int) -> bytes:
-    """Decompress Huffman-encoded data from servuo-rs game packets."""
+def huffman_decompress_one(data: bytes, offset: int = 0) -> tuple[bytes, int]:
+    """Decompress one Huffman-encoded packet from the data stream.
+
+    Each server packet is independently compressed with its own terminal symbol.
+    Returns (decompressed_bytes, bytes_consumed) so the caller can continue
+    decompressing subsequent packets from the remaining data.
+    """
     decode_table = _get_decode_table()
     output = bytearray()
 
-    bit_pos = 0
+    bit_pos = offset * 8
     total_bits = len(data) * 8
 
-    while len(output) < output_len and bit_pos < total_bits:
+    while bit_pos < total_bits:
         bits_available = total_bits - bit_pos
         if bits_available < 2:
             break
@@ -111,11 +116,36 @@ def huffman_decompress(data: bytes, output_len: int) -> bytes:
         if code_len == 0 or symbol == 0xFFFF:
             raise ValueError(f"No matching Huffman code at bit position {bit_pos}")
 
+        bit_pos += code_len
+
         if symbol == 256:  # terminal
             break
 
         output.append(symbol)
-        bit_pos += code_len
+
+    # Round up to next byte boundary
+    bytes_consumed = (bit_pos + 7) // 8 - offset
+    return bytes(output), bytes_consumed
+
+
+def huffman_decompress(data: bytes, output_len: int) -> bytes:
+    """Decompress all Huffman-encoded packets from data into a single byte stream.
+
+    Each packet is independently compressed with its own terminal symbol.
+    This function decompresses all of them sequentially.
+    """
+    output = bytearray()
+    offset = 0
+
+    while offset < len(data) and len(output) < output_len:
+        try:
+            chunk, consumed = huffman_decompress_one(data, offset)
+        except ValueError:
+            break
+        if not chunk and consumed == 0:
+            break
+        output.extend(chunk)
+        offset += consumed
 
     return bytes(output)
 
