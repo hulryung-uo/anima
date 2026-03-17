@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.client.packets import build_unicode_speech
+from anima.memory.rewards import get_reward
 
 if TYPE_CHECKING:
     from anima.brain.behavior_tree import BrainContext, Status
@@ -59,6 +60,27 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     # Record incoming speech in conversation history
     record_conversation(ctx, "user", f"{speaker}: {text}")
 
+    # Update relationship — someone is talking to us
+    if ctx.memory_db and serial:
+        await ctx.memory_db.update_relationship(
+            agent_name=_agent_name(ctx),
+            entity_serial=serial,
+            entity_name=speaker,
+            disposition_delta=0.05,
+            trust_delta=0.02,
+            note=f"Spoke to me: {text[:50]}",
+        )
+        await ctx.memory_db.record_episode(
+            agent_name=_agent_name(ctx),
+            location_x=ctx.perception.self_state.x,
+            location_y=ctx.perception.self_state.y,
+            action="speech_received",
+            target=speaker,
+            outcome="success",
+            reward=get_reward("speech_responded"),
+            summary=f"{speaker} said: {text[:50]}",
+        )
+
     # Detect language
     is_korean = any("\uac00" <= c <= "\ud7a3" for c in text)
 
@@ -76,7 +98,9 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
 
     # Tier 2: LLM response
     if ctx.llm is not None:
-        messages = build_speech_messages(ctx, speaker, text)
+        from anima.memory.retrieval import retrieve_context
+        memory_block = await retrieve_context(ctx)
+        messages = build_speech_messages(ctx, speaker, text, memory_block=memory_block)
         result = await ctx.llm.chat(messages)
         if result.text:
             response = result.text[:200]
@@ -97,3 +121,8 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     record_conversation(ctx, "assistant", response)
     logger.info("speech_fallback", to=speaker, text=response)
     return Status.SUCCESS
+
+
+def _agent_name(ctx: BrainContext) -> str:
+    persona = ctx.blackboard.get("persona")
+    return persona.name if persona else "Anima"

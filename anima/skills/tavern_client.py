@@ -173,7 +173,7 @@ def _iso_to_ts(iso: str) -> float:
     if not iso:
         return time.time()
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
         return dt.timestamp()
     except (ValueError, TypeError):

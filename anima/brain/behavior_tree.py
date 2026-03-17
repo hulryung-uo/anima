@@ -12,6 +12,7 @@ from anima.brain.llm import LLMClient
 from anima.client.connection import UoConnection
 from anima.config import Config
 from anima.map import MapReader
+from anima.memory.database import MemoryDB
 from anima.perception import Perception
 from anima.perception.walker import WalkerManager
 
@@ -32,6 +33,7 @@ class BrainContext:
     map_reader: MapReader | None
     cfg: Config
     llm: LLMClient | None = None
+    memory_db: MemoryDB | None = None
     blackboard: dict[str, Any] = field(default_factory=dict)
 
 

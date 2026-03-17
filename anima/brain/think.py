@@ -13,6 +13,8 @@ from anima.action.movement import wander_action
 from anima.brain.prompt import build_system_prompt
 from anima.client.packets import build_unicode_speech, build_walk_request
 from anima.data import item_name
+from anima.memory.retrieval import retrieve_context
+from anima.memory.rewards import get_reward
 from anima.pathfinding import direction_to, find_path
 from anima.world_knowledge import find_location, format_locations_for_llm
 
@@ -130,6 +132,11 @@ async def llm_think(ctx: BrainContext) -> Status:
             del ctx.blackboard["move_target"]
             place = goal["place"] if goal else "destination"
             logger.info("goal_arrived", place=place, pos=f"({sx},{sy})")
+            # Record success episode
+            await _record_episode(
+                ctx, "go", place, "success", get_reward("goal_arrived"),
+                summary=f"Arrived at {place}",
+            )
             # Force a new think cycle soon
             ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + 2.0
         elif ctx.walker.can_walk():
@@ -139,7 +146,9 @@ async def llm_think(ctx: BrainContext) -> Status:
 
     # Cooldown — wander while waiting for next think
     if now - last_think < THINK_COOLDOWN:
-        # If we have no goal, wander slowly; otherwise just wait
+        # If we have an active goal but no move_target, the goal is stale — clear it
+        if ctx.blackboard.get("current_goal") and not ctx.blackboard.get("move_target"):
+            ctx.blackboard.pop("current_goal", None)
         if ctx.blackboard.get("current_goal") is None:
             return await wander_action(ctx)
         return Status.SUCCESS
@@ -148,7 +157,10 @@ async def llm_think(ctx: BrainContext) -> Status:
     ctx.blackboard["last_think_time"] = now
     ss = ctx.perception.self_state
 
-    system = build_system_prompt(ctx)
+    # Retrieve memory context
+    memory_block = await retrieve_context(ctx)
+
+    system = build_system_prompt(ctx, memory_block=memory_block)
     user_msg = THINK_PROMPT.format(
         x=ss.x,
         y=ss.y,
@@ -208,9 +220,12 @@ async def llm_think(ctx: BrainContext) -> Status:
             return Status.RUNNING
         else:
             logger.warning("goal_place_unknown", place=place_name)
+            await _record_episode(ctx, "go", place_name, "failure", get_reward("goal_failed"),
+                                  summary=f"Unknown place: {place_name}")
             return await wander_action(ctx)
 
     elif act == "speak":
+        await _record_episode(ctx, "speak", say[:50], "success", 0.0)
         return Status.SUCCESS
 
     elif act == "idle":
@@ -218,6 +233,7 @@ async def llm_think(ctx: BrainContext) -> Status:
 
     else:
         # explore
+        await _record_episode(ctx, "explore", "", "success", 0.0)
         return await wander_action(ctx)
 
 
@@ -236,8 +252,13 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
 
     path = find_path(ctx.map_reader, sx, sy, tx, ty, max_steps=100)
     if not path:
+        goal = ctx.blackboard.pop("current_goal", None)
         ctx.blackboard.pop("move_target", None)
-        ctx.blackboard.pop("current_goal", None)
+        place = goal["place"] if goal else "unknown"
+        await _record_episode(
+            ctx, "go", place, "failure", get_reward("goal_failed"),
+            summary=f"No path to {place}",
+        )
         return await wander_action(ctx)
 
     next_x, next_y = path[0]
@@ -301,3 +322,75 @@ def _parse_action(text: str) -> dict | None:
                 except json.JSONDecodeError:
                     continue
     return None
+
+
+async def _record_episode(
+    ctx: BrainContext,
+    action: str,
+    target: str,
+    outcome: str,
+    reward: float,
+    summary: str = "",
+) -> None:
+    """Record an experience episode to memory and update action stats."""
+    memory_db = ctx.memory_db
+    if memory_db is None:
+        return
+
+    agent_name = _agent_name(ctx)
+    ss = ctx.perception.self_state
+
+    await memory_db.record_episode(
+        agent_name=agent_name,
+        location_x=ss.x,
+        location_y=ss.y,
+        action=action,
+        target=target,
+        outcome=outcome,
+        reward=reward,
+        summary=summary,
+    )
+
+    # Update action stats
+    context_pattern = _infer_context_pattern(ctx)
+    await memory_db.update_action_stats(
+        agent_name, context_pattern, action,
+        success=(outcome == "success"), reward=reward,
+    )
+
+    # Trigger reflection periodically
+    episode_count = ctx.blackboard.get("episode_count", 0) + 1
+    ctx.blackboard["episode_count"] = episode_count
+    if episode_count % 20 == 0 and ctx.llm is not None:
+        from anima.memory.learning import reflect
+        facts = await reflect(memory_db, ctx.llm, agent_name)
+        if facts:
+            logger.info("reflection_complete", new_facts=len(facts))
+
+    # Prune if needed
+    if episode_count % 100 == 0:
+        pruned = await memory_db.prune_episodes(agent_name, ctx.cfg.memory.max_episodes)
+        if pruned:
+            logger.info("episodes_pruned", count=pruned)
+
+
+def _agent_name(ctx: BrainContext) -> str:
+    persona = ctx.blackboard.get("persona")
+    return persona.name if persona else "Anima"
+
+
+def _infer_context_pattern(ctx: BrainContext) -> str:
+    """Infer a rough context pattern from the current game state."""
+    ss = ctx.perception.self_state
+    nearby_mobs = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
+
+    has_players = any(
+        m.notoriety is not None and m.notoriety.value <= 6
+        for m in nearby_mobs
+    )
+
+    if ss.hp_percent < 30:
+        return "low_hp"
+    if has_players:
+        return "near_player"
+    return "exploring"

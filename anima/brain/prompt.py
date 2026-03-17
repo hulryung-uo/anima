@@ -10,8 +10,8 @@ if TYPE_CHECKING:
 MAX_CONVERSATION_HISTORY = 20
 
 
-def build_system_prompt(ctx: BrainContext) -> str:
-    """Build the system prompt from persona + world context."""
+def build_system_prompt(ctx: BrainContext, memory_block: str = "") -> str:
+    """Build the system prompt from persona + world context + memory."""
     persona = ctx.blackboard.get("persona")
 
     if persona is not None:
@@ -29,6 +29,10 @@ def build_system_prompt(ctx: BrainContext) -> str:
 
     if status_lines:
         parts.append("\nStatus: " + " ".join(status_lines))
+
+    # Add memory context if available
+    if memory_block:
+        parts.append("\n" + memory_block)
 
     return "\n".join(parts)
 
@@ -56,13 +60,14 @@ def build_speech_messages(
     ctx: BrainContext,
     speaker: str,
     text: str,
+    memory_block: str = "",
 ) -> list[dict[str, str]]:
     """Build message list for responding to speech.
 
     Uses a dedicated conversation history in the blackboard
     so think_speak monologue doesn't pollute the context.
     """
-    system = build_system_prompt(ctx)
+    system = build_system_prompt(ctx, memory_block=memory_block)
 
     # Enforce language matching based on input
     if _detect_korean(text):
