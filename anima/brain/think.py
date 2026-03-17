@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-THINK_COOLDOWN = 8.0  # seconds between LLM decisions
+THINK_COOLDOWN = 15.0  # seconds between LLM decisions
 
 THINK_PROMPT = """\
 You are currently at position ({x}, {y}) in the city of Britain.
@@ -35,11 +35,11 @@ or
 {{"action": "explore", "say": "<optional thing to say>"}}
 
 Guidelines:
-- If you see interesting places nearby (tavern, shop, etc.), move toward them.
-- If there are people nearby, greet them or comment on your surroundings.
-- Say things a curious new adventurer would say. Be natural and brief.
-- "explore" means wander in a random direction to discover new things.
-- Keep "say" short (under 100 characters). Leave "say" empty string if you have nothing to say."""
+- PREFER "move" to interesting places (tavern, shop, landmark). Don't just talk — go somewhere!
+- Only "speak" when there's something genuinely worth saying, or someone is nearby to talk to.
+- "explore" to wander and discover new things when nothing interesting is visible.
+- You speak English and Korean (한국어). Reply in the language spoken to you.
+- Keep "say" under 60 chars. Leave "say" as "" most of the time — silence is fine."""
 
 
 def _build_surroundings(ctx: BrainContext) -> str:
@@ -65,15 +65,16 @@ def _build_surroundings(ctx: BrainContext) -> str:
             lines.append("Things you can see:")
             lines.extend(landmarks)
 
-    # Nearby mobiles
+    # Nearby mobiles (players only — skip NPCs/vendors with low serials)
     nearby_mobs = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
-    if nearby_mobs:
+    players = [m for m in nearby_mobs if m.serial >= 0x00010000]
+    if players:
         people: list[str] = []
-        for mob in nearby_mobs[:5]:
+        for mob in players[:5]:
             name = mob.name or "someone"
             dx, dy = mob.x - ss.x, mob.y - ss.y
             people.append(f"  - {name} at ({mob.x}, {mob.y}), {_direction_word(dx, dy)}")
-        lines.append("People nearby:")
+        lines.append("Players nearby:")
         lines.extend(people)
 
     if not lines:
