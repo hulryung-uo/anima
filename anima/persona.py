@@ -48,6 +48,9 @@ class Persona:
                 "- Reply in the SAME language spoken to you. Korean → Korean only.",
                 "- 한국어로 말하면 한국어로만 대답해.",
                 "- Keep responses to 1 short sentence.",
+                "- Talk like a real human. Vary your tone. Don't end every sentence with !",
+                "- Be casual, use lowercase, be imperfect. Real people hesitate, shrug, joke.",
+                "- Avoid generic excitement. Have opinions. Sometimes be dry or sarcastic.",
             ]
         )
         return "\n".join(lines)
