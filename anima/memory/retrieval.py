@@ -83,6 +83,35 @@ async def retrieve_context(ctx: BrainContext) -> str:
                 f"Past experience ({context_pattern}):\n" + "\n".join(stat_lines)
             )
 
+    # 5. Skill Q-values — what the RL system has learned
+    from anima.skills.state import encode_state, region_coords
+
+    state_key = encode_state(ctx)
+    q_values = await memory_db.get_q_values(agent_name, state_key)
+    if q_values:
+        q_lines = []
+        for action, (q, visits) in sorted(
+            q_values.items(), key=lambda x: x[1][0], reverse=True
+        ):
+            q_lines.append(f"  - {action}: Q={q:.1f} ({visits} tries)")
+        parts.append(
+            f"Skill learning ({state_key}):\n" + "\n".join(q_lines[:8])
+        )
+
+    # 6. Best locations for current activities
+    rx, ry = region_coords(ss.x, ss.y)
+    loc_values = await memory_db.get_location_values(agent_name, rx, ry)
+    if loc_values:
+        loc_lines = []
+        for activity, total_r, visits in loc_values[:5]:
+            avg = total_r / visits if visits else 0
+            loc_lines.append(
+                f"  - {activity}: avg reward {avg:+.1f} ({visits} visits)"
+            )
+        parts.append(
+            f"This area (region {rx},{ry}):\n" + "\n".join(loc_lines)
+        )
+
     if not parts:
         return ""
 

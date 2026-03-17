@@ -32,6 +32,8 @@ from anima.persona import load_persona_by_name
 from anima.skills.base import SkillRegistry
 from anima.skills.combat.healing import HealSelf
 from anima.skills.combat.melee import MeleeAttack
+from anima.skills.crafting.smelt import SmeltOre
+from anima.skills.gathering.lumber import ChopWood
 from anima.skills.gathering.mine import MineOre
 from anima.skills.trade.vendor import BuyFromNpc, SellToNpc
 
@@ -280,6 +282,8 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         skill_registry.register(HealSelf())
         skill_registry.register(MeleeAttack())
         skill_registry.register(MineOre())
+        skill_registry.register(ChopWood())
+        skill_registry.register(SmeltOre())
         skill_registry.register(BuyFromNpc())
         skill_registry.register(SellToNpc())
         logger.info("skills_registered", count=len(skill_registry.all_skills))

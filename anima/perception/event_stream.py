@@ -25,6 +25,9 @@ class GameEventType(Enum):
     WALK_CONFIRMED = auto()
     WALK_DENIED = auto()
     POSITION_CHANGED = auto()
+    TARGET_REQUESTED = auto()
+    DAMAGE_DEALT = auto()
+    DAMAGE_TAKEN = auto()
 
 
 @dataclass

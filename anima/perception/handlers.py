@@ -648,3 +648,59 @@ def register_handlers(
                 item.name = name
 
     handler.register(0xD6, handle_mega_cliloc)
+
+    # ------------------------------------------------------------------
+    # Target cursor + combat packets
+    # ------------------------------------------------------------------
+
+    def handle_target_cursor(packet_id: int, data: bytes) -> None:
+        """0x6C TargetCursor — server asks us to select a target."""
+        if len(data) < 19:
+            return
+        r = PacketReader(data[1:])
+        target_type = r.read_u8()  # 0=object, 1=ground
+        cursor_id = r.read_u32()
+        cursor_flag = r.read_u8()  # 0=neutral, 1=harmful, 2=helpful
+
+        p.emit(
+            GameEventType.TARGET_REQUESTED,
+            {
+                "target_type": target_type,
+                "cursor_id": cursor_id,
+                "cursor_flag": cursor_flag,
+            },
+        )
+        # Store cursor in blackboard-equivalent so skills can respond
+        p.self_state.pending_target = {
+            "target_type": target_type,
+            "cursor_id": cursor_id,
+            "cursor_flag": cursor_flag,
+        }
+        logger.debug(
+            "target_cursor",
+            type=target_type, cursor_id=f"0x{cursor_id:08X}",
+            flag=cursor_flag,
+        )
+
+    handler.register(0x6C, handle_target_cursor)
+
+    def handle_damage(packet_id: int, data: bytes) -> None:
+        """0x0B Damage — damage dealt to an entity."""
+        if len(data) < 7:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        serial = r.read_u32()
+        amount = r.read_u16()
+
+        if serial == p.self_state.serial:
+            p.emit(
+                GameEventType.DAMAGE_TAKEN,
+                {"amount": amount},
+            )
+        else:
+            p.emit(
+                GameEventType.DAMAGE_DEALT,
+                {"serial": serial, "amount": amount},
+            )
+
+    handler.register(0x0B, handle_damage)

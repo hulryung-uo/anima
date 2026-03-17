@@ -65,6 +65,9 @@ class SelfState:
         # Equipment serials by layer
         self.equipment: dict[int, int] = {}  # layer -> item serial
 
+        # Pending target cursor from server (set by 0x6C handler, consumed by skills)
+        self.pending_target: dict | None = None
+
     @property
     def hp_percent(self) -> float:
         if self.hits_max == 0:
