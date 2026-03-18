@@ -9,6 +9,8 @@ Anima is a Python-based AI player system for Ultima Online. It connects to `serv
 - `DESIGN.md` — Full system design (architecture, roadmap, tech stack)
 - `docs/classicuo-analysis.md` — ClassicUO protocol analysis (packet handlers, entity model, all subsystems)
 - `docs/implementation-plan.md` — Concrete implementation plan (module mapping, code sketches)
+- `docs/skill-system.md` — Skill system design (skill catalog, packet requirements, file structure)
+- `docs/reinforcement-learning.md` — **RL 학습 방법론** (Q-learning, UCB1, state encoding, reward signals, LLM 연동)
 - ClassicUO source: `~/dev/uo/classicuo/` (C# reference client)
 - servuo-rs source: `~/dev/uo/servuo-rs/` (Rust server, the target server)
 
@@ -68,3 +70,21 @@ When adding new AI behaviors:
 1. Add action implementation to `anima/action/`
 2. Add behavior tree node to `anima/brain/behavior_tree.py`
 3. Wire into persona schedule if it's a routine behavior
+
+When adding new skills (RL-driven actions):
+1. Create skill class in `anima/skills/<category>/<name>.py` extending `Skill` ABC
+2. Set `name`, `category`, `description`, preconditions (`required_items`, `required_nearby`, etc.)
+3. Implement `can_execute(ctx)` and `execute(ctx) -> SkillResult`
+4. Register in `main.py` via `skill_registry.register(MySkill())`
+5. Q-table handles selection automatically — no BT changes needed
+6. See `docs/reinforcement-learning.md` for reward design guidelines
+
+## AI & RL Architecture
+
+- **Behavior Tree** runs every 200ms: Survival → Social → Forum → SkillExec → Think
+- **SkillExec** uses Q-learning + UCB1 to select from available skills
+- **Think** uses LLM for strategic decisions (where to go, what to focus on)
+- RL stats (Q-values, location values) are injected into LLM prompts via `memory/retrieval.py`
+- Skills return `SkillResult` with reward signals — Q-table updates automatically
+- State is encoded as `"location_type|player_presence|enemy_presence|hp_level|inventory"` string
+- Location-activity value map tracks reward per 32×32 tile region
