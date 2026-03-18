@@ -6,6 +6,7 @@ All handlers are synchronous — they mutate state in-place with no I/O.
 from __future__ import annotations
 
 import struct
+import zlib
 
 import structlog
 
@@ -15,6 +16,7 @@ from anima.data import cliloc_text
 from anima.perception import Perception
 from anima.perception.enums import Direction, Lock, MobileFlags, NotorietyFlag
 from anima.perception.event_stream import GameEventType
+from anima.perception.gump import parse_layout
 from anima.perception.self_state import SkillInfo
 from anima.perception.walker import WalkerManager
 
@@ -86,8 +88,10 @@ def register_handlers(
 
         p.emit(GameEventType.MOBILE_APPEARED, {"serial": serial, "x": x, "y": y})
         logger.debug(
-            "mobile_incoming", serial=f"0x{serial:08X}",
-            body=f"0x{body:04X}", pos=f"({x},{y},{z})",
+            "mobile_incoming",
+            serial=f"0x{serial:08X}",
+            body=f"0x{body:04X}",
+            pos=f"({x},{y},{z})",
         )
 
     handler.register(0x78, handle_mobile_incoming)
@@ -678,7 +682,8 @@ def register_handlers(
         }
         logger.debug(
             "target_cursor",
-            type=target_type, cursor_id=f"0x{cursor_id:08X}",
+            type=target_type,
+            cursor_id=f"0x{cursor_id:08X}",
             flag=cursor_flag,
         )
 
@@ -704,3 +709,182 @@ def register_handlers(
             )
 
     handler.register(0x0B, handle_damage)
+
+    # ------------------------------------------------------------------
+    # Gump packets
+    # ------------------------------------------------------------------
+
+    def handle_open_gump(packet_id: int, data: bytes) -> None:
+        """0xB0 OpenGump — server sends a generic gump (uncompressed)."""
+        if len(data) < 21:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        serial = r.read_u32()
+        gump_id = r.read_u32()
+        gx = r.read_u32()
+        gy = r.read_u32()
+        layout_len = r.read_u16()
+        if r.remaining < layout_len:
+            logger.warning("gump_truncated_layout", gump_id=f"0x{gump_id:08X}")
+            return
+        layout_bytes = data[3 + r.position : 3 + r.position + layout_len]
+        r.skip(layout_len)
+        layout = layout_bytes.decode("ascii", errors="replace")
+
+        # Text lines
+        text_lines: list[str] = []
+        if r.remaining >= 2:
+            line_count = r.read_u16()
+            for _ in range(line_count):
+                if r.remaining < 2:
+                    break
+                line_len = r.read_u16()  # char count
+                if r.remaining < line_len * 2:
+                    break
+                line_bytes = data[3 + r.position : 3 + r.position + line_len * 2]
+                r.skip(line_len * 2)
+                text_lines.append(line_bytes.decode("utf-16-be", errors="replace"))
+
+        gump = parse_layout(layout, text_lines)
+        gump.serial = serial
+        gump.gump_id = gump_id
+        gump.x = gx
+        gump.y = gy
+
+        p.self_state.gumps[gump_id] = gump
+        p.emit(
+            GameEventType.GUMP_OPENED,
+            {"serial": serial, "gump_id": gump_id, "buttons": len(gump.buttons)},
+        )
+        logger.info(
+            "gump_opened",
+            serial=f"0x{serial:08X}",
+            gump_id=f"0x{gump_id:08X}",
+            buttons=len(gump.buttons),
+            texts=len(gump.texts),
+            text_lines=len(text_lines),
+        )
+
+    handler.register(0xB0, handle_open_gump)
+
+    def handle_compressed_gump(packet_id: int, data: bytes) -> None:
+        """0xDD CompressedGump — zlib-compressed variant of 0xB0."""
+        if len(data) < 27:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        serial = r.read_u32()
+        gump_id = r.read_u32()
+        gx = r.read_u32()
+        gy = r.read_u32()
+
+        # Layout section
+        layout_compressed_len = r.read_u32()  # includes 4-byte decompressed len
+        layout_decompressed_len = r.read_u32()
+
+        if layout_compressed_len < 4:
+            logger.warning("gump_bad_layout_len", gump_id=f"0x{gump_id:08X}")
+            return
+
+        compressed_data_len = layout_compressed_len - 4
+        if r.remaining < compressed_data_len:
+            logger.warning("gump_truncated_compressed", gump_id=f"0x{gump_id:08X}")
+            return
+
+        layout_compressed = data[3 + r.position : 3 + r.position + compressed_data_len]
+        r.skip(compressed_data_len)
+
+        try:
+            layout_bytes = zlib.decompress(layout_compressed)
+        except zlib.error:
+            logger.warning("gump_layout_decompress_failed", gump_id=f"0x{gump_id:08X}")
+            return
+        layout = layout_bytes[:layout_decompressed_len].decode("ascii", errors="replace")
+
+        # Text section
+        text_lines: list[str] = []
+        if r.remaining >= 4:
+            text_line_count = r.read_u32()
+            if r.remaining >= 8:
+                text_compressed_len = r.read_u32()  # includes 4-byte decompressed len
+                r.read_u32()  # text decompressed length (informational)
+
+                if text_compressed_len >= 4:
+                    text_cdata_len = text_compressed_len - 4
+                    if r.remaining >= text_cdata_len and text_cdata_len > 0:
+                        text_compressed = data[3 + r.position : 3 + r.position + text_cdata_len]
+                        r.skip(text_cdata_len)
+
+                        try:
+                            text_raw = zlib.decompress(text_compressed)
+                        except zlib.error:
+                            logger.warning(
+                                "gump_text_decompress_failed",
+                                gump_id=f"0x{gump_id:08X}",
+                            )
+                            text_raw = b""
+
+                        # Parse text lines: each is u16 BE char_count + utf16-be data
+                        pos = 0
+                        for _ in range(text_line_count):
+                            if pos + 2 > len(text_raw):
+                                break
+                            char_count = struct.unpack_from(">H", text_raw, pos)[0]
+                            pos += 2
+                            byte_count = char_count * 2
+                            if pos + byte_count > len(text_raw):
+                                break
+                            line = text_raw[pos : pos + byte_count].decode(
+                                "utf-16-be", errors="replace"
+                            )
+                            text_lines.append(line)
+                            pos += byte_count
+
+        gump = parse_layout(layout, text_lines)
+        gump.serial = serial
+        gump.gump_id = gump_id
+        gump.x = gx
+        gump.y = gy
+
+        p.self_state.gumps[gump_id] = gump
+        p.emit(
+            GameEventType.GUMP_OPENED,
+            {"serial": serial, "gump_id": gump_id, "buttons": len(gump.buttons)},
+        )
+        logger.info(
+            "gump_compressed_opened",
+            serial=f"0x{serial:08X}",
+            gump_id=f"0x{gump_id:08X}",
+            buttons=len(gump.buttons),
+            text_lines=len(text_lines),
+        )
+
+    handler.register(0xDD, handle_compressed_gump)
+
+    # Extend the existing 0xBF handler to also handle gump close (sub 0x04)
+    _original_general_info = handler._handlers.get(0xBF)
+
+    def handle_general_info_extended(packet_id: int, data: bytes) -> None:
+        """0xBF GeneralInfo — extended to handle CloseGump sub-command."""
+        if _original_general_info:
+            _original_general_info(packet_id, data)
+
+        if len(data) < 13:
+            return
+        subcmd = struct.unpack(">H", data[3:5])[0]
+        if subcmd == 0x04:
+            # CloseGump: subcmd(2) + gump_id(4) + button_id(4)
+            gump_id = struct.unpack(">I", data[5:9])[0]
+            button_id = struct.unpack(">I", data[9:13])[0]
+            removed = p.self_state.gumps.pop(gump_id, None)
+            if removed:
+                p.emit(
+                    GameEventType.GUMP_CLOSED,
+                    {"gump_id": gump_id, "button_id": button_id},
+                )
+                logger.debug(
+                    "gump_closed_by_server",
+                    gump_id=f"0x{gump_id:08X}",
+                    button_id=button_id,
+                )
+
+    handler.register(0xBF, handle_general_info_extended)

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from anima.perception.enums import Lock
+
+if TYPE_CHECKING:
+    from anima.perception.gump import GumpData
 
 
 @dataclass
@@ -67,6 +71,9 @@ class SelfState:
 
         # Pending target cursor from server (set by 0x6C handler, consumed by skills)
         self.pending_target: dict | None = None
+
+        # Active gumps from server, keyed by gump_id
+        self.gumps: dict[int, GumpData] = {}
 
     @property
     def hp_percent(self) -> float:

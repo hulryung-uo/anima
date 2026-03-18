@@ -507,6 +507,51 @@ def build_buy_items(vendor_serial: int, items: list[tuple[int, int]]) -> bytes:
     return bytes(data)
 
 
+def build_gump_response(
+    serial: int,
+    gump_id: int,
+    button_id: int,
+    switches: list[int] | None = None,
+    text_entries: list[tuple[int, str]] | None = None,
+) -> bytes:
+    """Build GumpResponse packet (0xB1, variable).
+
+    Args:
+        serial: Player character serial.
+        gump_id: Gump type ID (from the OpenGump packet).
+        button_id: Button pressed (0 = close/cancel).
+        switches: List of active switch/checkbox IDs.
+        text_entries: List of (entry_id, text) for text input fields.
+    """
+    switches = switches or []
+    text_entries = text_entries or []
+
+    w = PacketWriter()
+    w.write_u8(0xB1)
+    w.write_u16(0)  # length placeholder
+    w.write_u32(serial)
+    w.write_u32(gump_id)
+    w.write_u32(button_id)
+    # Switches
+    w.write_u32(len(switches))
+    for sw in switches:
+        w.write_u32(sw)
+    # Text entries
+    w.write_u32(len(text_entries))
+    for entry_id, text in text_entries:
+        w.write_u16(entry_id)
+        encoded = text.encode("utf-16-be")
+        char_len = len(text)
+        w.write_u16(char_len)
+        w.write_bytes(encoded)
+
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
+
+
 def build_sell_items(vendor_serial: int, items: list[tuple[int, int]]) -> bytes:
     """Build SellItems packet (0x9F, variable)."""
     w = PacketWriter()
