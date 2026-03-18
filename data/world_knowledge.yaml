@@ -1,0 +1,298 @@
+# Base world knowledge — common knowledge any UO character would know.
+# Coordinates sourced from servuo Regions.xml (Felucca facet).
+# Specific locations (individual NPCs, houses) are discovered through exploration.
+
+cities:
+  britain:
+    name: "Britain"
+    description: "수도. 대장간, 은행, 다양한 상점이 있는 큰 도시"
+    center: [1495, 1629]
+    bounds: [1093, 1498, 1740, 1907]
+    known_features:
+      - "bank"
+      - "blacksmith"
+      - "carpenter"
+      - "tinker"
+      - "healer"
+      - "inn"
+      - "mage_shop"
+      - "tailor"
+      - "provisioner"
+    resources_nearby:
+      - "trees to the north"
+      - "mines to the east near Minoc"
+
+  minoc:
+    name: "Minoc"
+    description: "광산 도시. 광부와 대장장이가 많다"
+    center: [2466, 544]
+    bounds: [2411, 366, 2628, 690]
+    known_features:
+      - "blacksmith"
+      - "bank"
+      - "mining_supply"
+      - "tinker"
+    resources_nearby:
+      - "mines nearby"
+      - "forest to the south"
+
+  yew:
+    name: "Yew"
+    description: "숲 속 도시. 벌목꾼과 목수가 많다. 법원이 있다"
+    center: [546, 992]
+    bounds: [92, 656, 756, 1261]
+    known_features:
+      - "carpenter"
+      - "bowyer"
+      - "inn"
+      - "court"
+    resources_nearby:
+      - "vast forests all around"
+      - "trees everywhere"
+
+  vesper:
+    name: "Vesper"
+    description: "항구 도시. 광산과 바다 사이에 위치. 무역이 활발하다"
+    center: [2899, 676]
+    bounds: [2728, 598, 3065, 1001]
+    known_features:
+      - "bank"
+      - "blacksmith"
+      - "tailor"
+      - "inn"
+      - "provisioner"
+    resources_nearby:
+      - "mines to the north near Minoc"
+      - "fishing spots along the coast"
+
+  trinsic:
+    name: "Trinsic"
+    description: "성벽으로 둘러싸인 기사의 도시. 팔라딘 길드가 있다"
+    center: [1867, 2780]
+    bounds: [1796, 2636, 2117, 2927]
+    known_features:
+      - "bank"
+      - "blacksmith"
+      - "healer"
+      - "inn"
+      - "provisioner"
+      - "tailor"
+    resources_nearby:
+      - "forest to the west"
+      - "jungle to the south"
+
+  jhelom:
+    name: "Jhelom"
+    description: "전사의 섬 도시. 무술 수련장이 많다"
+    center: [1383, 3815]
+    bounds: [1303, 3670, 1492, 4045]
+    known_features:
+      - "blacksmith"
+      - "bank"
+      - "healer"
+      - "inn"
+      - "fighting_pit"
+    resources_nearby:
+      - "fishing spots around the islands"
+
+  moonglow:
+    name: "Moonglow"
+    description: "마법사의 섬 도시. 마법 상점과 학자들이 많다"
+    center: [4442, 1172]
+    bounds: [4278, 844, 4717, 1509]
+    known_features:
+      - "bank"
+      - "mage_shop"
+      - "healer"
+      - "inn"
+      - "scribe"
+      - "alchemist"
+    resources_nearby:
+      - "reagent fields on the island"
+      - "fishing spots along the coast"
+
+  magincia:
+    name: "Magincia"
+    description: "부유한 섬 도시. 한때 오만의 도시였으나 재건됨"
+    center: [3714, 2220]
+    bounds: [3624, 2032, 3812, 2303]
+    known_features:
+      - "bank"
+      - "inn"
+    resources_nearby:
+      - "fishing spots around the island"
+
+  skara_brae:
+    name: "Skara Brae"
+    description: "음유시인의 섬 도시. 목장과 레인저 길드가 있다"
+    center: [632, 2233]
+    bounds: [538, 2107, 688, 2297]
+    known_features:
+      - "bank"
+      - "healer"
+      - "inn"
+      - "ranger_guild"
+      - "provisioner"
+    resources_nearby:
+      - "forest to the east"
+      - "fields for animal taming"
+
+  cove:
+    name: "Cove"
+    description: "작은 마을. 은행과 치료사가 있다"
+    center: [2275, 1210]
+    bounds: [2200, 1110, 2286, 1246]
+    known_features:
+      - "bank"
+      - "healer"
+    resources_nearby:
+      - "forest nearby"
+      - "orc cave to the north"
+
+  nujhelm:
+    name: "Nujel'm"
+    description: "사막 섬의 호화로운 도시. 궁전과 카지노가 있다"
+    center: [3732, 1279]
+    bounds: [3475, 1000, 3835, 1435]
+    known_features:
+      - "bank"
+      - "inn"
+      - "healer"
+      - "mage_shop"
+      - "palace"
+    resources_nearby:
+      - "fishing spots around the island"
+
+  serpents_hold:
+    name: "Serpent's Hold"
+    description: "전사 요새 섬. 기사단이 주둔한다"
+    center: [3010, 3371]
+    bounds: [2868, 3324, 3073, 3519]
+    known_features:
+      - "blacksmith"
+      - "healer"
+      - "inn"
+    resources_nearby:
+      - "fishing spots around the island"
+
+  delucia:
+    name: "Delucia"
+    description: "Lost Lands의 작은 마을. 위험한 대륙의 안전한 거점"
+    center: [5228, 3978]
+    bounds: [5123, 3930, 5315, 4084]
+    known_features:
+      - "bank"
+      - "blacksmith"
+      - "healer"
+      - "inn"
+    resources_nearby:
+      - "dangerous creatures outside"
+      - "mining spots in Lost Lands"
+
+  papua:
+    name: "Papua"
+    description: "Lost Lands의 항구 마을. 열대 지역에 위치"
+    center: [5769, 3176]
+    bounds: [5639, 3095, 5851, 3318]
+    known_features:
+      - "bank"
+      - "blacksmith"
+      - "healer"
+      - "mage_shop"
+    resources_nearby:
+      - "jungle creatures nearby"
+      - "fishing spots"
+
+  buccaneers_den:
+    name: "Buccaneer's Den"
+    description: "해적의 은신처. 경비병이 없어 위험하지만 특수 상점이 있다"
+    center: [2706, 2163]
+    bounds: [2604, 2057, 2776, 2267]
+    known_features:
+      - "bank"
+      - "blacksmith"
+      - "thieves_guild"
+    resources_nearby:
+      - "fishing spots"
+    warning: "no guards — dangerous for the unwary"
+
+  ocllo:
+    name: "Ocllo"
+    description: "남쪽 섬의 작은 마을. 조용하고 평화로운 곳"
+    center: [3650, 2519]
+    bounds: [3587, 2456, 3768, 2712]
+    known_features:
+      - "bank"
+      - "healer"
+      - "inn"
+      - "tailor"
+    resources_nearby:
+      - "fishing spots around the island"
+
+  wind:
+    name: "Wind"
+    description: "숨겨진 마법사의 도시. 마법사만 텔레포트로 진입 가능"
+    center: [5213, 98]
+    bounds: [5132, 3, 5366, 204]
+    known_features:
+      - "mage_shop"
+      - "scribe"
+    resources_nearby: []
+    warning: "accessible only by magic"
+
+
+# Moongate network — public moongates for fast travel (Felucca).
+# Coordinates from servuo PublicMoongate.cs PMList.Felucca
+moongates:
+  - name: "Moonglow Moongate"
+    location: [4467, 1283]
+  - name: "Britain Moongate"
+    location: [1336, 1997]
+  - name: "Jhelom Moongate"
+    location: [1499, 3771]
+  - name: "Yew Moongate"
+    location: [771, 752]
+  - name: "Minoc Moongate"
+    location: [2701, 692]
+  - name: "Trinsic Moongate"
+    location: [1828, 2948]
+  - name: "Skara Brae Moongate"
+    location: [643, 2067]
+  - name: "Magincia Moongate"
+    location: [3563, 2139]
+  - name: "Buccaneer's Den Moongate"
+    location: [2711, 2234]
+
+
+# Resource areas — general knowledge, not exact spots.
+# These represent common knowledge about where to find resources.
+resource_hints:
+  lumber:
+    - description: "Yew 근처 대규모 숲"
+      area: [100, 650, 750, 1260]
+    - description: "Britain 북쪽 숲"
+      area: [1300, 1300, 1600, 1500]
+    - description: "Skara Brae 동쪽 숲"
+      area: [700, 2050, 1000, 2300]
+    - description: "Vesper 서쪽 숲"
+      area: [2600, 600, 2800, 900]
+
+  mining:
+    - description: "Minoc 광산 지역"
+      area: [2450, 350, 2650, 600]
+    - description: "Britain 북동쪽 산악 지대"
+      area: [1500, 1100, 1800, 1400]
+    - description: "Vesper 북쪽 산"
+      area: [2800, 400, 3000, 600]
+    - description: "Delucia 주변 Lost Lands 광산"
+      area: [5100, 3900, 5400, 4100]
+
+  fishing:
+    - description: "Vesper 해안"
+      area: [2900, 600, 3100, 1000]
+    - description: "Jhelom 주변 바다"
+      area: [1300, 3650, 1550, 4050]
+    - description: "Britain 남쪽 해안"
+      area: [1300, 1950, 1600, 2100]
+    - description: "Moonglow 해안"
+      area: [4400, 1100, 4700, 1500]
