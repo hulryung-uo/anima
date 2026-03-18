@@ -30,6 +30,8 @@ class GameEventType(Enum):
     DAMAGE_TAKEN = auto()
     GUMP_OPENED = auto()
     GUMP_CLOSED = auto()
+    VENDOR_BUY_LIST = auto()
+    VENDOR_SELL_LIST = auto()
 
 
 @dataclass

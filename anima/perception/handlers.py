@@ -17,7 +17,7 @@ from anima.perception import Perception
 from anima.perception.enums import Direction, Lock, MobileFlags, NotorietyFlag
 from anima.perception.event_stream import GameEventType
 from anima.perception.gump import parse_layout
-from anima.perception.self_state import SkillInfo
+from anima.perception.self_state import SkillInfo, VendorBuyItem, VendorSellItem
 from anima.perception.walker import WalkerManager
 
 logger = structlog.get_logger()
@@ -888,3 +888,118 @@ def register_handlers(
                 )
 
     handler.register(0xBF, handle_general_info_extended)
+
+    # ------------------------------------------------------------------
+    # Vendor packets
+    # ------------------------------------------------------------------
+
+    def handle_vendor_buy_list(packet_id: int, data: bytes) -> None:
+        """0x74 VendorBuyList — prices for items in a vendor's buy container.
+
+        Format: [0x74][length:u16][container_serial:u32][item_count:u8]
+        Per item: [price:u32][name_length:u8][name:ascii]
+
+        The actual items were already received via 0x3C (ContainerContent).
+        This packet assigns prices/names and correlates them with the container.
+        """
+        if len(data) < 8:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        container_serial = r.read_u32()
+        count = r.read_u8()
+
+        # Find the vendor who owns this container
+        container_item = p.world.items.get(container_serial)
+        vendor_serial = container_item.container if container_item else 0
+
+        # Gather items that are inside this container (from 0x3C)
+        container_items = [it for it in p.world.items.values() if it.container == container_serial]
+
+        buy_items: list[VendorBuyItem] = []
+        for i in range(count):
+            if r.remaining < 5:
+                break
+            price = r.read_u32()
+            name_len = r.read_u8()
+            name = ""
+            if name_len > 0 and r.remaining >= name_len:
+                name = r.read_ascii(name_len)
+
+            # Match with container item by index
+            if i < len(container_items):
+                ci = container_items[i]
+                buy_items.append(
+                    VendorBuyItem(
+                        serial=ci.serial,
+                        graphic=ci.graphic,
+                        amount=ci.amount,
+                        price=price,
+                        name=name or ci.name or f"item_0x{ci.graphic:04X}",
+                    )
+                )
+
+        if buy_items:
+            p.self_state.vendor_serial = vendor_serial
+            p.self_state.vendor_buy_list = buy_items
+            p.emit(
+                GameEventType.VENDOR_BUY_LIST,
+                {"vendor_serial": vendor_serial, "count": len(buy_items)},
+            )
+            logger.info(
+                "vendor_buy_list",
+                vendor=f"0x{vendor_serial:08X}",
+                items=len(buy_items),
+            )
+
+    handler.register(0x74, handle_vendor_buy_list)
+
+    def handle_vendor_sell_list(packet_id: int, data: bytes) -> None:
+        """0x9E VendorSellList — items the vendor will buy from us.
+
+        Format: [0x9E][length:u16][vendor_serial:u32][item_count:u16]
+        Per item: [serial:u32][graphic:u16][hue:u16][amount:u16][price:u16]
+                  [name_length:u16][name:ascii]
+        """
+        if len(data) < 9:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        vendor_serial = r.read_u32()
+        count = r.read_u16()
+
+        sell_items: list[VendorSellItem] = []
+        for _ in range(count):
+            if r.remaining < 14:
+                break
+            serial = r.read_u32()
+            graphic = r.read_u16()
+            r.skip(2)  # hue
+            amount = r.read_u16()
+            price = r.read_u16()
+            name_len = r.read_u16()
+            name = ""
+            if name_len > 0 and r.remaining >= name_len:
+                name = r.read_ascii(name_len)
+
+            sell_items.append(
+                VendorSellItem(
+                    serial=serial,
+                    graphic=graphic,
+                    amount=amount,
+                    price=price,
+                    name=name or f"item_0x{graphic:04X}",
+                )
+            )
+
+        p.self_state.vendor_serial = vendor_serial
+        p.self_state.vendor_sell_list = sell_items
+        p.emit(
+            GameEventType.VENDOR_SELL_LIST,
+            {"vendor_serial": vendor_serial, "count": len(sell_items)},
+        )
+        logger.info(
+            "vendor_sell_list",
+            vendor=f"0x{vendor_serial:08X}",
+            items=len(sell_items),
+        )
+
+    handler.register(0x9E, handle_vendor_sell_list)

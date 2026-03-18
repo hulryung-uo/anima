@@ -20,6 +20,28 @@ class SkillInfo:
     lock: Lock = Lock.UP
 
 
+@dataclass
+class VendorBuyItem:
+    """An item available for purchase from a vendor (from 0x74 + 0x3C)."""
+
+    serial: int
+    graphic: int
+    amount: int
+    price: int
+    name: str
+
+
+@dataclass
+class VendorSellItem:
+    """A player item that a vendor will buy (from 0x9E)."""
+
+    serial: int
+    graphic: int
+    amount: int
+    price: int
+    name: str
+
+
 class SelfState:
     """Player's own character state — stats, skills, equipment."""
 
@@ -74,6 +96,11 @@ class SelfState:
 
         # Active gumps from server, keyed by gump_id
         self.gumps: dict[int, GumpData] = {}
+
+        # Vendor trading state (populated by 0x74 / 0x9E handlers)
+        self.vendor_serial: int = 0
+        self.vendor_buy_list: list[VendorBuyItem] = []
+        self.vendor_sell_list: list[VendorSellItem] = []
 
     @property
     def hp_percent(self) -> float:
