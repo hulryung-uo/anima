@@ -48,8 +48,10 @@ class MapConfig:
 
 @dataclass
 class LLMConfig:
+    provider: str = "ollama"  # "ollama" | "openai" | "anthropic" | "custom"
     base_url: str = "http://localhost:11434"
     model: str = "gemma3:4b"
+    api_key: str = ""
     temperature: float = 0.7
     timeout: float = 10.0
 

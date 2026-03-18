@@ -252,12 +252,18 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
 
         # Initialize LLM client
         llm_client = LLMClient(
-            base_url=cfg.llm.base_url,
+            provider=cfg.llm.provider,
             model=cfg.llm.model,
+            base_url=cfg.llm.base_url,
+            api_key=cfg.llm.api_key,
             temperature=cfg.llm.temperature,
             timeout=cfg.llm.timeout,
         )
-        logger.info("llm_client_ready", model=cfg.llm.model, base_url=cfg.llm.base_url)
+        logger.info(
+            "llm_client_ready",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        )
 
         logger.info(
             "agent_ready",
