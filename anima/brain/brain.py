@@ -87,16 +87,22 @@ async def _skill_action(ctx: BrainContext) -> Status:
 
     # Record episode in memory
     if ctx.memory_db:
+        ss = ctx.perception.self_state
         await ctx.memory_db.record_episode(
             agent_name=agent_name,
-            location_x=ctx.perception.self_state.x,
-            location_y=ctx.perception.self_state.y,
+            location_x=ss.x,
+            location_y=ss.y,
             action=skill.name,
             target=result.message[:50],
             outcome="success" if result.success else "failure",
             reward=result.reward,
             summary=result.message,
         )
+
+        # Record narrative journal entry
+        journal = ctx.blackboard.get("journal")
+        if journal is not None:
+            await journal.record_skill(skill.name, result, x=ss.x, y=ss.y)
 
     return Status.SUCCESS if result.success else Status.FAILURE
 

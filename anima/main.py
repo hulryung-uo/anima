@@ -24,6 +24,7 @@ from anima.config import Config, load_config
 from anima.data import item_name
 from anima.map import MapReader
 from anima.memory.database import MemoryDB
+from anima.memory.journal import ActivityJournal
 from anima.perception import Perception
 from anima.perception.enums import Layer
 from anima.perception.handlers import register_handlers
@@ -293,6 +294,10 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         skill_registry.register(SellToNpc())
         logger.info("skills_registered", count=len(skill_registry.all_skills))
 
+        # Initialize activity journal
+        journal = ActivityJournal(memory_db, agent_name=persona.name)
+        logger.info("journal_ready", agent=persona.name)
+
         # Build brain with behavior tree
         brain_ctx = BrainContext(
             perception=perception,
@@ -306,6 +311,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
                 "persona": persona,
                 "forum_client": forum_client,
                 "skill_registry": skill_registry,
+                "journal": journal,
             },
         )
         brain = Brain(brain_ctx)
