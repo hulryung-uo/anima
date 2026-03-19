@@ -9,4 +9,5 @@ build/
 .ruff_cache/
 *.db
 .env
+config.yaml
 .playwright-mcp/

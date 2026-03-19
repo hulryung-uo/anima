@@ -1,12 +1,13 @@
 # Anima Configuration
+# Copy this file to config.yaml and fill in your values.
 
 server:
   host: uo.hulryung.com
   port: 2593
 
 account:
-  username: test5
-  password: test5
+  username: your_username
+  password: your_password
 
 character:
   name: Anima
