@@ -231,6 +231,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             cfg.account.password,
             character_name=cfg.character.name,
             character_template=cfg.character.template,
+            character_persona=cfg.character.persona,
             character_city=cfg.character.city_index,
             delete_existing=delete_existing,
             packet_handler=pkt_handler,

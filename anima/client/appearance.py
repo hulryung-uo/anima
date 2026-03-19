@@ -52,6 +52,35 @@ CLOTHING_HUES = list(range(0x0002, 0x03E9, 5))  # ~200 colors
 # fmt: on
 
 
+# ---------------------------------------------------------------------------
+# Persona-to-creation mapping
+# ---------------------------------------------------------------------------
+
+# Stats: (str, dex, int), total must equal 80
+PERSONA_STATS: dict[str, tuple[int, int, int]] = {
+    "adventurer": (35, 25, 20),
+    "blacksmith":  (60, 10, 10),
+    "merchant":    (25, 25, 30),
+    "mage":        (10, 10, 60),
+    "bard":        (15, 30, 35),
+    "ranger":      (40, 30, 10),
+}
+
+# Initial skills: list of (skill_id, value), up to 4 skills, values should sum to 100
+# UO Skill IDs: 0=Alchemy, 8=Blacksmith, 11=Carpentry, 13=Cooking, 17=Healing,
+# 18=Fishing, 25=Magery, 27=Meditation, 31=Archery, 37=Tinkering,
+# 40=Swordsmanship, 41=MaceFighting, 42=Fencing, 44=Lumberjacking, 45=Mining,
+# 46=Musicianship, 48=Peacemaking, 53=Tactics, 57=Tailoring
+PERSONA_SKILLS: dict[str, list[tuple[int, int]]] = {
+    "adventurer": [(40, 50), (17, 50), (0, 0), (0, 0)],     # Swordsmanship, Healing
+    "blacksmith":  [(45, 50), (8, 50), (0, 0), (0, 0)],      # Mining, Blacksmith
+    "merchant":    [(37, 50), (57, 50), (0, 0), (0, 0)],      # Tinkering, Tailoring
+    "mage":        [(25, 50), (27, 50), (0, 0), (0, 0)],      # Magery, Meditation
+    "bard":        [(46, 50), (48, 50), (0, 0), (0, 0)],      # Musicianship, Peacemaking
+    "ranger":      [(31, 50), (44, 50), (0, 0), (0, 0)],      # Archery, Lumberjacking
+}
+
+
 @dataclass
 class CharacterAppearance:
     """Character appearance settings for creation."""
@@ -69,10 +98,14 @@ class CharacterAppearance:
     dexterity: int = 10
     intelligence: int = 10
     city_index: int = 0  # 0=New Haven, 3=Britain
+    # 4 skills: [(skill_id, value), ...]
+    skills: list[tuple[int, int]] = field(
+        default_factory=lambda: [(0, 50), (1, 50), (2, 0), (3, 0)]
+    )
 
     @staticmethod
     def random(name: str = "Anima", city_index: int = 0) -> CharacterAppearance:
-        """Generate a random human appearance."""
+        """Generate a random human appearance with random stats."""
         female = random.choice([True, False])
         skin_hue = random.choice(HUMAN_SKIN_TONES)
         hair_hue = random.choice(HUMAN_HAIR_HUES)
@@ -111,9 +144,33 @@ class CharacterAppearance:
             city_index=city_index,
         )
 
+    @staticmethod
+    def from_persona(
+        persona_name: str,
+        character_name: str = "Anima",
+        city_index: int = 0,
+    ) -> CharacterAppearance:
+        """Create appearance based on persona with appropriate stats/skills.
+
+        Appearance (gender, hair, skin, clothes) is randomized.
+        Stats and skills are determined by the persona type.
+        """
+        # Start with random appearance
+        app = CharacterAppearance.random(name=character_name, city_index=city_index)
+
+        # Apply persona-specific stats
+        if persona_name in PERSONA_STATS:
+            app.strength, app.dexterity, app.intelligence = PERSONA_STATS[persona_name]
+
+        # Apply persona-specific skills
+        if persona_name in PERSONA_SKILLS:
+            app.skills = list(PERSONA_SKILLS[persona_name])
+
+        return app
+
 
 # ---------------------------------------------------------------------------
-# Some preset templates
+# Some preset templates (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 TEMPLATES: dict[str, CharacterAppearance] = {
@@ -122,30 +179,35 @@ TEMPLATES: dict[str, CharacterAppearance] = {
         facial_hair_style=0x204D, facial_hair_hue=0x0455,
         shirt_hue=0x0037, pants_hue=0x004C,
         strength=60, dexterity=10, intelligence=10,
+        skills=[(40, 50), (53, 50), (0, 0), (0, 0)],  # Swordsmanship, Tactics
     ),
     "mage": CharacterAppearance(
         female=True, skin_hue=0x03EA, hair_style=0x2046, hair_hue=0x0474,
         facial_hair_style=0, facial_hair_hue=0,
         shirt_hue=0x0010, pants_hue=0x0010,
         strength=10, dexterity=10, intelligence=60,
+        skills=[(25, 50), (27, 50), (0, 0), (0, 0)],  # Magery, Meditation
     ),
     "smith": CharacterAppearance(
         female=False, skin_hue=0x0410, hair_style=0x203C, hair_hue=0x046A,
         facial_hair_style=0x203E, facial_hair_hue=0x046A,
         shirt_hue=0x0224, pants_hue=0x0156,
         strength=60, dexterity=10, intelligence=10,
+        skills=[(45, 50), (8, 50), (0, 0), (0, 0)],  # Mining, Blacksmith
     ),
     "merchant": CharacterAppearance(
         female=False, skin_hue=0x03F0, hair_style=0x2044, hair_hue=0x0460,
         facial_hair_style=0, facial_hair_hue=0,
         shirt_hue=0x01A2, pants_hue=0x0070,
         strength=30, dexterity=25, intelligence=25,
+        skills=[(37, 50), (57, 50), (0, 0), (0, 0)],  # Tinkering, Tailoring
     ),
     "ranger": CharacterAppearance(
         female=True, skin_hue=0x0400, hair_style=0x2049, hair_hue=0x0452,
         facial_hair_style=0, facial_hair_hue=0,
         shirt_hue=0x0182, pants_hue=0x017C,
         strength=40, dexterity=30, intelligence=10,
+        skills=[(31, 50), (44, 50), (0, 0), (0, 0)],  # Archery, Lumberjacking
     ),
 }
 
@@ -181,14 +243,12 @@ def build_create_character(appearance: CharacterAppearance, slot: int = 0) -> by
     w.write_u8(appearance.intelligence)
 
     # Skills (4 pairs: skill_id u8, value u8)
-    w.write_u8(0)   # Alchemy
-    w.write_u8(50)
-    w.write_u8(1)   # Anatomy
-    w.write_u8(50)
-    w.write_u8(2)   # AnimalLore
-    w.write_u8(0)
-    w.write_u8(3)   # ItemID
-    w.write_u8(0)
+    skills = appearance.skills[:4]
+    while len(skills) < 4:
+        skills.append((0, 0))
+    for skill_id, skill_val in skills:
+        w.write_u8(skill_id)
+        w.write_u8(skill_val)
 
     # Appearance
     w.write_u16(appearance.skin_hue)

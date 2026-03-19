@@ -207,6 +207,7 @@ class UoConnection:
         character_slot: int = 0,
         character_name: str = "",
         character_template: str = "random",
+        character_persona: str = "",
         character_city: int = 3,
         delete_existing: bool = False,
         packet_handler: PacketHandler | None = None,
@@ -346,7 +347,14 @@ class UoConnection:
                 else:
                     # No characters — create one
                     name = character_name or "Anima"
-                    if character_template in TEMPLATES:
+                    if character_persona:
+                        # Persona-driven: stats/skills from persona, random appearance
+                        appearance = CharacterAppearance.from_persona(
+                            persona_name=character_persona,
+                            character_name=name,
+                            city_index=character_city,
+                        )
+                    elif character_template in TEMPLATES:
                         appearance = TEMPLATES[character_template]
                         appearance.name = name
                         appearance.city_index = character_city
@@ -360,6 +368,10 @@ class UoConnection:
                         name=appearance.name,
                         female=appearance.female,
                         city=character_city,
+                        str=appearance.strength,
+                        dex=appearance.dexterity,
+                        int_=appearance.intelligence,
+                        skills=appearance.skills[:2],
                     )
                     create_data = build_create_character(appearance, slot=0)
                     await self.send_packet(create_data)
