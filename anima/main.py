@@ -209,6 +209,7 @@ async def brain_loop(brain: Brain) -> None:
         brain.context.blackboard["_skill_locks_pending"] = True
 
     # Say hello on connect
+    persona = brain.context.blackboard.get("persona")
     persona_name = persona.name if persona else "Anima"
     await brain.context.conn.send_packet(build_unicode_speech(f"Hello from {persona_name}!"))
     logger.info("speech_sent", text=f"Hello from {persona_name}!")
