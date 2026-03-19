@@ -374,10 +374,9 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             tui = AnimaTUI(
                 perception, feed, brain_ctx.blackboard,
                 cfg.monitor.refresh_rate,
-                background_tasks=game_coros,
             )
             try:
-                await tui.run_async()
+                await asyncio.gather(*game_coros, tui.run())
             finally:
                 await memory_db.close()
         else:

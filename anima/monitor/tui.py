@@ -1,22 +1,23 @@
-"""Textual TUI dashboard for Anima.
+"""Rich Live TUI — real-time terminal dashboard for Anima.
 
-Architecture: Textual App owns the event loop. Game coroutines
-are launched as asyncio.Tasks inside on_mount().
-
-Layout: CSS Grid with 3 columns x 3 rows.
-Key bindings: j=Journal, i=Inventory, s=Skills, q=Quit
+Uses Rich Live for rendering (proven reliable) and a dedicated
+stdin reader thread for key input (non-blocking, no asyncio conflict).
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+import threading
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Coroutine
+from typing import TYPE_CHECKING
 
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
 from rich.text import Text
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.widgets import Footer, Static
 
 if TYPE_CHECKING:
     from anima.monitor.feed import ActivityFeed
@@ -48,7 +49,7 @@ _SKILL_NAMES = {
 }
 
 
-def _hp_bar(cur: int, mx: int, width: int = 10) -> Text:
+def _bar(cur: int, mx: int, width: int = 10) -> Text:
     ratio = cur / mx if mx else 1.0
     filled = int(ratio * width)
     color = "red" if ratio < 0.25 else "yellow" if ratio < 0.5 else "green"
@@ -60,10 +61,10 @@ def _hp_bar(cur: int, mx: int, width: int = 10) -> Text:
 
 
 # ---------------------------------------------------------------------------
-# Pure render functions → Rich Text
+# Panel builders — each returns a Rich Panel
 # ---------------------------------------------------------------------------
 
-def _render_status(p: "Perception", bb: dict) -> Text:
+def _panel_status(p: "Perception", bb: dict) -> Panel:
     ss = p.self_state
     persona = bb.get("persona")
     name = persona.name if persona else "Anima"
@@ -74,43 +75,43 @@ def _render_status(p: "Perception", bb: dict) -> Text:
     t = Text()
     t.append(name, style="bold bright_white")
     t.append(f" — {title}\n\n")
-    for label, style, cur, mx, stat_label, stat_val in [
+    for label, style, cur, mx, sl, sv in [
         ("HP  ", "bold red", ss.hits, ss.hits_max, "STR", ss.strength),
         ("Mana", "bold blue", ss.mana, ss.mana_max, "DEX", ss.dexterity),
         ("Stam", "bold yellow", ss.stam, ss.stam_max, "INT", ss.intelligence),
     ]:
         t.append(f"{label} ", style=style)
-        t.append_text(_hp_bar(cur, mx))
-        t.append(f"  {stat_label} ", style="bold")
-        t.append(f"{stat_val}\n")
+        t.append_text(_bar(cur, mx))
+        t.append(f"  {sl} ", style="bold")
+        t.append(f"{sv}\n")
     t.append(f"\nPos ({ss.x}, {ss.y}, {ss.z})  ", style="grey70")
     t.append(f"Gold {ss.gold:,}  ", style="bright_yellow")
     t.append(f"Wt {ss.weight}/{ss.weight_max}\n", style="grey70")
     t.append("Goal ", style="bright_green")
     t.append(goal_text)
-    return t
+    return Panel(t, title="Status", border_style="bright_blue")
 
 
-def _render_activity(feed: "ActivityFeed") -> Text:
-    events = feed.recent(20)
+def _panel_activity(feed: "ActivityFeed") -> Panel:
+    events = feed.recent(18)
     t = Text()
     for ev in events:
         ts = datetime.fromtimestamp(ev.timestamp).strftime("%H:%M:%S")
         icon = _CATEGORY_ICONS.get(ev.category, "\u2022")
-        t.append(f"{ts} ", style="grey50")
+        t.append(f" {ts} ", style="grey50")
         t.append(f"{icon} ")
         t.append(f"{ev.message}\n", style="bold" if ev.importance >= 3 else "")
     if not events:
-        t.append("Waiting for activity...", style="grey50")
-    return t
+        t.append(" Waiting for activity...", style="grey50")
+    return Panel(t, title="Activity", border_style="bright_green")
 
 
-def _render_nearby(p: "Perception") -> Text:
+def _panel_nearby(p: "Perception") -> Panel:
     ss = p.self_state
     mobs = p.world.nearby_mobiles(ss.x, ss.y, distance=18)
     mobs.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
     t = Text()
-    for mob in mobs[:10]:
+    for mob in mobs[:8]:
         name = (mob.name or f"0x{mob.body:04X}")[:18]
         dx, dy = mob.x - ss.x, mob.y - ss.y
         dirs = []
@@ -127,11 +128,11 @@ def _render_nearby(p: "Perception") -> Text:
         t.append(f"  {','.join(dirs) or 'here'}\n", style="grey70")
     if not mobs:
         t.append("nobody nearby", style="grey50")
-    return t
+    return Panel(t, title="Nearby", border_style="bright_yellow")
 
 
-def _render_journal(p: "Perception") -> Text:
-    entries = p.social.recent(count=12)
+def _panel_journal(p: "Perception") -> Panel:
+    entries = p.social.recent(count=10)
     my = p.self_state.serial
     t = Text()
     for e in entries:
@@ -145,10 +146,10 @@ def _render_journal(p: "Perception") -> Text:
         t.append(f"{e.text[:55]}\n")
     if not entries:
         t.append("No speech yet...", style="grey50")
-    return t
+    return Panel(t, title="Journal", border_style="bright_magenta")
 
 
-def _render_inventory(p: "Perception") -> Text:
+def _panel_inventory(p: "Perception") -> Panel:
     bp = p.self_state.equipment.get(0x15)
     t = Text()
     if bp:
@@ -156,7 +157,7 @@ def _render_inventory(p: "Perception") -> Text:
             [it for it in p.world.items.values() if it.container == bp],
             key=lambda it: it.name or "",
         )
-        for it in items[:14]:
+        for it in items[:12]:
             name = it.name or f"0x{it.graphic:04X}"
             t.append(f"{name[:20]}")
             if it.amount > 1:
@@ -166,10 +167,10 @@ def _render_inventory(p: "Perception") -> Text:
             t.append("empty", style="grey50")
     else:
         t.append("no backpack", style="grey50")
-    return t
+    return Panel(t, title="Inventory", border_style="bright_white")
 
 
-def _render_skills(p: "Perception") -> Text:
+def _panel_skills(p: "Perception") -> Panel:
     skills = sorted(p.self_state.skills.values(), key=lambda s: (-s.value, s.id))
     t = Text()
     total = 0.0
@@ -185,13 +186,13 @@ def _render_skills(p: "Perception") -> Text:
         t.append(f"{sk.value:5.1f}", style="bright_white")
         t.append(f"/{sk.cap:.0f}\n", style="grey50")
         n += 1
-        if n >= 14:
+        if n >= 12:
             break
     t.append(f"\nTotal {total:.1f}/700", style="bold")
-    return t
+    return Panel(t, title="Skills", border_style="bright_yellow")
 
 
-def _render_qvalues(bb: dict) -> Text:
+def _panel_qvalues(bb: dict) -> Panel:
     qs: dict[str, tuple[float, int]] = bb.get("q_snapshot", {})
     t = Text()
     if qs:
@@ -204,57 +205,61 @@ def _render_qvalues(bb: dict) -> Text:
             t.append(f"n={v}\n", style="grey70")
     else:
         t.append("no data yet", style="grey50")
-    return t
+    return Panel(t, title="Q-Values", border_style="bright_cyan")
 
 
 # ---------------------------------------------------------------------------
-# Textual App — CSS Grid layout
+# Key reader thread — reads single chars from stdin in cbreak mode
 # ---------------------------------------------------------------------------
 
-class AnimaTUI(App):
-    """Anima TUI dashboard. Owns the event loop."""
+class _KeyReader:
+    """Reads keys from stdin in a background thread."""
 
-    TITLE = "Anima"
+    def __init__(self) -> None:
+        self._keys: list[str] = []
+        self._lock = threading.Lock()
+        self._stop = False
+        self._thread: threading.Thread | None = None
 
-    CSS = """
-    Screen {
-        layout: grid;
-        grid-size: 3 3;
-        grid-columns: 2fr 2fr 1fr;
-        grid-rows: 1fr 1fr 1;
-        grid-gutter: 0;
-    }
-    .panel {
-        border: round gray;
-        padding: 0 1;
-        overflow-y: auto;
-    }
-    #p-status {
-        column-span: 1;
-    }
-    #p-activity {
-        column-span: 2;
-    }
-    #p-nearby {
-        column-span: 1;
-    }
-    #p-journal {
-        column-span: 1;
-    }
-    #p-qvalues {
-        column-span: 1;
-    }
-    Footer {
-        column-span: 3;
-    }
-    """
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-    BINDINGS = [
-        Binding("j", "toggle_journal", "Journal"),
-        Binding("i", "toggle_inventory", "Inventory"),
-        Binding("s", "toggle_skills", "Skills"),
-        Binding("q", "quit", "Quit"),
-    ]
+    def stop(self) -> None:
+        self._stop = True
+
+    def poll(self) -> list[str]:
+        with self._lock:
+            keys = list(self._keys)
+            self._keys.clear()
+        return keys
+
+    def _run(self) -> None:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while not self._stop:
+                try:
+                    ch = os.read(fd, 1)
+                    if ch:
+                        with self._lock:
+                            self._keys.append(ch.decode("ascii", errors="ignore"))
+                except OSError:
+                    break
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+# ---------------------------------------------------------------------------
+# TUI main class
+# ---------------------------------------------------------------------------
+
+class AnimaTUI:
+    """Rich Live TUI with threaded key input."""
 
     def __init__(
         self,
@@ -262,95 +267,95 @@ class AnimaTUI(App):
         feed: "ActivityFeed",
         blackboard: dict,
         refresh_rate: float = 0.5,
-        background_tasks: list[Coroutine[Any, Any, None]] | None = None,
     ) -> None:
-        super().__init__()
         self._p = perception
         self._feed = feed
         self._bb = blackboard
-        self._rate = refresh_rate
-        self._bg_coros = background_tasks or []
-        self._tasks: list[asyncio.Task] = []
+        self._refresh = refresh_rate
+        self._show_inventory = False
+        self._show_skills = False
 
-    def compose(self) -> ComposeResult:
-        yield Static("Loading...", id="p-status", classes="panel")
-        yield Static("Activity", id="p-activity", classes="panel")
-        yield Static("Nearby", id="p-nearby", classes="panel")
-        yield Static("Journal", id="p-journal", classes="panel")
-        yield Static("Q-Values", id="p-qvalues", classes="panel")
-        yield Footer()
+    def _build(self) -> Layout:
+        layout = Layout()
+        layout.split_column(
+            Layout(name="upper"),
+            Layout(name="lower", size=14),
+            Layout(name="footer", size=1),
+        )
+        layout["upper"].split_row(
+            Layout(name="status", ratio=2, minimum_size=30),
+            Layout(name="activity", ratio=3, minimum_size=40),
+        )
 
-    def on_mount(self) -> None:
-        for coro in self._bg_coros:
-            self._tasks.append(asyncio.create_task(coro))
-        self.set_interval(self._rate, self._tick)
+        # Build lower panels based on toggle state
+        lower_panels = [Layout(name="nearby", ratio=1)]
+        lower_panels.append(Layout(name="journal", ratio=1))
+        if self._show_inventory:
+            lower_panels.append(Layout(name="inventory", ratio=1))
+        if self._show_skills:
+            lower_panels.append(Layout(name="skills", ratio=1))
+        lower_panels.append(Layout(name="qvalues", ratio=1))
+        layout["lower"].split_row(*lower_panels)
 
-    def on_key(self, event) -> None:
-        key = event.character
-        if key == "j":
-            self.action_toggle_journal()
-        elif key == "i":
-            self.action_toggle_inventory()
-        elif key == "s":
-            self.action_toggle_skills()
+        # Render panels
+        layout["status"].update(_panel_status(self._p, self._bb))
+        layout["activity"].update(_panel_activity(self._feed))
+        layout["nearby"].update(_panel_nearby(self._p))
+        layout["journal"].update(_panel_journal(self._p))
+        if self._show_inventory:
+            layout["inventory"].update(_panel_inventory(self._p))
+        if self._show_skills:
+            layout["skills"].update(_panel_skills(self._p))
+        layout["qvalues"].update(_panel_qvalues(self._bb))
 
-    async def action_quit(self) -> None:
-        for task in self._tasks:
-            task.cancel()
-        self.exit()
+        # Footer
+        footer = Text()
+        footer.append(" j", style="bold bright_yellow")
+        footer.append(" Journal  ", style="grey70")
+        footer.append("i", style="bold bright_yellow")
+        footer.append(" Inventory  ", style="grey70")
+        footer.append("s", style="bold bright_yellow")
+        footer.append(" Skills  ", style="grey70")
+        footer.append("q", style="bold bright_yellow")
+        footer.append(" Quit", style="grey70")
+        layout["footer"].update(footer)
 
-    def action_toggle_journal(self) -> None:
-        w = self.query_one("#p-journal")
-        w.display = not w.display
+        return layout
 
-    def action_toggle_inventory(self) -> None:
-        """Toggle inventory panel — replaces journal when shown."""
-        journal = self.query_one("#p-journal")
-        inv = self.query("#p-inventory")
-        if inv:
-            inv.first().remove()
-            journal.display = True
-        else:
-            journal.display = False
-            self.mount(
-                Static(_render_inventory(self._p), id="p-inventory", classes="panel"),
-                after=self.query_one("#p-nearby"),
-            )
+    def _handle_keys(self, keys: list[str]) -> bool:
+        """Handle key presses. Returns True if quit requested."""
+        for key in keys:
+            if key == "j":
+                # Journal is always shown — no toggle needed
+                pass
+            elif key == "i":
+                self._show_inventory = not self._show_inventory
+            elif key == "s":
+                self._show_skills = not self._show_skills
+            elif key == "q":
+                return True
+        return False
 
-    def action_toggle_skills(self) -> None:
-        """Toggle skills panel — replaces qvalues when shown."""
-        qvals = self.query_one("#p-qvalues")
-        sk = self.query("#p-skills")
-        if sk:
-            sk.first().remove()
-            qvals.display = True
-        else:
-            qvals.display = False
-            self.mount(
-                Static(_render_skills(self._p), id="p-skills", classes="panel"),
-                after=self.query_one("#p-qvalues"),
-            )
+    async def run(self) -> None:
+        console = Console()
+        key_reader = _KeyReader()
+        key_reader.start()
 
-    def _tick(self) -> None:
         try:
-            self.query_one("#p-status").update(_render_status(self._p, self._bb))
-            self.query_one("#p-activity").update(_render_activity(self._feed))
-            self.query_one("#p-nearby").update(_render_nearby(self._p))
+            with Live(
+                self._build(),
+                console=console,
+                refresh_per_second=2,
+                screen=True,
+            ) as live:
+                while True:
+                    # Handle key input
+                    keys = key_reader.poll()
+                    if self._handle_keys(keys):
+                        break
 
-            journal = self.query("#p-journal")
-            if journal:
-                journal.first().update(_render_journal(self._p))
-
-            inv = self.query("#p-inventory")
-            if inv:
-                inv.first().update(_render_inventory(self._p))
-
-            qvals = self.query("#p-qvalues")
-            if qvals:
-                qvals.first().update(_render_qvalues(self._bb))
-
-            sk = self.query("#p-skills")
-            if sk:
-                sk.first().update(_render_skills(self._p))
-        except Exception:
-            pass
+                    # Update display
+                    live.update(self._build())
+                    await asyncio.sleep(self._refresh)
+        finally:
+            key_reader.stop()
