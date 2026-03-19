@@ -396,48 +396,38 @@ class AnimaTUI:
             return True
         return False
 
-    async def _start_key_reader(self) -> None:
-        """Read keys from stdin in a background thread using raw os.read."""
+    @staticmethod
+    def _poll_stdin(fd: int) -> str:
+        """Check for key press without blocking. Returns key or empty string."""
         import os
+        import select
+        if select.select([fd], [], [], 0)[0]:
+            data = os.read(fd, 1)
+            return data.decode("ascii", errors="ignore")
+        return ""
+
+    async def run(self) -> None:
         import sys
         import tty
         import termios
 
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        tty.setcbreak(fd)
-
-        loop = asyncio.get_event_loop()
-        try:
-            while True:
-                data = await loop.run_in_executor(None, os.read, fd, 1)
-                if data:
-                    key = data.decode("ascii", errors="ignore")
-                    if key and self._handle_key(key):
-                        self._layout_dirty = True
-        except (OSError, asyncio.CancelledError):
-            pass
-        finally:
-            try:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            except (OSError, termios.error):
-                pass
-
-    async def run(self) -> None:
         console = Console()
         layout = self._build_layout()
-        self._layout_dirty = False
 
-        # Start key reader in background
-        key_task = asyncio.create_task(self._start_key_reader())
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
 
         try:
+            # Set cbreak mode BEFORE Live starts
+            tty.setcbreak(fd)
+
             with Live(layout, console=console, refresh_per_second=2, screen=True):
                 while True:
                     try:
-                        if self._layout_dirty:
+                        # Non-blocking key poll
+                        key = self._poll_stdin(fd)
+                        if key and self._handle_key(key):
                             layout = self._build_layout()
-                            self._layout_dirty = False
 
                         layout["header"].update(self._build_header())
                         layout["status"].update(self._build_status_panel())
@@ -454,4 +444,4 @@ class AnimaTUI:
                         pass  # Never crash the TUI
                     await asyncio.sleep(self._refresh_rate)
         finally:
-            key_task.cancel()
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
