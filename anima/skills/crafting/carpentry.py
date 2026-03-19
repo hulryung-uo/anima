@@ -125,20 +125,43 @@ class CraftCarpentry(Skill):
         skill_info = ss.skills.get(CARPENTRY_SKILL_ID)
         skill_val = skill_info.value if skill_info else 0.0
 
+        # Find the best item to craft — check each recipe
         target = None
+        best_feasible = None
         for name, grp_idx, item_idx, min_skill, boards in CRAFT_TARGETS:
-            if skill_val >= min_skill and boards_available >= boards:
-                target = (name, grp_idx, item_idx, boards)
+            if skill_val >= min_skill:
+                if boards_available >= boards:
+                    target = (name, grp_idx, item_idx, boards)
+                elif best_feasible is None:
+                    # First item we have skill for but not enough materials
+                    best_feasible = (name, boards)
+
         if not target:
-            logger.info(
-                "carpentry_skip",
-                boards=boards_available,
-                skill=skill_val,
-                has_tool=tool is not None,
-            )
+            feed = ctx.blackboard.get("activity_feed")
+            if best_feasible:
+                need_name, need_boards = best_feasible
+                shortage = need_boards - boards_available
+                msg = (
+                    f"Want to craft {need_name} but need "
+                    f"{shortage} more wood (have {boards_available}, need {need_boards})"
+                )
+                # Signal brain to gather materials
+                ctx.blackboard["skill_problem"] = msg
+                ctx.blackboard["last_think_time"] = 0.0  # force rethink
+                if feed:
+                    feed.publish("skill", msg, importance=2)
+                logger.info(
+                    "carpentry_need_materials",
+                    item=need_name, have=boards_available, need=need_boards,
+                )
+            else:
+                msg = f"Carpentry skill too low ({skill_val:.0f})"
+                if feed:
+                    feed.publish("skill", msg, importance=1)
+                logger.info("carpentry_skill_too_low", skill=skill_val)
             return SkillResult(
                 success=False, reward=-0.5,
-                message=f"Not enough boards ({boards_available}) or skill ({skill_val:.0f})",
+                message=msg,
             )
 
         target_name, grp_idx, item_idx, boards_needed = target
