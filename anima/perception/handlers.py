@@ -415,6 +415,8 @@ def register_handlers(
             if skill is None:
                 skill = SkillInfo(id=skill_id)
                 p.self_state.skills[skill_id] = skill
+
+            old_value = skill.value
             skill.value = value / 10.0
             skill.base = base / 10.0
             skill.cap = cap / 10.0
@@ -422,6 +424,17 @@ def register_handlers(
                 skill.lock = Lock(lock)
 
             p.emit(GameEventType.SKILL_CHANGED, {"skill_id": skill_id, "value": skill.value})
+
+            # Log skill gains/losses to journal
+            diff = skill.value - old_value
+            if abs(diff) >= 0.1 and is_single:
+                direction = "increased" if diff > 0 else "decreased"
+                msg = f"Your skill has {direction}: {skill.value:.1f} ({diff:+.1f})"
+                p.social.add_speech(0xFFFFFFFF, "System", msg, 0)
+                logger.info(
+                    "skill_gain", skill_id=skill_id,
+                    old=old_value, new=skill.value, diff=f"{diff:+.1f}",
+                )
 
             if is_single:
                 break  # single skill update — only one entry
