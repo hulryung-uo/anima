@@ -1,17 +1,20 @@
-"""Rich Live TUI — real-time terminal dashboard for Anima."""
+"""Textual TUI dashboard for Anima.
+
+Textual owns the event loop. Game tasks (recv_loop, brain_loop, etc.)
+run as background asyncio tasks created in on_mount().
+"""
 
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Coroutine
 
-from rich.console import Console
-from rich.layout import Layout
-from rich.live import Live
-from rich.panel import Panel
 from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal
+from textual.widgets import Footer, Static
 
 if TYPE_CHECKING:
     from anima.monitor.feed import ActivityFeed
@@ -53,8 +56,30 @@ def _bar(cur: int, mx: int, width: int = 10) -> Text:
     return t
 
 
-class AnimaTUI:
-    """Real-time terminal dashboard using Rich Live display."""
+class AnimaTUI(App):
+    """Textual app that owns the event loop and runs game tasks internally."""
+
+    TITLE = "Anima"
+    CSS = """
+    Screen { layout: vertical; }
+    #upper { height: 1fr; }
+    #lower { height: 16; }
+    .box { border: round gray; padding: 0 1; }
+    #status-box { width: 2fr; }
+    #activity-box { width: 3fr; }
+    #nearby-box { width: 1fr; }
+    #journal-box { width: 1fr; }
+    #inventory-box { width: 1fr; display: none; }
+    #skills-box { width: 1fr; display: none; }
+    #qvalues-box { width: 1fr; }
+    """
+
+    BINDINGS = [
+        Binding("j", "toggle_panel('journal-box')", "Journal"),
+        Binding("i", "toggle_panel('inventory-box')", "Inventory"),
+        Binding("s", "toggle_panel('skills-box')", "Skills"),
+        Binding("q", "quit", "Quit"),
+    ]
 
     def __init__(
         self,
@@ -62,26 +87,70 @@ class AnimaTUI:
         feed: ActivityFeed,
         blackboard: dict,
         refresh_rate: float = 0.5,
+        background_tasks: list[Coroutine[Any, Any, None]] | None = None,
     ) -> None:
+        super().__init__()
         self._p = perception
         self._feed = feed
         self._bb = blackboard
         self._refresh = refresh_rate
-        self._start_time = time.time()
+        self._bg_coros = background_tasks or []
+        self._bg_tasks: list[asyncio.Task] = []
 
-    def _build_status(self) -> Panel:
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="upper"):
+            yield Static("", id="status-box", classes="box")
+            yield Static("", id="activity-box", classes="box")
+        with Horizontal(id="lower"):
+            yield Static("", id="nearby-box", classes="box")
+            yield Static("", id="journal-box", classes="box")
+            yield Static("", id="inventory-box", classes="box")
+            yield Static("", id="skills-box", classes="box")
+            yield Static("", id="qvalues-box", classes="box")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        # Start game tasks as background asyncio tasks
+        for coro in self._bg_coros:
+            task = asyncio.create_task(coro)
+            self._bg_tasks.append(task)
+        # Start periodic UI refresh
+        self.set_interval(self._refresh, self._refresh_all)
+
+    async def on_unmount(self) -> None:
+        for task in self._bg_tasks:
+            task.cancel()
+
+    def action_toggle_panel(self, panel_id: str) -> None:
+        try:
+            box = self.query_one(f"#{panel_id}")
+            box.display = not box.display
+        except Exception:
+            pass
+
+    def _refresh_all(self) -> None:
+        try:
+            self._do_status()
+            self._do_activity()
+            self._do_nearby()
+            self._do_journal()
+            self._do_inventory()
+            self._do_skills()
+            self._do_qvalues()
+        except Exception:
+            pass
+
+    def _do_status(self) -> None:
         ss = self._p.self_state
         persona = self._bb.get("persona")
         name = persona.name if persona else "Anima"
+        title = getattr(persona, "title", "") if persona else ""
         goal = self._bb.get("current_goal")
         goal_text = goal.get("description", "")[:50] if goal else "none"
 
-        elapsed = int(time.time() - self._start_time)
-        h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
-
         t = Text()
-        t.append(f"{name}", style="bold bright_white")
-        t.append(f"  [{h:02d}:{m:02d}:{s:02d}]\n\n", style="grey50")
+        t.append(name, style="bold bright_white")
+        t.append(f" — {title}\n\n")
         t.append("HP   ", style="bold red")
         t.append_text(_bar(ss.hits, ss.hits_max))
         t.append("  STR ", style="bold")
@@ -99,27 +168,28 @@ class AnimaTUI:
         t.append(f"Wt {ss.weight}/{ss.weight_max}\n", style="grey70")
         t.append("Goal ", style="bright_green")
         t.append(goal_text)
-        return Panel(t, title="Status", border_style="bright_blue")
+        self.query_one("#status-box").update(t)
 
-    def _build_activity(self) -> Panel:
-        events = self._feed.recent(18)
+    def _do_activity(self) -> None:
+        events = self._feed.recent(16)
         t = Text()
+        t.append("Activity\n\n", style="bold")
         for ev in events:
             ts = datetime.fromtimestamp(ev.timestamp).strftime("%H:%M:%S")
             icon = CATEGORY_ICONS.get(ev.category, "\u2022")
-            t.append(f" {ts} ", style="grey50")
+            t.append(f"{ts} ", style="grey50")
             t.append(f"{icon} ")
-            style = f"bold" if ev.importance >= 3 else ""
-            t.append(f"{ev.message}\n", style=style)
+            t.append(f"{ev.message}\n", style="bold" if ev.importance >= 3 else "")
         if not events:
-            t.append(" Waiting for activity...", style="grey50")
-        return Panel(t, title="Activity", border_style="bright_green")
+            t.append("Waiting for activity...", style="grey50")
+        self.query_one("#activity-box").update(t)
 
-    def _build_nearby(self) -> Panel:
+    def _do_nearby(self) -> None:
         ss = self._p.self_state
         mobs = self._p.world.nearby_mobiles(ss.x, ss.y, distance=18)
         mobs.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
         t = Text()
+        t.append("Nearby\n\n", style="bold")
         for mob in mobs[:8]:
             name = (mob.name or f"0x{mob.body:04X}")[:18]
             dx, dy = mob.x - ss.x, mob.y - ss.y
@@ -130,40 +200,39 @@ class AnimaTUI:
             elif dx < 0: dirs.append(f"{abs(dx)}W")
             nv = mob.notoriety.value if mob.notoriety else 1
             color = NOTORIETY_COLORS.get(nv, "white")
-            t.append(f"{name}", style=color)
+            t.append(name, style=color)
             t.append(f"  {','.join(dirs) or 'here'}\n", style="grey70")
         if not mobs:
             t.append("nobody nearby", style="grey50")
-        return Panel(t, title="Nearby", border_style="bright_yellow")
+        self.query_one("#nearby-box").update(t)
 
-    def _build_journal(self) -> Panel:
+    def _do_journal(self) -> None:
         entries = self._p.social.recent(count=10)
         my_serial = self._p.self_state.serial
         t = Text()
+        t.append("Journal\n\n", style="bold")
         for entry in entries:
             ts = datetime.fromtimestamp(entry.timestamp).strftime("%H:%M:%S")
             name = entry.name or "?"
-            if entry.serial == my_serial:
-                style = "bright_cyan"
-            elif name.lower() == "system":
-                style = "grey50"
-            else:
-                style = "bright_white"
+            style = "bright_cyan" if entry.serial == my_serial else \
+                    "grey50" if name.lower() == "system" else "bright_white"
             t.append(f"{ts} ", style="grey50")
             t.append(f"{name}: ", style=style)
             t.append(f"{entry.text[:55]}\n")
         if not entries:
             t.append("No speech yet...", style="grey50")
-        return Panel(t, title="Journal", border_style="bright_magenta")
+        self.query_one("#journal-box").update(t)
 
-    def _build_inventory(self) -> Panel:
-        ss = self._p.self_state
-        bp = ss.equipment.get(0x15)
+    def _do_inventory(self) -> None:
+        bp = self._p.self_state.equipment.get(0x15)
         t = Text()
+        t.append("Inventory\n\n", style="bold")
         if bp:
-            items = [it for it in self._p.world.items.values() if it.container == bp]
-            items.sort(key=lambda it: it.name or f"0x{it.graphic:04X}")
-            for it in items[:10]:
+            items = sorted(
+                [it for it in self._p.world.items.values() if it.container == bp],
+                key=lambda it: it.name or "",
+            )
+            for it in items[:12]:
                 name = it.name or f"0x{it.graphic:04X}"
                 t.append(f"{name[:20]}")
                 if it.amount > 1:
@@ -173,12 +242,13 @@ class AnimaTUI:
                 t.append("empty", style="grey50")
         else:
             t.append("no backpack", style="grey50")
-        return Panel(t, title="Inventory", border_style="bright_white")
+        self.query_one("#inventory-box").update(t)
 
-    def _build_skills(self) -> Panel:
+    def _do_skills(self) -> None:
         ss = self._p.self_state
         skills = sorted(ss.skills.values(), key=lambda s: (-s.value, s.id))
         t = Text()
+        t.append("Skills\n\n", style="bold")
         total = 0.0
         count = 0
         for skill in skills:
@@ -196,11 +266,12 @@ class AnimaTUI:
             if count >= 12:
                 break
         t.append(f"\nTotal {total:.1f}/700", style="bold")
-        return Panel(t, title="Skills", border_style="bright_yellow")
+        self.query_one("#skills-box").update(t)
 
-    def _build_qvalues(self) -> Panel:
+    def _do_qvalues(self) -> None:
         q_snapshot: dict[str, tuple[float, int]] = self._bb.get("q_snapshot", {})
         t = Text()
+        t.append("Q-Values\n\n", style="bold")
         if q_snapshot:
             sorted_q = sorted(q_snapshot.items(), key=lambda x: x[1][0], reverse=True)
             for name, (q_val, visits) in sorted_q[:8]:
@@ -210,41 +281,4 @@ class AnimaTUI:
                 t.append(f"n={visits}\n", style="grey70")
         else:
             t.append("no data yet", style="grey50")
-        return Panel(t, title="Q-Values", border_style="bright_cyan")
-
-    def _build_layout(self) -> Layout:
-        layout = Layout()
-        layout.split_column(
-            Layout(name="upper"),
-            Layout(name="lower", size=14),
-        )
-        layout["upper"].split_row(
-            Layout(name="status", ratio=2, minimum_size=30),
-            Layout(name="activity", ratio=3, minimum_size=40),
-        )
-        layout["lower"].split_row(
-            Layout(name="nearby", ratio=1),
-            Layout(name="journal", ratio=1),
-            Layout(name="inventory", ratio=1),
-            Layout(name="skills", ratio=1),
-            Layout(name="qvalues", ratio=1),
-        )
-        return layout
-
-    async def run(self) -> None:
-        console = Console()
-        layout = self._build_layout()
-
-        with Live(layout, console=console, refresh_per_second=2, screen=True):
-            while True:
-                try:
-                    layout["status"].update(self._build_status())
-                    layout["activity"].update(self._build_activity())
-                    layout["nearby"].update(self._build_nearby())
-                    layout["journal"].update(self._build_journal())
-                    layout["inventory"].update(self._build_inventory())
-                    layout["skills"].update(self._build_skills())
-                    layout["qvalues"].update(self._build_qvalues())
-                except Exception:
-                    pass
-                await asyncio.sleep(self._refresh)
+        self.query_one("#qvalues-box").update(t)

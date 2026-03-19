@@ -362,7 +362,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             importance=2,
         )
 
-        tasks: list = [
+        game_coros = [
             recv_loop(conn, pkt_handler),
             inspect_self(conn, perception),
             brain_loop(brain),
@@ -371,13 +371,21 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         if cfg.monitor.tui_enabled:
             from anima.monitor.tui import AnimaTUI
 
-            tui = AnimaTUI(perception, feed, brain_ctx.blackboard, cfg.monitor.refresh_rate)
-            tasks.append(tui.run())
-
-        try:
-            await asyncio.gather(*tasks)
-        finally:
-            await memory_db.close()
+            # Textual owns the event loop; game tasks run inside it
+            tui = AnimaTUI(
+                perception, feed, brain_ctx.blackboard,
+                cfg.monitor.refresh_rate,
+                background_tasks=game_coros,
+            )
+            try:
+                await tui.run_async()
+            finally:
+                await memory_db.close()
+        else:
+            try:
+                await asyncio.gather(*game_coros)
+            finally:
+                await memory_db.close()
     except ConnectionError as e:
         logger.error("connection_error", error=str(e))
     except KeyboardInterrupt:
