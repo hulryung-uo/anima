@@ -396,34 +396,40 @@ class AnimaTUI:
             return True
         return False
 
-    async def _poll_keys(self) -> str | None:
-        """Non-blocking key read from stdin."""
-        import sys
-        import select
-        if select.select([sys.stdin], [], [], 0)[0]:
-            return sys.stdin.read(1)
-        return None
-
-    async def run(self) -> None:
+    async def _start_key_reader(self) -> None:
+        """Read keys from stdin in a background thread."""
         import sys
         import tty
         import termios
 
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                key = await loop.run_in_executor(None, sys.stdin.read, 1)
+                if key and self._handle_key(key):
+                    self._layout_dirty = True
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    async def run(self) -> None:
         console = Console()
         layout = self._build_layout()
+        self._layout_dirty = False
 
-        # Set terminal to raw mode for key capture
-        old_settings = termios.tcgetattr(sys.stdin)
+        # Start key reader in background
+        key_task = asyncio.create_task(self._start_key_reader())
+
         try:
-            tty.setcbreak(sys.stdin.fileno())
-
             with Live(layout, console=console, refresh_per_second=2, screen=True):
                 while True:
                     try:
-                        # Check for key input
-                        key = await self._poll_keys()
-                        if key and self._handle_key(key):
+                        if self._layout_dirty:
                             layout = self._build_layout()
+                            self._layout_dirty = False
 
                         layout["header"].update(self._build_header())
                         layout["status"].update(self._build_status_panel())
@@ -440,4 +446,4 @@ class AnimaTUI:
                         pass  # Never crash the TUI
                     await asyncio.sleep(self._refresh_rate)
         finally:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            key_task.cancel()
