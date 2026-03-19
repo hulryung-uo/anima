@@ -112,14 +112,27 @@ class ChopWood(Skill):
             return SkillResult(success=False, reward=-1.0, message="No trees nearby")
 
         tree_x, tree_y, tree_z, tree_graphic = tree
+        dist = max(abs(tree_x - ss.x), abs(tree_y - ss.y))
 
         logger.info(
             "chop_start",
             tree=f"0x{tree_graphic:04X}",
             pos=f"({tree_x},{tree_y},{tree_z})",
-            dist=max(abs(tree_x - ss.x), abs(tree_y - ss.y)),
+            dist=dist,
         )
         feed = ctx.blackboard.get("activity_feed")
+
+        # Walk closer if too far (need to be within 2 tiles)
+        if dist > 2:
+            if feed:
+                feed.publish("skill", f"Walking to tree at ({tree_x},{tree_y})", importance=1)
+            from anima.action.movement import go_to
+            arrived = await go_to(ctx, tree_x, tree_y)
+            if not arrived:
+                # Get as close as possible — even 3 tiles might work
+                pass
+            logger.debug("chop_walked", pos=f"({ss.x},{ss.y})")
+
         if feed:
             feed.publish("skill", f"Chopping tree at ({tree_x},{tree_y})", importance=2)
 
