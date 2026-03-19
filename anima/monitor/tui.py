@@ -84,6 +84,7 @@ class AnimaTUI:
         self._start_time = time.time()
         self._show_journal = True
         self._show_inventory = False
+        self._show_skills_list = False
 
     def _build_header(self) -> Text:
         persona = self._bb.get("persona")
@@ -293,6 +294,67 @@ class AnimaTUI:
 
         return Panel(table, title="[bold]Inventory[/bold]", border_style="bright_white")
 
+    def _build_skills_list_panel(self) -> Panel:
+        """Show character skills with values and lock states."""
+        ss = self._perception.self_state
+        lock_icons = {0: "\u2191", 1: "\u2193", 2: "\u2022"}  # ↑ ↓ •
+        lock_colors = {0: "bright_green", 1: "red", 2: "grey50"}
+
+        # Skill name lookup (common ones)
+        SKILL_NAMES = {
+            0: "Alchemy", 1: "Anatomy", 2: "Animal Lore", 3: "Item ID",
+            4: "Arms Lore", 5: "Parrying", 7: "Blacksmith", 8: "Bowcraft",
+            9: "Peacemaking", 11: "Carpentry", 13: "Cooking", 17: "Healing",
+            18: "Fishing", 21: "Hiding", 22: "Provocation", 23: "Inscription",
+            25: "Magery", 26: "Resist Spells", 27: "Tactics", 29: "Musicianship",
+            31: "Archery", 34: "Tailoring", 35: "Taming", 37: "Tinkering",
+            38: "Tracking", 39: "Veterinary", 40: "Swordsmanship",
+            41: "Mace Fighting", 42: "Fencing", 43: "Wrestling",
+            44: "Lumberjacking", 45: "Mining", 46: "Meditation",
+            47: "Stealth", 48: "Remove Trap",
+        }
+
+        table = Table.grid(padding=(0, 1))
+        table.add_column(width=2)   # lock icon
+        table.add_column(width=15)  # name
+        table.add_column(width=6, justify="right")  # value
+        table.add_column(width=6, justify="right")  # cap
+
+        # Sort: non-zero skills first by value descending, then rest
+        skills = sorted(
+            ss.skills.values(),
+            key=lambda s: (-s.value, s.id),
+        )
+
+        shown = 0
+        total = sum(s.value for s in skills)
+        for skill in skills:
+            if shown >= 16:
+                break
+            if skill.value == 0 and skill.lock.value == 2:
+                continue  # skip zero+locked
+            name = SKILL_NAMES.get(skill.id, f"Skill {skill.id}")
+            lock_val = skill.lock.value if hasattr(skill.lock, 'value') else skill.lock
+            icon = lock_icons.get(lock_val, "?")
+            color = lock_colors.get(lock_val, "white")
+            table.add_row(
+                Text(icon, style=color),
+                Text(name[:15]),
+                Text(f"{skill.value:.1f}", style="bright_white"),
+                Text(f"/{skill.cap:.0f}", style="grey50"),
+            )
+            shown += 1
+
+        if shown == 0:
+            table.add_row(Text(), Text("no skills yet", style="grey50"), Text(), Text())
+        else:
+            table.add_row(Text(), Text(), Text(), Text())
+            table.add_row(
+                Text(), Text("Total", style="bold"), Text(f"{total:.1f}", style="bold"), Text(),
+            )
+
+        return Panel(table, title="[bold]Skills[/bold]", border_style="bright_yellow")
+
     def _build_layout(self) -> Layout:
         layout = Layout()
         layout.split_column(
@@ -314,6 +376,8 @@ class AnimaTUI:
             lower_panels.append(Layout(name="journal", ratio=1))
         if self._show_inventory:
             lower_panels.append(Layout(name="inventory", ratio=1))
+        if self._show_skills_list:
+            lower_panels.append(Layout(name="skills_list", ratio=1))
         lower_panels.append(Layout(name="skills", ratio=1))
         layout["lower"].split_row(*lower_panels)
 
@@ -326,6 +390,9 @@ class AnimaTUI:
             return True
         if key == "i":
             self._show_inventory = not self._show_inventory
+            return True
+        if key == "s":
+            self._show_skills_list = not self._show_skills_list
             return True
         return False
 
@@ -366,6 +433,8 @@ class AnimaTUI:
                             layout["journal"].update(self._build_journal_panel())
                         if self._show_inventory:
                             layout["inventory"].update(self._build_inventory_panel())
+                        if self._show_skills_list:
+                            layout["skills_list"].update(self._build_skills_list_panel())
                         layout["skills"].update(self._build_skills_panel())
                     except Exception:
                         pass  # Never crash the TUI

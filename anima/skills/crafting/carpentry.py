@@ -224,22 +224,21 @@ class CraftCarpentry(Skill):
                 duration_ms=(time.monotonic() - start) * 1000,
             )
 
-        prev_layout = gump.layout
-        prev_gump_id = gump.gump_id
-        # Send response but DON'T pop gump — server may update it in-place
+        prev_serial = gump.serial
+        # Send response — server will send a new gump with different serial
         packet = build_gump_response(
             serial=gump.serial, gump_id=gump.gump_id, button_id=category_btn.button_id,
         )
+        ss.gumps.pop(gump.gump_id, None)
         await ctx.conn.send_packet(packet)
 
-        # 8. Wait for updated gump with item list (different layout or new gump)
-        await asyncio.sleep(0.5)
-        # Check if server sent a new gump (same or different ID)
+        # 8. Wait for new gump (different serial = server responded to our click)
+        await asyncio.sleep(0.3)
         gump = None
         deadline = time.monotonic() + GUMP_TIMEOUT
         while time.monotonic() < deadline:
             for g in ss.gumps.values():
-                if g.layout != prev_layout:
+                if g.serial != prev_serial:
                     gump = g
                     break
             if gump:
