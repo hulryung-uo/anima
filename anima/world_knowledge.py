@@ -11,12 +11,28 @@ class Location:
     x: int
     y: int
     description: str = ""
+    # Outdoor approach point — if set, agent navigates here instead of (x, y).
+    # Use for indoor locations where the exact coords are inside a building.
+    approach_x: int | None = None
+    approach_y: int | None = None
+
+    @property
+    def nav_x(self) -> int:
+        """X coordinate to navigate to (approach point or exact)."""
+        return self.approach_x if self.approach_x is not None else self.x
+
+    @property
+    def nav_y(self) -> int:
+        """Y coordinate to navigate to (approach point or exact)."""
+        return self.approach_y if self.approach_y is not None else self.y
 
 
 # Britain city landmarks (Felucca/Trammel)
+# Locations with approach_x/y are indoor — agent stops at the outdoor approach point.
 BRITAIN_LOCATIONS: list[Location] = [
     Location("West Britain Bank", 1434, 1699, "The famous gathering spot. Everyone comes here."),
-    Location("Britain Tavern", 1610, 1591, "The Salty Dog tavern. Good place for rumors."),
+    Location("Britain Tavern", 1610, 1591, "The Salty Dog tavern. Good place for rumors.",
+             approach_x=1605, approach_y=1591),
     Location("Britain Blacksmith", 1416, 1757, "Forge and anvil. Weapons and armor."),
     Location("Britain Mage Shop", 1492, 1628, "Reagents and scrolls."),
     Location("Britain Healer", 1454, 1699, "Healing and resurrection."),
@@ -28,8 +44,10 @@ BRITAIN_LOCATIONS: list[Location] = [
     Location("Britain Castle", 1323, 1624, "Lord British's castle. Grand and imposing."),
     Location("Britain Park", 1475, 1645, "Green space in the middle of town."),
     Location("Britain Stables", 1479, 1555, "Horses and pack animals."),
-    Location("Bulletin Board", 1600, 1595, "Community messages and notices."),
-    Location("Sweet Dreams Inn", 1585, 1590, "A cozy inn to rest."),
+    Location("Bulletin Board", 1600, 1595, "Community messages and notices.",
+             approach_x=1601, approach_y=1596),
+    Location("Sweet Dreams Inn", 1585, 1590, "A cozy inn to rest.",
+             approach_x=1585, approach_y=1598),
 ]
 
 # Locations indexed by name for quick lookup

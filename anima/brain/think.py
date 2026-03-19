@@ -253,18 +253,20 @@ async def llm_think(ctx: BrainContext) -> Status:
         place_name = action.get("place", "")
         loc = find_location(place_name)
         if loc:
+            # Use approach point for indoor locations
+            nav_x, nav_y = loc.nav_x, loc.nav_y
             ctx.blackboard["current_goal"] = {
                 "place": loc.name,
                 "description": reason or f"Going to {loc.name}",
-                "x": loc.x,
-                "y": loc.y,
+                "x": nav_x,
+                "y": nav_y,
             }
-            ctx.blackboard["move_target"] = (loc.x, loc.y)
+            ctx.blackboard["move_target"] = (nav_x, nav_y)
             _clear_path_cache(ctx)
             ctx.walker.consecutive_denials = 0
-            logger.info("goal_set", place=loc.name, target=f"({loc.x},{loc.y})")
+            logger.info("goal_set", place=loc.name, target=f"({nav_x},{nav_y})")
             if ctx.walker.can_walk():
-                return await _step_toward(ctx, loc.x, loc.y)
+                return await _step_toward(ctx, nav_x, nav_y)
             return Status.RUNNING
         else:
             logger.warning("goal_place_unknown", place=place_name)

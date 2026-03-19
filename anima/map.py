@@ -99,36 +99,29 @@ class TileInfo:
             and what Z the entity would be standing at after stepping.
         """
         max_step = 16  # DEFAULT_BLOCK_HEIGHT from ClassicUO
+        char_height = 16  # DEFAULT_CHARACTER_HEIGHT
 
         if self.land.impassable:
             return False, current_z
 
-        # Collect possible standing surfaces: (surface_z, top_z, is_blocker)
-        # Land tile is always a potential surface
+        # Start with land as the best standing surface
         best_z = self.land.z
-        found_surface = True
 
         for s in self.statics:
             standing_z = s.z + (s.height // 2 if s.flags & FLAG_BRIDGE else s.height)
             top_z = s.z + s.height
 
             if s.impassable and not s.surface:
-                # Blocker — check if it blocks our path at our Z level
-                if s.z < current_z + max_step and top_z > current_z - max_step:
-                    # This impassable object is in our Z range
-                    if not s.surface:
-                        return False, current_z
+                # Blocker — check if it overlaps with our body at current_z
+                # Our body occupies [current_z, current_z + char_height)
+                if top_z > current_z and s.z < current_z + char_height:
+                    return False, current_z
             elif s.surface:
-                # Potential standing surface — check if reachable
-                step_diff = abs(standing_z - current_z)
-                if step_diff <= max_step:
+                # Only consider surfaces reachable by stepping (within max_step)
+                if abs(standing_z - current_z) <= max_step:
                     # Prefer the surface closest to our current Z
                     if abs(standing_z - current_z) < abs(best_z - current_z):
                         best_z = standing_z
-                        found_surface = True
-
-        if not found_surface:
-            return False, current_z
 
         # Final check: can we step from current_z to best_z?
         if abs(best_z - current_z) > max_step:
