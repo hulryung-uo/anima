@@ -290,7 +290,22 @@ class AnimaTUI(App):
             task.cancel()
         self.exit()
 
-    # -- Key actions --
+    # -- Key actions (use on_key for reliable capture without focus) --
+
+    def on_key(self, event) -> None:
+        key = event.character
+        if key == "j":
+            w = self.query_one("#p-journal")
+            w.display = not w.display
+            event.prevent_default()
+        elif key == "i":
+            w = self.query_one("#p-inventory")
+            w.display = not w.display
+            event.prevent_default()
+        elif key == "s":
+            w = self.query_one("#p-skills")
+            w.display = not w.display
+            event.prevent_default()
 
     def action_toggle_journal(self) -> None:
         w = self.query_one("#p-journal")
