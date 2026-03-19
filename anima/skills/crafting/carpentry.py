@@ -182,6 +182,16 @@ class CraftCarpentry(Skill):
             skill=skill_value,
         )
 
+        # Publish intent to activity feed
+        feed = ctx.blackboard.get("activity_feed")
+        if feed:
+            reason = (
+                f"Making {target_item.name} — "
+                + ("converting logs to usable boards" if target_item.name == "Boards"
+                   else f"training Carpentry ({skill_value:.0f}/100)")
+            )
+            feed.publish("skill", reason, importance=2)
+
         # 4. Clear any existing gumps so we can detect the new one
         ss.gumps.clear()
 

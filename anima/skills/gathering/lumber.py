@@ -66,6 +66,12 @@ class ChopWood(Skill):
         if not tree:
             return SkillResult(success=False, reward=-1.0, message="No trees nearby")
 
+        tree_name = tree.name or "tree"
+        logger.info("chop_start", tree=tree_name, pos=f"({tree.x},{tree.y})")
+        feed = ctx.blackboard.get("activity_feed")
+        if feed:
+            feed.publish("skill", f"Chopping {tree_name} for logs", importance=2)
+
         logs_before = sum(
             it.amount for it in world.items.values()
             if it.container == backpack and it.graphic in LOG_GRAPHICS
