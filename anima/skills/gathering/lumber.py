@@ -28,6 +28,47 @@ TREE_GRAPHICS = {
 
 LOG_GRAPHICS = {0x1BDD, 0x1BE0}
 LUMBERJACK_SKILL_ID = 44
+SEARCH_RADIUS = 8  # tiles to search for trees
+
+
+def _find_nearby_tree(ctx: BrainContext) -> tuple[int, int, int, int] | None:
+    """Find a tree within SEARCH_RADIUS tiles.
+
+    Checks BOTH map statics and world items.
+    Returns (x, y, z, graphic) or None.
+    """
+    ss = ctx.perception.self_state
+    sx, sy = ss.x, ss.y
+
+    # Check map statics first (most trees are static)
+    if ctx.map_reader is not None:
+        best = None
+        best_dist = SEARCH_RADIUS + 1
+        for dy in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
+            for dx in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
+                dist = max(abs(dx), abs(dy))
+                if dist >= best_dist:
+                    continue
+                tx, ty = sx + dx, sy + dy
+                tile = ctx.map_reader.get_tile(tx, ty)
+                for s in tile.statics:
+                    if s.graphic in TREE_GRAPHICS:
+                        best = (tx, ty, s.z, s.graphic)
+                        best_dist = dist
+                        break
+        if best:
+            return best
+
+    # Fallback: check world items (dynamic trees)
+    for it in ctx.perception.world.items.values():
+        if it.container != 0:
+            continue
+        if it.graphic in TREE_GRAPHICS:
+            dist = max(abs(it.x - sx), abs(it.y - sy))
+            if dist <= SEARCH_RADIUS:
+                return (it.x, it.y, it.z, it.graphic)
+
+    return None
 
 
 class ChopWood(Skill):
@@ -39,11 +80,9 @@ class ChopWood(Skill):
     required_skill = (LUMBERJACK_SKILL_ID, 0.0)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
-        ss = ctx.perception.self_state
         if not _find_hatchet(ctx):
             return False
-        nearby = ctx.perception.world.nearby_items(ss.x, ss.y, distance=3)
-        return any(it.graphic in TREE_GRAPHICS for it in nearby)
+        return _find_nearby_tree(ctx) is not None
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state
@@ -56,35 +95,38 @@ class ChopWood(Skill):
         if not hatchet:
             return SkillResult(success=False, reward=-1.0, message="No hatchet")
 
-        nearby = world.nearby_items(ss.x, ss.y, distance=3)
-        tree = None
-        for item in nearby:
-            if item.graphic in TREE_GRAPHICS:
-                tree = item
-                break
-
+        tree = _find_nearby_tree(ctx)
         if not tree:
             return SkillResult(success=False, reward=-1.0, message="No trees nearby")
 
-        tree_name = tree.name or "tree"
-        logger.info("chop_start", tree=tree_name, pos=f"({tree.x},{tree.y})")
+        tree_x, tree_y, tree_z, tree_graphic = tree
+
+        logger.info(
+            "chop_start",
+            tree=f"0x{tree_graphic:04X}",
+            pos=f"({tree_x},{tree_y},{tree_z})",
+            dist=max(abs(tree_x - ss.x), abs(tree_y - ss.y)),
+        )
         feed = ctx.blackboard.get("activity_feed")
         if feed:
-            feed.publish("skill", f"Chopping {tree_name} for logs", importance=2)
+            feed.publish("skill", f"Chopping tree at ({tree_x},{tree_y})", importance=2)
 
         logs_before = sum(
             it.amount for it in world.items.values()
             if it.container == backpack and it.graphic in LOG_GRAPHICS
         )
 
+        # Double-click hatchet to activate
         await ctx.conn.send_packet(build_double_click(hatchet.serial))
         await asyncio.sleep(0.5)
 
+        # Target the tree (static target = target_type 1)
         await ctx.conn.send_packet(build_target_response(
             target_type=1, cursor_id=0,
-            x=tree.x, y=tree.y, z=tree.z, graphic=tree.graphic,
+            x=tree_x, y=tree_y, z=tree_z, graphic=tree_graphic,
         ))
 
+        # Wait for chopping animation and result
         await asyncio.sleep(3.0)
 
         logs_after = sum(
@@ -98,6 +140,8 @@ class ChopWood(Skill):
         if logs_gained > 0:
             reward = 5.0 + logs_gained
             logger.info("chop_success", logs=logs_gained)
+            if feed:
+                feed.publish("skill", f"Chopped {logs_gained} logs!", importance=2)
             return SkillResult(
                 success=True, reward=reward,
                 message=f"Chopped {logs_gained} logs",
@@ -105,6 +149,7 @@ class ChopWood(Skill):
                 duration_ms=elapsed,
             )
         else:
+            logger.info("chop_no_logs")
             return SkillResult(
                 success=False, reward=-1.0,
                 message="No logs obtained",
