@@ -24,7 +24,7 @@ from anima.skills.state import encode_state
 logger = structlog.get_logger()
 
 # Cooldown between skill executions (seconds)
-SKILL_COOLDOWN = 2.0
+SKILL_COOLDOWN = 0.5  # minimal gap between skill executions
 
 
 def _has_low_hp(ctx: BrainContext) -> bool:
