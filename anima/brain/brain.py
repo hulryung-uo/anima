@@ -81,6 +81,23 @@ async def _skill_action(ctx: BrainContext) -> Status:
     if registry is None or ctx.memory_db is None:
         return Status.FAILURE
 
+    # If a skill has failed too many times in a row, skip skill_exec
+    # and let Think/LLM figure out what to do
+    consecutive_fails = ctx.blackboard.get("skill_consecutive_fails", 0)
+    if consecutive_fails >= 5:
+        ctx.blackboard["skill_consecutive_fails"] = 0
+        # Force a think cycle by clearing the last_think_time
+        ctx.blackboard["last_think_time"] = 0.0
+        ctx.blackboard["skill_problem"] = (
+            f"Last skill failed {consecutive_fails} times in a row. "
+            f"May need to move elsewhere, get materials, or try something different."
+        )
+        logger.info("skill_too_many_fails", fails=consecutive_fails)
+        feed = ctx.blackboard.get("activity_feed")
+        if feed:
+            feed.publish("brain", "Too many skill failures, rethinking...", importance=2)
+        return Status.FAILURE
+
     agent_name = _agent_name(ctx)
     available = await registry.available_skills(ctx)
     if not available:
@@ -105,6 +122,14 @@ async def _skill_action(ctx: BrainContext) -> Status:
         feed.publish("skill", f"Executing {skill.name}", details={"skill": skill.name})
 
     result = await skill.execute(ctx)
+
+    # Track consecutive failures
+    if result.success:
+        ctx.blackboard["skill_consecutive_fails"] = 0
+    else:
+        ctx.blackboard["skill_consecutive_fails"] = (
+            ctx.blackboard.get("skill_consecutive_fails", 0) + 1
+        )
 
     if feed:
         icon = "OK" if result.success else "FAIL"

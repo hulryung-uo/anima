@@ -100,9 +100,26 @@ def _build_recent_speech(ctx: BrainContext) -> str:
 
 def _build_goal_context(ctx: BrainContext) -> str:
     goal = ctx.blackboard.get("current_goal")
+    parts: list[str] = []
     if goal:
-        return f"Current goal: {goal['description']} (heading to {goal.get('place', 'unknown')})"
-    return "You have no current goal. Pick something to do."
+        place = goal.get("place", "unknown")
+        parts.append(f"Current goal: {goal['description']} (heading to {place})")
+    else:
+        parts.append("You have no current goal. Pick something to do.")
+
+    # Include skill problems if any
+    problem = ctx.blackboard.pop("skill_problem", None)
+    if problem:
+        parts.append(f"PROBLEM: {problem}")
+
+    # Include weight info
+    ss = ctx.perception.self_state
+    if ss.weight_max > 0:
+        pct = ss.weight / ss.weight_max * 100
+        if pct > 80:
+            parts.append(f"WARNING: Carrying {ss.weight}/{ss.weight_max} stones ({pct:.0f}% full)!")
+
+    return "\n".join(parts)
 
 
 async def llm_think(ctx: BrainContext) -> Status:
