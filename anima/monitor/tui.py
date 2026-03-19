@@ -82,6 +82,8 @@ class AnimaTUI:
         self._bb = blackboard
         self._refresh_rate = refresh_rate
         self._start_time = time.time()
+        self._show_journal = True
+        self._show_inventory = False
 
     def _build_header(self) -> Text:
         persona = self._bb.get("persona")
@@ -263,6 +265,34 @@ class AnimaTUI:
 
         return Panel(text, title="[bold]Journal[/bold]", border_style="bright_magenta")
 
+    def _build_inventory_panel(self) -> Panel:
+        """Show backpack contents."""
+        ss = self._perception.self_state
+        world = self._perception.world
+        backpack = ss.equipment.get(0x15)
+
+        table = Table.grid(padding=(0, 1))
+        table.add_column(width=20)  # name
+        table.add_column(width=6, justify="right")  # amount
+
+        if backpack:
+            items = [
+                it for it in world.items.values()
+                if it.container == backpack
+            ]
+            items.sort(key=lambda it: it.name or f"0x{it.graphic:04X}")
+            for it in items[:12]:
+                name = it.name or f"0x{it.graphic:04X}"
+                amt = f"x{it.amount}" if it.amount > 1 else ""
+                table.add_row(Text(name[:20]), Text(amt, style="grey70"))
+
+            if not items:
+                table.add_row(Text("empty", style="grey50"), Text())
+        else:
+            table.add_row(Text("no backpack", style="grey50"), Text())
+
+        return Panel(table, title="[bold]Inventory[/bold]", border_style="bright_white")
+
     def _build_layout(self) -> Layout:
         layout = Layout()
         layout.split_column(
@@ -277,26 +307,68 @@ class AnimaTUI:
             Layout(name="status", ratio=2, minimum_size=30),
             Layout(name="activity", ratio=3, minimum_size=40),
         )
-        layout["lower"].split_row(
-            Layout(name="nearby", ratio=1),
-            Layout(name="journal", ratio=1),
-            Layout(name="skills", ratio=1),
-        )
+
+        # Build lower row based on toggle state
+        lower_panels = [Layout(name="nearby", ratio=1)]
+        if self._show_journal:
+            lower_panels.append(Layout(name="journal", ratio=1))
+        if self._show_inventory:
+            lower_panels.append(Layout(name="inventory", ratio=1))
+        lower_panels.append(Layout(name="skills", ratio=1))
+        layout["lower"].split_row(*lower_panels)
+
         return layout
 
+    def _handle_key(self, key: str) -> bool:
+        """Handle keyboard input. Returns True if layout needs rebuild."""
+        if key == "j":
+            self._show_journal = not self._show_journal
+            return True
+        if key == "i":
+            self._show_inventory = not self._show_inventory
+            return True
+        return False
+
+    async def _poll_keys(self) -> str | None:
+        """Non-blocking key read from stdin."""
+        import sys
+        import select
+        if select.select([sys.stdin], [], [], 0)[0]:
+            return sys.stdin.read(1)
+        return None
+
     async def run(self) -> None:
+        import sys
+        import tty
+        import termios
+
         console = Console()
         layout = self._build_layout()
 
-        with Live(layout, console=console, refresh_per_second=2, screen=True):
-            while True:
-                try:
-                    layout["header"].update(self._build_header())
-                    layout["status"].update(self._build_status_panel())
-                    layout["activity"].update(self._build_activity_panel())
-                    layout["nearby"].update(self._build_nearby_panel())
-                    layout["journal"].update(self._build_journal_panel())
-                    layout["skills"].update(self._build_skills_panel())
-                except Exception:
-                    pass  # Never crash the TUI
-                await asyncio.sleep(self._refresh_rate)
+        # Set terminal to raw mode for key capture
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            tty.setcbreak(sys.stdin.fileno())
+
+            with Live(layout, console=console, refresh_per_second=2, screen=True):
+                while True:
+                    try:
+                        # Check for key input
+                        key = await self._poll_keys()
+                        if key and self._handle_key(key):
+                            layout = self._build_layout()
+
+                        layout["header"].update(self._build_header())
+                        layout["status"].update(self._build_status_panel())
+                        layout["activity"].update(self._build_activity_panel())
+                        layout["nearby"].update(self._build_nearby_panel())
+                        if self._show_journal and "journal" in layout:
+                            layout["journal"].update(self._build_journal_panel())
+                        if self._show_inventory and "inventory" in layout:
+                            layout["inventory"].update(self._build_inventory_panel())
+                        layout["skills"].update(self._build_skills_panel())
+                    except Exception:
+                        pass  # Never crash the TUI
+                    await asyncio.sleep(self._refresh_rate)
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)

@@ -225,11 +225,26 @@ class CraftCarpentry(Skill):
             )
 
         prev_layout = gump.layout
-        await _click_gump_button(ctx, gump, category_btn.button_id)
+        prev_gump_id = gump.gump_id
+        # Send response but DON'T pop gump — server may update it in-place
+        packet = build_gump_response(
+            serial=gump.serial, gump_id=gump.gump_id, button_id=category_btn.button_id,
+        )
+        await ctx.conn.send_packet(packet)
 
-        # 8. Wait for updated gump with item list (different layout)
-        await asyncio.sleep(0.3)
-        gump = await _wait_for_gump(ctx, exclude_layout=prev_layout)
+        # 8. Wait for updated gump with item list (different layout or new gump)
+        await asyncio.sleep(0.5)
+        # Check if server sent a new gump (same or different ID)
+        gump = None
+        deadline = time.monotonic() + GUMP_TIMEOUT
+        while time.monotonic() < deadline:
+            for g in ss.gumps.values():
+                if g.layout != prev_layout:
+                    gump = g
+                    break
+            if gump:
+                break
+            await asyncio.sleep(GUMP_POLL_INTERVAL)
         if not gump:
             return SkillResult(
                 success=False,

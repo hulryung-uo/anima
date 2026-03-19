@@ -25,6 +25,7 @@ from anima.data import item_name
 from anima.map import MapReader
 from anima.memory.database import MemoryDB
 from anima.memory.journal import ActivityJournal
+from anima.monitor.feed import ActivityFeed
 from anima.perception import Perception
 from anima.perception.enums import Layer
 from anima.perception.handlers import register_handlers
@@ -332,6 +333,9 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         journal = ActivityJournal(memory_db, agent_name=persona.name)
         logger.info("journal_ready", agent=persona.name)
 
+        # Build activity feed for monitoring
+        feed = ActivityFeed(max_events=cfg.monitor.max_events)
+
         # Build brain with behavior tree
         brain_ctx = BrainContext(
             perception=perception,
@@ -347,16 +351,49 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
                 "forum_client": forum_client,
                 "skill_registry": skill_registry,
                 "journal": journal,
+                "activity_feed": feed,
             },
         )
         brain = Brain(brain_ctx)
 
-        try:
-            await asyncio.gather(
-                recv_loop(conn, pkt_handler),
-                inspect_self(conn, perception),
-                brain_loop(brain),
+        feed.publish(
+            "system",
+            f"{persona.name} connected to {cfg.server.host}:{cfg.server.port}",
+            importance=2,
+        )
+
+        tasks: list = [
+            recv_loop(conn, pkt_handler),
+            inspect_self(conn, perception),
+            brain_loop(brain),
+        ]
+
+        if cfg.monitor.tui_enabled:
+            import logging
+
+            from anima.monitor.tui import AnimaTUI
+
+            # Redirect logs to file so TUI screen stays clean
+            log_path = Path("data/anima.log")
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(str(log_path), mode="a")
+            file_handler.setLevel(logging.DEBUG)
+
+            structlog.configure(
+                processors=[
+                    structlog.processors.TimeStamper(fmt="iso"),
+                    structlog.dev.ConsoleRenderer(),
+                ],
+                wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+                logger_factory=structlog.PrintLoggerFactory(file=file_handler.stream),
             )
+            logger.info("tui_logging_to_file", path=str(log_path))
+
+            tui = AnimaTUI(perception, feed, brain_ctx.blackboard, cfg.monitor.refresh_rate)
+            tasks.append(tui.run())
+
+        try:
+            await asyncio.gather(*tasks)
         finally:
             await memory_db.close()
     except ConnectionError as e:
@@ -375,6 +412,7 @@ def main() -> None:
     parser.add_argument(
         "--recreate", action="store_true", help="Delete existing character and recreate"
     )
+    parser.add_argument("--tui", action="store_true", help="Enable Rich TUI dashboard")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -388,6 +426,8 @@ def main() -> None:
         cfg.account.username = args.user
     if args.password:
         cfg.account.password = args.password
+    if args.tui:
+        cfg.monitor.tui_enabled = True
 
     asyncio.run(run(cfg, delete_existing=args.recreate))
 
