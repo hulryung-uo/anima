@@ -281,9 +281,7 @@ class AnimaTUI(App):
             self._tasks.append(asyncio.create_task(coro))
         # Periodic UI refresh
         self.set_interval(self._rate, self._tick)
-        # Hide optional panels by default
-        self.query_one("#p-inventory").display = False
-        self.query_one("#p-skills").display = False
+        # All panels visible by default
 
     async def action_quit(self) -> None:
         for task in self._tasks:
@@ -327,12 +325,9 @@ class AnimaTUI(App):
             self.query_one("#p-status").update(_render_status(self._p, self._bb))
             self.query_one("#p-activity").update(_render_activity(self._feed))
             self.query_one("#p-nearby").update(_render_nearby(self._p))
-            if self.query_one("#p-journal").display:
-                self.query_one("#p-journal").update(_render_journal(self._p))
-            if self.query_one("#p-inventory").display:
-                self.query_one("#p-inventory").update(_render_inventory(self._p))
-            if self.query_one("#p-skills").display:
-                self.query_one("#p-skills").update(_render_skills(self._p))
+            self.query_one("#p-journal").update(_render_journal(self._p))
+            self.query_one("#p-inventory").update(_render_inventory(self._p))
+            self.query_one("#p-skills").update(_render_skills(self._p))
             self.query_one("#p-qvalues").update(_render_qvalues(self._bb))
         except Exception:
             pass  # Never crash the TUI render loop
