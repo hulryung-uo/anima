@@ -78,12 +78,10 @@ class MakeBoards(Skill):
         cursor_id = ss.pending_target.get("cursor_id", 0)
         ss.pending_target = None
 
-        # Target the logs (object target = target_type 0)
+        # Target the logs in backpack (object target = target_type 0, serial only)
         await ctx.conn.send_packet(build_target_response(
             target_type=0, cursor_id=cursor_id,
             serial=log_item.serial,
-            x=ss.x, y=ss.y, z=ss.z,
-            graphic=log_item.graphic,
         ))
 
         # Wait for conversion
