@@ -1,20 +1,10 @@
 """Textual TUI dashboard for Anima.
 
 Architecture: Textual App owns the event loop. Game coroutines
-(recv_loop, brain_loop, inspect_self) are launched as asyncio.Tasks
-inside on_mount(), so everything runs in one event loop.
+are launched as asyncio.Tasks inside on_mount().
 
-Panels:
-  - Status:    HP/Mana/Stam bars, stats, position, goal
-  - Activity:  ActivityFeed events (brain decisions, skill actions, movement)
-  - Nearby:    Mobiles within 18 tiles
-  - Journal:   Recent speech/system messages
-  - Inventory: Backpack contents (toggle: i)
-  - Skills:    Character skills with lock state (toggle: s)
-  - Q-Values:  RL Q-table snapshot
-
-Key bindings:
-  j = toggle Journal | i = toggle Inventory | s = toggle Skills | q = quit
+Layout: CSS Grid with 3 columns x 3 rows.
+Key bindings: j=Journal, i=Inventory, s=Skills, q=Quit
 """
 
 from __future__ import annotations
@@ -26,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Coroutine
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
 from textual.widgets import Footer, Static
 
 if TYPE_CHECKING:
@@ -60,7 +49,6 @@ _SKILL_NAMES = {
 
 
 def _hp_bar(cur: int, mx: int, width: int = 10) -> Text:
-    """Render a colored HP/mana/stam bar as a Rich Text object."""
     ratio = cur / mx if mx else 1.0
     filled = int(ratio * width)
     color = "red" if ratio < 0.25 else "yellow" if ratio < 0.5 else "green"
@@ -72,7 +60,7 @@ def _hp_bar(cur: int, mx: int, width: int = 10) -> Text:
 
 
 # ---------------------------------------------------------------------------
-# Panel renderers — each returns a Rich Text object
+# Pure render functions → Rich Text
 # ---------------------------------------------------------------------------
 
 def _render_status(p: "Perception", bb: dict) -> Text:
@@ -86,17 +74,15 @@ def _render_status(p: "Perception", bb: dict) -> Text:
     t = Text()
     t.append(name, style="bold bright_white")
     t.append(f" — {title}\n\n")
-
     for label, style, cur, mx, stat_label, stat_val in [
-        ("HP  ", "bold red",    ss.hits, ss.hits_max, "STR", ss.strength),
-        ("Mana", "bold blue",   ss.mana, ss.mana_max, "DEX", ss.dexterity),
+        ("HP  ", "bold red", ss.hits, ss.hits_max, "STR", ss.strength),
+        ("Mana", "bold blue", ss.mana, ss.mana_max, "DEX", ss.dexterity),
         ("Stam", "bold yellow", ss.stam, ss.stam_max, "INT", ss.intelligence),
     ]:
         t.append(f"{label} ", style=style)
         t.append_text(_hp_bar(cur, mx))
         t.append(f"  {stat_label} ", style="bold")
         t.append(f"{stat_val}\n")
-
     t.append(f"\nPos ({ss.x}, {ss.y}, {ss.z})  ", style="grey70")
     t.append(f"Gold {ss.gold:,}  ", style="bright_yellow")
     t.append(f"Wt {ss.weight}/{ss.weight_max}\n", style="grey70")
@@ -106,7 +92,7 @@ def _render_status(p: "Perception", bb: dict) -> Text:
 
 
 def _render_activity(feed: "ActivityFeed") -> Text:
-    events = feed.recent(16)
+    events = feed.recent(20)
     t = Text()
     for ev in events:
         ts = datetime.fromtimestamp(ev.timestamp).strftime("%H:%M:%S")
@@ -209,7 +195,9 @@ def _render_qvalues(bb: dict) -> Text:
     qs: dict[str, tuple[float, int]] = bb.get("q_snapshot", {})
     t = Text()
     if qs:
-        for name, (q, v) in sorted(qs.items(), key=lambda x: x[1][0], reverse=True)[:8]:
+        for name, (q, v) in sorted(
+            qs.items(), key=lambda x: x[1][0], reverse=True
+        )[:8]:
             c = "bright_green" if q > 0 else "red" if q < 0 else "grey70"
             t.append(f"{name[:16]:<16} ")
             t.append(f"Q={q:.2f} ", style=c)
@@ -220,27 +208,52 @@ def _render_qvalues(bb: dict) -> Text:
 
 
 # ---------------------------------------------------------------------------
-# Textual App
+# Textual App — CSS Grid layout
 # ---------------------------------------------------------------------------
 
 class AnimaTUI(App):
     """Anima TUI dashboard. Owns the event loop."""
 
     TITLE = "Anima"
+
     CSS = """
-    #top-row { height: 12; }
-    #mid-row { height: 12; }
-    #bot-row { height: 12; }
-    .panel { border: round gray; padding: 0 1; }
-    #p-status { width: 2fr; }
-    #p-activity { width: 3fr; }
+    Screen {
+        layout: grid;
+        grid-size: 3 3;
+        grid-columns: 2fr 2fr 1fr;
+        grid-rows: 1fr 1fr 1;
+        grid-gutter: 0;
+    }
+    .panel {
+        border: round gray;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+    #p-status {
+        column-span: 1;
+    }
+    #p-activity {
+        column-span: 2;
+    }
+    #p-nearby {
+        column-span: 1;
+    }
+    #p-journal {
+        column-span: 1;
+    }
+    #p-qvalues {
+        column-span: 1;
+    }
+    Footer {
+        column-span: 3;
+    }
     """
 
     BINDINGS = [
-        Binding("j", "toggle_journal", "Journal", show=True),
-        Binding("i", "toggle_inventory", "Inventory", show=True),
-        Binding("s", "toggle_skills", "Skills", show=True),
-        Binding("q", "quit", "Quit", show=True),
+        Binding("j", "toggle_journal", "Journal"),
+        Binding("i", "toggle_inventory", "Inventory"),
+        Binding("s", "toggle_skills", "Skills"),
+        Binding("q", "quit", "Quit"),
     ]
 
     def __init__(
@@ -259,95 +272,85 @@ class AnimaTUI(App):
         self._bg_coros = background_tasks or []
         self._tasks: list[asyncio.Task] = []
 
-    # -- Layout --
-
     def compose(self) -> ComposeResult:
-        with Horizontal(id="top-row"):
-            yield Static("Loading...", id="p-status", classes="panel")
-            yield Static("Loading...", id="p-activity", classes="panel")
-        with Horizontal(id="mid-row"):
-            yield Static("Nearby", id="p-nearby", classes="panel")
-            yield Static("Journal", id="p-journal", classes="panel")
-            yield Static("Q-Values", id="p-qvalues", classes="panel")
-        with Horizontal(id="bot-row"):
-            yield Static("Inventory", id="p-inventory", classes="panel")
-            yield Static("Skills", id="p-skills", classes="panel")
+        yield Static("Loading...", id="p-status", classes="panel")
+        yield Static("Activity", id="p-activity", classes="panel")
+        yield Static("Nearby", id="p-nearby", classes="panel")
+        yield Static("Journal", id="p-journal", classes="panel")
+        yield Static("Q-Values", id="p-qvalues", classes="panel")
         yield Footer()
 
-    # -- Lifecycle --
-
     def on_mount(self) -> None:
-        self._log_error(f"on_mount called, {len(self._bg_coros)} background tasks")
-        # Launch game coroutines as background tasks in the same event loop
         for coro in self._bg_coros:
             self._tasks.append(asyncio.create_task(coro))
-        # Periodic UI refresh
         self.set_interval(self._rate, self._tick)
-        self._log_error("set_interval started")
+
+    def on_key(self, event) -> None:
+        key = event.character
+        if key == "j":
+            self.action_toggle_journal()
+        elif key == "i":
+            self.action_toggle_inventory()
+        elif key == "s":
+            self.action_toggle_skills()
 
     async def action_quit(self) -> None:
         for task in self._tasks:
             task.cancel()
         self.exit()
 
-    # -- Key actions (use on_key for reliable capture without focus) --
-
-    def on_key(self, event) -> None:
-        self._log_error(f"on_key: {event.character!r} key={event.key!r}")
-        key = event.character
-        if key == "j":
-            w = self.query_one("#p-journal")
-            w.display = not w.display
-            event.prevent_default()
-        elif key == "i":
-            w = self.query_one("#p-inventory")
-            w.display = not w.display
-            event.prevent_default()
-        elif key == "s":
-            w = self.query_one("#p-skills")
-            w.display = not w.display
-            event.prevent_default()
-
     def action_toggle_journal(self) -> None:
         w = self.query_one("#p-journal")
         w.display = not w.display
 
     def action_toggle_inventory(self) -> None:
-        w = self.query_one("#p-inventory")
-        w.display = not w.display
+        """Toggle inventory panel — replaces journal when shown."""
+        journal = self.query_one("#p-journal")
+        inv = self.query("#p-inventory")
+        if inv:
+            inv.first().remove()
+            journal.display = True
+        else:
+            journal.display = False
+            self.mount(
+                Static(_render_inventory(self._p), id="p-inventory", classes="panel"),
+                after=self.query_one("#p-nearby"),
+            )
 
     def action_toggle_skills(self) -> None:
-        w = self.query_one("#p-skills")
-        w.display = not w.display
-
-    # -- Periodic refresh --
-
-    _tick_count: int = 0
+        """Toggle skills panel — replaces qvalues when shown."""
+        qvals = self.query_one("#p-qvalues")
+        sk = self.query("#p-skills")
+        if sk:
+            sk.first().remove()
+            qvals.display = True
+        else:
+            qvals.display = False
+            self.mount(
+                Static(_render_skills(self._p), id="p-skills", classes="panel"),
+                after=self.query_one("#p-qvalues"),
+            )
 
     def _tick(self) -> None:
-        """Update all visible panels."""
-        self._tick_count += 1
         try:
             self.query_one("#p-status").update(_render_status(self._p, self._bb))
             self.query_one("#p-activity").update(_render_activity(self._feed))
             self.query_one("#p-nearby").update(_render_nearby(self._p))
-            self.query_one("#p-journal").update(_render_journal(self._p))
-            self.query_one("#p-inventory").update(_render_inventory(self._p))
-            self.query_one("#p-skills").update(_render_skills(self._p))
-            self.query_one("#p-qvalues").update(_render_qvalues(self._bb))
-            if self._tick_count <= 3:
-                self._log_error(f"tick #{self._tick_count}: "
-                                f"hp={self._p.self_state.hits}/{self._p.self_state.hits_max}, "
-                                f"skills={len(self._p.self_state.skills)}, "
-                                f"feed={self._feed.total_count}")
-        except Exception as e:
-            self._log_error(f"tick error: {type(e).__name__}: {e}")
 
-    def _log_error(self, msg: str) -> None:
-        """Write debug message to data/anima-tui.log."""
-        from pathlib import Path
-        p = Path("data/anima-tui.log")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a") as f:
-            from datetime import datetime as dt
-            f.write(f"{dt.now().isoformat()} {msg}\n")
+            journal = self.query("#p-journal")
+            if journal:
+                journal.first().update(_render_journal(self._p))
+
+            inv = self.query("#p-inventory")
+            if inv:
+                inv.first().update(_render_inventory(self._p))
+
+            qvals = self.query("#p-qvalues")
+            if qvals:
+                qvals.first().update(_render_qvalues(self._bb))
+
+            sk = self.query("#p-skills")
+            if sk:
+                sk.first().update(_render_skills(self._p))
+        except Exception:
+            pass
