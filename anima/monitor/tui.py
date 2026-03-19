@@ -225,7 +225,7 @@ class AnimaTUI(App):
     CSS = """
     #upper { height: 1fr; }
     #lower { height: 14; }
-    .panel { border: solid grey50; padding: 0 1; }
+    .panel { border: solid gray; padding: 0 1; }
     #status-panel { width: 2fr; min-width: 30; }
     #activity-panel { width: 3fr; min-width: 40; }
     #nearby-panel { width: 1fr; }
