@@ -371,7 +371,6 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         if cfg.monitor.tui_enabled:
             from anima.monitor.tui import AnimaTUI
 
-            # Textual owns the event loop; game tasks run inside it
             tui = AnimaTUI(
                 perception, feed, brain_ctx.blackboard,
                 cfg.monitor.refresh_rate,
