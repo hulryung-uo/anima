@@ -32,7 +32,11 @@ async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
             return True
 
         denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
-        path = find_path(ctx.map_reader, sx, sy, target_x, target_y, denied_tiles=denied)
+        sz = ctx.perception.self_state.z
+        path = find_path(
+            ctx.map_reader, sx, sy, target_x, target_y,
+            denied_tiles=denied, current_z=sz,
+        )
         if not path:
             return False
 
@@ -149,13 +153,16 @@ async def wander_action(ctx: BrainContext) -> Status:
     # Score each direction
     candidates: list[tuple[int, float]] = []
 
+    sz = ctx.perception.self_state.z
+
     for direction in range(8):
         dx, dy = DIRECTION_DELTAS[direction]
         nx, ny = sx + dx, sy + dy
 
         if ctx.map_reader is not None:
             tile = ctx.map_reader.get_tile(nx, ny)
-            if not tile.walkable:
+            can_walk, _ = tile.walkable_z(sz)
+            if not can_walk:
                 continue
 
         if ctx.walker.is_tile_denied(nx, ny):

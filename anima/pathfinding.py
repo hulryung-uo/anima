@@ -57,8 +57,14 @@ def find_path(
     ty: int,
     max_steps: int = 200,
     denied_tiles: set[tuple[int, int]] | None = None,
+    current_z: int | None = None,
 ) -> list[tuple[int, int]]:
     """A* pathfinding from (sx,sy) to (tx,ty).
+
+    Args:
+        current_z: If provided, enables Z-aware walkability checks.
+            Tiles that are not reachable from the current Z level
+            (step height > 16) will be treated as impassable.
 
     Returns a list of (x, y) waypoints excluding start, including target.
     Returns empty list if no path found within max_steps.
@@ -74,6 +80,11 @@ def find_path(
     came_from: dict[tuple[int, int], tuple[int, int]] = {}
     g_score: dict[tuple[int, int], float] = {(sx, sy): 0.0}
     closed: set[tuple[int, int]] = set()
+
+    # Track Z at each visited node for Z-aware mode
+    z_at: dict[tuple[int, int], int] = {}
+    if current_z is not None:
+        z_at[(sx, sy)] = current_z
 
     while open_set:
         _, _, cx, cy = heapq.heappop(open_set)
@@ -106,8 +117,17 @@ def find_path(
                 continue
 
             tile = map_reader.get_tile(nx, ny)
-            if not tile.walkable:
-                continue
+
+            if current_z is not None:
+                # Z-aware walkability
+                node_z = z_at.get((cx, cy), current_z)
+                can_walk, new_z = tile.walkable_z(node_z)
+                if not can_walk:
+                    continue
+            else:
+                if not tile.walkable:
+                    continue
+                new_z = 0  # unused
 
             # Diagonal moves cost sqrt(2), cardinal moves cost 1
             move_cost = SQRT2 if (dx != 0 and dy != 0) else 1.0
@@ -116,6 +136,8 @@ def find_path(
             if tentative_g < g_score.get((nx, ny), float("inf")):
                 came_from[(nx, ny)] = (cx, cy)
                 g_score[(nx, ny)] = tentative_g
+                if current_z is not None:
+                    z_at[(nx, ny)] = new_z
                 f = tentative_g + _octile_distance(nx, ny, tx, ty)
                 counter += 1
                 heapq.heappush(open_set, (f, counter, nx, ny))

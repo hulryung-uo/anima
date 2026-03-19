@@ -46,6 +46,7 @@ class StaticItem:
     hue: int
     flags: int = 0
     name: str = ""
+    height: int = 0  # from tiledata
 
     @property
     def impassable(self) -> bool:
@@ -54,6 +55,11 @@ class StaticItem:
     @property
     def surface(self) -> bool:
         return bool(self.flags & (FLAG_SURFACE | FLAG_BRIDGE))
+
+    @property
+    def top_z(self) -> int:
+        """Z coordinate of the top of this item."""
+        return self.z + self.height
 
 
 @dataclass(slots=True)
@@ -74,13 +80,61 @@ class TileInfo:
 
     @property
     def walkable(self) -> bool:
-        """Check if this tile can be walked on."""
+        """Check if this tile can be walked on (ignoring Z)."""
         if self.land.impassable:
             return False
         for s in self.statics:
             if s.impassable and not s.surface:
                 return False
         return True
+
+    def walkable_z(self, current_z: int) -> tuple[bool, int]:
+        """Z-aware walkability check following ClassicUO's algorithm.
+
+        Args:
+            current_z: The Z coordinate of the entity trying to walk here.
+
+        Returns:
+            (can_walk, new_z) — whether the tile is walkable from current_z,
+            and what Z the entity would be standing at after stepping.
+        """
+        max_step = 16  # DEFAULT_BLOCK_HEIGHT from ClassicUO
+
+        if self.land.impassable:
+            return False, current_z
+
+        # Collect possible standing surfaces: (surface_z, top_z, is_blocker)
+        # Land tile is always a potential surface
+        best_z = self.land.z
+        found_surface = True
+
+        for s in self.statics:
+            standing_z = s.z + (s.height // 2 if s.flags & FLAG_BRIDGE else s.height)
+            top_z = s.z + s.height
+
+            if s.impassable and not s.surface:
+                # Blocker — check if it blocks our path at our Z level
+                if s.z < current_z + max_step and top_z > current_z - max_step:
+                    # This impassable object is in our Z range
+                    if not s.surface:
+                        return False, current_z
+            elif s.surface:
+                # Potential standing surface — check if reachable
+                step_diff = abs(standing_z - current_z)
+                if step_diff <= max_step:
+                    # Prefer the surface closest to our current Z
+                    if abs(standing_z - current_z) < abs(best_z - current_z):
+                        best_z = standing_z
+                        found_surface = True
+
+        if not found_surface:
+            return False, current_z
+
+        # Final check: can we step from current_z to best_z?
+        if abs(best_z - current_z) > max_step:
+            return False, current_z
+
+        return True, best_z
 
 
 class MapReader:
@@ -145,6 +199,12 @@ class MapReader:
         assert self._item_data is not None
         entry = self._item_data.get(str(graphic))
         return entry["flags"] if entry else 0
+
+    def _get_item_height(self, graphic: int) -> int:
+        self._ensure_tiledata()
+        assert self._item_data is not None
+        entry = self._item_data.get(str(graphic))
+        return entry["height"] if entry else 0
 
     def _get_item_name(self, graphic: int) -> str:
         self._ensure_tiledata()
@@ -222,9 +282,10 @@ class MapReader:
 
             flags = self._get_item_flags(graphic)
             name = self._get_item_name(graphic)
+            height = self._get_item_height(graphic)
             items.append(StaticItem(
                 graphic=graphic, x=x_off, y=y_off, z=z,
-                hue=hue, flags=flags, name=name,
+                hue=hue, flags=flags, name=name, height=height,
             ))
 
         self._statics_cache[key] = items

@@ -384,7 +384,11 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     if not path:
         # Compute new path, avoiding denied tiles and dynamic obstacles
         denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
-        path = find_path(ctx.map_reader, sx, sy, tx, ty, max_steps=100, denied_tiles=denied)
+        sz = ctx.perception.self_state.z
+        path = find_path(
+            ctx.map_reader, sx, sy, tx, ty,
+            max_steps=100, denied_tiles=denied, current_z=sz,
+        )
         if not path:
             goal = ctx.blackboard.pop("current_goal", None)
             ctx.blackboard.pop("move_target", None)
