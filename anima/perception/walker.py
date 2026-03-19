@@ -46,6 +46,9 @@ class WalkerManager:
         # Pending step tile — set before sending walk, cleared on confirm/deny
         self._pending_step_tile: tuple[int, int] | None = None
 
+        # Set to True on deny — signals path cache should be invalidated
+        self._path_dirty: bool = False
+
     def reset(self) -> None:
         self.steps_count = 0
         self.walk_sequence = 0
@@ -97,8 +100,10 @@ class WalkerManager:
         self.steps_count = 0
         self.walking_failed = False
         self.consecutive_denials += 1
-        # Brief cooldown after deny to prevent rapid re-attempts
-        self.last_step_time = asyncio.get_event_loop().time() * 1000 + WALK_DELAY_MS
+        # Short cooldown — just enough for path recalculation
+        self.last_step_time = asyncio.get_event_loop().time() * 1000 + 200
+        # Invalidate path cache so next step recalculates with denied tile
+        self._path_dirty = True
         self.sync_position(x, y, z, direction)
         self._events.emit(
             GameEventType.WALK_DENIED,

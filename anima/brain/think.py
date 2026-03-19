@@ -395,6 +395,11 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     if ctx.map_reader is None:
         return await wander_action(ctx)
 
+    # Invalidate path cache if walker was denied
+    if ctx.walker._path_dirty:
+        _clear_path_cache(ctx)
+        ctx.walker._path_dirty = False
+
     # Try cached path first
     path = _get_cached_path(ctx, sx, sy, tx, ty)
 
