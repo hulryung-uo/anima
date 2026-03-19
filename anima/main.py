@@ -90,8 +90,9 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
 
     await asyncio.sleep(1.0)  # let initial packets settle
 
-    # Request full stats
+    # Request full stats and skills
     await conn.send_packet(build_status_request(4, serial))
+    await conn.send_packet(build_status_request(5, serial))
 
     # Double-click self to trigger paperdoll / equipment packets
     await conn.send_packet(build_double_click(serial))
@@ -199,11 +200,30 @@ async def brain_loop(brain: Brain) -> None:
     """Run the behavior tree brain at ~5Hz after initial settle time."""
     await asyncio.sleep(3.0)  # wait for world to load and fastwalk keys
 
+    # Apply stat locks immediately, skill locks after skills arrive
+    persona_type = brain.context.blackboard.get("persona_type", "")
+    if persona_type:
+        from anima.skills.skill_manager import apply_skill_locks
+
+        await apply_skill_locks(brain.context, persona_type)
+        brain.context.blackboard["_skill_locks_pending"] = True
+
     # Say hello on connect
-    await brain.context.conn.send_packet(build_unicode_speech("Hello from Anima!"))
-    logger.info("speech_sent", text="Hello from Anima!")
+    persona_name = persona.name if persona else "Anima"
+    await brain.context.conn.send_packet(build_unicode_speech(f"Hello from {persona_name}!"))
+    logger.info("speech_sent", text=f"Hello from {persona_name}!")
 
     while brain.context.conn.connected:
+        # Apply pending skill locks once skills arrive from server
+        if brain.context.blackboard.get("_skill_locks_pending"):
+            if brain.context.perception.self_state.skills:
+                from anima.skills.skill_manager import apply_skill_locks
+
+                pt = brain.context.blackboard.get("persona_type", "")
+                if pt:
+                    await apply_skill_locks(brain.context, pt)
+                brain.context.blackboard["_skill_locks_pending"] = False
+
         await brain.tick()
         await asyncio.sleep(0.2)  # 200ms tick
 
@@ -322,6 +342,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             memory_db=memory_db,
             blackboard={
                 "persona": persona,
+                "persona_type": cfg.character.persona,
                 "forum_client": forum_client,
                 "skill_registry": skill_registry,
                 "journal": journal,

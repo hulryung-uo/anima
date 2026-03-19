@@ -567,3 +567,39 @@ def build_sell_items(vendor_serial: int, items: list[tuple[int, int]]) -> bytes:
     data[1] = (length >> 8) & 0xFF
     data[2] = length & 0xFF
     return bytes(data)
+
+
+def build_skill_lock(skill_id: int, lock_state: int) -> bytes:
+    """Build SkillLock packet (0x3A, variable).
+
+    lock_state: 0=Up, 1=Down, 2=Locked
+    """
+    w = PacketWriter()
+    w.write_u8(0x3A)
+    w.write_u16(0)  # length placeholder
+    w.write_u16(skill_id)
+    w.write_u8(lock_state)
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
+
+
+def build_stat_lock(stat_index: int, lock_state: int) -> bytes:
+    """Build StatLock packet (0xBF subcommand 0x1A, variable).
+
+    stat_index: 0=STR, 1=DEX, 2=INT
+    lock_state: 0=Up, 1=Down, 2=Locked
+    """
+    w = PacketWriter()
+    w.write_u8(0xBF)
+    w.write_u16(0)  # length placeholder
+    w.write_u16(0x001A)  # subcommand: SetStatLock
+    w.write_u8(stat_index)
+    w.write_u8(lock_state)
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
