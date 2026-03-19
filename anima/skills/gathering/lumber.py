@@ -116,15 +116,28 @@ class ChopWood(Skill):
             if it.container == backpack and it.graphic in LOG_GRAPHICS
         )
 
-        # Double-click hatchet to activate
+        # Double-click hatchet to activate → server sends target cursor (0x6C)
+        ss.pending_target = None
         await ctx.conn.send_packet(build_double_click(hatchet.serial))
-        await asyncio.sleep(0.5)
+
+        # Wait for target cursor from server
+        for _ in range(20):  # up to 2 seconds
+            await asyncio.sleep(0.1)
+            if ss.pending_target is not None:
+                break
+
+        if ss.pending_target is None:
+            return SkillResult(success=False, reward=-0.5, message="No target cursor received")
+
+        cursor_id = ss.pending_target.get("cursor_id", 0)
+        ss.pending_target = None
 
         # Target the tree (static target = target_type 1)
         await ctx.conn.send_packet(build_target_response(
-            target_type=1, cursor_id=0,
+            target_type=1, cursor_id=cursor_id,
             x=tree_x, y=tree_y, z=tree_z, graphic=tree_graphic,
         ))
+        logger.debug("chop_target_sent", cursor_id=f"0x{cursor_id:08X}")
 
         # Wait for chopping animation and result
         await asyncio.sleep(3.0)
