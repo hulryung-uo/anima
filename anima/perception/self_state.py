@@ -97,6 +97,9 @@ class SelfState:
         # Active gumps from server, keyed by gump_id
         self.gumps: dict[int, GumpData] = {}
 
+        # Combat state
+        self.last_damage_taken_at: float = 0.0  # time.monotonic() of last hit
+
         # Vendor trading state (populated by 0x74 / 0x9E handlers)
         self.vendor_serial: int = 0
         self.vendor_buy_list: list[VendorBuyItem] = []

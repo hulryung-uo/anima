@@ -25,9 +25,15 @@ ATTACKABLE_NOTORIETY = {
     NotorietyFlag.MURDERER,
 }
 
+# Human body types (should not be attacked unless criminal/enemy/murderer)
+HUMAN_BODIES = {0x0190, 0x0191}  # male, female
+
 # How long to fight before giving up (seconds)
 COMBAT_TIMEOUT = 30.0
 COMBAT_TICK = 1.0
+
+# How recently we must have taken damage to fight back in defensive mode
+DEFENSIVE_WINDOW = 10.0
 
 
 class MeleeAttack(Skill):
@@ -40,6 +46,19 @@ class MeleeAttack(Skill):
     async def can_execute(self, ctx: BrainContext) -> bool:
         if ctx.perception.self_state.hp_percent < 20:
             return False  # Too low to fight
+
+        persona = ctx.blackboard.get("persona")
+        disposition = getattr(persona, "combat_disposition", "defensive")
+
+        if disposition == "pacifist":
+            return False  # Never initiates combat
+
+        if disposition == "defensive":
+            # Only fight back if recently took damage
+            elapsed = time.monotonic() - ctx.perception.self_state.last_damage_taken_at
+            if elapsed > DEFENSIVE_WINDOW:
+                return False
+
         return bool(_find_target(ctx))
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
@@ -120,14 +139,22 @@ class MeleeAttack(Skill):
 
 
 def _find_target(ctx: BrainContext):
-    """Find the nearest attackable mobile."""
+    """Find the nearest attackable mobile.
+
+    Human body types (players/NPCs) are only targeted if they are
+    CRIMINAL, ENEMY, or MURDERER — never for mere ATTACKABLE notoriety.
+    """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=10)
 
-    candidates = [
-        m for m in nearby
-        if m.notoriety in ATTACKABLE_NOTORIETY
-    ]
+    candidates = []
+    for m in nearby:
+        if m.notoriety not in ATTACKABLE_NOTORIETY:
+            continue
+        # Don't attack human bodies unless clearly hostile
+        if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
+            continue
+        candidates.append(m)
 
     if not candidates:
         return None

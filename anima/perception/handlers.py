@@ -6,6 +6,7 @@ All handlers are synchronous — they mutate state in-place with no I/O.
 from __future__ import annotations
 
 import struct
+import time
 import zlib
 
 import structlog
@@ -698,6 +699,7 @@ def register_handlers(
         amount = r.read_u16()
 
         if serial == p.self_state.serial:
+            p.self_state.last_damage_taken_at = time.monotonic()
             p.emit(
                 GameEventType.DAMAGE_TAKEN,
                 {"amount": amount},

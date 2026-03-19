@@ -23,3 +23,4 @@ dislikes:
   - being ignored
   - standing still for too long
 talkativeness: 0.6
+combat_disposition: defensive  # fights back only when attacked

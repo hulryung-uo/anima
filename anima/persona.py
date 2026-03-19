@@ -22,6 +22,9 @@ class Persona:
     interests: list[str] = field(default_factory=list)
     dislikes: list[str] = field(default_factory=list)
     talkativeness: float = 0.5  # 0.0 = silent, 1.0 = very chatty
+    # Combat disposition: aggressive (hunt targets), defensive (fight back only),
+    # pacifist (never initiate combat)
+    combat_disposition: str = "defensive"
 
     def build_system_prompt(self) -> str:
         """Generate the system prompt from this persona."""
@@ -73,6 +76,7 @@ def load_persona(path: str | Path) -> Persona:
         "interests",
         "dislikes",
         "talkativeness",
+        "combat_disposition",
     ):
         if key in raw:
             setattr(p, key, raw[key])
