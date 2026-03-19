@@ -29,16 +29,21 @@ TREE_GRAPHICS = {
 LOG_GRAPHICS = {0x1BDD, 0x1BE0}
 LUMBERJACK_SKILL_ID = 44
 SEARCH_RADIUS = 8  # tiles to search for trees
+DEPLETED_COOLDOWN = 1200.0  # seconds before retrying a depleted tree (~20 min)
 
 
 def _find_nearby_tree(ctx: BrainContext) -> tuple[int, int, int, int] | None:
-    """Find a tree within SEARCH_RADIUS tiles.
+    """Find a tree within SEARCH_RADIUS tiles, skipping depleted ones.
 
     Checks BOTH map statics and world items.
     Returns (x, y, z, graphic) or None.
     """
     ss = ctx.perception.self_state
     sx, sy = ss.x, ss.y
+    depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+        "depleted_trees", {}
+    )
+    now = time.time()
 
     # Check map statics first (most trees are static)
     if ctx.map_reader is not None:
@@ -50,6 +55,10 @@ def _find_nearby_tree(ctx: BrainContext) -> tuple[int, int, int, int] | None:
                 if dist >= best_dist:
                     continue
                 tx, ty = sx + dx, sy + dy
+                # Skip depleted trees
+                dep_time = depleted.get((tx, ty))
+                if dep_time and now - dep_time < DEPLETED_COOLDOWN:
+                    continue
                 tile = ctx.map_reader.get_tile(tx, ty)
                 for s in tile.statics:
                     if s.graphic in TREE_GRAPHICS:
@@ -64,6 +73,9 @@ def _find_nearby_tree(ctx: BrainContext) -> tuple[int, int, int, int] | None:
         if it.container != 0:
             continue
         if it.graphic in TREE_GRAPHICS:
+            dep_time = depleted.get((it.x, it.y))
+            if dep_time and now - dep_time < DEPLETED_COOLDOWN:
+                continue
             dist = max(abs(it.x - sx), abs(it.y - sy))
             if dist <= SEARCH_RADIUS:
                 return (it.x, it.y, it.z, it.graphic)
@@ -152,10 +164,25 @@ class ChopWood(Skill):
 
         # Also check journal for success/fail messages
         journal_success = ctx.perception.social.search("log")
-        journal_fail = ctx.perception.social.search("not enough wood")
+        journal_depleted = ctx.perception.social.search("not enough wood")
         now = time.time()
         recent_log_msg = [e for e in journal_success if now - e.timestamp < 6.0]
-        _ = [e for e in journal_fail if now - e.timestamp < 6.0]  # checked implicitly
+        recent_depleted = [e for e in journal_depleted if now - e.timestamp < 6.0]
+
+        # Mark tree as depleted if server says no wood
+        if recent_depleted:
+            depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+                "depleted_trees", {}
+            )
+            depleted[(tree_x, tree_y)] = now
+            logger.info(
+                "chop_tree_depleted",
+                pos=f"({tree_x},{tree_y})",
+            )
+            if feed:
+                feed.publish(
+                    "skill", f"Tree ({tree_x},{tree_y}) depleted", importance=1,
+                )
 
         if logs_gained > 0 or recent_log_msg:
             reward = 5.0 + logs_gained
