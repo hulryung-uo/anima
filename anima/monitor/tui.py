@@ -276,12 +276,13 @@ class AnimaTUI(App):
     # -- Lifecycle --
 
     def on_mount(self) -> None:
+        self._log_error(f"on_mount called, {len(self._bg_coros)} background tasks")
         # Launch game coroutines as background tasks in the same event loop
         for coro in self._bg_coros:
             self._tasks.append(asyncio.create_task(coro))
         # Periodic UI refresh
         self.set_interval(self._rate, self._tick)
-        # All panels visible by default
+        self._log_error("set_interval started")
 
     async def action_quit(self) -> None:
         for task in self._tasks:
@@ -291,6 +292,7 @@ class AnimaTUI(App):
     # -- Key actions (use on_key for reliable capture without focus) --
 
     def on_key(self, event) -> None:
+        self._log_error(f"on_key: {event.character!r} key={event.key!r}")
         key = event.character
         if key == "j":
             w = self.query_one("#p-journal")
@@ -329,5 +331,14 @@ class AnimaTUI(App):
             self.query_one("#p-inventory").update(_render_inventory(self._p))
             self.query_one("#p-skills").update(_render_skills(self._p))
             self.query_one("#p-qvalues").update(_render_qvalues(self._bb))
-        except Exception:
-            pass  # Never crash the TUI render loop
+        except Exception as e:
+            self._log_error(f"tick error: {e}")
+
+    def _log_error(self, msg: str) -> None:
+        """Write debug message to data/anima-tui.log."""
+        from pathlib import Path
+        p = Path("data/anima-tui.log")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            from datetime import datetime as dt
+            f.write(f"{dt.now().isoformat()} {msg}\n")
