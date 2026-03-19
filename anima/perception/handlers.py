@@ -425,16 +425,31 @@ def register_handlers(
 
             p.emit(GameEventType.SKILL_CHANGED, {"skill_id": skill_id, "value": skill.value})
 
-            # Log skill gains/losses to journal
+            # Log skill gains/losses to journal and activity feed
             diff = skill.value - old_value
             if abs(diff) >= 0.1 and is_single:
-                direction = "increased" if diff > 0 else "decreased"
-                msg = f"Your skill has {direction}: {skill.value:.1f} ({diff:+.1f})"
+                _skill_names = {
+                    0: "Alchemy", 1: "Anatomy", 4: "Arms Lore", 5: "Parrying",
+                    7: "Blacksmith", 8: "Bowcraft", 9: "Peacemaking",
+                    11: "Carpentry", 13: "Cooking", 17: "Healing", 18: "Fishing",
+                    25: "Magery", 26: "Resist Spells", 27: "Tactics",
+                    29: "Musicianship", 31: "Archery", 34: "Tailoring",
+                    37: "Tinkering", 40: "Swordsmanship", 41: "Mace Fighting",
+                    42: "Fencing", 43: "Wrestling", 44: "Lumberjacking",
+                    45: "Mining", 46: "Meditation",
+                }
+                sname = _skill_names.get(skill_id, f"Skill {skill_id}")
+                arrow = "\u2191" if diff > 0 else "\u2193"
+                msg = f"{arrow} {sname} {old_value:.1f} \u2192 {skill.value:.1f}"
                 p.social.add_speech(0xFFFFFFFF, "System", msg, 0)
                 logger.info(
-                    "skill_gain", skill_id=skill_id,
+                    "skill_gain", skill=sname,
                     old=old_value, new=skill.value, diff=f"{diff:+.1f}",
                 )
+                p.emit(GameEventType.SKILL_CHANGED, {
+                    "skill_id": skill_id, "value": skill.value,
+                    "name": sname, "diff": diff,
+                })
 
             if is_single:
                 break  # single skill update — only one entry

@@ -28,6 +28,7 @@ from anima.memory.journal import ActivityJournal
 from anima.monitor.feed import ActivityFeed
 from anima.perception import Perception
 from anima.perception.enums import Layer
+from anima.perception.event_stream import GameEventType
 from anima.perception.handlers import register_handlers
 from anima.perception.walker import WalkerManager
 from anima.persona import load_persona_by_name
@@ -357,6 +358,21 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             },
         )
         brain = Brain(brain_ctx)
+
+        # Bridge perception events → activity feed
+        def _on_perception_event(event):
+            if event.type == GameEventType.SKILL_CHANGED and "name" in event.data:
+                diff = event.data.get("diff", 0)
+                if abs(diff) >= 0.1:
+                    name = event.data["name"]
+                    val = event.data["value"]
+                    arrow = "\u2191" if diff > 0 else "\u2193"
+                    feed.publish(
+                        "skill",
+                        f"{arrow} {name} → {val:.1f} ({diff:+.1f})",
+                        importance=2,
+                    )
+        perception.events.subscribe_sync(_on_perception_event)
 
         feed.publish(
             "system",

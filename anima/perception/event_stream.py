@@ -48,11 +48,21 @@ class EventStream:
         self._events: deque[GameEvent] = deque(maxlen=MAX_EVENTS)
         self._read_index: int = 0
         self._write_index: int = 0
+        self._sync_listeners: list = []
+
+    def subscribe_sync(self, callback) -> None:
+        """Register a synchronous callback invoked on every emit."""
+        self._sync_listeners.append(callback)
 
     def emit(self, event_type: GameEventType, data: dict | None = None) -> None:
         event = GameEvent(type=event_type, data=data or {})
         self._events.append(event)
         self._write_index += 1
+        for cb in self._sync_listeners:
+            try:
+                cb(event)
+            except Exception:
+                pass
 
     def poll(self) -> list[GameEvent]:
         """Return all unread events and advance the read cursor."""
