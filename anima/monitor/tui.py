@@ -321,18 +321,27 @@ class AnimaTUI(App):
 
     # -- Periodic refresh --
 
+    _tick_count: int = 0
+
     def _tick(self) -> None:
         """Update all visible panels."""
+        self._tick_count += 1
         try:
-            self.query_one("#p-status").update(_render_status(self._p, self._bb))
+            st = _render_status(self._p, self._bb)
+            self.query_one("#p-status").update(st)
             self.query_one("#p-activity").update(_render_activity(self._feed))
             self.query_one("#p-nearby").update(_render_nearby(self._p))
             self.query_one("#p-journal").update(_render_journal(self._p))
             self.query_one("#p-inventory").update(_render_inventory(self._p))
             self.query_one("#p-skills").update(_render_skills(self._p))
             self.query_one("#p-qvalues").update(_render_qvalues(self._bb))
+            if self._tick_count <= 3:
+                self._log_error(f"tick #{self._tick_count}: status len={len(st)}, "
+                                f"hp={self._p.self_state.hits}/{self._p.self_state.hits_max}, "
+                                f"skills={len(self._p.self_state.skills)}, "
+                                f"feed={self._feed.total_count}")
         except Exception as e:
-            self._log_error(f"tick error: {e}")
+            self._log_error(f"tick error: {type(e).__name__}: {e}")
 
     def _log_error(self, msg: str) -> None:
         """Write debug message to data/anima-tui.log."""
