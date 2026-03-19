@@ -228,10 +228,10 @@ class AnimaTUI(App):
 
     TITLE = "Anima"
     CSS = """
-    Screen { layout: vertical; }
-    #top-row { height: 1fr; min-height: 12; }
-    #bot-row { height: 1fr; min-height: 12; }
-    .panel { border: round gray; padding: 0 1; height: 100%; overflow-y: auto; }
+    #top-row { height: 12; }
+    #mid-row { height: 12; }
+    #bot-row { height: 12; }
+    .panel { border: round gray; padding: 0 1; }
     #p-status { width: 2fr; }
     #p-activity { width: 3fr; }
     """
@@ -265,12 +265,13 @@ class AnimaTUI(App):
         with Horizontal(id="top-row"):
             yield Static("Loading...", id="p-status", classes="panel")
             yield Static("Loading...", id="p-activity", classes="panel")
-        with Horizontal(id="bot-row"):
+        with Horizontal(id="mid-row"):
             yield Static("Nearby", id="p-nearby", classes="panel")
             yield Static("Journal", id="p-journal", classes="panel")
+            yield Static("Q-Values", id="p-qvalues", classes="panel")
+        with Horizontal(id="bot-row"):
             yield Static("Inventory", id="p-inventory", classes="panel")
             yield Static("Skills", id="p-skills", classes="panel")
-            yield Static("Q-Values", id="p-qvalues", classes="panel")
         yield Footer()
 
     # -- Lifecycle --
