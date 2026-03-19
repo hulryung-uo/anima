@@ -362,9 +362,9 @@ class AnimaTUI:
                         layout["status"].update(self._build_status_panel())
                         layout["activity"].update(self._build_activity_panel())
                         layout["nearby"].update(self._build_nearby_panel())
-                        if self._show_journal and "journal" in layout:
+                        if self._show_journal:
                             layout["journal"].update(self._build_journal_panel())
-                        if self._show_inventory and "inventory" in layout:
+                        if self._show_inventory:
                             layout["inventory"].update(self._build_inventory_panel())
                         layout["skills"].update(self._build_skills_panel())
                     except Exception:
