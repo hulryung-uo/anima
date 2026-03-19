@@ -30,6 +30,10 @@ class MakeBoards(Skill):
     description = "Use hatchet on logs to make boards."
 
     async def can_execute(self, ctx: BrainContext) -> bool:
+        ss = ctx.perception.self_state
+        # Boards are lighter than logs, but still check weight
+        if ss.weight_max > 0 and ss.weight >= ss.weight_max - 10:
+            return False
         if not _find_hatchet(ctx):
             return False
         return _count_logs(ctx) >= 1

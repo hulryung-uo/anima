@@ -79,6 +79,10 @@ class CraftCarpentry(Skill):
         ss = ctx.perception.self_state
         world = ctx.perception.world
 
+        # Don't craft if near weight limit
+        if ss.weight_max > 0 and ss.weight >= ss.weight_max - 10:
+            return False
+
         backpack = ss.equipment.get(0x15)
         if not backpack:
             return False

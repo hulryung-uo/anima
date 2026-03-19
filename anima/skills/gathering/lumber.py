@@ -92,6 +92,10 @@ class ChopWood(Skill):
     required_skill = (LUMBERJACK_SKILL_ID, 0.0)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
+        ss = ctx.perception.self_state
+        # Don't chop if near weight limit (logs are heavy)
+        if ss.weight_max > 0 and ss.weight >= ss.weight_max - 20:
+            return False
         if not _find_hatchet(ctx):
             return False
         return _find_nearby_tree(ctx) is not None
