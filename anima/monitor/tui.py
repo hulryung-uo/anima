@@ -397,23 +397,31 @@ class AnimaTUI:
         return False
 
     async def _start_key_reader(self) -> None:
-        """Read keys from stdin in a background thread."""
+        """Read keys from stdin in a background thread using raw os.read."""
+        import os
         import sys
         import tty
         import termios
 
         fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
+        old_settings = termios.tcgetattr(fd)
         tty.setcbreak(fd)
 
         loop = asyncio.get_event_loop()
         try:
             while True:
-                key = await loop.run_in_executor(None, sys.stdin.read, 1)
-                if key and self._handle_key(key):
-                    self._layout_dirty = True
+                data = await loop.run_in_executor(None, os.read, fd, 1)
+                if data:
+                    key = data.decode("ascii", errors="ignore")
+                    if key and self._handle_key(key):
+                        self._layout_dirty = True
+        except (OSError, asyncio.CancelledError):
+            pass
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except (OSError, termios.error):
+                pass
 
     async def run(self) -> None:
         console = Console()
