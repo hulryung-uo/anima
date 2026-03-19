@@ -38,6 +38,7 @@ from anima.skills.crafting.carpentry import CraftCarpentry
 from anima.skills.crafting.smelt import SmeltOre
 from anima.skills.crafting.tinker import CraftTinker
 from anima.skills.gathering.lumber import ChopWood
+from anima.skills.gathering.make_boards import MakeBoards
 from anima.skills.gathering.mine import MineOre
 from anima.skills.trade.vendor import BuyFromNpc, SellToNpc
 
@@ -322,6 +323,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         skill_registry.register(MeleeAttack())
         skill_registry.register(MineOre())
         skill_registry.register(ChopWood())
+        skill_registry.register(MakeBoards())
         skill_registry.register(SmeltOre())
         skill_registry.register(CraftTinker())
         skill_registry.register(CraftCarpentry())
