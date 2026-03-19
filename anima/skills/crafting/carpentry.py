@@ -111,10 +111,10 @@ class CraftCarpentry(Skill):
         if not tool:
             return SkillResult(success=False, reward=-1.0, message="No carpentry tool")
 
-        # Count boards available
+        # Count boards + logs available (server auto-converts logs to boards)
         boards_available = sum(
             it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic == BOARD_GRAPHIC
+            if it.container == backpack and it.graphic in MATERIAL_GRAPHICS
         )
 
         # Pick what to craft based on skill and available boards
@@ -186,7 +186,7 @@ class CraftCarpentry(Skill):
         # Count materials before
         mats_before = sum(
             it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic == BOARD_GRAPHIC
+            if it.container == backpack and it.graphic in MATERIAL_GRAPHICS
         )
 
         prev_serial = gump.serial
@@ -195,24 +195,36 @@ class CraftCarpentry(Skill):
             build_gump_response(gump.serial, gump.gump_id, create_btn_id)
         )
 
-        # Step 4: Wait for crafting result
-        await asyncio.sleep(CRAFT_WAIT)
+        # Step 4: Wait for server result message
+        result_msg = ""
+        journal_mark = time.time()
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            for entry in ctx.perception.social.recent(count=5):
+                if entry.timestamp < journal_mark:
+                    continue
+                text_lower = entry.text.lower()
+                if "you create" in text_lower:
+                    result_msg = "success"
+                    break
+                if "failed to create" in text_lower:
+                    result_msg = "fail"
+                    break
+                if "worn out your tool" in text_lower:
+                    result_msg = "tool_broke"
+                    break
+            if result_msg:
+                break
 
         elapsed = (time.monotonic() - start) * 1000
 
-        # Count materials after
+        # Count materials consumed
         mats_after = sum(
             it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic == BOARD_GRAPHIC
+            if it.container == backpack and it.graphic in MATERIAL_GRAPHICS
         )
         consumed = mats_before - mats_after
-
-        # Check journal for result messages
-        success_msgs = ctx.perception.social.search("You create")
-        fail_msgs = ctx.perception.social.search("You fail")
-        now = time.time()
-        recent_success = [e for e in success_msgs if now - e.timestamp < 5.0]
-        recent_fail = [e for e in fail_msgs if now - e.timestamp < 5.0]
 
         # Close remaining gump
         for g in list(ss.gumps.values()):
@@ -221,8 +233,8 @@ class CraftCarpentry(Skill):
                 build_gump_response(g.serial, g.gump_id, 0)
             )
 
-        if recent_success or consumed > 0:
-            msg = f"Crafted {target_name}" + (f" (used {consumed} boards)" if consumed else "")
+        if result_msg == "success" or consumed > 0:
+            msg = f"Crafted {target_name} (used {consumed} wood)"
             logger.info("carpentry_success", item=target_name, consumed=consumed)
             if feed:
                 feed.publish("skill", msg, importance=2)
@@ -231,22 +243,33 @@ class CraftCarpentry(Skill):
                 skill_gains=[(CARPENTRY_SKILL_ID, 0.1)],
                 duration_ms=elapsed,
             )
-        elif recent_fail:
-            logger.info("carpentry_fail", item=target_name)
+        elif result_msg == "fail":
+            logger.info("carpentry_fail", item=target_name, consumed=consumed)
+            if feed:
+                feed.publish("skill", f"Failed {target_name}", importance=1)
             return SkillResult(
-                success=False, reward=-1.0,
+                success=False, reward=-0.5,
                 message=f"Failed to craft {target_name}",
                 skill_gains=[(CARPENTRY_SKILL_ID, 0.05)],
                 duration_ms=elapsed,
             )
+        elif result_msg == "tool_broke":
+            logger.warning("carpentry_tool_broke", item=target_name)
+            if feed:
+                feed.publish("skill", "Saw broke!", importance=3)
+            return SkillResult(
+                success=False, reward=-2.0,
+                message="Carpentry tool broke",
+                duration_ms=elapsed,
+            )
         else:
             logger.warning(
-                "carpentry_unknown", item=target_name,
+                "carpentry_no_response", item=target_name,
                 consumed=consumed, elapsed_ms=round(elapsed),
             )
             return SkillResult(
                 success=False, reward=-0.5,
-                message=f"Crafting result unknown for {target_name}",
+                message=f"No server response for {target_name}",
                 duration_ms=elapsed,
             )
 
