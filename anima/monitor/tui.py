@@ -359,3 +359,10 @@ class AnimaTUI:
                     await asyncio.sleep(self._refresh)
         finally:
             key_reader.stop()
+
+        # q pressed — cancel all other tasks and exit
+        for task in asyncio.all_tasks():
+            if task is not asyncio.current_task():
+                task.cancel()
+        # Force exit cleanly
+        os._exit(0)
