@@ -323,6 +323,27 @@ def _get_cached_path(
 
 
 # ------------------------------------------------------------------
+# Dynamic obstacle detection
+# ------------------------------------------------------------------
+
+def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
+    """Collect (x, y) of ground-level world items that may block movement.
+
+    Many UO items (furniture, chairs, etc.) lack the IMPASSABLE flag in tiledata
+    but still block movement server-side. We treat all non-container ground items
+    as potential obstacles, excluding surfaces/bridges you can walk on.
+    """
+    blocked: set[tuple[int, int]] = set()
+    for it in ctx.perception.world.items.values():
+        if it.container != 0:
+            continue  # skip contained items (in bags, etc.)
+        if it.serial & 0x40000000 == 0:
+            continue  # not an item serial (items have high bit set)
+        blocked.add((it.x, it.y))
+    return blocked
+
+
+# ------------------------------------------------------------------
 # Door detection
 # ------------------------------------------------------------------
 
@@ -361,8 +382,8 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     path = _get_cached_path(ctx, sx, sy, tx, ty)
 
     if not path:
-        # Compute new path, avoiding denied tiles
-        denied = set(ctx.walker.denied_tiles.keys())
+        # Compute new path, avoiding denied tiles and dynamic obstacles
+        denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
         path = find_path(ctx.map_reader, sx, sy, tx, ty, max_steps=100, denied_tiles=denied)
         if not path:
             goal = ctx.blackboard.pop("current_goal", None)

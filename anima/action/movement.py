@@ -31,7 +31,7 @@ async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
         if sx == target_x and sy == target_y:
             return True
 
-        denied = set(ctx.walker.denied_tiles.keys())
+        denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
         path = find_path(ctx.map_reader, sx, sy, target_x, target_y, denied_tiles=denied)
         if not path:
             return False
@@ -143,6 +143,9 @@ async def wander_action(ctx: BrainContext) -> Status:
         for tile, _ in sorted_tiles[: len(visited) - 200]:
             del visited[tile]
 
+    # Collect dynamic obstacles once
+    dynamic_blocked = _impassable_world_items(ctx)
+
     # Score each direction
     candidates: list[tuple[int, float]] = []
 
@@ -156,6 +159,9 @@ async def wander_action(ctx: BrainContext) -> Status:
                 continue
 
         if ctx.walker.is_tile_denied(nx, ny):
+            continue
+
+        if (nx, ny) in dynamic_blocked:
             continue
 
         score = 1.0
@@ -230,3 +236,15 @@ async def wander_action(ctx: BrainContext) -> Status:
     )
 
     return Status.SUCCESS
+
+
+def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
+    """Collect (x, y) of ground-level world items that may block movement."""
+    blocked: set[tuple[int, int]] = set()
+    for it in ctx.perception.world.items.values():
+        if it.container != 0:
+            continue
+        if it.serial & 0x40000000 == 0:
+            continue
+        blocked.add((it.x, it.y))
+    return blocked
