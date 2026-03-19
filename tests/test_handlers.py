@@ -373,3 +373,131 @@ def test_dispatch_known_returns_true():
     buf.write_u8(0)
     buf.write_u8(0)
     assert h.dispatch(0x22, buf.to_bytes()) is True
+
+
+# ---------------------------------------------------------------------------
+# SkillUpdate (0x3A)
+# ---------------------------------------------------------------------------
+
+
+def _build_skill_packet(list_type: int, skills: list[tuple[int, int, int, int, int]]) -> bytes:
+    """Build a 0x3A skill update packet.
+
+    skills: list of (skill_id, value, base, lock, cap) — values in tenths.
+    """
+    buf = PacketWriter()
+    buf.write_u8(0x3A)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u8(list_type)
+
+    has_cap = list_type in (0x02, 0x03, 0xDF, 0xFF)
+
+    for sid, val, base, lock, cap in skills:
+        buf.write_u16(sid)
+        buf.write_u16(val)
+        buf.write_u16(base)
+        buf.write_u8(lock)
+        if has_cap:
+            buf.write_u16(cap)
+
+    # Terminator for full lists
+    if list_type in (0x00, 0x01, 0x02, 0x03):
+        buf.write_u16(0)  # skill_id=0 terminates
+
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_skill_full_list_type_0x00():
+    """Full skill list (no caps), skill IDs are 1-based."""
+    h, p, w = _make_stack()
+
+    # Server sends 1-based IDs: 1=Alchemy(0), 41=Swordsmanship(40)
+    packet = _build_skill_packet(0x00, [
+        (1, 500, 500, 0, 0),    # Alchemy (id=0 after adjust), 50.0
+        (41, 300, 300, 2, 0),   # Swordsmanship (id=40 after adjust), 30.0
+    ])
+    h.dispatch(0x3A, packet)
+
+    assert 0 in p.self_state.skills  # Alchemy
+    assert p.self_state.skills[0].value == 50.0
+    assert p.self_state.skills[0].lock.value == 0  # UP
+
+    assert 40 in p.self_state.skills  # Swordsmanship
+    assert p.self_state.skills[40].value == 30.0
+    assert p.self_state.skills[40].lock.value == 2  # LOCKED
+
+
+def test_skill_full_list_with_caps_type_0x02():
+    """Full skill list WITH caps, skill IDs are 1-based."""
+    h, p, w = _make_stack()
+
+    packet = _build_skill_packet(0x02, [
+        (46, 750, 750, 0, 1000),  # Mining (id=45 after adjust), 75.0, cap=100.0
+    ])
+    h.dispatch(0x3A, packet)
+
+    assert 45 in p.self_state.skills  # Mining
+    assert p.self_state.skills[45].value == 75.0
+    assert p.self_state.skills[45].cap == 100.0
+
+
+def test_skill_single_update_type_0xFF():
+    """Single skill update (with cap), skill ID is 0-based (no adjustment)."""
+    h, p, w = _make_stack()
+
+    packet = _build_skill_packet(0xFF, [
+        (25, 800, 800, 2, 1000),  # Magery, 80.0, cap=100.0
+    ])
+    h.dispatch(0x3A, packet)
+
+    assert 25 in p.self_state.skills  # Magery (no ID adjustment for 0xFF)
+    assert p.self_state.skills[25].value == 80.0
+    assert p.self_state.skills[25].cap == 100.0
+    assert p.self_state.skills[25].lock.value == 2  # LOCKED
+
+
+def test_skill_single_update_type_0xDF():
+    """Single skill update (with cap), type 0xDF."""
+    h, p, w = _make_stack()
+
+    packet = _build_skill_packet(0xDF, [
+        (7, 600, 600, 1, 1000),  # Blacksmith, 60.0
+    ])
+    h.dispatch(0x3A, packet)
+
+    assert 7 in p.self_state.skills
+    assert p.self_state.skills[7].value == 60.0
+    assert p.self_state.skills[7].lock.value == 1  # DOWN
+
+
+def test_skill_cap_defaults_to_100():
+    """Full list without caps (type 0x00) should default cap to 100.0."""
+    h, p, w = _make_stack()
+
+    packet = _build_skill_packet(0x00, [
+        (1, 100, 100, 0, 0),  # Alchemy (id=0 after adjust)
+    ])
+    h.dispatch(0x3A, packet)
+
+    assert p.self_state.skills[0].cap == 100.0  # default
+
+
+def test_skill_type_0xFE_ignored():
+    """Skill name list (0xFE) should be ignored without error."""
+    h, p, w = _make_stack()
+
+    buf = PacketWriter()
+    buf.write_u8(0x3A)
+    buf.write_u16(0)
+    buf.write_u8(0xFE)
+    buf.write_u16(5)  # count
+    # Some garbage data
+    buf.write_bytes(b"SomeSkillName\x00")
+
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+
+    h.dispatch(0x3A, bytes(data))
+    assert len(p.self_state.skills) == 0  # nothing parsed

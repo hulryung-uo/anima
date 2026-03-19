@@ -365,19 +365,33 @@ def register_handlers(
     handler.register(0xA3, handle_stam_update)
 
     def handle_skill_update(packet_id: int, data: bytes) -> None:
-        """0x3A SkillUpdate — skill list or single skill change."""
+        """0x3A SkillUpdate — skill list or single skill change.
+
+        list_type values (per ClassicUO PacketHandlers.cs):
+          0x00 = Full list (no caps), terminated by skill_id=0
+          0x01 = Full list variant (no caps)
+          0x02 = Full list WITH caps, terminated by skill_id=0
+          0x03 = Full list variant WITH caps
+          0xDF = Single skill update (with cap)
+          0xFF = Single skill update (with cap)
+          0xFE = Skill name list (ignored)
+        """
         r = PacketReader(data[3:])  # variable: skip id + length
-        list_type = r.read_u8()  # 0x00 = full, 0x02 = single, 0xFF = full + caps
+        list_type = r.read_u8()
+
+        if list_type == 0xFE:
+            return  # skill name list metadata — not needed
+
+        is_single = list_type in (0xDF, 0xFF)
+        has_cap = list_type in (0x02, 0x03, 0xDF, 0xFF)
+        # For full lists (0x00, 0x02), ClassicUO decrements skill_id by 1
+        adjust_id = list_type in (0x00, 0x01, 0x02, 0x03)
+
         while r.remaining >= 2:
-            if list_type in (0x00, 0xFF):
-                skill_id = r.read_u16()
-                if skill_id == 0 and r.remaining < 5:
-                    break
-            elif list_type == 0x02:
-                skill_id = r.read_u16()
-            elif list_type == 0xDF:
-                skill_id = r.read_u16()
-            else:
+            skill_id = r.read_u16()
+
+            # Full lists are terminated by skill_id=0
+            if not is_single and skill_id == 0:
                 break
 
             if r.remaining < 5:
@@ -386,9 +400,16 @@ def register_handlers(
             value = r.read_u16()
             base = r.read_u16()
             lock = r.read_u8()
-            cap = 0
-            if list_type in (0xFF, 0xDF, 0x02) and r.remaining >= 2:
+            cap = 1000  # default 100.0
+            if has_cap and r.remaining >= 2:
                 cap = r.read_u16()
+
+            # Adjust skill ID for full list types (server sends 1-based)
+            if adjust_id:
+                skill_id -= 1
+
+            if skill_id < 0:
+                continue
 
             skill = p.self_state.skills.get(skill_id)
             if skill is None:
@@ -402,8 +423,8 @@ def register_handlers(
 
             p.emit(GameEventType.SKILL_CHANGED, {"skill_id": skill_id, "value": skill.value})
 
-            if list_type == 0x02:
-                break  # single skill update
+            if is_single:
+                break  # single skill update — only one entry
 
     handler.register(0x3A, handle_skill_update)
 
