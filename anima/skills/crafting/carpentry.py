@@ -126,6 +126,12 @@ class CraftCarpentry(Skill):
             if skill_val >= min_skill and boards_available >= boards:
                 target = (name, grp_idx, item_idx, boards)
         if not target:
+            logger.info(
+                "carpentry_skip",
+                boards=boards_available,
+                skill=skill_val,
+                has_tool=tool is not None,
+            )
             return SkillResult(
                 success=False, reward=-0.5,
                 message=f"Not enough boards ({boards_available}) or skill ({skill_val:.0f})",
