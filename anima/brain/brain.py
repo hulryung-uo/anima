@@ -86,7 +86,6 @@ async def _skill_action(ctx: BrainContext) -> Status:
     consecutive_fails = ctx.blackboard.get("skill_consecutive_fails", 0)
     if consecutive_fails >= 5:
         ctx.blackboard["skill_consecutive_fails"] = 0
-        # Force a think cycle by clearing the last_think_time
         ctx.blackboard["last_think_time"] = 0.0
         ctx.blackboard["skill_problem"] = (
             f"Last skill failed {consecutive_fails} times in a row. "
@@ -96,6 +95,17 @@ async def _skill_action(ctx: BrainContext) -> Status:
         feed = ctx.blackboard.get("activity_feed")
         if feed:
             feed.publish("brain", "Too many skill failures, rethinking...", importance=2)
+
+        # Generate problem report after 10+ failures
+        if consecutive_fails >= 10:
+            from anima.monitor.report import report_problem
+            await report_problem(
+                ctx,
+                problem=f"Skill execution failed {consecutive_fails} times consecutively",
+                expected="Skills should succeed occasionally with proper materials and location",
+                actual="All attempts failed — may be missing materials, wrong location, or stuck",
+            )
+
         return Status.FAILURE
 
     agent_name = _agent_name(ctx)

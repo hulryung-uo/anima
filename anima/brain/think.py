@@ -198,6 +198,17 @@ async def llm_think(ctx: BrainContext) -> Status:
                     get_reward("goal_failed"),
                     summary=f"Stuck near {place}: too many walk denials",
                 )
+
+                # Report if stuck too many times
+                if stuck_count >= 5:
+                    from anima.monitor.report import report_problem
+                    await report_problem(
+                        ctx,
+                        problem=f"Cannot reach {place} — stuck {stuck_count} times",
+                        expected=f"Walk to {place} at ({tx},{ty})",
+                        actual=f"Repeatedly blocked, {ctx.walker.consecutive_denials} denials",
+                    )
+
                 return Status.RUNNING
             elif stuck == "wander":
                 ctx.blackboard.pop("move_target", None)
