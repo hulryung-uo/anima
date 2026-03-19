@@ -237,9 +237,9 @@ class AnimaTUI(App):
     """
 
     BINDINGS = [
-        Binding("j", "toggle_panel('p-journal')", "Journal", show=True),
-        Binding("i", "toggle_panel('p-inventory')", "Inventory", show=True),
-        Binding("s", "toggle_panel('p-skills')", "Skills", show=True),
+        Binding("j", "toggle_journal", "Journal", show=True),
+        Binding("i", "toggle_inventory", "Inventory", show=True),
+        Binding("s", "toggle_skills", "Skills", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
@@ -292,8 +292,16 @@ class AnimaTUI(App):
 
     # -- Key actions --
 
-    def action_toggle_panel(self, panel_id: str) -> None:
-        w = self.query_one(f"#{panel_id}")
+    def action_toggle_journal(self) -> None:
+        w = self.query_one("#p-journal")
+        w.display = not w.display
+
+    def action_toggle_inventory(self) -> None:
+        w = self.query_one("#p-inventory")
+        w.display = not w.display
+
+    def action_toggle_skills(self) -> None:
+        w = self.query_one("#p-skills")
         w.display = not w.display
 
     # -- Periodic refresh --
