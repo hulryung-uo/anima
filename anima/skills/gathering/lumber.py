@@ -130,11 +130,27 @@ class ChopWood(Skill):
         if dist > 2:
             if feed:
                 feed.publish("skill", f"Walking to tree at ({tree_x},{tree_y})", importance=1)
+
+            # Walk to an adjacent tile, not the tree tile itself
             from anima.action.movement import go_to
-            arrived = await go_to(ctx, tree_x, tree_y)
-            if not arrived:
-                # Get as close as possible — even 3 tiles might work
-                pass
+            from anima.pathfinding import DIRECTION_DELTAS
+
+            best_adj = None
+            best_adj_dist = 999
+            for d in range(8):
+                dx, dy = DIRECTION_DELTAS[d]
+                ax, ay = tree_x + dx, tree_y + dy
+                ad = max(abs(ax - ss.x), abs(ay - ss.y))
+                if ctx.map_reader:
+                    tile = ctx.map_reader.get_tile(ax, ay)
+                    can, _ = tile.walkable_z(ss.z)
+                    if can and ad < best_adj_dist:
+                        best_adj = (ax, ay)
+                        best_adj_dist = ad
+
+            if best_adj:
+                await go_to(ctx, best_adj[0], best_adj[1])
+
             logger.debug("chop_walked", pos=f"({ss.x},{ss.y})")
 
         if feed:
