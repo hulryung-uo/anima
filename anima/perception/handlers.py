@@ -285,7 +285,11 @@ def register_handlers(
 
             if flag >= 5 and r.remaining >= 2:
                 p.self_state.weight_max = r.read_u16()
-                r.skip(1)  # race
+                if r.remaining >= 1:
+                    r.skip(1)  # race
+            else:
+                # Calculate weight_max from STR (UOR formula)
+                p.self_state.weight_max = 7 * (p.self_state.strength // 2) + 40
 
             if flag >= 2 and r.remaining >= 2:
                 p.self_state.stat_cap = r.read_u16()
@@ -312,6 +316,8 @@ def register_handlers(
                 str=p.self_state.strength,
                 dex=p.self_state.dexterity,
                 int=p.self_state.intelligence,
+                wt=f"{p.self_state.weight}/{p.self_state.weight_max}",
+                flag=flag,
             )
         else:
             mob = p.world.get_or_create_mobile(serial)
