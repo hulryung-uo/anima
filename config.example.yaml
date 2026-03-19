@@ -32,10 +32,16 @@ map:
   resource_dir: ~/dev/uo/uo-resource
 
 llm:
-  base_url: http://localhost:11434
-  model: gemma3:4b
+  # provider: ollama | openai | anthropic | replicate | custom
+  provider: replicate
+  model: deepseek-ai/deepseek-v3.1
+  api_key: ""  # REPLICATE_API_KEY (or set via env var)
+  # For Ollama (local):
+  #   provider: ollama
+  #   model: qwen3:8b
+  #   base_url: http://localhost:11434
   temperature: 0.7
-  timeout: 10.0
+  timeout: 30.0
 
 memory:
   db_path: data/anima.db

@@ -1,14 +1,15 @@
 """LLM client — unified async interface via litellm.
 
-Supports Ollama (local), OpenAI, Anthropic (Claude), and 100+ other
-providers through a single ``chat()`` method.  Provider is selected
+Supports Ollama (local), OpenAI, Anthropic (Claude), Replicate, and 100+
+other providers through a single ``chat()`` method.  Provider is selected
 via config: ``provider`` + ``model`` + optional ``api_key``.
 
 Provider string → litellm model ID mapping:
-  ollama   → "ollama/<model>"        (e.g. "ollama/gemma3:4b")
-  openai   → "<model>"               (e.g. "gpt-4o")
-  anthropic→ "<model>"               (e.g. "claude-sonnet-4-20250514")
-  custom   → "<model>" + base_url    (any OpenAI-compatible endpoint)
+  ollama    → "ollama/<model>"        (e.g. "ollama/gemma3:4b")
+  openai    → "<model>"               (e.g. "gpt-4o")
+  anthropic → "<model>"               (e.g. "claude-sonnet-4-20250514")
+  replicate → "replicate/<model>"     (e.g. "replicate/deepseek-ai/deepseek-v3.1")
+  custom    → "<model>" + base_url    (any OpenAI-compatible endpoint)
 """
 
 from __future__ import annotations
@@ -77,12 +78,16 @@ class LLMClient:
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
             elif provider == "anthropic":
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
+            elif provider == "replicate":
+                os.environ.setdefault("REPLICATE_API_KEY", api_key)
 
     def _litellm_model(self, model: str | None = None) -> str:
         """Convert provider + model into a litellm model string."""
         m = model or self.model
         if self.provider == "ollama":
             return f"ollama/{m}" if not m.startswith("ollama/") else m
+        if self.provider == "replicate":
+            return f"replicate/{m}" if not m.startswith("replicate/") else m
         if self.provider == "custom":
             return f"openai/{m}" if not m.startswith("openai/") else m
         # openai, anthropic, etc. — pass through as-is

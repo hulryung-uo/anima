@@ -48,7 +48,7 @@ class MapConfig:
 
 @dataclass
 class LLMConfig:
-    provider: str = "ollama"  # "ollama" | "openai" | "anthropic" | "custom"
+    provider: str = "ollama"  # "ollama" | "openai" | "anthropic" | "replicate" | "custom"
     base_url: str = "http://localhost:11434"
     model: str = "gemma3:4b"
     api_key: str = ""
