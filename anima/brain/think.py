@@ -162,6 +162,20 @@ async def llm_think(ctx: BrainContext) -> Status:
                     target=f"({tx},{ty})",
                     denials=ctx.walker.consecutive_denials,
                 )
+                # Ask for help occasionally
+                stuck_count = ctx.blackboard.get("stuck_count", 0) + 1
+                ctx.blackboard["stuck_count"] = stuck_count
+                if stuck_count % 3 == 1:  # every 3rd time stuck
+                    help_msgs = [
+                        f"hmm, can't seem to find my way to {place}... anyone know a good route?",
+                        "I keep getting stuck here. Is there another way around?",
+                        f"trying to get to {place} but the path is blocked...",
+                    ]
+                    import random
+                    msg = random.choice(help_msgs)
+                    await ctx.conn.send_packet(build_unicode_speech(msg))
+                    logger.info("stuck_help_request", text=msg)
+
                 await _record_episode(
                     ctx, "go", place, "failure",
                     get_reward("goal_failed"),
@@ -404,13 +418,26 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     path = _get_cached_path(ctx, sx, sy, tx, ty)
 
     if not path:
-        # Compute new path, avoiding denied tiles and dynamic obstacles
         denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
         sz = ctx.perception.self_state.z
-        path = find_path(
-            ctx.map_reader, sx, sy, tx, ty,
-            max_steps=100, denied_tiles=denied, current_z=sz,
-        )
+
+        # If destination is far, aim for an intermediate waypoint
+        dist = max(abs(tx - sx), abs(ty - sy))
+        if dist > 50:
+            # Aim ~40 tiles toward destination
+            ratio = 40.0 / dist
+            mid_x = int(sx + (tx - sx) * ratio)
+            mid_y = int(sy + (ty - sy) * ratio)
+            path = find_path(
+                ctx.map_reader, sx, sy, mid_x, mid_y,
+                max_steps=150, denied_tiles=denied, current_z=sz,
+            )
+        else:
+            path = find_path(
+                ctx.map_reader, sx, sy, tx, ty,
+                max_steps=200, denied_tiles=denied, current_z=sz,
+            )
+
         if not path:
             goal = ctx.blackboard.pop("current_goal", None)
             ctx.blackboard.pop("move_target", None)
