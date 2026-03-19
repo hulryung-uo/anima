@@ -369,25 +369,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         ]
 
         if cfg.monitor.tui_enabled:
-            import logging
-
             from anima.monitor.tui import AnimaTUI
-
-            # Redirect logs to file so TUI screen stays clean
-            log_path = Path("data/anima.log")
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(str(log_path), mode="a")
-            file_handler.setLevel(logging.DEBUG)
-
-            structlog.configure(
-                processors=[
-                    structlog.processors.TimeStamper(fmt="iso"),
-                    structlog.dev.ConsoleRenderer(),
-                ],
-                wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
-                logger_factory=structlog.PrintLoggerFactory(file=file_handler.stream),
-            )
-            logger.info("tui_logging_to_file", path=str(log_path))
 
             tui = AnimaTUI(perception, feed, brain_ctx.blackboard, cfg.monitor.refresh_rate)
             tasks.append(tui.run())
@@ -428,6 +410,20 @@ def main() -> None:
         cfg.account.password = args.password
     if args.tui:
         cfg.monitor.tui_enabled = True
+
+    # If TUI mode, redirect structlog to file BEFORE anything starts
+    if cfg.monitor.tui_enabled:
+        log_path = Path("data/anima.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _log_file = open(log_path, "a")  # noqa: SIM115
+        structlog.configure(
+            processors=[
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ],
+            wrapper_class=structlog.make_filtering_bound_logger(0),
+            logger_factory=structlog.PrintLoggerFactory(file=_log_file),
+        )
 
     asyncio.run(run(cfg, delete_existing=args.recreate))
 
