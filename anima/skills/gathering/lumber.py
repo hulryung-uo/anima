@@ -151,57 +151,74 @@ class ChopWood(Skill):
         ))
         logger.debug("chop_target_sent", cursor_id=f"0x{cursor_id:08X}")
 
-        # Wait for chopping animation and result (server takes several seconds)
-        await asyncio.sleep(4.0)
+        # Wait for server response — poll journal for result message
+        result_msg = ""
+        deadline = time.monotonic() + 6.0
+        journal_mark = time.time()
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            for entry in ctx.perception.social.recent(count=5):
+                if entry.timestamp < journal_mark:
+                    continue
+                text_lower = entry.text.lower()
+                if "logs into your backpack" in text_lower:
+                    result_msg = "success"
+                    break
+                if "not enough wood" in text_lower:
+                    result_msg = "depleted"
+                    break
+                if "fail to produce" in text_lower:
+                    result_msg = "fail"
+                    break
+            if result_msg:
+                break
 
+        elapsed = (time.monotonic() - start) * 1000
+
+        # Count logs gained
         logs_after = sum(
             it.amount for it in world.items.values()
             if it.container == backpack and it.graphic in LOG_GRAPHICS
         )
-
-        elapsed = (time.monotonic() - start) * 1000
         logs_gained = logs_after - logs_before
 
-        # Also check journal for success/fail messages
-        journal_success = ctx.perception.social.search("log")
-        journal_depleted = ctx.perception.social.search("not enough wood")
-        now = time.time()
-        recent_log_msg = [e for e in journal_success if now - e.timestamp < 6.0]
-        recent_depleted = [e for e in journal_depleted if now - e.timestamp < 6.0]
-
-        # Mark tree as depleted if server says no wood
-        if recent_depleted:
+        # Handle depleted tree
+        if result_msg == "depleted":
             depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
                 "depleted_trees", {}
             )
-            depleted[(tree_x, tree_y)] = now
-            logger.info(
-                "chop_tree_depleted",
-                pos=f"({tree_x},{tree_y})",
-            )
+            depleted[(tree_x, tree_y)] = time.time()
+            logger.info("chop_tree_depleted", pos=f"({tree_x},{tree_y})")
             if feed:
                 feed.publish(
                     "skill", f"Tree ({tree_x},{tree_y}) depleted", importance=1,
                 )
-
-        if logs_gained > 0 or recent_log_msg:
-            reward = 5.0 + logs_gained
-            logger.info("chop_success", logs=logs_gained)
-            if feed:
-                feed.publish("skill", f"Chopped {logs_gained} logs!", importance=2)
             return SkillResult(
-                success=True, reward=reward,
-                message=f"Chopped {logs_gained} logs",
+                success=False, reward=-0.5,
+                message=f"Tree at ({tree_x},{tree_y}) depleted",
+                duration_ms=elapsed,
+            )
+
+        # Handle success
+        if result_msg == "success" or logs_gained > 0:
+            gained = max(logs_gained, 1)
+            logger.info("chop_success", logs=gained)
+            if feed:
+                feed.publish("skill", f"Chopped {gained} logs!", importance=2)
+            return SkillResult(
+                success=True, reward=5.0 + gained,
+                message=f"Chopped {gained} logs",
                 skill_gains=[(LUMBERJACK_SKILL_ID, 0.1)],
                 duration_ms=elapsed,
             )
-        else:
-            logger.info("chop_no_logs")
-            return SkillResult(
-                success=False, reward=-1.0,
-                message="No logs obtained",
-                duration_ms=elapsed,
-            )
+
+        # Handle fail (tree still has wood, just bad luck)
+        logger.info("chop_fail")
+        return SkillResult(
+            success=False, reward=-0.5,
+            message="Failed to chop, will try again",
+            duration_ms=elapsed,
+        )
 
 
 def _find_hatchet(ctx: BrainContext):
