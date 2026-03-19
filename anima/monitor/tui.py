@@ -229,9 +229,9 @@ class AnimaTUI(App):
     TITLE = "Anima"
     CSS = """
     Screen { layout: vertical; }
-    #top-row { height: 1fr; }
-    #bot-row { height: 16; }
-    .panel { border: round gray; padding: 0 1; height: 100%; }
+    #top-row { height: 1fr; min-height: 12; }
+    #bot-row { height: 1fr; min-height: 12; }
+    .panel { border: round gray; padding: 0 1; height: 100%; overflow-y: auto; }
     #p-status { width: 2fr; }
     #p-activity { width: 3fr; }
     """
@@ -327,8 +327,7 @@ class AnimaTUI(App):
         """Update all visible panels."""
         self._tick_count += 1
         try:
-            st = _render_status(self._p, self._bb)
-            self.query_one("#p-status").update(st)
+            self.query_one("#p-status").update(_render_status(self._p, self._bb))
             self.query_one("#p-activity").update(_render_activity(self._feed))
             self.query_one("#p-nearby").update(_render_nearby(self._p))
             self.query_one("#p-journal").update(_render_journal(self._p))
@@ -336,7 +335,7 @@ class AnimaTUI(App):
             self.query_one("#p-skills").update(_render_skills(self._p))
             self.query_one("#p-qvalues").update(_render_qvalues(self._bb))
             if self._tick_count <= 3:
-                self._log_error(f"tick #{self._tick_count}: status len={len(st)}, "
+                self._log_error(f"tick #{self._tick_count}: "
                                 f"hp={self._p.self_state.hits}/{self._p.self_state.hits_max}, "
                                 f"skills={len(self._p.self_state.skills)}, "
                                 f"feed={self._feed.total_count}")
