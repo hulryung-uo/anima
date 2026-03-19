@@ -548,6 +548,62 @@ def register_handlers(
 
     handler.register(0xAE, handle_unicode_talk)
 
+    def handle_cliloc_message(packet_id: int, data: bytes) -> None:
+        """0xC1 ClilocMessage — localized system message with optional args.
+
+        Format: [0xC1][len:u16][serial:u32][graphic:u16][msg_type:u8]
+                [hue:u16][font:u16][cliloc_num:u32][name:ascii 30]
+                [args:utf16-le null-terminated]
+        """
+        if len(data) < 48:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        serial = r.read_u32()
+        r.skip(2)  # graphic
+        msg_type = r.read_u8()
+        hue = r.read_u16()
+        r.skip(2)  # font
+        cliloc_num = r.read_u32()
+        name_bytes = data[3 + r.position: 3 + r.position + 30]
+        r.skip(30)
+        name = name_bytes.split(b"\x00", 1)[0].decode("ascii", errors="replace")
+
+        # Args are UTF-16 LE, null-terminated
+        args_raw = data[3 + r.position:]
+        try:
+            args = args_raw.decode("utf-16-le").rstrip("\x00")
+        except (UnicodeDecodeError, ValueError):
+            args = ""
+
+        # Resolve cliloc text
+        base_text = cliloc_text(cliloc_num)
+        if base_text and args:
+            parts = args.split("\t")
+            text = base_text
+            for i, part in enumerate(parts):
+                text = text.replace(f"~{i + 1}_val~", part)
+                text = text.replace(f"~{i + 1}~", part)
+                text = text.replace(f"#{i + 1}", part)
+        elif base_text:
+            text = base_text
+        else:
+            text = f"[cliloc {cliloc_num}]"
+
+        # Clean up tilde markers that weren't replaced
+        import re as _re
+        text = _re.sub(r"~\d+[^~]*~", "", text).strip()
+
+        if not name:
+            name = "System"
+
+        p.social.add_speech(serial, name, text, msg_type, hue)
+        p.emit(GameEventType.SPEECH_HEARD, {
+            "serial": serial, "name": name, "text": text,
+        })
+        logger.info("speech_cliloc", name=name, text=text, cliloc=cliloc_num)
+
+    handler.register(0xC1, handle_cliloc_message)
+
     # ------------------------------------------------------------------
     # Movement packets
     # ------------------------------------------------------------------

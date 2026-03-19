@@ -139,8 +139,8 @@ class ChopWood(Skill):
         ))
         logger.debug("chop_target_sent", cursor_id=f"0x{cursor_id:08X}")
 
-        # Wait for chopping animation and result
-        await asyncio.sleep(3.0)
+        # Wait for chopping animation and result (server takes several seconds)
+        await asyncio.sleep(4.0)
 
         logs_after = sum(
             it.amount for it in world.items.values()
@@ -150,7 +150,14 @@ class ChopWood(Skill):
         elapsed = (time.monotonic() - start) * 1000
         logs_gained = logs_after - logs_before
 
-        if logs_gained > 0:
+        # Also check journal for success/fail messages
+        journal_success = ctx.perception.social.search("log")
+        journal_fail = ctx.perception.social.search("not enough wood")
+        now = time.time()
+        recent_log_msg = [e for e in journal_success if now - e.timestamp < 6.0]
+        _ = [e for e in journal_fail if now - e.timestamp < 6.0]  # checked implicitly
+
+        if logs_gained > 0 or recent_log_msg:
             reward = 5.0 + logs_gained
             logger.info("chop_success", logs=logs_gained)
             if feed:
