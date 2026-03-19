@@ -1,17 +1,28 @@
-"""Carpentry skill — craft wooden items from logs using the gump-based crafting UI."""
+"""Carpentry skill — craft wooden items via the server's crafting gump.
+
+ServUO CraftGump button ID scheme:
+  GetButtonID(type, index) = 1 + type + (index * 7)
+  OnResponse: buttonID - 1, type = buttonID % 7, index = buttonID / 7
+
+  type 0 = Show group (category)
+  type 1 = Create item
+  type 2 = Item details
+  type 6 = Misc (EXIT=0, SMELT=1, MAKE_LAST=2, LAST_TEN=3, etc.)
+
+  MAKE_LAST = GetButtonID(6, 2) = 1 + 6 + 14 = 21
+  EXIT      = GetButtonID(6, 0) = 0 (button_id 0 closes gump)
+"""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
 
 from anima.client.packets import build_double_click, build_gump_response
 from anima.perception.gump import GumpData
-from anima.perception.world_state import ItemInfo
 from anima.skills.base import Skill, SkillResult
 
 if TYPE_CHECKING:
@@ -20,8 +31,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # Tool graphics
-SAW_GRAPHICS = {0x1034, 0x1035}  # Saw
-DOVETAIL_SAW_GRAPHICS = {0x1028, 0x1029}  # Dovetail Saw
+SAW_GRAPHICS = {0x1034, 0x1035}
+DOVETAIL_SAW_GRAPHICS = {0x1028, 0x1029}
 ALL_TOOL_GRAPHICS = SAW_GRAPHICS | DOVETAIL_SAW_GRAPHICS
 
 # Material graphics
@@ -31,90 +42,29 @@ MATERIAL_GRAPHICS = {LOG_GRAPHIC, BOARD_GRAPHIC}
 
 CARPENTRY_SKILL_ID = 11
 
-# Gump polling settings
-GUMP_POLL_INTERVAL = 0.2
+# Gump timing
+GUMP_POLL = 0.2
 GUMP_TIMEOUT = 5.0
 CRAFT_WAIT = 3.5
 
-
-@dataclass
-class CraftableItem:
-    """Definition of a craftable carpentry item."""
-
-    name: str
-    category: str
-    min_skill: float
+# ServUO button IDs (pre-calculated)
+BUTTON_MAKE_LAST = 21  # GetButtonID(6, 2)
 
 
-# Items ordered by skill difficulty (ascending) for progressive training
-CRAFTABLE_ITEMS: list[CraftableItem] = [
-    CraftableItem(name="Boards", category="Other", min_skill=0.0),
-    CraftableItem(name="Barrel Staves", category="Other", min_skill=0.0),
-    CraftableItem(name="Fishing Pole", category="Tools", min_skill=0.0),
-    CraftableItem(name="Shepherd's Crook", category="Tools", min_skill=0.0),
-    CraftableItem(name="Wooden Box", category="Containers", min_skill=0.0),
-    CraftableItem(name="Wooden Shield", category="Armor", min_skill=0.0),
+def _get_button_id(btn_type: int, index: int) -> int:
+    """Match ServUO's GetButtonID(type, index)."""
+    return 1 + btn_type + (index * 7)
+
+
+# Category/item definitions: (category_name, group_index, items)
+# group_index matches ServUO CraftGroup order in DefCarpentry.cs
+CRAFT_TARGETS = [
+    # (display_name, group_index, item_index, min_skill, boards_needed)
+    ("Barrel Staves", 0, 0, 0.0, 5),     # Other group=0, item=0
+    ("Barrel Lid", 0, 1, 11.0, 4),        # Other group=0, item=1
+    ("Small Crate", 2, 1, 10.0, 8),       # Containers group=2, item=1
+    ("Wooden Box", 2, 0, 21.0, 10),       # Containers group=2, item=0
 ]
-
-
-async def _find_backpack_item(ctx: BrainContext, graphic_ids: set[int]) -> ItemInfo | None:
-    """Find the first item in the player's backpack matching any of the given graphics."""
-    ss = ctx.perception.self_state
-    world = ctx.perception.world
-    backpack = ss.equipment.get(0x15)
-    if not backpack:
-        return None
-    for item in world.items.values():
-        if item.container == backpack and item.graphic in graphic_ids:
-            return item
-    return None
-
-
-async def _wait_for_gump(
-    ctx: BrainContext,
-    timeout: float = GUMP_TIMEOUT,
-    exclude_layout: str = "",
-) -> GumpData | None:
-    """Poll self_state.gumps until a new gump appears or timeout is reached.
-
-    If exclude_layout is set, skip gumps with identical layout (waiting for
-    a server-updated version of the same gump).
-    """
-    ss = ctx.perception.self_state
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for gump in ss.gumps.values():
-            if exclude_layout and gump.layout == exclude_layout:
-                continue
-            return gump
-        await asyncio.sleep(GUMP_POLL_INTERVAL)
-    return None
-
-
-async def _click_gump_button(ctx: BrainContext, gump: GumpData, button_id: int) -> None:
-    """Send a gump response clicking the specified button, then remove the gump."""
-    ss = ctx.perception.self_state
-    packet = build_gump_response(
-        serial=gump.serial,
-        gump_id=gump.gump_id,
-        button_id=button_id,
-    )
-    # Remove gump before sending so we can detect the next one
-    ss.gumps.pop(gump.gump_id, None)
-    await ctx.conn.send_packet(packet)
-
-
-def _pick_item_to_craft(skill_value: float) -> CraftableItem:
-    """Choose the best item to craft based on current skill level.
-
-    Start with Boards (always useful, converts logs to boards).
-    Progress to harder items as skill improves.
-    """
-    if skill_value < 40.0:
-        return CRAFTABLE_ITEMS[0]  # Boards
-    if skill_value < 60.0:
-        return CRAFTABLE_ITEMS[4]  # Wooden Box
-    return CRAFTABLE_ITEMS[5]  # Wooden Shield
 
 
 class CraftCarpentry(Skill):
@@ -123,11 +73,9 @@ class CraftCarpentry(Skill):
     name = "craft_carpentry"
     category = "crafting"
     description = "Craft wooden items using Carpentry skill"
-    required_items = [0x1034]  # saw (overridden in can_execute)
     required_skill = (CARPENTRY_SKILL_ID, 0.0)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
-        """Check that a carpentry tool AND logs/boards exist in backpack."""
         ss = ctx.perception.self_state
         world = ctx.perception.world
 
@@ -135,233 +83,184 @@ class CraftCarpentry(Skill):
         if not backpack:
             return False
 
-        backpack_items = [it for it in world.items.values() if it.container == backpack]
-        backpack_graphics = {it.graphic for it in backpack_items}
+        bp_items = [it for it in world.items.values() if it.container == backpack]
+        bp_graphics = {it.graphic for it in bp_items}
 
-        has_tool = bool(backpack_graphics & ALL_TOOL_GRAPHICS)
-        if not has_tool:
+        if not (bp_graphics & ALL_TOOL_GRAPHICS):
+            return False
+        if not (bp_graphics & MATERIAL_GRAPHICS):
             return False
 
-        has_material = bool(backpack_graphics & MATERIAL_GRAPHICS)
-        if not has_material:
+        skill_info = ss.skills.get(CARPENTRY_SKILL_ID)
+        if skill_info is None or skill_info.value < 0.0:
             return False
-
-        # Check skill requirement
-        if self.required_skill is not None:
-            skill_id, min_val = self.required_skill
-            skill_info = ss.skills.get(skill_id)
-            if skill_info is None or skill_info.value < min_val:
-                return False
-
         return True
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state
+        world = ctx.perception.world
         start = time.monotonic()
+        backpack = ss.equipment.get(0x15)
 
-        # 1. Find carpentry tool in backpack
-        tool = await _find_backpack_item(ctx, ALL_TOOL_GRAPHICS)
+        # Find tool
+        tool = None
+        for it in world.items.values():
+            if it.container == backpack and it.graphic in ALL_TOOL_GRAPHICS:
+                tool = it
+                break
         if not tool:
-            return SkillResult(success=False, reward=-1.0, message="No carpentry tool in backpack")
+            return SkillResult(success=False, reward=-1.0, message="No carpentry tool")
 
-        # 2. Check materials
-        material = await _find_backpack_item(ctx, MATERIAL_GRAPHICS)
-        if not material:
-            return SkillResult(success=False, reward=-1.0, message="No logs or boards in backpack")
-
-        # 3. Decide what to craft based on skill level
-        skill_info = ss.skills.get(CARPENTRY_SKILL_ID)
-        skill_value = skill_info.value if skill_info else 0.0
-        target_item = _pick_item_to_craft(skill_value)
-
-        logger.info(
-            "carpentry_start",
-            tool_serial=hex(tool.serial),
-            item=target_item.name,
-            category=target_item.category,
-            skill=skill_value,
+        # Count boards available
+        boards_available = sum(
+            it.amount for it in world.items.values()
+            if it.container == backpack and it.graphic == BOARD_GRAPHIC
         )
 
-        # Publish intent to activity feed
+        # Pick what to craft based on skill and available boards
+        skill_info = ss.skills.get(CARPENTRY_SKILL_ID)
+        skill_val = skill_info.value if skill_info else 0.0
+
+        target = None
+        for name, grp_idx, item_idx, min_skill, boards in CRAFT_TARGETS:
+            if skill_val >= min_skill and boards_available >= boards:
+                target = (name, grp_idx, item_idx, boards)
+        if not target:
+            return SkillResult(
+                success=False, reward=-0.5,
+                message=f"Not enough boards ({boards_available}) or skill ({skill_val:.0f})",
+            )
+
+        target_name, grp_idx, item_idx, boards_needed = target
+
+        # Publish intent
         feed = ctx.blackboard.get("activity_feed")
         if feed:
-            reason = (
-                f"Making {target_item.name} — "
-                + ("converting logs to usable boards" if target_item.name == "Boards"
-                   else f"training Carpentry ({skill_value:.0f}/100)")
+            feed.publish(
+                "skill",
+                f"Crafting {target_name} (need {boards_needed} boards, have {boards_available})",
+                importance=2,
             )
-            feed.publish("skill", reason, importance=2)
+        logger.info(
+            "carpentry_start",
+            item=target_name,
+            group=grp_idx,
+            item_index=item_idx,
+            skill=skill_val,
+            boards=boards_available,
+        )
 
-        # 4. Clear any existing gumps so we can detect the new one
+        # Step 1: Open crafting gump
         ss.gumps.clear()
-
-        # 5. Double-click carpentry tool to open crafting gump
         await ctx.conn.send_packet(build_double_click(tool.serial))
 
-        # 6. Wait for crafting gump to appear
-        gump = await _wait_for_gump(ctx)
+        gump = await self._wait_gump(ctx)
         if not gump:
-            return SkillResult(
-                success=False,
-                reward=-1.0,
-                message="Crafting gump did not appear",
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
+            return SkillResult(success=False, reward=-1.0, message="Gump didn't open")
 
-        logger.debug(
-            "carpentry_gump_opened",
-            gump_id=hex(gump.gump_id),
-            buttons=len(gump.buttons),
-            texts=len(gump.text_lines),
-        )
-
-        # 7. Navigate gump: click category button
-        category_btn = gump.find_button_near_text(target_item.category)
-        logger.debug(
-            "carpentry_category_search",
-            category=target_item.category,
-            found=category_btn is not None,
-            button_id=category_btn.button_id if category_btn else None,
-            available_texts=[gump.get_text(t.text_id) for t in gump.texts[:15]],
-        )
-        if not category_btn:
-            # Close the gump gracefully
-            await _click_gump_button(ctx, gump, 0)
-            return SkillResult(
-                success=False,
-                reward=-1.0,
-                message=f"Category '{target_item.category}' not found in gump",
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
+        # Step 2: Click category (type=0, index=grp_idx)
+        cat_btn_id = _get_button_id(0, grp_idx)
+        logger.debug("carpentry_click_category", group=grp_idx, button_id=cat_btn_id)
 
         prev_serial = gump.serial
-        # Send response — server will send a new gump with different serial
-        packet = build_gump_response(
-            serial=gump.serial, gump_id=gump.gump_id, button_id=category_btn.button_id,
-        )
         ss.gumps.pop(gump.gump_id, None)
-        await ctx.conn.send_packet(packet)
+        await ctx.conn.send_packet(
+            build_gump_response(gump.serial, gump.gump_id, cat_btn_id)
+        )
 
-        # 8. Wait for new gump (different serial = server responded to our click)
-        await asyncio.sleep(0.3)
-        gump = None
-        deadline = time.monotonic() + GUMP_TIMEOUT
-        while time.monotonic() < deadline:
-            for g in ss.gumps.values():
-                if g.serial != prev_serial:
-                    gump = g
-                    break
-            if gump:
-                break
-            await asyncio.sleep(GUMP_POLL_INTERVAL)
+        # Wait for new gump
+        gump = await self._wait_gump_new(ctx, prev_serial)
         if not gump:
-            return SkillResult(
-                success=False,
-                reward=-1.0,
-                message="Item list gump did not appear",
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
+            return SkillResult(success=False, reward=-1.0, message="Category gump didn't appear")
 
-        # 9. Click the specific item button
-        item_btn = gump.find_button_near_text(target_item.name)
-        logger.debug(
-            "carpentry_item_search",
-            item=target_item.name,
-            found=item_btn is not None,
-            button_id=item_btn.button_id if item_btn else None,
-            available_texts=[gump.get_text(t.text_id) for t in gump.texts[:15]],
-        )
-        if not item_btn:
-            await _click_gump_button(ctx, gump, 0)
-            return SkillResult(
-                success=False,
-                reward=-1.0,
-                message=f"Item '{target_item.name}' not found in gump",
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
+        # Step 3: Click create item (type=1, index=item_idx)
+        create_btn_id = _get_button_id(1, item_idx)
+        logger.debug("carpentry_click_create", item=target_name, button_id=create_btn_id)
 
-        # Count materials before crafting
-        backpack = ss.equipment.get(0x15)
+        # Count materials before
         mats_before = sum(
-            it.amount for it in ctx.perception.world.items.values()
-            if it.container == backpack and it.graphic in MATERIAL_GRAPHICS
+            it.amount for it in world.items.values()
+            if it.container == backpack and it.graphic == BOARD_GRAPHIC
         )
 
-        await _click_gump_button(ctx, gump, item_btn.button_id)
+        prev_serial = gump.serial
+        ss.gumps.pop(gump.gump_id, None)
+        await ctx.conn.send_packet(
+            build_gump_response(gump.serial, gump.gump_id, create_btn_id)
+        )
 
-        # 10. Wait for crafting to complete
+        # Step 4: Wait for crafting result
         await asyncio.sleep(CRAFT_WAIT)
 
         elapsed = (time.monotonic() - start) * 1000
 
-        # Count materials after crafting
+        # Count materials after
         mats_after = sum(
-            it.amount for it in ctx.perception.world.items.values()
-            if it.container == backpack and it.graphic in MATERIAL_GRAPHICS
+            it.amount for it in world.items.values()
+            if it.container == backpack and it.graphic == BOARD_GRAPHIC
         )
-        material_consumed = mats_before - mats_after
+        consumed = mats_before - mats_after
 
-        # 11. Check result via system messages in the journal
+        # Check journal for result messages
         success_msgs = ctx.perception.social.search("You create")
         fail_msgs = ctx.perception.social.search("You fail")
-
-        # Filter to recent messages (within last 5 seconds)
         now = time.time()
         recent_success = [e for e in success_msgs if now - e.timestamp < 5.0]
         recent_fail = [e for e in fail_msgs if now - e.timestamp < 5.0]
 
-        if recent_success:
-            logger.info(
-                "carpentry_success",
-                item=target_item.name,
-                elapsed_ms=round(elapsed),
+        # Close remaining gump
+        for g in list(ss.gumps.values()):
+            ss.gumps.pop(g.gump_id, None)
+            await ctx.conn.send_packet(
+                build_gump_response(g.serial, g.gump_id, 0)
             )
+
+        if recent_success or consumed > 0:
+            msg = f"Crafted {target_name}" + (f" (used {consumed} boards)" if consumed else "")
+            logger.info("carpentry_success", item=target_name, consumed=consumed)
+            if feed:
+                feed.publish("skill", msg, importance=2)
             return SkillResult(
-                success=True,
-                reward=5.0,
-                message=f"Crafted {target_item.name}",
+                success=True, reward=5.0, message=msg,
                 skill_gains=[(CARPENTRY_SKILL_ID, 0.1)],
                 duration_ms=elapsed,
             )
         elif recent_fail:
-            logger.info(
-                "carpentry_fail",
-                item=target_item.name,
-                elapsed_ms=round(elapsed),
-            )
+            logger.info("carpentry_fail", item=target_name)
             return SkillResult(
-                success=False,
-                reward=-1.0,
-                message=f"Failed to craft {target_item.name}",
+                success=False, reward=-1.0,
+                message=f"Failed to craft {target_name}",
                 skill_gains=[(CARPENTRY_SKILL_ID, 0.05)],
                 duration_ms=elapsed,
             )
         else:
-            # No system message — check if materials were consumed as fallback
-            if material_consumed > 0:
-                logger.info(
-                    "carpentry_inferred_success",
-                    item=target_item.name,
-                    material_consumed=material_consumed,
-                    elapsed_ms=round(elapsed),
-                )
-                return SkillResult(
-                    success=True,
-                    reward=4.0,
-                    message=f"Crafted {target_item.name} (inferred from material use)",
-                    skill_gains=[(CARPENTRY_SKILL_ID, 0.1)],
-                    duration_ms=elapsed,
-                )
-
             logger.warning(
-                "carpentry_unknown_result",
-                item=target_item.name,
-                material_consumed=material_consumed,
-                elapsed_ms=round(elapsed),
+                "carpentry_unknown", item=target_name,
+                consumed=consumed, elapsed_ms=round(elapsed),
             )
             return SkillResult(
-                success=False,
-                reward=-0.5,
-                message=f"Crafting result unknown for {target_item.name}",
+                success=False, reward=-0.5,
+                message=f"Crafting result unknown for {target_name}",
                 duration_ms=elapsed,
             )
+
+    async def _wait_gump(self, ctx: BrainContext) -> GumpData | None:
+        """Wait for any gump to appear."""
+        deadline = time.monotonic() + GUMP_TIMEOUT
+        while time.monotonic() < deadline:
+            if ctx.perception.self_state.gumps:
+                return next(iter(ctx.perception.self_state.gumps.values()))
+            await asyncio.sleep(GUMP_POLL)
+        return None
+
+    async def _wait_gump_new(
+        self, ctx: BrainContext, prev_serial: int,
+    ) -> GumpData | None:
+        """Wait for a gump with a different serial than prev_serial."""
+        deadline = time.monotonic() + GUMP_TIMEOUT
+        while time.monotonic() < deadline:
+            for g in ctx.perception.self_state.gumps.values():
+                if g.serial != prev_serial:
+                    return g
+            await asyncio.sleep(GUMP_POLL)
+        return None
