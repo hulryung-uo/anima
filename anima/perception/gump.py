@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from anima.data import cliloc_text
+
 # ---------------------------------------------------------------------------
 # Parsed layout elements
 # ---------------------------------------------------------------------------
@@ -212,6 +214,45 @@ def parse_layout(layout: str, text_lines: list[str]) -> GumpData:
                     text_id=_safe_int(tokens[5]),
                 )
             )
+
+        elif cmd == "xmfhtmlgumpcolor" and len(tokens) >= 9:
+            # xmfhtmlgumpcolor x y width height cliloc_num background scrollbar hue
+            cliloc_num = _safe_int(tokens[5])
+            resolved = cliloc_text(cliloc_num)
+            if resolved:
+                idx = len(text_lines)
+                text_lines.append(resolved)
+                gump.texts.append(
+                    GumpText(
+                        x=_safe_int(tokens[1]),
+                        y=_safe_int(tokens[2]),
+                        hue=_safe_int(tokens[8]) if len(tokens) > 8 else 0,
+                        text_id=idx,
+                    )
+                )
+
+        elif cmd == "xmfhtmltok" and len(tokens) >= 9:
+            # xmfhtmltok x y width height background scrollbar hue cliloc_num @args@
+            cliloc_num = _safe_int(tokens[8])
+            resolved = cliloc_text(cliloc_num)
+            # Substitute @args@ into the cliloc text
+            if resolved and len(tokens) > 9:
+                args_str = " ".join(tokens[9:])
+                parts = args_str.strip("@").split("\t")
+                for i, part in enumerate(parts):
+                    resolved = resolved.replace(f"~{i+1}_val~", part.strip())
+                    resolved = resolved.replace(f"#{i+1}", part.strip())
+            if resolved:
+                idx = len(text_lines)
+                text_lines.append(resolved)
+                gump.texts.append(
+                    GumpText(
+                        x=_safe_int(tokens[1]),
+                        y=_safe_int(tokens[2]),
+                        hue=_safe_int(tokens[7]) if len(tokens) > 7 else 0,
+                        text_id=idx,
+                    )
+                )
 
         elif cmd == "textentry" and len(tokens) >= 7:
             tid = _safe_int(tokens[6])

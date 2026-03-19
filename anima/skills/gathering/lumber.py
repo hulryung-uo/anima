@@ -40,20 +40,9 @@ class ChopWood(Skill):
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
-        world = ctx.perception.world
-
-        backpack = ss.equipment.get(0x15)
-        if not backpack:
+        if not _find_hatchet(ctx):
             return False
-        has_hatchet = any(
-            it.graphic in HATCHET_GRAPHICS
-            for it in world.items.values()
-            if it.container == backpack
-        )
-        if not has_hatchet:
-            return False
-
-        nearby = world.nearby_items(ss.x, ss.y, distance=3)
+        nearby = ctx.perception.world.nearby_items(ss.x, ss.y, distance=3)
         return any(it.graphic in TREE_GRAPHICS for it in nearby)
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
@@ -62,11 +51,7 @@ class ChopWood(Skill):
         start = time.monotonic()
 
         backpack = ss.equipment.get(0x15)
-        hatchet = None
-        for item in world.items.values():
-            if item.container == backpack and item.graphic in HATCHET_GRAPHICS:
-                hatchet = item
-                break
+        hatchet = _find_hatchet(ctx)
 
         if not hatchet:
             return SkillResult(success=False, reward=-1.0, message="No hatchet")
@@ -119,3 +104,26 @@ class ChopWood(Skill):
                 message="No logs obtained",
                 duration_ms=elapsed,
             )
+
+
+def _find_hatchet(ctx: BrainContext):
+    """Find a hatchet in backpack OR equipped (hand slots)."""
+    ss = ctx.perception.self_state
+    world = ctx.perception.world
+    backpack = ss.equipment.get(0x15)
+
+    # Check backpack
+    if backpack:
+        for it in world.items.values():
+            if it.container == backpack and it.graphic in HATCHET_GRAPHICS:
+                return it
+
+    # Check equipped items (one_handed=0x01, two_handed=0x02)
+    for layer in (0x01, 0x02):
+        eq_serial = ss.equipment.get(layer)
+        if eq_serial:
+            it = world.items.get(eq_serial)
+            if it and it.graphic in HATCHET_GRAPHICS:
+                return it
+
+    return None
