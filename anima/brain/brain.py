@@ -76,6 +76,12 @@ async def _skill_action(ctx: BrainContext) -> Status:
     if not available:
         return Status.FAILURE
 
+    logger.debug(
+        "skills_available",
+        skills=[s.name for s in available],
+        count=len(available),
+    )
+
     selector = SkillSelector(ctx.memory_db)
     skill = await selector.select(ctx, available, agent_name)
     if skill is None:
