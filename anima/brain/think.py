@@ -11,8 +11,9 @@ import structlog
 
 from anima.action.movement import wander_action
 from anima.brain.prompt import build_system_prompt
-from anima.client.packets import build_unicode_speech, build_walk_request
+from anima.client.packets import build_double_click, build_unicode_speech, build_walk_request
 from anima.data import item_name
+from anima.map import FLAG_DOOR
 from anima.memory.retrieval import retrieve_context
 from anima.memory.rewards import get_reward
 from anima.pathfinding import direction_to, find_path
@@ -130,9 +131,9 @@ async def llm_think(ctx: BrainContext) -> Status:
             # Arrived at destination
             goal = ctx.blackboard.pop("current_goal", None)
             del ctx.blackboard["move_target"]
+            _clear_path_cache(ctx)
             place = goal["place"] if goal else "destination"
             logger.info("goal_arrived", place=place, pos=f"({sx},{sy})")
-            # Record success episode
             await _record_episode(
                 ctx,
                 "go",
@@ -141,16 +142,44 @@ async def llm_think(ctx: BrainContext) -> Status:
                 get_reward("goal_arrived"),
                 summary=f"Arrived at {place}",
             )
-            # Force a new think cycle soon
             ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + 2.0
         elif ctx.walker.can_walk():
+            # Check if we're stuck
+            stuck = ctx.walker.check_stuck((tx, ty))
+            if stuck == "cooldown":
+                goal = ctx.blackboard.pop("current_goal", None)
+                ctx.blackboard.pop("move_target", None)
+                _clear_path_cache(ctx)
+                place = goal["place"] if goal else "unknown"
+                ctx.walker.last_step_time = (
+                    asyncio.get_event_loop().time() * 1000 + 5000
+                )
+                logger.warning(
+                    "movement_stuck_cooldown",
+                    target=f"({tx},{ty})",
+                    denials=ctx.walker.consecutive_denials,
+                )
+                await _record_episode(
+                    ctx, "go", place, "failure",
+                    get_reward("goal_failed"),
+                    summary=f"Stuck near {place}: too many walk denials",
+                )
+                return Status.RUNNING
+            elif stuck == "wander":
+                ctx.blackboard.pop("move_target", None)
+                _clear_path_cache(ctx)
+                logger.info(
+                    "movement_stuck_wander",
+                    target=f"({tx},{ty})",
+                    denials=ctx.walker.consecutive_denials,
+                )
+                return await wander_action(ctx)
             return await _step_toward(ctx, tx, ty)
         else:
             return Status.RUNNING
 
     # Cooldown — wander while waiting for next think
     if now - last_think < THINK_COOLDOWN:
-        # If we have an active goal but no move_target, the goal is stale — clear it
         if ctx.blackboard.get("current_goal") and not ctx.blackboard.get("move_target"):
             ctx.blackboard.pop("current_goal", None)
         if ctx.blackboard.get("current_goal") is None:
@@ -231,6 +260,8 @@ async def llm_think(ctx: BrainContext) -> Status:
                 "y": loc.y,
             }
             ctx.blackboard["move_target"] = (loc.x, loc.y)
+            _clear_path_cache(ctx)
+            ctx.walker.consecutive_denials = 0
             logger.info("goal_set", place=loc.name, target=f"({loc.x},{loc.y})")
             if ctx.walker.can_walk():
                 return await _step_toward(ctx, loc.x, loc.y)
@@ -260,8 +291,61 @@ async def llm_think(ctx: BrainContext) -> Status:
         return await wander_action(ctx)
 
 
+# ------------------------------------------------------------------
+# Path caching helpers
+# ------------------------------------------------------------------
+
+def _clear_path_cache(ctx: BrainContext) -> None:
+    ctx.blackboard.pop("cached_path", None)
+    ctx.blackboard.pop("cached_path_target", None)
+
+
+def _get_cached_path(
+    ctx: BrainContext, sx: int, sy: int, tx: int, ty: int,
+) -> list[tuple[int, int]] | None:
+    """Return cached path if still valid, else None."""
+    cached_path = ctx.blackboard.get("cached_path")
+    cached_target = ctx.blackboard.get("cached_path_target")
+
+    if cached_path is None or cached_target != (tx, ty):
+        return None
+
+    # Trim path to current position
+    try:
+        idx = cached_path.index((sx, sy))
+        trimmed = cached_path[idx + 1:]
+        return trimmed if trimmed else None
+    except ValueError:
+        # Current position not on cached path — might be 1 step ahead
+        if cached_path and abs(sx - cached_path[0][0]) <= 1 and abs(sy - cached_path[0][1]) <= 1:
+            return cached_path
+        return None
+
+
+# ------------------------------------------------------------------
+# Door detection
+# ------------------------------------------------------------------
+
+def _find_door_at(ctx: BrainContext, x: int, y: int) -> int | None:
+    """Find a closed door world item at (x, y). Returns serial or None."""
+    if ctx.map_reader is None:
+        return None
+    for it in ctx.perception.world.items.values():
+        if it.container != 0:
+            continue
+        if it.x == x and it.y == y:
+            flags = ctx.map_reader._get_item_flags(it.graphic)
+            if flags & FLAG_DOOR:
+                return it.serial
+    return None
+
+
+# ------------------------------------------------------------------
+# Core step logic
+# ------------------------------------------------------------------
+
 async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
-    """Take a single step toward (tx, ty) using pathfinding."""
+    """Take a single step toward (tx, ty) using pathfinding with caching."""
     from anima.brain.behavior_tree import Status
 
     sx = ctx.perception.self_state.x
@@ -273,24 +357,47 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     if ctx.map_reader is None:
         return await wander_action(ctx)
 
-    path = find_path(ctx.map_reader, sx, sy, tx, ty, max_steps=100)
+    # Try cached path first
+    path = _get_cached_path(ctx, sx, sy, tx, ty)
+
     if not path:
-        goal = ctx.blackboard.pop("current_goal", None)
-        ctx.blackboard.pop("move_target", None)
-        place = goal["place"] if goal else "unknown"
-        await _record_episode(
-            ctx,
-            "go",
-            place,
-            "failure",
-            get_reward("goal_failed"),
-            summary=f"No path to {place}",
-        )
-        return await wander_action(ctx)
+        # Compute new path, avoiding denied tiles
+        denied = set(ctx.walker.denied_tiles.keys())
+        path = find_path(ctx.map_reader, sx, sy, tx, ty, max_steps=100, denied_tiles=denied)
+        if not path:
+            goal = ctx.blackboard.pop("current_goal", None)
+            ctx.blackboard.pop("move_target", None)
+            _clear_path_cache(ctx)
+            place = goal["place"] if goal else "unknown"
+            await _record_episode(
+                ctx,
+                "go",
+                place,
+                "failure",
+                get_reward("goal_failed"),
+                summary=f"No path to {place}",
+            )
+            return await wander_action(ctx)
+
+    # Cache the path
+    ctx.blackboard["cached_path"] = path
+    ctx.blackboard["cached_path_target"] = (tx, ty)
 
     next_x, next_y = path[0]
     direction = direction_to(sx, sy, next_x, next_y)
 
+    # Check for doors at the next tile
+    door_serial = _find_door_at(ctx, next_x, next_y)
+    if door_serial is not None:
+        await ctx.conn.send_packet(build_double_click(door_serial))
+        ctx.walker.clear_denied_tile(next_x, next_y)
+        logger.info("door_opening", serial=f"0x{door_serial:08X}", pos=f"({next_x},{next_y})")
+        return Status.RUNNING
+
+    # Record pending step for denial tracking (both turns and steps send walk packets)
+    ctx.walker._pending_step_tile = (next_x, next_y)
+
+    # Turn first if needed
     current_dir = ctx.perception.self_state.direction
     if current_dir != direction:
         seq = ctx.walker.next_sequence()
@@ -304,6 +411,8 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
         ctx.perception.self_state.direction = direction
         return Status.SUCCESS
 
+    # Take a step
+
     seq = ctx.walker.next_sequence()
     fastwalk = ctx.walker.pop_fast_walk_key()
     pkt = build_walk_request(direction, seq, fastwalk)
@@ -312,6 +421,14 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     ctx.walker.last_step_time = (
         asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
     )
+
+    # Invalidate cache — the first step is consumed
+    path_rest = path[1:]
+    if path_rest:
+        ctx.blackboard["cached_path"] = path_rest
+    else:
+        _clear_path_cache(ctx)
+
     return Status.SUCCESS
 
 

@@ -56,6 +56,7 @@ def find_path(
     tx: int,
     ty: int,
     max_steps: int = 200,
+    denied_tiles: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     """A* pathfinding from (sx,sy) to (tx,ty).
 
@@ -99,6 +100,9 @@ def find_path(
             nx, ny = cx + dx, cy + dy
 
             if (nx, ny) in closed:
+                continue
+
+            if denied_tiles and (nx, ny) in denied_tiles:
                 continue
 
             tile = map_reader.get_tile(nx, ny)

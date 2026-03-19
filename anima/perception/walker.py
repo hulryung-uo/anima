@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from anima.perception.event_stream import EventStream, GameEventType
 from anima.perception.self_state import SelfState
@@ -12,6 +13,15 @@ MAX_FAST_WALK_STACK_SIZE = 5
 TURN_DELAY_MS = 100
 WALK_DELAY_MS = 400
 RUN_DELAY_MS = 200
+
+# Denied tile cache
+DENIED_TILE_EXPIRY_S = 300.0  # 5 minutes
+MAX_DENIED_TILES = 500
+
+# Consecutive denial thresholds
+CONSECUTIVE_DENIAL_WANDER = 3   # after 3 denials, give up goal and wander
+CONSECUTIVE_DENIAL_COOLDOWN = 5  # after 5 denials, long cooldown
+CONSECUTIVE_DENIAL_COOLDOWN_MS = 5000
 
 
 class WalkerManager:
@@ -26,11 +36,24 @@ class WalkerManager:
         self.last_step_time: float = 0.0
         self.fast_walk_keys: list[int] = [0] * MAX_FAST_WALK_STACK_SIZE
 
+        # Denied tile cache: (x, y) -> timestamp
+        self.denied_tiles: dict[tuple[int, int], float] = {}
+
+        # Consecutive denial tracking
+        self.consecutive_denials: int = 0
+        self._denied_target: tuple[int, int] | None = None
+
+        # Pending step tile — set before sending walk, cleared on confirm/deny
+        self._pending_step_tile: tuple[int, int] | None = None
+
     def reset(self) -> None:
         self.steps_count = 0
         self.walk_sequence = 0
         self.walking_failed = False
         self.last_step_time = 0.0
+        self.consecutive_denials = 0
+        self._denied_target = None
+        self._pending_step_tile = None
 
     def set_fast_walk_keys(self, keys: list[int]) -> None:
         for i in range(min(len(keys), MAX_FAST_WALK_STACK_SIZE)):
@@ -61,11 +84,19 @@ class WalkerManager:
     def confirm_walk(self, seq: int) -> None:
         if self.steps_count > 0:
             self.steps_count -= 1
+        self.consecutive_denials = 0
+        self._pending_step_tile = None
         self._events.emit(GameEventType.WALK_CONFIRMED, {"seq": seq})
 
     def deny_walk(self, seq: int, x: int, y: int, z: int, direction: int) -> None:
+        # Record the denied tile if we know which one we tried
+        if self._pending_step_tile is not None:
+            self.record_denied_tile(*self._pending_step_tile)
+            self._pending_step_tile = None
+
         self.steps_count = 0
         self.walking_failed = False
+        self.consecutive_denials += 1
         # Brief cooldown after deny to prevent rapid re-attempts
         self.last_step_time = asyncio.get_event_loop().time() * 1000 + WALK_DELAY_MS
         self.sync_position(x, y, z, direction)
@@ -92,3 +123,52 @@ class WalkerManager:
             and self.steps_count < MAX_STEP_COUNT
             and now >= self.last_step_time
         )
+
+    # ------------------------------------------------------------------
+    # Denied tile cache
+    # ------------------------------------------------------------------
+
+    def record_denied_tile(self, x: int, y: int) -> None:
+        """Record a tile that was denied by the server."""
+        self.denied_tiles[(x, y)] = time.time()
+        # Prune if too many
+        if len(self.denied_tiles) > MAX_DENIED_TILES:
+            oldest = sorted(self.denied_tiles.items(), key=lambda t: t[1])
+            for tile, _ in oldest[: len(self.denied_tiles) - MAX_DENIED_TILES]:
+                del self.denied_tiles[tile]
+
+    def is_tile_denied(self, x: int, y: int) -> bool:
+        """Check if a tile is in the denied cache (not expired)."""
+        ts = self.denied_tiles.get((x, y))
+        if ts is None:
+            return False
+        if time.time() - ts >= DENIED_TILE_EXPIRY_S:
+            del self.denied_tiles[(x, y)]
+            return False
+        return True
+
+    def clear_denied_tile(self, x: int, y: int) -> None:
+        """Remove a specific tile from the denied cache (e.g. after opening a door)."""
+        self.denied_tiles.pop((x, y), None)
+
+    # ------------------------------------------------------------------
+    # Stuck detection
+    # ------------------------------------------------------------------
+
+    def check_stuck(self, target: tuple[int, int] | None) -> str:
+        """Check if we're stuck trying to reach a target.
+
+        Returns:
+            "ok" — keep going
+            "wander" — give up this path and try wandering
+            "cooldown" — too many denials, long cooldown needed
+        """
+        if target != self._denied_target:
+            self.consecutive_denials = 0
+            self._denied_target = target
+
+        if self.consecutive_denials >= CONSECUTIVE_DENIAL_COOLDOWN:
+            return "cooldown"
+        if self.consecutive_denials >= CONSECUTIVE_DENIAL_WANDER:
+            return "wander"
+        return "ok"

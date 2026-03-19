@@ -160,3 +160,134 @@ class TestFindPath:
         assert path[-1] == (5, 2)
         for x, y in path:
             assert (x, y) not in m.blocked
+
+    def test_denied_tiles_avoided(self) -> None:
+        m = MockMapReader()
+        denied = {(1, 0), (1, 1)}
+        path = find_path(m, 0, 0, 3, 0, denied_tiles=denied)
+        assert len(path) > 0
+        assert path[-1] == (3, 0)
+        for x, y in path:
+            assert (x, y) not in denied
+
+    def test_denied_tiles_none_default(self) -> None:
+        m = MockMapReader()
+        # No denied tiles — same behavior as before
+        path = find_path(m, 0, 0, 3, 0, denied_tiles=None)
+        assert len(path) == 3
+        assert path[-1] == (3, 0)
+
+    def test_denied_tiles_blocks_all_paths(self) -> None:
+        m = MockMapReader()
+        # Deny all tiles around target
+        denied = set()
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                denied.add((5 + dx, 5 + dy))
+        path = find_path(m, 0, 0, 5, 5, denied_tiles=denied)
+        assert path == []
+
+    def test_denied_tiles_forces_detour(self) -> None:
+        m = MockMapReader()
+        # Deny the direct diagonal path, forcing a detour
+        denied = {(1, 1), (2, 2)}
+        path = find_path(m, 0, 0, 3, 3, denied_tiles=denied)
+        assert len(path) > 0
+        assert path[-1] == (3, 3)
+        for x, y in path:
+            assert (x, y) not in denied
+
+
+class TestWalkerDeniedTiles:
+    """Test WalkerManager denied tile cache and stuck detection."""
+
+    def _make_walker(self):
+        from anima.perception.event_stream import EventStream
+        from anima.perception.self_state import SelfState
+        from anima.perception.walker import WalkerManager
+        ss = SelfState(serial=1)
+        events = EventStream()
+        return WalkerManager(ss, events)
+
+    def test_record_and_check_denied(self) -> None:
+        w = self._make_walker()
+        w.record_denied_tile(10, 20)
+        assert w.is_tile_denied(10, 20)
+        assert not w.is_tile_denied(10, 21)
+
+    def test_denied_tile_expiry(self) -> None:
+        import time as _time
+        from anima.perception.walker import DENIED_TILE_EXPIRY_S
+        w = self._make_walker()
+        # Record with an old timestamp
+        w.denied_tiles[(5, 5)] = _time.time() - DENIED_TILE_EXPIRY_S - 1
+        assert not w.is_tile_denied(5, 5)
+        assert (5, 5) not in w.denied_tiles  # should be cleaned up
+
+    def test_clear_denied_tile(self) -> None:
+        w = self._make_walker()
+        w.record_denied_tile(10, 20)
+        w.clear_denied_tile(10, 20)
+        assert not w.is_tile_denied(10, 20)
+
+    def test_deny_walk_records_pending_tile(self) -> None:
+        w = self._make_walker()
+        w._pending_step_tile = (15, 25)
+        w.deny_walk(1, 10, 20, 0, 0)
+        assert w.is_tile_denied(15, 25)
+        assert w._pending_step_tile is None
+
+    def test_confirm_walk_clears_pending(self) -> None:
+        w = self._make_walker()
+        w.steps_count = 1
+        w._pending_step_tile = (15, 25)
+        w.confirm_walk(1)
+        assert w._pending_step_tile is None
+        assert not w.is_tile_denied(15, 25)
+
+    def test_consecutive_denials_increment(self) -> None:
+        w = self._make_walker()
+        w.deny_walk(1, 10, 20, 0, 0)
+        w.deny_walk(2, 10, 20, 0, 0)
+        w.deny_walk(3, 10, 20, 0, 0)
+        assert w.consecutive_denials == 3
+
+    def test_confirm_resets_consecutive(self) -> None:
+        w = self._make_walker()
+        w.deny_walk(1, 10, 20, 0, 0)
+        w.deny_walk(2, 10, 20, 0, 0)
+        w.steps_count = 1
+        w.confirm_walk(3)
+        assert w.consecutive_denials == 0
+
+    def test_check_stuck_ok(self) -> None:
+        w = self._make_walker()
+        assert w.check_stuck((100, 200)) == "ok"
+
+    def test_check_stuck_wander(self) -> None:
+        w = self._make_walker()
+        w.consecutive_denials = 3
+        w._denied_target = (100, 200)
+        assert w.check_stuck((100, 200)) == "wander"
+
+    def test_check_stuck_cooldown(self) -> None:
+        w = self._make_walker()
+        w.consecutive_denials = 5
+        w._denied_target = (100, 200)
+        assert w.check_stuck((100, 200)) == "cooldown"
+
+    def test_check_stuck_resets_on_new_target(self) -> None:
+        w = self._make_walker()
+        w.consecutive_denials = 4
+        w._denied_target = (100, 200)
+        assert w.check_stuck((300, 400)) == "ok"
+        assert w.consecutive_denials == 0
+
+    def test_max_denied_tiles_pruned(self) -> None:
+        from anima.perception.walker import MAX_DENIED_TILES
+        w = self._make_walker()
+        for i in range(MAX_DENIED_TILES + 50):
+            w.record_denied_tile(i, 0)
+        assert len(w.denied_tiles) <= MAX_DENIED_TILES
