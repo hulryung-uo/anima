@@ -70,15 +70,23 @@ async def _find_backpack_item(ctx: BrainContext, graphic_ids: set[int]) -> ItemI
     return None
 
 
-async def _wait_for_gump(ctx: BrainContext, timeout: float = GUMP_TIMEOUT) -> GumpData | None:
-    """Poll self_state.gumps until a new gump appears or timeout is reached."""
+async def _wait_for_gump(
+    ctx: BrainContext,
+    timeout: float = GUMP_TIMEOUT,
+    exclude_layout: str = "",
+) -> GumpData | None:
+    """Poll self_state.gumps until a new gump appears or timeout is reached.
+
+    If exclude_layout is set, skip gumps with identical layout (waiting for
+    a server-updated version of the same gump).
+    """
     ss = ctx.perception.self_state
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if ss.gumps:
-            # Return the most recently added gump
-            gump_id = next(iter(ss.gumps))
-            return ss.gumps[gump_id]
+        for gump in ss.gumps.values():
+            if exclude_layout and gump.layout == exclude_layout:
+                continue
+            return gump
         await asyncio.sleep(GUMP_POLL_INTERVAL)
     return None
 
@@ -216,11 +224,12 @@ class CraftCarpentry(Skill):
                 duration_ms=(time.monotonic() - start) * 1000,
             )
 
+        prev_layout = gump.layout
         await _click_gump_button(ctx, gump, category_btn.button_id)
 
-        # 8. Wait for updated gump with item list
+        # 8. Wait for updated gump with item list (different layout)
         await asyncio.sleep(0.3)
-        gump = await _wait_for_gump(ctx)
+        gump = await _wait_for_gump(ctx, exclude_layout=prev_layout)
         if not gump:
             return SkillResult(
                 success=False,

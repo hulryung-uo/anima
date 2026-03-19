@@ -109,6 +109,7 @@ class GumpData:
         """Find a reply button whose nearest text label contains *substring*.
 
         Useful for crafting menus: find the button next to "Boards" etc.
+        Strips HTML tags from resolved text before matching.
         """
         substring_lower = substring.lower()
         # Build (text_id → resolved string) for fast lookup
@@ -116,7 +117,9 @@ class GumpData:
         for t in self.texts:
             resolved = self.get_text(t.text_id)
             if resolved:
-                label_positions.append((t.x, t.y, resolved))
+                # Strip HTML tags (e.g. <CENTER>text</CENTER>)
+                clean = re.sub(r"<[^>]+>", "", resolved)
+                label_positions.append((t.x, t.y, clean))
 
         best_button: GumpButton | None = None
         best_dist = float("inf")
