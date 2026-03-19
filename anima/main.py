@@ -224,12 +224,20 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         pkt_handler = PacketHandler()
         register_handlers(pkt_handler, perception, walker)
 
+        # Load persona early so we can use its name for character creation
+        persona = load_persona_by_name(cfg.character.persona)
+
+        # Use persona name as character name (config name is only an override)
+        char_name = cfg.character.name
+        if char_name == "Anima" and persona.name != "Anima":
+            char_name = persona.name
+
         result = await conn.login(
             cfg.server.host,
             cfg.server.port,
             cfg.account.username,
             cfg.account.password,
-            character_name=cfg.character.name,
+            character_name=char_name,
             character_template=cfg.character.template,
             character_persona=cfg.character.persona,
             character_city=cfg.character.city_index,
@@ -276,8 +284,6 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         memory_db = MemoryDB(cfg.memory.db_path)
         await memory_db.init()
 
-        # Load persona
-        persona = load_persona_by_name(cfg.character.persona)
         logger.info("persona_loaded", name=persona.name, title=persona.title)
 
         # Initialize forum client if enabled
