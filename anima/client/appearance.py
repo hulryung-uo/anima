@@ -64,6 +64,7 @@ PERSONA_STATS: dict[str, tuple[int, int, int]] = {
     "mage":        (10, 10, 60),
     "bard":        (15, 30, 35),
     "ranger":      (40, 30, 10),
+    "woodcutter":  (50, 20, 10),
 }
 
 # Initial skills: list of (skill_id, value), up to 4 skills, values should sum to 100
@@ -78,6 +79,7 @@ PERSONA_SKILLS: dict[str, list[tuple[int, int]]] = {
     "mage":        [(25, 50), (27, 50), (0, 0), (0, 0)],      # Magery, Meditation
     "bard":        [(46, 50), (48, 50), (0, 0), (0, 0)],      # Musicianship, Peacemaking
     "ranger":      [(31, 50), (44, 50), (0, 0), (0, 0)],      # Archery, Lumberjacking
+    "woodcutter":  [(44, 50), (11, 50), (0, 0), (0, 0)],      # Lumberjacking, Carpentry
 }
 
 

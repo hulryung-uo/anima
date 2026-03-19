@@ -121,6 +121,13 @@ PERSONA_SKILL_PROFILES: dict[str, dict] = {
         ],
         "stats_lock": (Lock.UP, Lock.UP, Lock.LOCKED),
     },
+    "woodcutter": {
+        "skills_up": [
+            SKILL_LUMBERJACKING, SKILL_CARPENTRY, SKILL_TINKERING,
+            SKILL_ARMS_LORE,
+        ],
+        "stats_lock": (Lock.UP, Lock.LOCKED, Lock.LOCKED),
+    },
 }
 
 

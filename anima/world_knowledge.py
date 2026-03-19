@@ -48,6 +48,8 @@ BRITAIN_LOCATIONS: list[Location] = [
              approach_x=1601, approach_y=1596),
     Location("Sweet Dreams Inn", 1585, 1590, "A cozy inn to rest.",
              approach_x=1585, approach_y=1598),
+    Location("Britain North Forest", 1620, 1554, "Dense forest north of town. Good for lumber."),
+    Location("Britain East Forest", 1640, 1551, "Oak and walnut trees east of town."),
 ]
 
 # Locations indexed by name for quick lookup

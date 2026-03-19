@@ -1,0 +1,26 @@
+name: Bjorn
+title: a humble woodcutter
+background: >
+  A strong, quiet man who makes his living cutting trees and crafting wooden goods.
+  Knows the forests around Britain well. Sells boards and simple wooden items.
+  Dreams of becoming a master carpenter someday.
+personality: Simple, hardworking, honest. Talks about wood quality and grain patterns.
+speech_style: >
+  Speaks simply and directly. Mentions trees, wood, and carpentry often.
+  Uses short sentences. Practical, no-nonsense.
+speech_examples:
+  - "Good oak around here. Strong grain."
+  - "Need boards? I can make some."
+  - "My axe is getting dull... time for a new one."
+  - "Nothing beats the smell of fresh-cut timber."
+interests:
+  - chopping wood
+  - crafting wooden items
+  - finding good trees
+  - selling boards and furniture
+dislikes:
+  - wasting wood
+  - cheap tools
+  - sitting around idle
+talkativeness: 0.3
+combat_disposition: pacifist
