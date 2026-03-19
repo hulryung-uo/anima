@@ -151,7 +151,23 @@ class ChopWood(Skill):
             if best_adj:
                 await go_to(ctx, best_adj[0], best_adj[1])
 
-            logger.debug("chop_walked", pos=f"({ss.x},{ss.y})")
+            # Check if we actually got close enough
+            new_dist = max(abs(tree_x - ss.x), abs(tree_y - ss.y))
+            if new_dist > 3:
+                # Give up on this tree — mark as unreachable
+                depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+                    "depleted_trees", {}
+                )
+                depleted[(tree_x, tree_y)] = time.time()
+                logger.info("chop_tree_unreachable", pos=f"({tree_x},{tree_y})", dist=new_dist)
+                if feed:
+                    feed.publish(
+                        "skill", "Can't reach tree, skipping", importance=1,
+                    )
+                return SkillResult(
+                    success=False, reward=-0.5,
+                    message=f"Tree at ({tree_x},{tree_y}) unreachable",
+                )
 
         if feed:
             feed.publish("skill", f"Chopping tree at ({tree_x},{tree_y})", importance=2)
