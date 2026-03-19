@@ -127,16 +127,21 @@ async def wander_action(ctx: BrainContext) -> Status:
     if not ctx.walker.can_walk():
         return Status.RUNNING
 
-    # If too many consecutive denials even during wander, stop trying for a while
+    # If too many consecutive denials, try to escape instead of just cooling down
     if ctx.walker.consecutive_denials >= 5:
+        logger.info("wander_stuck", denials=ctx.walker.consecutive_denials)
+        ctx.walker.consecutive_denials = 0
+        if ctx.map_reader is not None:
+            escaped = await _escape_stuck(ctx)
+            if escaped:
+                return Status.SUCCESS
+        # Couldn't escape — cooldown
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + 5000
         )
-        logger.info("wander_stuck_cooldown", denials=ctx.walker.consecutive_denials)
         feed = ctx.blackboard.get("activity_feed")
         if feed:
             feed.publish("movement", "Stuck — cooling down", importance=2)
-        ctx.walker.consecutive_denials = 0
         return Status.FAILURE
 
     # Track visited tiles
@@ -186,6 +191,11 @@ async def wander_action(ctx: BrainContext) -> Status:
         candidates.append((direction, score))
 
     if not candidates:
+        # All 8 adjacent tiles blocked — try pathfinding to a farther open tile
+        if ctx.map_reader is not None:
+            escaped = await _escape_stuck(ctx)
+            if escaped:
+                return Status.SUCCESS
         return Status.FAILURE
 
     # Bias toward nearest known location if no active goal
@@ -258,3 +268,56 @@ def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
             continue
         blocked.add((it.x, it.y))
     return blocked
+
+
+async def _escape_stuck(ctx: BrainContext) -> bool:
+    """Try to pathfind to an open tile when all 8 adjacent tiles are blocked.
+
+    Searches outward in a spiral pattern for a walkable tile, then
+    uses pathfinding (with larger max_steps) to get there.
+    """
+    ss = ctx.perception.self_state
+    sx, sy, sz = ss.x, ss.y, ss.z
+    denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
+
+    # Search for an open tile in expanding radius
+    for radius in range(3, 15):
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                if max(abs(dx), abs(dy)) != radius:
+                    continue  # only check the ring at this radius
+                tx, ty = sx + dx, sy + dy
+                if (tx, ty) in denied:
+                    continue
+                if ctx.map_reader is None:
+                    continue
+                tile = ctx.map_reader.get_tile(tx, ty)
+                can, _ = tile.walkable_z(sz)
+                if not can:
+                    continue
+
+                # Found open tile — pathfind there
+                path = find_path(
+                    ctx.map_reader, sx, sy, tx, ty,
+                    max_steps=300, denied_tiles=denied, current_z=sz,
+                )
+                if path:
+                    logger.info(
+                        "escape_stuck",
+                        target=f"({tx},{ty})",
+                        dist=radius,
+                        path_len=len(path),
+                    )
+                    feed = ctx.blackboard.get("activity_feed")
+                    if feed:
+                        feed.publish(
+                            "movement",
+                            f"Escaping stuck area → ({tx},{ty})",
+                            importance=2,
+                        )
+                    # Set as move target so _step_toward takes over
+                    ctx.blackboard["move_target"] = (tx, ty)
+                    ctx.blackboard.pop("current_goal", None)
+                    return True
+
+    return False
