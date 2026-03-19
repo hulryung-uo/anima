@@ -228,24 +228,10 @@ async def wander_action(ctx: BrainContext) -> Status:
     dx, dy = DIRECTION_DELTAS[direction]
     nx, ny = sx + dx, sy + dy
 
-    # Record pending step for denial tracking (turns also send walk packets)
+    # Record pending step for denial tracking
     ctx.walker._pending_step_tile = (nx, ny)
 
-    # Turn first if needed
-    current_dir = ctx.perception.self_state.direction
-    if current_dir != direction:
-        seq = ctx.walker.next_sequence()
-        fastwalk = ctx.walker.pop_fast_walk_key()
-        pkt = build_walk_request(direction, seq, fastwalk)
-        await ctx.conn.send_packet(pkt)
-        ctx.walker.steps_count += 1
-        ctx.walker.last_step_time = (
-            asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.turn_delay_ms
-        )
-        ctx.perception.self_state.direction = direction
-        return Status.SUCCESS
-
-    # Take a step
+    # Send walk request (direction includes turn + move)
     seq = ctx.walker.next_sequence()
     fastwalk = ctx.walker.pop_fast_walk_key()
     pkt = build_walk_request(direction, seq, fastwalk)

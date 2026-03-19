@@ -425,53 +425,42 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     ctx.blackboard["cached_path"] = path
     ctx.blackboard["cached_path_target"] = (tx, ty)
 
-    next_x, next_y = path[0]
-    direction = direction_to(sx, sy, next_x, next_y)
+    # Send multiple walk steps in one tick (up to pending limit)
+    steps_sent = 0
+    cx, cy = sx, sy
+    remaining_path = list(path)
 
-    # Check for doors at the next tile
-    door_serial = _find_door_at(ctx, next_x, next_y)
-    if door_serial is not None:
-        await ctx.conn.send_packet(build_double_click(door_serial))
-        ctx.walker.clear_denied_tile(next_x, next_y)
-        logger.info("door_opening", serial=f"0x{door_serial:08X}", pos=f"({next_x},{next_y})")
-        return Status.RUNNING
+    while remaining_path and ctx.walker.can_walk():
+        next_x, next_y = remaining_path[0]
+        direction = direction_to(cx, cy, next_x, next_y)
 
-    # Record pending step for denial tracking (both turns and steps send walk packets)
-    ctx.walker._pending_step_tile = (next_x, next_y)
+        # Check for doors at the next tile
+        door_serial = _find_door_at(ctx, next_x, next_y)
+        if door_serial is not None:
+            await ctx.conn.send_packet(build_double_click(door_serial))
+            ctx.walker.clear_denied_tile(next_x, next_y)
+            break
 
-    # Turn first if needed
-    current_dir = ctx.perception.self_state.direction
-    if current_dir != direction:
+        ctx.walker._pending_step_tile = (next_x, next_y)
         seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
         pkt = build_walk_request(direction, seq, fastwalk)
         await ctx.conn.send_packet(pkt)
         ctx.walker.steps_count += 1
         ctx.walker.last_step_time = (
-            asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.turn_delay_ms
+            asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
         )
-        ctx.perception.self_state.direction = direction
-        return Status.SUCCESS
+        cx, cy = next_x, next_y
+        remaining_path.pop(0)
+        steps_sent += 1
 
-    # Take a step
-
-    seq = ctx.walker.next_sequence()
-    fastwalk = ctx.walker.pop_fast_walk_key()
-    pkt = build_walk_request(direction, seq, fastwalk)
-    await ctx.conn.send_packet(pkt)
-    ctx.walker.steps_count += 1
-    ctx.walker.last_step_time = (
-        asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
-    )
-
-    # Invalidate cache — the first step is consumed
-    path_rest = path[1:]
-    if path_rest:
-        ctx.blackboard["cached_path"] = path_rest
+    # Update path cache
+    if remaining_path:
+        ctx.blackboard["cached_path"] = remaining_path
     else:
         _clear_path_cache(ctx)
 
-    return Status.SUCCESS
+    return Status.SUCCESS if steps_sent > 0 else Status.RUNNING
 
 
 def _parse_action(text: str) -> dict | None:
