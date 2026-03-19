@@ -231,7 +231,7 @@ class AnimaTUI(App):
     Screen { layout: vertical; }
     #top-row { height: 1fr; }
     #bot-row { height: 16; }
-    .panel { border: round gray; padding: 0 1; }
+    .panel { border: round gray; padding: 0 1; height: 100%; }
     #p-status { width: 2fr; }
     #p-activity { width: 3fr; }
     """
@@ -263,14 +263,14 @@ class AnimaTUI(App):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="top-row"):
-            yield Static(id="p-status", classes="panel")
-            yield Static(id="p-activity", classes="panel")
+            yield Static("Loading...", id="p-status", classes="panel")
+            yield Static("Loading...", id="p-activity", classes="panel")
         with Horizontal(id="bot-row"):
-            yield Static(id="p-nearby", classes="panel")
-            yield Static(id="p-journal", classes="panel")
-            yield Static(id="p-inventory", classes="panel")
-            yield Static(id="p-skills", classes="panel")
-            yield Static(id="p-qvalues", classes="panel")
+            yield Static("Nearby", id="p-nearby", classes="panel")
+            yield Static("Journal", id="p-journal", classes="panel")
+            yield Static("Inventory", id="p-inventory", classes="panel")
+            yield Static("Skills", id="p-skills", classes="panel")
+            yield Static("Q-Values", id="p-qvalues", classes="panel")
         yield Footer()
 
     # -- Lifecycle --
