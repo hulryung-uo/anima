@@ -134,6 +134,9 @@ async def llm_think(ctx: BrainContext) -> Status:
             _clear_path_cache(ctx)
             place = goal["place"] if goal else "destination"
             logger.info("goal_arrived", place=place, pos=f"({sx},{sy})")
+            feed = ctx.blackboard.get("activity_feed")
+            if feed:
+                feed.publish("movement", f"Arrived at {place}", importance=2)
             await _record_episode(
                 ctx,
                 "go",
@@ -239,6 +242,15 @@ async def llm_think(ctx: BrainContext) -> Status:
         duration_ms=f"{result.total_duration_ms:.0f}",
     )
 
+    feed = ctx.blackboard.get("activity_feed")
+    if feed:
+        feed.publish(
+            "brain",
+            f"Think: {act} — {reason[:60]}",
+            details={"action": act, "reason": reason},
+            importance=2,
+        )
+
     # Speak if warranted
     if say and not ctx.blackboard.get("pending_speech"):
         recent = ctx.perception.social.recent(count=3)
@@ -253,6 +265,9 @@ async def llm_think(ctx: BrainContext) -> Status:
         place_name = action.get("place", "")
         loc = find_location(place_name)
         if loc:
+            feed = ctx.blackboard.get("activity_feed")
+            if feed:
+                feed.publish("movement", f"Goal: go to {loc.name}", importance=2)
             # Use approach point for indoor locations
             nav_x, nav_y = loc.nav_x, loc.nav_y
             ctx.blackboard["current_goal"] = {

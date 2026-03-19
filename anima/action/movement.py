@@ -133,6 +133,9 @@ async def wander_action(ctx: BrainContext) -> Status:
             asyncio.get_event_loop().time() * 1000 + 5000
         )
         logger.info("wander_stuck_cooldown", denials=ctx.walker.consecutive_denials)
+        feed = ctx.blackboard.get("activity_feed")
+        if feed:
+            feed.publish("movement", "Stuck — cooling down", importance=2)
         ctx.walker.consecutive_denials = 0
         return Status.FAILURE
 

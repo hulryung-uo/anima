@@ -83,6 +83,9 @@ class MeleeAttack(Skill):
         # Attack target
         await ctx.conn.send_packet(build_attack(target_serial))
         logger.info("melee_attack_start", target=target_name)
+        feed = ctx.blackboard.get("activity_feed")
+        if feed:
+            feed.publish("combat", f"Attacking {target_name}", importance=2)
 
         # Monitor combat until target dies, we're hurt badly, or timeout
         deadline = time.monotonic() + COMBAT_TIMEOUT
@@ -118,6 +121,8 @@ class MeleeAttack(Skill):
                 "melee_kill", target=target_name,
                 hp_lost=hp_lost, duration_ms=f"{elapsed:.0f}",
             )
+            if feed:
+                feed.publish("combat", f"Killed {target_name}!", importance=3)
             return SkillResult(
                 success=True,
                 reward=reward,
@@ -130,6 +135,8 @@ class MeleeAttack(Skill):
                 "melee_disengage", target=target_name,
                 hp_lost=hp_lost, reason="timeout_or_retreat",
             )
+            if feed:
+                feed.publish("combat", f"Disengaged from {target_name}", importance=2)
             return SkillResult(
                 success=False,
                 reward=reward,

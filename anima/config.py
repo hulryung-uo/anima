@@ -73,6 +73,13 @@ class ForumConfig:
 
 
 @dataclass
+class MonitorConfig:
+    tui_enabled: bool = False
+    refresh_rate: float = 0.5
+    max_events: int = 200
+
+
+@dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     account: AccountConfig = field(default_factory=AccountConfig)
@@ -83,6 +90,7 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     forum: ForumConfig = field(default_factory=ForumConfig)
+    monitor: MonitorConfig = field(default_factory=MonitorConfig)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -144,5 +152,10 @@ def load_config(path: str | Path | None = None) -> Config:
         for k, v in raw["forum"].items():
             if hasattr(cfg.forum, k):
                 setattr(cfg.forum, k, v)
+
+    if "monitor" in raw:
+        for k, v in raw["monitor"].items():
+            if hasattr(cfg.monitor, k):
+                setattr(cfg.monitor, k, v)
 
     return cfg

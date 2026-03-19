@@ -19,6 +19,7 @@ from anima.brain.behavior_tree import (
 from anima.brain.think import llm_think
 from anima.perception.event_stream import GameEventType
 from anima.skills.forum_action import forum_read_action, forum_write_action
+from anima.skills.state import encode_state
 
 logger = structlog.get_logger()
 
@@ -49,6 +50,10 @@ async def _flee_action(ctx: BrainContext) -> Status:
         hp=ctx.perception.self_state.hits,
         hp_max=ctx.perception.self_state.hits_max,
     )
+    feed = ctx.blackboard.get("activity_feed")
+    if feed:
+        ss = ctx.perception.self_state
+        feed.publish("combat", f"Flee! HP={ss.hits}/{ss.hits_max}", importance=3)
     return Status.SUCCESS
 
 
@@ -79,11 +84,28 @@ async def _skill_action(ctx: BrainContext) -> Status:
     logger.info("skill_executing", skill=skill.name, category=skill.category)
     ctx.blackboard["last_skill_time"] = now
 
+    feed = ctx.blackboard.get("activity_feed")
+    if feed:
+        feed.publish("skill", f"Executing {skill.name}", details={"skill": skill.name})
+
     result = await skill.execute(ctx)
+
+    if feed:
+        icon = "OK" if result.success else "FAIL"
+        feed.publish(
+            "skill",
+            f"{icon}: {skill.name} (reward={result.reward:+.1f}) {result.message[:60]}",
+            details={"skill": skill.name, "reward": result.reward, "success": result.success},
+            importance=2 if result.success else 1,
+        )
 
     # Update Q-values
     next_available = await registry.available_skills(ctx)
     await selector.update(ctx, skill, result, agent_name, next_available)
+
+    # Snapshot Q-values for TUI
+    q_values = await selector._db.get_q_values(agent_name, encode_state(ctx))
+    ctx.blackboard["q_snapshot"] = q_values
 
     # Record episode in memory
     if ctx.memory_db:

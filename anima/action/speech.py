@@ -57,6 +57,11 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     if serial == 0xFFFFFFFF or speaker.lower() == "system":
         return Status.FAILURE
 
+    # Publish to activity feed
+    feed = ctx.blackboard.get("activity_feed")
+    if feed:
+        feed.publish("social", f'{speaker}: "{text[:60]}"', importance=1)
+
     # Record incoming speech in conversation history
     record_conversation(ctx, "user", f"{speaker}: {text}")
 
@@ -94,6 +99,8 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
         await ctx.conn.send_packet(build_unicode_speech(response))
         record_conversation(ctx, "assistant", response)
         logger.info("speech_t1", to=speaker, text=response)
+        if feed:
+            feed.publish("social", f'Replied to {speaker}: "{response}"', importance=2)
         return Status.SUCCESS
 
     # Tier 2: LLM response
@@ -112,6 +119,8 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
                 text=response,
                 duration_ms=f"{result.total_duration_ms:.0f}",
             )
+            if feed:
+                feed.publish("social", f'Replied to {speaker}: "{response[:60]}"', importance=2)
             return Status.SUCCESS
         logger.warning("speech_llm_failed", to=speaker)
 

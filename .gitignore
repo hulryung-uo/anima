@@ -11,3 +11,4 @@ build/
 .env
 config.yaml
 .playwright-mcp/
+*.log
