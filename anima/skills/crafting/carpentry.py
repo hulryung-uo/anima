@@ -99,14 +99,14 @@ async def _click_gump_button(ctx: BrainContext, gump: GumpData, button_id: int) 
 def _pick_item_to_craft(skill_value: float) -> CraftableItem:
     """Choose the best item to craft based on current skill level.
 
-    Picks the highest-difficulty item available to maximize skill gains.
+    Start with Boards (always useful, converts logs to boards).
+    Progress to harder items as skill improves.
     """
-    # For now, pick the last item in the list that the player can attempt.
-    # All items currently have min_skill 0.0, so default to the last one,
-    # but prefer Boards at very low skill for safety.
-    if skill_value < 20.0:
+    if skill_value < 40.0:
         return CRAFTABLE_ITEMS[0]  # Boards
-    return CRAFTABLE_ITEMS[-1]  # Wooden Shield (best for gains)
+    if skill_value < 60.0:
+        return CRAFTABLE_ITEMS[4]  # Wooden Box
+    return CRAFTABLE_ITEMS[5]  # Wooden Shield
 
 
 class CraftCarpentry(Skill):
@@ -199,6 +199,13 @@ class CraftCarpentry(Skill):
 
         # 7. Navigate gump: click category button
         category_btn = gump.find_button_near_text(target_item.category)
+        logger.debug(
+            "carpentry_category_search",
+            category=target_item.category,
+            found=category_btn is not None,
+            button_id=category_btn.button_id if category_btn else None,
+            available_texts=[gump.get_text(t.text_id) for t in gump.texts[:15]],
+        )
         if not category_btn:
             # Close the gump gracefully
             await _click_gump_button(ctx, gump, 0)
@@ -224,6 +231,13 @@ class CraftCarpentry(Skill):
 
         # 9. Click the specific item button
         item_btn = gump.find_button_near_text(target_item.name)
+        logger.debug(
+            "carpentry_item_search",
+            item=target_item.name,
+            found=item_btn is not None,
+            button_id=item_btn.button_id if item_btn else None,
+            available_texts=[gump.get_text(t.text_id) for t in gump.texts[:15]],
+        )
         if not item_btn:
             await _click_gump_button(ctx, gump, 0)
             return SkillResult(
@@ -233,12 +247,26 @@ class CraftCarpentry(Skill):
                 duration_ms=(time.monotonic() - start) * 1000,
             )
 
+        # Count materials before crafting
+        backpack = ss.equipment.get(0x15)
+        mats_before = sum(
+            it.amount for it in ctx.perception.world.items.values()
+            if it.container == backpack and it.graphic in MATERIAL_GRAPHICS
+        )
+
         await _click_gump_button(ctx, gump, item_btn.button_id)
 
         # 10. Wait for crafting to complete
         await asyncio.sleep(CRAFT_WAIT)
 
         elapsed = (time.monotonic() - start) * 1000
+
+        # Count materials after crafting
+        mats_after = sum(
+            it.amount for it in ctx.perception.world.items.values()
+            if it.container == backpack and it.graphic in MATERIAL_GRAPHICS
+        )
+        material_consumed = mats_before - mats_after
 
         # 11. Check result via system messages in the journal
         success_msgs = ctx.perception.social.search("You create")
@@ -276,10 +304,26 @@ class CraftCarpentry(Skill):
                 duration_ms=elapsed,
             )
         else:
-            # No definitive message — might have succeeded or failed silently
+            # No system message — check if materials were consumed as fallback
+            if material_consumed > 0:
+                logger.info(
+                    "carpentry_inferred_success",
+                    item=target_item.name,
+                    material_consumed=material_consumed,
+                    elapsed_ms=round(elapsed),
+                )
+                return SkillResult(
+                    success=True,
+                    reward=4.0,
+                    message=f"Crafted {target_item.name} (inferred from material use)",
+                    skill_gains=[(CARPENTRY_SKILL_ID, 0.1)],
+                    duration_ms=elapsed,
+                )
+
             logger.warning(
                 "carpentry_unknown_result",
                 item=target_item.name,
+                material_consumed=material_consumed,
                 elapsed_ms=round(elapsed),
             )
             return SkillResult(
