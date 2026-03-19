@@ -62,6 +62,16 @@ async def _skill_action(ctx: BrainContext) -> Status:
     from anima.skills.base import SkillRegistry
     from anima.skills.selector import SkillSelector
 
+    # Don't execute skills while actively walking to a destination
+    move_target = ctx.blackboard.get("move_target")
+    if move_target is not None:
+        sx = ctx.perception.self_state.x
+        sy = ctx.perception.self_state.y
+        tx, ty = move_target
+        # Only run skills if we've arrived (within 2 tiles)
+        if abs(sx - tx) > 2 or abs(sy - ty) > 2:
+            return Status.FAILURE
+
     now = time.time()
     last_skill = ctx.blackboard.get("last_skill_time", 0.0)
     if now - last_skill < SKILL_COOLDOWN:
