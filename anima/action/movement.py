@@ -90,11 +90,14 @@ async def wander_action(ctx: BrainContext) -> Status:
     # If too many consecutive denials, try to escape instead of just cooling down
     if ctx.walker.consecutive_denials >= 5:
         logger.info("wander_stuck", denials=ctx.walker.consecutive_denials)
+        escape_fails = ctx.blackboard.get("escape_fail_count", 0)
         ctx.walker.consecutive_denials = 0
         if ctx.map_reader is not None:
-            escaped = await _escape_stuck(ctx)
+            escaped = await _escape_stuck(ctx, full_clear=escape_fails >= 2)
             if escaped:
+                ctx.blackboard["escape_fail_count"] = 0
                 return Status.SUCCESS
+            ctx.blackboard["escape_fail_count"] = escape_fails + 1
         # Couldn't escape — cooldown
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + 5000
@@ -216,7 +219,7 @@ def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
     return blocked
 
 
-async def _escape_stuck(ctx: BrainContext) -> bool:
+async def _escape_stuck(ctx: BrainContext, full_clear: bool = False) -> bool:
     """Try to pathfind to an open tile when all 8 adjacent tiles are blocked.
 
     Searches outward in a spiral pattern for a walkable tile, then
@@ -224,21 +227,28 @@ async def _escape_stuck(ctx: BrainContext) -> bool:
 
     Clears nearby denied tiles first — they may have been blocked by
     dynamic obstacles (NPCs/mobiles) that have since moved.
+
+    If full_clear=True, clears ALL denied tiles (used after repeated escape failures).
     """
     ss = ctx.perception.self_state
     sx, sy, sz = ss.x, ss.y, ss.z
 
-    # Clear denied tiles within radius 3 so the pathfinder can try them again.
-    # If they're still blocked, the server will deny and re-add them.
-    cleared = 0
-    for dy in range(-3, 4):
-        for dx in range(-3, 4):
-            tile_key = (sx + dx, sy + dy)
-            if tile_key in ctx.walker.denied_tiles:
-                del ctx.walker.denied_tiles[tile_key]
-                cleared += 1
-    if cleared:
-        logger.info("escape_clear_denied", cleared=cleared)
+    if full_clear:
+        cleared = len(ctx.walker.denied_tiles)
+        ctx.walker.clear_all_denied_tiles()
+        logger.info("escape_full_clear", cleared=cleared)
+    else:
+        # Clear denied tiles within radius 8 so the pathfinder can try them again.
+        # If they're still blocked, the server will deny and re-add them.
+        cleared = 0
+        for dy in range(-8, 9):
+            for dx in range(-8, 9):
+                tile_key = (sx + dx, sy + dy)
+                if tile_key in ctx.walker.denied_tiles:
+                    del ctx.walker.denied_tiles[tile_key]
+                    cleared += 1
+        if cleared:
+            logger.info("escape_clear_denied", cleared=cleared, radius=8)
 
     denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
 
