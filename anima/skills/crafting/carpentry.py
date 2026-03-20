@@ -92,7 +92,12 @@ class CraftCarpentry(Skill):
 
         if not (bp_graphics & ALL_TOOL_GRAPHICS):
             return False
-        if not (bp_graphics & MATERIAL_GRAPHICS):
+
+        # Check minimum material amount (need at least 4 for cheapest recipe)
+        materials = sum(
+            it.amount for it in bp_items if it.graphic in MATERIAL_GRAPHICS
+        )
+        if materials < 4:
             return False
 
         skill_info = ss.skills.get(CARPENTRY_SKILL_ID)

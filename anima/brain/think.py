@@ -117,7 +117,10 @@ def _build_goal_context(ctx: BrainContext) -> str:
     if ss.weight_max > 0:
         pct = ss.weight / ss.weight_max * 100
         if pct > 80:
-            parts.append(f"WARNING: Carrying {ss.weight}/{ss.weight_max} stones ({pct:.0f}% full)!")
+            parts.append(
+                f"WARNING: Carrying {ss.weight}/{ss.weight_max} stones ({pct:.0f}% full)! "
+                f"Too heavy to gather more. Go sell items at a shop or drop heavy items."
+            )
 
     return "\n".join(parts)
 
