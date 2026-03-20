@@ -30,7 +30,7 @@ class WalkerManager:
     def __init__(self, self_state: SelfState, events: EventStream) -> None:
         self._self_state = self_state
         self._events = events
-        self.walk_sequence: int = 0
+        self.walk_sequence: int = 1
         self.steps_count: int = 0
         self.walking_failed: bool = False
         self.last_step_time: float = 0.0
@@ -51,7 +51,7 @@ class WalkerManager:
 
     def reset(self) -> None:
         self.steps_count = 0
-        self.walk_sequence = 0
+        self.walk_sequence = 1
         self.walking_failed = False
         self.last_step_time = 0.0
         self.consecutive_denials = 0
@@ -88,6 +88,19 @@ class WalkerManager:
         if self.steps_count > 0:
             self.steps_count -= 1
         self.consecutive_denials = 0
+        # Predictively update position to where this step was heading.
+        # Without this, self_state stays at the old position after a
+        # successful walk, causing pathfinding to calculate from the
+        # wrong spot and cascading into more server denials.
+        if self._pending_step_tile is not None:
+            nx, ny = self._pending_step_tile
+            self._self_state.x = nx
+            self._self_state.y = ny
+            self._events.emit(
+                GameEventType.POSITION_CHANGED,
+                {"x": nx, "y": ny, "z": self._self_state.z,
+                 "direction": self._self_state.direction},
+            )
         self._pending_step_tile = None
         self._events.emit(GameEventType.WALK_CONFIRMED, {"seq": seq})
 
