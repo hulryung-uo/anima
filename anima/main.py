@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
-from pathlib import Path
 
 import structlog
 
@@ -312,22 +311,10 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             brain_loop(brain),
         ]
 
-        if cfg.monitor.tui_enabled:
-            from anima.monitor.tui import AnimaTUI
-
-            tui = AnimaTUI(
-                avatar.perception, avatar.feed, brain_ctx.blackboard,
-                cfg.monitor.refresh_rate,
-            )
-            try:
-                await asyncio.gather(*game_coros, tui.run())
-            finally:
-                await avatar.close()
-        else:
-            try:
-                await asyncio.gather(*game_coros)
-            finally:
-                await avatar.close()
+        try:
+            await asyncio.gather(*game_coros)
+        finally:
+            await avatar.close()
     except ConnectionError as e:
         logger.error("connection_error", error=str(e))
     except KeyboardInterrupt:
@@ -344,7 +331,6 @@ def main() -> None:
     parser.add_argument(
         "--recreate", action="store_true", help="Delete existing character and recreate"
     )
-    parser.add_argument("--tui", action="store_true", help="Enable Rich TUI dashboard")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -358,22 +344,6 @@ def main() -> None:
         cfg.account.username = args.user
     if args.password:
         cfg.account.password = args.password
-    if args.tui:
-        cfg.monitor.tui_enabled = True
-
-    # If TUI mode, redirect structlog to file BEFORE anything starts
-    if cfg.monitor.tui_enabled:
-        log_path = Path("data/anima.log")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        _log_file = open(log_path, "a")  # noqa: SIM115
-        structlog.configure(
-            processors=[
-                structlog.processors.TimeStamper(fmt="iso"),
-                structlog.dev.ConsoleRenderer(colors=False),
-            ],
-            wrapper_class=structlog.make_filtering_bound_logger(0),
-            logger_factory=structlog.PrintLoggerFactory(file=_log_file),
-        )
 
     asyncio.run(run(cfg, delete_existing=args.recreate))
 
