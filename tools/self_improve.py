@@ -18,10 +18,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # Project root
 ROOT = Path(__file__).parent.parent
@@ -82,7 +85,10 @@ def parse_recent_log(minutes: int = 10) -> dict:
     positions: set[str] = set()
 
     with open(LOG_FILE) as f:
-        for line in f:
+        for raw_line in f:
+            # Strip ANSI color codes (log file may contain them)
+            line = _ANSI_RE.sub("", raw_line)
+
             # Quick filter — only process recent lines
             if "2026-03-" not in line:
                 continue

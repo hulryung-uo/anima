@@ -507,7 +507,7 @@ def main() -> None:
         structlog.configure(
             processors=[
                 structlog.processors.TimeStamper(fmt="iso"),
-                structlog.dev.ConsoleRenderer(),
+                structlog.dev.ConsoleRenderer(colors=False),
             ],
             wrapper_class=structlog.make_filtering_bound_logger(0),
             logger_factory=structlog.PrintLoggerFactory(file=_log_file),
