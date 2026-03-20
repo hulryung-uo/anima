@@ -87,6 +87,10 @@ async def wander_action(ctx: BrainContext) -> Status:
     if not ctx.walker.can_walk():
         return Status.RUNNING
 
+    # Reset escape counter when movement is actually working
+    if ctx.walker.consecutive_denials == 0:
+        ctx.blackboard.pop("escape_fail_count", None)
+
     # If too many consecutive denials, try to escape instead of just cooling down
     if ctx.walker.consecutive_denials >= 5:
         logger.info("wander_stuck", denials=ctx.walker.consecutive_denials)
@@ -94,10 +98,10 @@ async def wander_action(ctx: BrainContext) -> Status:
         ctx.walker.consecutive_denials = 0
         if ctx.map_reader is not None:
             escaped = await _escape_stuck(ctx, full_clear=escape_fails >= 2)
-            if escaped:
-                ctx.blackboard["escape_fail_count"] = 0
-                return Status.SUCCESS
+            # Always increment — only reset on actual confirmed movement above
             ctx.blackboard["escape_fail_count"] = escape_fails + 1
+            if escaped:
+                return Status.SUCCESS
         # Couldn't escape — cooldown
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + 5000
@@ -249,17 +253,17 @@ async def _escape_stuck(ctx: BrainContext, full_clear: bool = False) -> bool:
         ctx.walker.clear_all_denied_tiles()
         logger.info("escape_full_clear", cleared=cleared)
     else:
-        # Clear denied tiles within radius 8 so the pathfinder can try them again.
+        # Clear denied tiles within radius 12 so the pathfinder can try them again.
         # If they're still blocked, the server will deny and re-add them.
         cleared = 0
-        for dy in range(-8, 9):
-            for dx in range(-8, 9):
+        for dy in range(-12, 13):
+            for dx in range(-12, 13):
                 tile_key = (sx + dx, sy + dy)
                 if tile_key in ctx.walker.denied_tiles:
                     del ctx.walker.denied_tiles[tile_key]
                     cleared += 1
         if cleared:
-            logger.info("escape_clear_denied", cleared=cleared, radius=8)
+            logger.info("escape_clear_denied", cleared=cleared, radius=12)
 
     denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
 
@@ -298,9 +302,50 @@ async def _escape_stuck(ctx: BrainContext, full_clear: bool = False) -> bool:
                             f"Escaping stuck area → ({tx},{ty})",
                             importance=2,
                         )
+                    # Take the first step immediately while denied tiles are cleared
+                    next_x, next_y = path[0]
+                    direction = direction_to(sx, sy, next_x, next_y)
+                    ctx.walker._pending_step_tile = (next_x, next_y)
+                    seq = ctx.walker.next_sequence()
+                    fastwalk = ctx.walker.pop_fast_walk_key()
+                    pkt = build_walk_request(direction, seq, fastwalk)
+                    await ctx.conn.send_packet(pkt)
+                    ctx.walker.steps_count += 1
+                    ctx.walker.last_step_time = (
+                        asyncio.get_event_loop().time() * 1000
+                        + ctx.cfg.movement.walk_delay_ms
+                    )
                     # Set as move target so _step_toward takes over
                     ctx.blackboard["move_target"] = (tx, ty)
                     ctx.blackboard.pop("current_goal", None)
                     return True
+
+    # Last resort: brute-force walk in all 8 directions ignoring map data
+    logger.warning("escape_brute_force", pos=f"({sx},{sy})")
+    ctx.walker.clear_all_denied_tiles()
+    for direction in range(8):
+        if not ctx.walker.can_walk():
+            await asyncio.sleep(0.5)
+            if not ctx.walker.can_walk():
+                continue
+        dx, dy = DIRECTION_DELTAS[direction]
+        nx, ny = sx + dx, sy + dy
+        ctx.walker._pending_step_tile = (nx, ny)
+        seq = ctx.walker.next_sequence()
+        fastwalk = ctx.walker.pop_fast_walk_key()
+        pkt = build_walk_request(direction, seq, fastwalk)
+        await ctx.conn.send_packet(pkt)
+        ctx.walker.steps_count += 1
+        ctx.walker.last_step_time = (
+            asyncio.get_event_loop().time() * 1000 + 400
+        )
+        await asyncio.sleep(0.5)
+        if ss.x != sx or ss.y != sy:
+            logger.info(
+                "escape_brute_success",
+                direction=direction,
+                pos=f"({ss.x},{ss.y})",
+            )
+            return True
 
     return False
