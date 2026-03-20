@@ -389,12 +389,7 @@ def _get_cached_path(
 # ------------------------------------------------------------------
 
 def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
-    """Collect (x, y) of ground-level world items that actually have the IMPASSABLE flag.
-
-    Previously this blocked ALL ground items, which incorrectly treated walkable
-    items (logs, ore, etc.) as obstacles — trapping the agent after gathering.
-    Items that block without the flag are handled by the denied_tiles cache.
-    """
+    """Collect (x, y) of ground-level world items that actually have the IMPASSABLE flag."""
     if ctx.map_reader is None:
         return set()
     blocked: set[tuple[int, int]] = set()
@@ -407,6 +402,29 @@ def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
         if flags & FLAG_IMPASSABLE:
             blocked.add((it.x, it.y))
     return blocked
+
+
+def _scan_building_walls(ctx: BrainContext, radius: int = 20) -> set[tuple[int, int]]:
+    """Pre-scan map statics near agent for impassable tiles (building walls, etc).
+
+    This helps A* avoid buildings from the start instead of discovering them
+    one tile at a time during pathfinding.
+    """
+    if ctx.map_reader is None:
+        return set()
+    ss = ctx.perception.self_state
+    sx, sy, sz = ss.x, ss.y, ss.z
+    walls: set[tuple[int, int]] = set()
+
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            x, y = sx + dx, sy + dy
+            tile = ctx.map_reader.get_tile(x, y)
+            can, _ = tile.walkable_z(sz)
+            if not can:
+                walls.add((x, y))
+
+    return walls
 
 
 # ------------------------------------------------------------------
@@ -453,24 +471,27 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     path = _get_cached_path(ctx, sx, sy, tx, ty)
 
     if not path:
-        denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
+        denied = (
+            set(ctx.walker.denied_tiles.keys())
+            | _impassable_world_items(ctx)
+            | _scan_building_walls(ctx, radius=25)
+        )
         sz = ctx.perception.self_state.z
 
         # If destination is far, aim for an intermediate waypoint
         dist = max(abs(tx - sx), abs(ty - sy))
-        if dist > 50:
-            # Aim ~40 tiles toward destination
-            ratio = 40.0 / dist
+        if dist > 80:
+            ratio = 60.0 / dist
             mid_x = int(sx + (tx - sx) * ratio)
             mid_y = int(sy + (ty - sy) * ratio)
             path = find_path(
                 ctx.map_reader, sx, sy, mid_x, mid_y,
-                max_steps=150, denied_tiles=denied, current_z=sz,
+                max_steps=1500, denied_tiles=denied, current_z=sz,
             )
         else:
             path = find_path(
                 ctx.map_reader, sx, sy, tx, ty,
-                max_steps=200, denied_tiles=denied, current_z=sz,
+                max_steps=2000, denied_tiles=denied, current_z=sz,
             )
 
         if not path:
