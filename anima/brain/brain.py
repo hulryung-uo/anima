@@ -50,10 +50,9 @@ async def _flee_action(ctx: BrainContext) -> Status:
         hp=ctx.perception.self_state.hits,
         hp_max=ctx.perception.self_state.hits_max,
     )
-    feed = ctx.blackboard.get("activity_feed")
-    if feed:
-        ss = ctx.perception.self_state
-        feed.publish("combat", f"Flee! HP={ss.hits}/{ss.hits_max}", importance=3)
+    from anima.core.publish import pub
+    ss = ctx.perception.self_state
+    pub(ctx, "combat.flee", f"Flee! HP={ss.hits}/{ss.hits_max}", importance=3)
     return Status.SUCCESS
 
 
@@ -92,9 +91,8 @@ async def _skill_action(ctx: BrainContext) -> Status:
             f"May need to move elsewhere, get materials, or try something different."
         )
         logger.info("skill_too_many_fails", fails=consecutive_fails)
-        feed = ctx.blackboard.get("activity_feed")
-        if feed:
-            feed.publish("brain", "Too many skill failures, rethinking...", importance=2)
+        from anima.core.publish import pub
+        pub(ctx, "brain.rethink", "Too many skill failures, rethinking...", importance=2)
 
         # Generate problem report after 10+ failures
         if consecutive_fails >= 10:
@@ -127,9 +125,8 @@ async def _skill_action(ctx: BrainContext) -> Status:
     logger.info("skill_executing", skill=skill.name, category=skill.category)
     ctx.blackboard["last_skill_time"] = now
 
-    feed = ctx.blackboard.get("activity_feed")
-    if feed:
-        feed.publish("skill", f"Executing {skill.name}", details={"skill": skill.name})
+    from anima.core.publish import pub
+    pub(ctx, "action.start", f"Executing {skill.name}", skill=skill.name)
 
     result = await skill.execute(ctx)
 
@@ -147,14 +144,13 @@ async def _skill_action(ctx: BrainContext) -> Status:
         event = f"{skill.category}_success" if result.success else f"{skill.category}_fail"
         mc.record(event, {"skill": skill.name, "reward": result.reward})
 
-    if feed:
-        icon = "OK" if result.success else "FAIL"
-        feed.publish(
-            "skill",
-            f"{icon}: {skill.name} (reward={result.reward:+.1f}) {result.message[:60]}",
-            details={"skill": skill.name, "reward": result.reward, "success": result.success},
-            importance=2 if result.success else 1,
-        )
+    icon = "OK" if result.success else "FAIL"
+    pub(
+        ctx, "action.end",
+        f"{icon}: {skill.name} (reward={result.reward:+.1f}) {result.message[:60]}",
+        importance=2 if result.success else 1,
+        skill=skill.name, reward=result.reward, success=result.success,
+    )
 
     # Update Q-values
     next_available = await registry.available_skills(ctx)
