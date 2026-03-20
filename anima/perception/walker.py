@@ -30,7 +30,7 @@ class WalkerManager:
     def __init__(self, self_state: SelfState, events: EventStream) -> None:
         self._self_state = self_state
         self._events = events
-        self.walk_sequence: int = 1
+        self.walk_sequence: int = 0
         self.steps_count: int = 0
         self.walking_failed: bool = False
         self.last_step_time: float = 0.0
@@ -51,7 +51,7 @@ class WalkerManager:
 
     def reset(self) -> None:
         self.steps_count = 0
-        self.walk_sequence = 1
+        self.walk_sequence = 0
         self.walking_failed = False
         self.last_step_time = 0.0
         self.consecutive_denials = 0
@@ -111,7 +111,10 @@ class WalkerManager:
             self._pending_step_tile = None
 
         self.steps_count = 0
-        self.walk_sequence = 1
+        # Server resets state.Sequence to 0 on deny.
+        # Next walk MUST send seq=0, otherwise server rejects with
+        # (state.Sequence==0 && seq!=0) check in MovementReq.
+        self.walk_sequence = 0
         self.walking_failed = False
         self.consecutive_denials += 1
         # Short cooldown — just enough for path recalculation
