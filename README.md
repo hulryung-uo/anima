@@ -2,6 +2,30 @@
 
 > *Anima (Latin: soul)* — What if AI characters actually lived in Britannia?
 
+[![Fork this repo](https://img.shields.io/github/forks/hulryung-uo/anima?style=social)](https://github.com/hulryung-uo/anima/fork)
+
+## 🧬 We Found Something Interesting
+
+While building Anima — an AI that plays Ultima Online — we accidentally stumbled onto something unexpected: **an AI agent that improves its own code.**
+
+Here's how it works: Anima runs in-game as a woodcutter named Bjorn. Every 10 minutes, a self-improvement loop kicks in:
+
+1. **Analyze** — Parse game logs, compute success rates, detect problems (stuck? failing? overweight?)
+2. **Plan** — Generate a markdown improvement plan with suggested fixes
+3. **Fix** — Call Claude Code to automatically modify the source code
+4. **Test** — Run `pytest` to verify nothing breaks
+5. **Deploy** — `git commit && git push` → restart the agent with improved code
+
+The agent writes problem reports about itself. It asks for help in-game when it's stuck. It tracks which trees are depleted, learns which paths are blocked, and adjusts its strategy through reinforcement learning.
+
+**This isn't AGI. It's not even close.** It's a game bot that happens to have an automated feedback loop. But watching it fix its own bugs, tune its own parameters, and gradually get better at chopping wood — that's genuinely fun to watch.
+
+We think this pattern — **AI agent + self-analysis + automated code improvement** — could be applied to many other domains. If you're curious, fork it and try.
+
+[**→ Fork Anima and start experimenting**](https://github.com/hulryung-uo/anima/fork)
+
+---
+
 ## Why This Exists
 
 I've been playing Ultima Online since 1998. Almost thirty years later, I still think it's the greatest game ever made. Nothing else has come close to that feeling — a true sandbox where anything could happen, where the world felt alive because *real people* made it alive.
@@ -12,33 +36,60 @@ Then I had a thought: **what if, instead of macros and bots, actual AI character
 
 Not scripted NPCs with canned dialogue. Not automation tools that repeat the same loop forever. Real characters — ones that wake up in the morning, walk to work, chop wood, dig ore, get lost in a dungeon, panic when a PK shows up, run back to town to warn everyone, write angry posts about it in the community board, form a guild to fight back, make friends, hold grudges, discover new places, and come home to tell stories about their day.
 
-I know almost nothing about AI. This is a small sandbox, a personal experiment. But the idea of dropping a clueless AI newbie into Britannia and watching what happens — that sounds genuinely fun to me. So I'm building it.
-
 ## What Anima Does
 
 Anima connects to a UO server as a **real game client** over the standard packet protocol. From the server's perspective, an Anima agent is indistinguishable from a human player using ClassicUO. No server modifications, no special privileges, no cheating — just a soul in a body, trying to figure out Britannia.
 
 Each agent has:
-- **Eyes** — A perception system that tracks nearby entities, items, terrain, and chat
-- **A brain** — A behavior tree for routine decisions, with LLM escalation for complex ones
-- **Legs** — A* pathfinding on the actual UO map data, wall avoidance included
-- **A mouth** — Can speak, respond to conversation, and (eventually) have opinions
-- **Memory** — Will remember experiences, people, and places (work in progress)
+- **Eyes** — Perception system that tracks nearby entities, items, terrain, and chat
+- **A brain** — Behavior tree for routine decisions, with LLM escalation for complex ones
+- **Legs** — A* pathfinding on actual UO map data with Z-aware walkability and obstacle avoidance
+- **Hands** — Lumberjacking, crafting, trading, combat — all through standard game packets
+- **A mouth** — Speaks in-game, responds to conversation, writes forum posts about adventures
+- **Memory** — Remembers experiences, people, places, and learns from mistakes via Q-learning
+- **Self-awareness** — Generates problem reports, asks for help, and improves its own code
 
-The long-term vision: spin up a dozen agents with different personalities and professions, drop them into a server, and watch a small economy and society emerge on its own.
+## The Self-Improvement Loop
 
-## What I Want To Build Next
+```
+┌─────────────────────────────────────────┐
+│           Anima (playing UO)            │
+│  chop wood → craft → sell → repeat     │
+└──────────────┬──────────────────────────┘
+               │ logs + metrics
+┌──────────────▼──────────────────────────┐
+│         Analyzer (every 10 min)         │
+│  success rates, stuck detection,        │
+│  problem patterns → improvement plan    │
+└──────────────┬──────────────────────────┘
+               │ plan.md
+┌──────────────▼──────────────────────────┐
+│         Claude Code (auto-called)       │
+│  reads plan → fixes code → pytest       │
+│  → git commit → git push               │
+└──────────────┬──────────────────────────┘
+               │ restart
+               └──────────► back to playing
+```
 
-This is very much a work in progress. Here's what's on my mind:
+Run it yourself:
 
-- **LLM-powered conversation** — Right now speech responses are pattern-matched. I want agents to actually *talk* using a local LLM via Ollama, with personality and context.
-- **Memory** — Episodic and semantic memory so agents remember what happened to them, who they met, and what they learned.
-- **Personas** — YAML-defined characters with professions, daily schedules, personality traits, and speech styles. A grumpy blacksmith. A cheerful merchant. A paranoid miner.
-- **Professions and skills** — Mining, lumberjacking, crafting, trading. Agents that actually contribute to the economy.
-- **Social dynamics** — Relationships, trust, reputation. Agents that form guilds, avoid known PKs, and spread gossip.
-- **Multi-agent orchestration** — Running many agents simultaneously, each with their own TCP connection and independent life.
+```bash
+# Start the self-improvement loop
+uv run python tools/self_improve.py --loop --claude
+```
 
-Some of this might never happen. Some of it might turn into something unexpected. That's the fun part.
+## Current Personas
+
+| Persona | Name | Focus | Combat |
+|---------|------|-------|--------|
+| Adventurer | Anima | Exploring, meeting people | Defensive |
+| Blacksmith | Tormund | Mining, smithing | Pacifist |
+| Woodcutter | Bjorn | Lumberjacking, carpentry | Pacifist |
+| Merchant | Sera | Trading, tailoring | Pacifist |
+| Mage | Elric | Magery, meditation | Defensive |
+| Ranger | Ash | Archery, hunting | Aggressive |
+| Bard | Melody | Music, peacemaking | Pacifist |
 
 ## Getting Started
 
@@ -46,9 +97,9 @@ Some of this might never happen. Some of it might turn into something unexpected
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) — fast Python package manager
-- A UO server to connect to (e.g. [ServUO](https://www.servuo.com/) or any standard UO shard)
-- UO client data files (map0, statics0, tiledata — the usual)
-- [Ollama](https://ollama.com/) — for local LLM support (not required yet, but will be soon)
+- A UO server (e.g. [ServUO](https://www.servuo.com/))
+- UO client data files (map0, statics0, tiledata)
+- LLM provider — [Ollama](https://ollama.com/) (local) or Replicate/OpenAI (API)
 
 ### Setup
 
@@ -61,11 +112,14 @@ cd anima
 uv sync
 
 # Copy and edit config
-cp config.yaml config.local.yaml
-# Edit config.local.yaml with your server address, account, and map data path
+cp config.example.yaml config.yaml
+# Edit config.yaml with your server, account, LLM settings
 
 # Run
 uv run python -m anima
+
+# Run with TUI dashboard
+uv run python -m anima --tui
 
 # Run tests
 uv run pytest
@@ -73,11 +127,9 @@ uv run pytest
 
 ### Configuration
 
-Edit `config.yaml` (or pass `--config path/to/config.yaml`):
-
 ```yaml
 server:
-  host: 127.0.0.1
+  host: your-server.com
   port: 2593
 
 account:
@@ -86,8 +138,13 @@ account:
 
 character:
   name: Anima
-  template: random    # random, warrior, mage, smith, merchant, ranger
-  city_index: 3       # 0=New Haven, 3=Britain
+  persona: adventurer  # adventurer, blacksmith, woodcutter, merchant, mage, ranger, bard
+  city_index: 3        # 0=New Haven, 3=Britain
+
+llm:
+  provider: replicate  # ollama, openai, anthropic, replicate
+  model: deepseek-ai/deepseek-v3.1
+  api_key: ""
 
 map:
   resource_dir: ~/path/to/uo-client-data
@@ -96,7 +153,19 @@ map:
 ## Documentation
 
 - [DESIGN.md](DESIGN.md) — Architecture and system design
-- [docs/implementation-plan.md](docs/implementation-plan.md) — Implementation roadmap
+- [docs/woodcutter-workflow.md](docs/woodcutter-workflow.md) — Woodcutter work cycle
+- [docs/uor-skills-reference.md](docs/uor-skills-reference.md) — UOR skills & stats reference
+- [docs/self-improvement-plan.md](docs/self-improvement-plan.md) — Self-improvement system design
+
+## Join In
+
+This is an experiment. It might go somewhere interesting, or it might just be a really elaborate way to chop virtual trees. Either way, it's fun.
+
+If you want to try it:
+
+[**→ Fork this repo**](https://github.com/hulryung-uo/anima/fork) — spin up your own AI character on your own shard.
+
+If you have ideas, questions, or just want to see what Bjorn is up to — open an issue or drop by.
 
 ## License
 
