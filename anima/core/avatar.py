@@ -16,6 +16,7 @@ from anima.client.connection import UoConnection
 from anima.client.handler import PacketHandler
 from anima.config import Config
 from anima.core.bus import EventBus
+from anima.core.goals import GoalManager
 from anima.core.subscriber import LogSubscriber, MetricsSubscriber
 from anima.map import MapReader
 from anima.perception import Perception
@@ -62,6 +63,7 @@ class Avatar:
         self.memory_db = memory_db
         self.feed = feed
         self.skill_registry = skill_registry
+        self.goals = GoalManager()
 
         # Subscribers (kept for cleanup)
         self._subscribers: list = []
@@ -237,6 +239,7 @@ class Avatar:
             "metrics": getattr(self, "_metrics_collector", None),
             "map_reader": self.map_reader,
             "bus": self.bus,
+            "goals": self.goals,
         }
 
     async def close(self) -> None:
