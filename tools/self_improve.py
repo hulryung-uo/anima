@@ -32,11 +32,17 @@ PLANS_DIR = ROOT / "data" / "plans"
 
 
 def _parse_ts(line: str) -> datetime | None:
-    """Extract ISO timestamp from a log line."""
+    """Extract ISO timestamp from a log line.
+
+    structlog writes UTC timestamps (suffix Z), so we treat parsed
+    timestamps as UTC and convert to local time for comparison with
+    datetime.now().
+    """
     m = _TS_RE.search(line)
     if m:
         try:
-            return datetime.fromisoformat(m.group(1))
+            utc_ts = datetime.fromisoformat(m.group(1)).replace(tzinfo=timezone.utc)
+            return utc_ts.astimezone().replace(tzinfo=None)
         except ValueError:
             pass
     return None

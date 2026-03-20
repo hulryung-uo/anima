@@ -45,6 +45,12 @@ def _setup_logging() -> None:
     root.addHandler(file_handler)
     root.addHandler(console_handler)
 
+    # Suppress noisy third-party debug output that floods the log
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+    logging.getLogger("litellm").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
     structlog.configure(
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),
@@ -272,7 +278,10 @@ async def brain_loop(brain: Brain) -> None:
                 logger.warning("analysis_error", error=str(e))
 
         # Check for shutdown request — write final forum post
-        if brain.context.blackboard.get("shutdown_requested"):
+        shutdown_ev = brain.context.blackboard.get("shutdown_event")
+        if brain.context.blackboard.get("shutdown_requested") or (
+            shutdown_ev and shutdown_ev.is_set()
+        ):
             logger.info("shutdown_writing_final_post")
             try:
                 from anima.skills.forum_action import forum_write_action
@@ -291,13 +300,14 @@ async def brain_loop(brain: Brain) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def run(cfg: Config, delete_existing: bool = False) -> None:
+async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = False) -> None:
     from anima.core.avatar import Avatar
 
     try:
         avatar = await Avatar.create(cfg, delete_existing=delete_existing)
 
         # Build brain with behavior tree (legacy bridge via blackboard)
+        blackboard = avatar.build_blackboard()
         brain_ctx = BrainContext(
             perception=avatar.perception,
             conn=avatar.conn,
@@ -306,7 +316,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             cfg=avatar.cfg,
             llm=avatar.llm,
             memory_db=avatar.memory_db,
-            blackboard=avatar.build_blackboard(),
+            blackboard=blackboard,
         )
         brain = Brain(brain_ctx)
 
@@ -332,11 +342,30 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
                 importance=2,
             )
 
-        game_coros = [
+        # State publisher — feeds monitor subscribers via EventBus
+        from anima.monitor.state_publisher import StatePublisher
+
+        state_pub = StatePublisher(avatar.perception, blackboard, avatar.bus)
+
+        game_coros: list = [
             recv_loop(avatar.conn, avatar.pkt_handler),
             inspect_self(avatar.conn, avatar.perception),
             brain_loop(brain),
+            state_pub.run(interval=0.5),
         ]
+
+        # TUI monitor — subscribes to EventBus
+        if enable_tui:
+            from anima.monitor.tui import AnimaMonitor
+
+            shutdown_event = asyncio.Event()
+            blackboard["shutdown_event"] = shutdown_event
+            monitor = AnimaMonitor(
+                bus=avatar.bus,
+                map_reader=avatar.map_reader,
+                shutdown_event=shutdown_event,
+            )
+            game_coros.append(monitor.run())
 
         try:
             await asyncio.gather(*game_coros)
@@ -358,6 +387,9 @@ def main() -> None:
     parser.add_argument(
         "--recreate", action="store_true", help="Delete existing character and recreate"
     )
+    parser.add_argument(
+        "--tui", action="store_true", help="Enable TUI monitor (subscribes to EventBus)"
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -372,7 +404,7 @@ def main() -> None:
     if args.password:
         cfg.account.password = args.password
 
-    asyncio.run(run(cfg, delete_existing=args.recreate))
+    asyncio.run(run(cfg, delete_existing=args.recreate, enable_tui=args.tui))
 
 
 if __name__ == "__main__":
