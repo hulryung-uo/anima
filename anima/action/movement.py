@@ -221,9 +221,25 @@ async def _escape_stuck(ctx: BrainContext) -> bool:
 
     Searches outward in a spiral pattern for a walkable tile, then
     uses pathfinding (with larger max_steps) to get there.
+
+    Clears nearby denied tiles first — they may have been blocked by
+    dynamic obstacles (NPCs/mobiles) that have since moved.
     """
     ss = ctx.perception.self_state
     sx, sy, sz = ss.x, ss.y, ss.z
+
+    # Clear denied tiles within radius 3 so the pathfinder can try them again.
+    # If they're still blocked, the server will deny and re-add them.
+    cleared = 0
+    for dy in range(-3, 4):
+        for dx in range(-3, 4):
+            tile_key = (sx + dx, sy + dy)
+            if tile_key in ctx.walker.denied_tiles:
+                del ctx.walker.denied_tiles[tile_key]
+                cleared += 1
+    if cleared:
+        logger.info("escape_clear_denied", cleared=cleared)
+
     denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
 
     # Search for an open tile in expanding radius
