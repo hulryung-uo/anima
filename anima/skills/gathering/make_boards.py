@@ -28,6 +28,7 @@ class MakeBoards(Skill):
     name = "make_boards"
     category = "crafting"
     description = "Use hatchet on logs to make boards."
+    required_skill = (LUMBERJACK_SKILL_ID, 0.0)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state

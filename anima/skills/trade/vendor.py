@@ -49,22 +49,34 @@ async def _wait_for_buy_list(ctx: BrainContext, timeout: float = _VENDOR_LIST_TI
     return False
 
 
+# Essential tool graphics — buy these when missing
+HATCHET_GRAPHICS = {0x0F43, 0x0F44, 0x0F47, 0x0F48, 0x0F4B, 0x0F4D}
+SAW_GRAPHICS = {0x1034, 0x1035}
+TINKER_TOOLS_GRAPHICS = {0x1EB8, 0x1EBC}
+PICKAXE_GRAPHICS = {0x0E85, 0x0E86}
+
+# (graphic, max_to_buy) — tools we always want to have
+ESSENTIAL_TOOLS: list[tuple[int, int]] = [
+    (0x0F43, 1),  # hatchet
+    (0x1034, 1),  # saw
+]
+
+
 class BuyFromNpc(Skill):
-    """Buy specific items from an NPC vendor."""
+    """Buy essential tools from an NPC vendor when they're missing."""
 
     name = "buy_from_npc"
     category = "trade"
-    description = "Buy items from an NPC vendor. Requires gold and a vendor nearby."
-
-    # Subclasses or config can set desired items to buy: list of (graphic, max_amount)
-    # If empty, buys nothing (just opens the shop).
-    buy_targets: list[tuple[int, int]] = []
+    description = "Buy tools from an NPC vendor when missing essential tools."
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
-        if ss.gold <= 0:
+        if ss.gold < 10:
             return False
-        return bool(_find_vendor(ctx))
+        if not _find_vendor(ctx):
+            return False
+        # Only buy if we're missing essential tools
+        return bool(_find_missing_tools(ctx))
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
@@ -74,13 +86,17 @@ class BuyFromNpc(Skill):
             return SkillResult(success=False, reward=-1.0, message="No vendor nearby")
 
         vendor_name = vendor.name or "vendor"
+        missing = _find_missing_tools(ctx)
+
+        from anima.core.publish import pub
+        pub(ctx, "action.buy_start", f"Buying tools from {vendor_name}: {missing}")
 
         # Clear any stale vendor state
         ss.vendor_buy_list = []
 
         # Double-click vendor to open shop (triggers 0x3C + 0x74)
         await ctx.conn.send_packet(build_double_click(vendor.serial))
-        logger.info("vendor_buy_opened", vendor=vendor_name)
+        logger.info("vendor_buy_opened", vendor=vendor_name, missing=missing)
 
         # Wait for buy list to arrive
         got_list = await _wait_for_buy_list(ctx)
@@ -96,26 +112,18 @@ class BuyFromNpc(Skill):
         buy_list = ss.vendor_buy_list
         logger.info("vendor_buy_list_received", count=len(buy_list))
 
-        # Determine what to buy
+        # Buy missing tools
         items_to_buy: list[tuple[int, int]] = []  # (serial, amount)
         total_cost = 0
+        missing_graphics = {g for g, _ in missing}
 
-        if self.buy_targets:
-            # Buy specific items by graphic
-            target_map = {g: amt for g, amt in self.buy_targets}
-            for bi in buy_list:
-                if bi.graphic in target_map:
-                    want = min(bi.amount, target_map[bi.graphic])
-                    cost = want * bi.price
-                    if total_cost + cost <= ss.gold:
-                        items_to_buy.append((bi.serial, want))
-                        total_cost += cost
-        else:
-            # No specific targets — just report what's available
-            logger.info(
-                "vendor_buy_items_available",
-                items=[(bi.name, bi.price, bi.amount) for bi in buy_list[:10]],
-            )
+        for bi in buy_list:
+            if bi.graphic in missing_graphics:
+                want = 1  # buy one of each missing tool
+                cost = want * bi.price
+                if total_cost + cost <= ss.gold:
+                    items_to_buy.append((bi.serial, want))
+                    total_cost += cost
 
         gold_before = ss.gold
 
@@ -250,3 +258,33 @@ def _find_vendor(ctx: BrainContext) -> MobileInfo | None:
         return None
     vendors.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
     return vendors[0]
+
+
+def _find_missing_tools(ctx: BrainContext) -> list[tuple[int, int]]:
+    """Check which essential tools are missing from backpack + equipment.
+
+    Returns list of (graphic, amount) that need to be purchased.
+    """
+    ss = ctx.perception.self_state
+    world = ctx.perception.world
+    backpack = ss.equipment.get(0x15)
+
+    # Collect all item graphics in backpack + equipment
+    owned_graphics: set[int] = set()
+    if backpack:
+        for it in world.items.values():
+            if it.container == backpack:
+                owned_graphics.add(it.graphic)
+    for layer in (0x01, 0x02):  # hand slots
+        eq = ss.equipment.get(layer)
+        if eq:
+            it = world.items.get(eq)
+            if it:
+                owned_graphics.add(it.graphic)
+
+    missing: list[tuple[int, int]] = []
+    for graphic, amount in ESSENTIAL_TOOLS:
+        if graphic not in owned_graphics:
+            missing.append((graphic, amount))
+
+    return missing

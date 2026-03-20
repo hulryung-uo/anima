@@ -289,9 +289,14 @@ class CraftCarpentry(Skill):
             logger.warning("carpentry_tool_broke", item=target_name)
             if feed:
                 feed.publish("skill", "Saw broke!", importance=3)
+            # Signal brain to buy a new tool
+            ctx.blackboard["skill_problem"] = (
+                "Carpentry saw broke! Need to buy a new one from a vendor."
+            )
+            ctx.blackboard["last_think_time"] = 0.0  # force rethink
             return SkillResult(
                 success=False, reward=-2.0,
-                message="Carpentry tool broke",
+                message="Carpentry tool broke — need to buy new saw",
                 duration_ms=elapsed,
             )
         else:
