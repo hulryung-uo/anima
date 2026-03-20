@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import time
+from pathlib import Path
 
 import structlog
 
@@ -24,12 +26,37 @@ from anima.data import item_name
 from anima.perception import Perception
 from anima.perception.enums import Layer
 
-structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.dev.ConsoleRenderer(),
-    ],
-)
+LOG_PATH = Path("data/anima.log")
+
+
+def _setup_logging() -> None:
+    """Configure structlog to write to both console and data/anima.log."""
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # stdlib file handler — structlog will route through it
+    file_handler = logging.FileHandler(str(LOG_PATH), encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+
+    structlog.configure(
+        processors=[
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.stdlib.add_log_level,
+            structlog.dev.ConsoleRenderer(),
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+    )
+
+
+_setup_logging()
 logger = structlog.get_logger()
 
 
