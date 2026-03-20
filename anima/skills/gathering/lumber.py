@@ -219,6 +219,9 @@ class ChopWood(Skill):
                 if "fail to produce" in text_lower:
                     result_msg = "fail"
                     break
+                if "too far away" in text_lower:
+                    result_msg = "too_far"
+                    break
             if result_msg:
                 break
 
@@ -231,12 +234,14 @@ class ChopWood(Skill):
         )
         logs_gained = logs_after - logs_before
 
-        # Handle depleted tree
-        if result_msg == "depleted":
-            depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+        # Handle depleted tree or unreachable tree — mark and skip
+        if result_msg in ("depleted", "too_far"):
+            depleted_map: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
                 "depleted_trees", {}
             )
-            depleted[(tree_x, tree_y)] = time.time()
+            depleted_map[(tree_x, tree_y)] = time.time()
+
+        if result_msg == "depleted":
             logger.info("chop_tree_depleted", pos=f"({tree_x},{tree_y})")
             if feed:
                 feed.publish(
@@ -245,6 +250,19 @@ class ChopWood(Skill):
             return SkillResult(
                 success=False, reward=-0.5,
                 message=f"Tree at ({tree_x},{tree_y}) depleted",
+                duration_ms=elapsed,
+            )
+
+        # Handle too far — tree exists in statics but isn't reachable
+        if result_msg == "too_far":
+            logger.info("chop_tree_too_far", pos=f"({tree_x},{tree_y})")
+            if feed:
+                feed.publish(
+                    "skill", f"Tree ({tree_x},{tree_y}) too far away", importance=1,
+                )
+            return SkillResult(
+                success=False, reward=-1.0,
+                message=f"Tree at ({tree_x},{tree_y}) too far away",
                 duration_ms=elapsed,
             )
 
