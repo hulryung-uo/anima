@@ -157,13 +157,72 @@ map:
 - [docs/uor-skills-reference.md](docs/uor-skills-reference.md) — UOR skills & stats reference
 - [docs/self-improvement-plan.md](docs/self-improvement-plan.md) — Self-improvement system design
 
+## Try It Live — Test Server
+
+We run a public test server where you can watch AI agents in action or drop in alongside them with a real client.
+
+**Server:** `uo.hulryung.com:2593` (ServUO, UOR era)
+
+You can:
+- **Watch Bjorn chop wood** — connect with ClassicUO and find him wandering around Britain
+- **Talk to the agents** — they respond in character (English and Korean)
+- **Run your own agent** — point Anima at the test server with a new account
+
+```yaml
+# config.yaml for the test server
+server:
+  host: uo.hulryung.com
+  port: 2593
+account:
+  username: your_test_account
+  password: your_password
+character:
+  persona: adventurer  # or blacksmith, woodcutter, mage...
+```
+
+## TUI Dashboard
+
+Anima comes with a real-time terminal dashboard that shows everything the agent is doing.
+
+```bash
+uv run python -m anima --tui
+```
+
+```
+┌─ Status ──────────────────┐┌─ Activity ────────────────────────────┐
+│ Bjorn — a humble woodcutter││ 01:23:45 ⚒ Chopping oak tree          │
+│                            ││ 01:23:40 → Walking to tree (1596,1491)│
+│ HP   ████████░░ 79/79      ││ 01:23:35 ⭐ Think: go to forest       │
+│ Mana ██░░░░░░░░ 10/10      ││ 01:23:30 ⚒ Made 5 boards!            │
+│ Stam ████████░░ 22/22      ││                                       │
+│                            ││                                       │
+│ Pos (1595, 1490, 35)       ││                                       │
+│ Gold 1,000  Wt 60/243      ││                                       │
+│ Goal Find good oak trees   ││                                       │
+├─ Nearby ──────┐┌─ Journal ────────┐┌─ Q-Values ────────────────────┤
+│ Bilal innkeep ││ System: Welcome  ││ chop_wood    Q=12.3  n=80     │
+│ a rat    6N   ││ Bjorn: hello!    ││ make_boards  Q= 3.1  n=12     │
+│               ││ ↑ Lumberjack →51 ││ carpentry    Q=-0.5  n=15     │
+└───────────────┘└──────────────────┘└────────────────────────────────┘
+ j Journal  i Inventory  s Skills  q Quit
+```
+
+The dashboard shows:
+- **Status** — HP, mana, stamina, position, weight, current goal
+- **Activity** — Real-time feed of brain decisions, skill executions, movement
+- **Nearby** — NPCs and players within range with notoriety colors
+- **Journal** — In-game speech and system messages (cliloc decoded)
+- **Q-Values** — Reinforcement learning scores for skill selection
+- **Inventory** — Backpack contents (toggle with `i`)
+- **Skills** — Skill values with lock states ↑↓• (toggle with `s`)
+
 ## Join In
 
 This is an experiment. It might go somewhere interesting, or it might just be a really elaborate way to chop virtual trees. Either way, it's fun.
 
 If you want to try it:
 
-[**→ Fork this repo**](https://github.com/hulryung-uo/anima/fork) — spin up your own AI character on your own shard.
+[**→ Fork this repo**](https://github.com/hulryung-uo/anima/fork) — spin up your own AI character on your own shard, or connect to our test server and play alongside the AI.
 
 If you have ideas, questions, or just want to see what Bjorn is up to — open an issue or drop by.
 
