@@ -16,7 +16,7 @@ RUN_DELAY_MS = 200
 
 # Denied tile cache
 DENIED_TILE_EXPIRY_S = 300.0  # 5 minutes
-MAX_DENIED_TILES = 500
+MAX_DENIED_TILES = 2000
 
 # Consecutive denial thresholds
 CONSECUTIVE_DENIAL_WANDER = 3   # after 3 denials, give up goal and wander

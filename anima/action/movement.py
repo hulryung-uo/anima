@@ -227,7 +227,7 @@ async def _escape_stuck(ctx: BrainContext) -> bool:
     denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
 
     # Search for an open tile in expanding radius
-    for radius in range(3, 15):
+    for radius in range(2, 25):
         for dy in range(-radius, radius + 1):
             for dx in range(-radius, radius + 1):
                 if max(abs(dx), abs(dy)) != radius:
@@ -245,7 +245,7 @@ async def _escape_stuck(ctx: BrainContext) -> bool:
                 # Found open tile — pathfind there
                 path = find_path(
                     ctx.map_reader, sx, sy, tx, ty,
-                    max_steps=300, denied_tiles=denied, current_z=sz,
+                    max_steps=500, denied_tiles=denied, current_z=sz,
                 )
                 if path:
                     logger.info(
