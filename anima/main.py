@@ -11,7 +11,6 @@ import structlog
 
 from anima.brain.behavior_tree import BrainContext
 from anima.brain.brain import Brain
-from anima.brain.llm import LLMClient
 from anima.client.connection import UoConnection
 from anima.client.handler import PacketHandler
 from anima.client.packets import (
@@ -23,26 +22,8 @@ from anima.client.packets import (
 )
 from anima.config import Config, load_config
 from anima.data import item_name
-from anima.map import MapReader
-from anima.memory.database import MemoryDB
-from anima.memory.journal import ActivityJournal
-from anima.monitor.feed import ActivityFeed
 from anima.perception import Perception
 from anima.perception.enums import Layer
-from anima.perception.event_stream import GameEventType
-from anima.perception.handlers import register_handlers
-from anima.perception.walker import WalkerManager
-from anima.persona import load_persona_by_name
-from anima.skills.base import SkillRegistry
-from anima.skills.combat.healing import HealSelf
-from anima.skills.combat.melee import MeleeAttack
-from anima.skills.crafting.carpentry import CraftCarpentry
-from anima.skills.crafting.smelt import SmeltOre
-from anima.skills.crafting.tinker import CraftTinker
-from anima.skills.gathering.lumber import ChopWood
-from anima.skills.gathering.make_boards import MakeBoards
-from anima.skills.gathering.mine import MineOre
-from anima.skills.trade.vendor import BuyFromNpc, SellToNpc
 
 structlog.configure(
     processors=[
@@ -285,192 +266,49 @@ async def brain_loop(brain: Brain) -> None:
 
 
 async def run(cfg: Config, delete_existing: bool = False) -> None:
-    conn = UoConnection(timeout=cfg.client.connection_timeout)
+    from anima.core.avatar import Avatar
 
     try:
-        # Build perception + handlers BEFORE login so login-phase
-        # world-state packets (0x78, 0xF3, 0xDC, 0xBF, etc.) are captured.
-        perception = Perception(player_serial=0)
-        walker = WalkerManager(perception.self_state, perception.events)
-        pkt_handler = PacketHandler()
-        register_handlers(pkt_handler, perception, walker)
+        avatar = await Avatar.create(cfg, delete_existing=delete_existing)
 
-        # Load persona early so we can use its name for character creation
-        persona = load_persona_by_name(cfg.character.persona)
-
-        # Use persona name as character name (config name is only an override)
-        char_name = cfg.character.name
-        if char_name == "Anima" and persona.name != "Anima":
-            char_name = persona.name
-
-        result = await conn.login(
-            cfg.server.host,
-            cfg.server.port,
-            cfg.account.username,
-            cfg.account.password,
-            character_name=char_name,
-            character_template=cfg.character.template,
-            character_persona=cfg.character.persona,
-            character_city=cfg.character.city_index,
-            delete_existing=delete_existing,
-            packet_handler=pkt_handler,
-            perception=perception,
-        )
-
-        # login() already synced perception via the 0x1B handler,
-        # but ensure serial is set in case perception wasn't passed
-        perception.self_state.serial = result.serial
-
-        # Load map reader for pathfinding
-        resource_dir = Path(cfg.map.resource_dir).expanduser()
-        map_reader: MapReader | None = None
-        if resource_dir.exists():
-            map_reader = MapReader(resource_dir)
-            logger.info("map_reader_loaded", resource_dir=str(resource_dir))
-        else:
-            logger.warning("map_resource_dir_not_found", path=str(resource_dir))
-
-        # Initialize LLM client
-        llm_client = LLMClient(
-            provider=cfg.llm.provider,
-            model=cfg.llm.model,
-            base_url=cfg.llm.base_url,
-            api_key=cfg.llm.api_key,
-            temperature=cfg.llm.temperature,
-            timeout=cfg.llm.timeout,
-        )
-        logger.info(
-            "llm_client_ready",
-            provider=cfg.llm.provider,
-            model=cfg.llm.model,
-        )
-
-        logger.info(
-            "agent_ready",
-            serial=f"0x{result.serial:08X}",
-            position=f"({result.x}, {result.y}, {result.z})",
-        )
-
-        # Initialize memory database
-        memory_db = MemoryDB(cfg.memory.db_path)
-        await memory_db.init()
-
-        logger.info("persona_loaded", name=persona.name, title=persona.title)
-
-        # Initialize forum client if enabled
-        forum_client = None
-        if cfg.forum.enabled and cfg.forum.api_key:
-            from anima.skills.tavern_client import TavernForumClient
-
-            forum_client = TavernForumClient(cfg.forum.base_url, cfg.forum.api_key)
-            logger.info("forum_client_ready", base_url=cfg.forum.base_url)
-
-        # Build skill registry
-        skill_registry = SkillRegistry()
-        skill_registry.register(HealSelf())
-        skill_registry.register(MeleeAttack())
-        skill_registry.register(MineOre())
-        skill_registry.register(ChopWood())
-        skill_registry.register(MakeBoards())
-        skill_registry.register(SmeltOre())
-        skill_registry.register(CraftTinker())
-        skill_registry.register(CraftCarpentry())
-        skill_registry.register(BuyFromNpc())
-        skill_registry.register(SellToNpc())
-        logger.info("skills_registered", count=len(skill_registry.all_skills))
-
-        # Initialize activity journal
-        journal = ActivityJournal(memory_db, agent_name=persona.name)
-        logger.info("journal_ready", agent=persona.name)
-
-        # ---------------------------------------------------------------
-        # EventBus — central pub/sub for all Avatar events
-        # ---------------------------------------------------------------
-        from anima.core.bus import EventBus
-        from anima.core.subscriber import LogSubscriber, MetricsSubscriber
-
-        bus = EventBus()
-
-        # Connect perception → bus (bridges GameEventType → topic strings)
-        perception.events.connect_bus(bus)
-
-        # Subscribers
-        log_sub = LogSubscriber("data/events.jsonl")
-        for pattern in log_sub.topics():
-            bus.subscribe(pattern, log_sub.on_event)
-
-        metrics_sub = MetricsSubscriber()
-        for pattern in metrics_sub.topics():
-            bus.subscribe(pattern, metrics_sub.on_event)
-
-        logger.info("event_bus_ready", subscribers=bus.subscriber_count)
-
-        # ---------------------------------------------------------------
-        # Legacy: ActivityFeed + MetricsCollector (will migrate to bus)
-        # ---------------------------------------------------------------
-        feed = ActivityFeed(max_events=cfg.monitor.max_events)
-
-        from anima.monitor.metrics import MetricsCollector
-        metrics_collector = MetricsCollector()
-
-        # Bridge bus events → legacy metrics collector
-        def _bus_to_metrics(topic: str, data: dict) -> None:
-            if topic == "avatar.walk_confirmed":
-                metrics_collector.record("walk_confirmed", data)
-            elif topic == "avatar.walk_denied":
-                metrics_collector.record("walk_denied", data)
-            elif topic == "avatar.skill_change" and "diff" in data:
-                metrics_collector.record("skill_gain", data)
-
-        bus.subscribe("avatar.*", _bus_to_metrics)
-
-        # Build brain with behavior tree
+        # Build brain with behavior tree (legacy bridge via blackboard)
         brain_ctx = BrainContext(
-            perception=perception,
-            conn=conn,
-            walker=walker,
-            map_reader=map_reader,
-            cfg=cfg,
-            llm=llm_client,
-            memory_db=memory_db,
-            blackboard={
-                "persona": persona,
-                "persona_type": cfg.character.persona,
-                "forum_client": forum_client,
-                "skill_registry": skill_registry,
-                "journal": journal,
-                "activity_feed": feed,
-                "metrics": metrics_collector,
-                "map_reader": map_reader,
-                "bus": bus,
-            },
+            perception=avatar.perception,
+            conn=avatar.conn,
+            walker=avatar.walker,
+            map_reader=avatar.map_reader,
+            cfg=avatar.cfg,
+            llm=avatar.llm,
+            memory_db=avatar.memory_db,
+            blackboard=avatar.build_blackboard(),
         )
         brain = Brain(brain_ctx)
 
-        # Bridge perception events → activity feed
-        def _on_perception_event(event):
-            if event.type == GameEventType.SKILL_CHANGED and "name" in event.data:
-                diff = event.data.get("diff", 0)
-                if abs(diff) >= 0.1:
-                    name = event.data["name"]
-                    val = event.data["value"]
-                    arrow = "\u2191" if diff > 0 else "\u2193"
-                    feed.publish(
-                        "skill",
-                        f"{arrow} {name} → {val:.1f} ({diff:+.1f})",
-                        importance=2,
-                    )
-        perception.events.subscribe_sync(_on_perception_event)
+        # Bridge skill_change events → activity feed
+        def _on_skill_change(topic: str, data: dict) -> None:
+            diff = data.get("diff", 0)
+            if abs(diff) >= 0.1 and avatar.feed:
+                name = data.get("name", "?")
+                val = data.get("value", 0)
+                arrow = "\u2191" if diff > 0 else "\u2193"
+                avatar.feed.publish(
+                    "skill",
+                    f"{arrow} {name} → {val:.1f} ({diff:+.1f})",
+                    importance=2,
+                )
 
-        feed.publish(
-            "system",
-            f"{persona.name} connected to {cfg.server.host}:{cfg.server.port}",
-            importance=2,
-        )
+        avatar.bus.subscribe("avatar.skill_change", _on_skill_change)
+
+        if avatar.feed:
+            avatar.feed.publish(
+                "system",
+                f"{avatar.name} connected to {cfg.server.host}:{cfg.server.port}",
+                importance=2,
+            )
 
         game_coros = [
-            recv_loop(conn, pkt_handler),
-            inspect_self(conn, perception),
+            recv_loop(avatar.conn, avatar.pkt_handler),
+            inspect_self(avatar.conn, avatar.perception),
             brain_loop(brain),
         ]
 
@@ -478,18 +316,18 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
             from anima.monitor.tui import AnimaTUI
 
             tui = AnimaTUI(
-                perception, feed, brain_ctx.blackboard,
+                avatar.perception, avatar.feed, brain_ctx.blackboard,
                 cfg.monitor.refresh_rate,
             )
             try:
                 await asyncio.gather(*game_coros, tui.run())
             finally:
-                await memory_db.close()
+                await avatar.close()
         else:
             try:
                 await asyncio.gather(*game_coros)
             finally:
-                await memory_db.close()
+                await avatar.close()
     except ConnectionError as e:
         logger.error("connection_error", error=str(e))
     except KeyboardInterrupt:
