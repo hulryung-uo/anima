@@ -383,24 +383,46 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         journal = ActivityJournal(memory_db, agent_name=persona.name)
         logger.info("journal_ready", agent=persona.name)
 
-        # Build activity feed and metrics collector
+        # ---------------------------------------------------------------
+        # EventBus — central pub/sub for all Avatar events
+        # ---------------------------------------------------------------
+        from anima.core.bus import EventBus
+        from anima.core.subscriber import LogSubscriber, MetricsSubscriber
+
+        bus = EventBus()
+
+        # Connect perception → bus (bridges GameEventType → topic strings)
+        perception.events.connect_bus(bus)
+
+        # Subscribers
+        log_sub = LogSubscriber("data/events.jsonl")
+        for pattern in log_sub.topics():
+            bus.subscribe(pattern, log_sub.on_event)
+
+        metrics_sub = MetricsSubscriber()
+        for pattern in metrics_sub.topics():
+            bus.subscribe(pattern, metrics_sub.on_event)
+
+        logger.info("event_bus_ready", subscribers=bus.subscriber_count)
+
+        # ---------------------------------------------------------------
+        # Legacy: ActivityFeed + MetricsCollector (will migrate to bus)
+        # ---------------------------------------------------------------
         feed = ActivityFeed(max_events=cfg.monitor.max_events)
 
         from anima.monitor.metrics import MetricsCollector
         metrics_collector = MetricsCollector()
 
-        # Bridge perception events → metrics
-        def _on_event_for_metrics(event):
-            etype = event.type.name.lower()
-            if etype == "walk_confirmed":
-                ss = perception.self_state
-                metrics_collector.record("walk_confirmed", {"pos": (ss.x, ss.y)})
-            elif etype == "walk_denied":
-                metrics_collector.record("walk_denied")
-            elif etype == "skill_changed" and "diff" in event.data:
-                metrics_collector.record("skill_gain", event.data)
+        # Bridge bus events → legacy metrics collector
+        def _bus_to_metrics(topic: str, data: dict) -> None:
+            if topic == "avatar.walk_confirmed":
+                metrics_collector.record("walk_confirmed", data)
+            elif topic == "avatar.walk_denied":
+                metrics_collector.record("walk_denied", data)
+            elif topic == "avatar.skill_change" and "diff" in data:
+                metrics_collector.record("skill_gain", data)
 
-        perception.events.subscribe_sync(_on_event_for_metrics)
+        bus.subscribe("avatar.*", _bus_to_metrics)
 
         # Build brain with behavior tree
         brain_ctx = BrainContext(
@@ -420,6 +442,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
                 "activity_feed": feed,
                 "metrics": metrics_collector,
                 "map_reader": map_reader,
+                "bus": bus,
             },
         )
         brain = Brain(brain_ctx)

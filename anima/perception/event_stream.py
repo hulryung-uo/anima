@@ -42,13 +42,42 @@ class GameEvent:
 
 
 class EventStream:
-    """Ring buffer of game events. Brain calls poll() each tick."""
+    """Ring buffer of game events. Brain calls poll() each tick.
+
+    Also bridges to EventBus if connected — converts GameEventType
+    to topic strings (e.g. WALK_CONFIRMED → "avatar.walk_confirmed").
+    """
+
+    # Map GameEventType → EventBus topic
+    _TOPIC_MAP: dict[GameEventType, str] = {
+        GameEventType.WALK_CONFIRMED: "avatar.walk_confirmed",
+        GameEventType.WALK_DENIED: "avatar.walk_denied",
+        GameEventType.POSITION_CHANGED: "avatar.position",
+        GameEventType.SKILL_CHANGED: "avatar.skill_change",
+        GameEventType.SPEECH_HEARD: "avatar.speech_heard",
+        GameEventType.HP_CHANGED: "avatar.health",
+        GameEventType.STATS_CHANGED: "avatar.stats",
+        GameEventType.DAMAGE_TAKEN: "avatar.damage_taken",
+        GameEventType.DAMAGE_DEALT: "avatar.damage_dealt",
+        GameEventType.GUMP_OPENED: "avatar.gump_opened",
+        GameEventType.GUMP_CLOSED: "avatar.gump_closed",
+        GameEventType.ITEM_APPEARED: "avatar.item_appeared",
+        GameEventType.ITEM_REMOVED: "avatar.item_removed",
+        GameEventType.MOBILE_APPEARED: "avatar.mobile_appeared",
+        GameEventType.MOBILE_REMOVED: "avatar.mobile_removed",
+        GameEventType.TARGET_REQUESTED: "avatar.target_requested",
+    }
 
     def __init__(self) -> None:
         self._events: deque[GameEvent] = deque(maxlen=MAX_EVENTS)
         self._read_index: int = 0
         self._write_index: int = 0
         self._sync_listeners: list = []
+        self._bus = None  # Optional EventBus reference
+
+    def connect_bus(self, bus) -> None:
+        """Connect to an EventBus for topic-based publishing."""
+        self._bus = bus
 
     def subscribe_sync(self, callback) -> None:
         """Register a synchronous callback invoked on every emit."""
@@ -58,11 +87,19 @@ class EventStream:
         event = GameEvent(type=event_type, data=data or {})
         self._events.append(event)
         self._write_index += 1
+
+        # Notify sync listeners
         for cb in self._sync_listeners:
             try:
                 cb(event)
             except Exception:
                 pass
+
+        # Bridge to EventBus
+        if self._bus is not None:
+            topic = self._TOPIC_MAP.get(event_type)
+            if topic:
+                self._bus.publish(topic, event.data)
 
     def poll(self) -> list[GameEvent]:
         """Return all unread events and advance the read cursor."""
