@@ -13,7 +13,7 @@ from anima.action.movement import wander_action
 from anima.brain.prompt import build_system_prompt
 from anima.client.packets import build_double_click, build_unicode_speech, build_walk_request
 from anima.data import item_name
-from anima.map import FLAG_DOOR
+from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
 from anima.memory.retrieval import retrieve_context
 from anima.memory.rewards import get_reward
 from anima.pathfinding import direction_to, find_path
@@ -492,9 +492,12 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     ctx.blackboard["cached_path"] = path
     ctx.blackboard["cached_path_target"] = (tx, ty)
 
-    # Send multiple walk steps in one tick (up to pending limit)
+    # UO movement: if facing different direction, first packet turns only.
+    # Second packet (same direction) actually moves one tile.
+    # Send up to MAX_STEP_COUNT packets per tick.
     steps_sent = 0
     cx, cy = sx, sy
+    current_dir = ctx.perception.self_state.direction
     remaining_path = list(path)
 
     while remaining_path and ctx.walker.can_walk():
@@ -517,9 +520,17 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
         )
-        cx, cy = next_x, next_y
-        remaining_path.pop(0)
         steps_sent += 1
+
+        if current_dir != direction:
+            # This packet was a TURN only — position doesn't change.
+            # Next packet with same direction will move.
+            current_dir = direction
+            ctx.perception.self_state.direction = direction
+        else:
+            # Direction matched — this was an actual MOVE.
+            cx, cy = next_x, next_y
+            remaining_path.pop(0)
 
     # Update path cache
     if remaining_path:
