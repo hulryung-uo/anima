@@ -208,14 +208,25 @@ async def wander_action(ctx: BrainContext) -> Status:
 
 
 def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
-    """Collect (x, y) of ground-level world items that may block movement."""
+    """Collect (x, y) of ground-level world items that actually have the IMPASSABLE flag.
+
+    Previously this blocked ALL ground items, which incorrectly treated walkable
+    items (logs, ore, etc.) as obstacles — trapping the agent after gathering.
+    Items that block without the flag are handled by the denied_tiles cache.
+    """
+    if ctx.map_reader is None:
+        return set()
+    from anima.map import FLAG_IMPASSABLE
+
     blocked: set[tuple[int, int]] = set()
     for it in ctx.perception.world.items.values():
         if it.container != 0:
             continue
         if it.serial & 0x40000000 == 0:
             continue
-        blocked.add((it.x, it.y))
+        flags = ctx.map_reader._get_item_flags(it.graphic)
+        if flags & FLAG_IMPASSABLE:
+            blocked.add((it.x, it.y))
     return blocked
 
 

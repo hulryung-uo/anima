@@ -389,19 +389,23 @@ def _get_cached_path(
 # ------------------------------------------------------------------
 
 def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
-    """Collect (x, y) of ground-level world items that may block movement.
+    """Collect (x, y) of ground-level world items that actually have the IMPASSABLE flag.
 
-    Many UO items (furniture, chairs, etc.) lack the IMPASSABLE flag in tiledata
-    but still block movement server-side. We treat all non-container ground items
-    as potential obstacles, excluding surfaces/bridges you can walk on.
+    Previously this blocked ALL ground items, which incorrectly treated walkable
+    items (logs, ore, etc.) as obstacles — trapping the agent after gathering.
+    Items that block without the flag are handled by the denied_tiles cache.
     """
+    if ctx.map_reader is None:
+        return set()
     blocked: set[tuple[int, int]] = set()
     for it in ctx.perception.world.items.values():
         if it.container != 0:
-            continue  # skip contained items (in bags, etc.)
+            continue
         if it.serial & 0x40000000 == 0:
-            continue  # not an item serial (items have high bit set)
-        blocked.add((it.x, it.y))
+            continue
+        flags = ctx.map_reader._get_item_flags(it.graphic)
+        if flags & FLAG_IMPASSABLE:
+            blocked.add((it.x, it.y))
     return blocked
 
 
