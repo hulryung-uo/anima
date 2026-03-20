@@ -419,6 +419,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
                 "journal": journal,
                 "activity_feed": feed,
                 "metrics": metrics_collector,
+                "map_reader": map_reader,
             },
         )
         brain = Brain(brain_ctx)

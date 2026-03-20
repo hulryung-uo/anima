@@ -192,6 +192,60 @@ def _panel_skills(p: "Perception") -> Panel:
     return Panel(t, title="Skills", border_style="bright_yellow")
 
 
+def _panel_minimap(p: "Perception", bb: dict) -> Panel:
+    """Render a minimap showing agent position, walls, and nearby mobiles."""
+    ss = p.self_state
+    sx, sy, sz = ss.x, ss.y, ss.z
+    mr = bb.get("map_reader")
+
+    radius = 12
+    t = Text()
+
+    if mr is None:
+        t.append("No map reader", style="grey50")
+        return Panel(t, title="Map", border_style="bright_blue")
+
+    mobs = {(m.x, m.y): m for m in p.world.nearby_mobiles(sx, sy, distance=radius)}
+    goal = bb.get("move_target")
+
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            x, y = sx + dx, sy + dy
+
+            if dx == 0 and dy == 0:
+                t.append("@", style="bold bright_green")
+            elif goal and x == goal[0] and y == goal[1]:
+                t.append("X", style="bold bright_red")
+            elif (x, y) in mobs:
+                mob = mobs[(x, y)]
+                nv = mob.notoriety.value if mob.notoriety else 1
+                color = _NOTORIETY_COLORS.get(nv, "white")
+                t.append("M", style=color)
+            else:
+                tile = mr.get_tile(x, y)
+                can, _ = tile.walkable_z(sz)
+                if not can:
+                    has_wall = any(
+                        s.impassable and not s.surface for s in tile.statics
+                    )
+                    if has_wall:
+                        t.append("#", style="grey30")
+                    else:
+                        t.append("~", style="blue")
+                else:
+                    # Check for trees
+                    has_tree = any(
+                        s.graphic in range(0x0CCA, 0x0D9C) for s in tile.statics
+                    )
+                    if has_tree:
+                        t.append("T", style="green")
+                    else:
+                        t.append(".", style="grey23")
+        t.append("\n")
+
+    return Panel(t, title="Map", border_style="bright_blue")
+
+
 def _panel_qvalues(bb: dict) -> Panel:
     qs: dict[str, tuple[float, int]] = bb.get("q_snapshot", {})
     t = Text()
@@ -274,6 +328,7 @@ class AnimaTUI:
         self._refresh = refresh_rate
         self._show_inventory = False
         self._show_skills = False
+        self._show_map = True
 
     def _build(self) -> Layout:
         layout = Layout()
@@ -282,10 +337,13 @@ class AnimaTUI:
             Layout(name="lower", size=14),
             Layout(name="footer", size=1),
         )
-        layout["upper"].split_row(
+        upper_panels = [
             Layout(name="status", ratio=2, minimum_size=30),
             Layout(name="activity", ratio=3, minimum_size=40),
-        )
+        ]
+        if self._show_map:
+            upper_panels.append(Layout(name="minimap", ratio=2, minimum_size=26))
+        layout["upper"].split_row(*upper_panels)
 
         # Build lower panels based on toggle state
         lower_panels = [Layout(name="nearby", ratio=1)]
@@ -300,6 +358,8 @@ class AnimaTUI:
         # Render panels
         layout["status"].update(_panel_status(self._p, self._bb))
         layout["activity"].update(_panel_activity(self._feed))
+        if self._show_map:
+            layout["minimap"].update(_panel_minimap(self._p, self._bb))
         layout["nearby"].update(_panel_nearby(self._p))
         layout["journal"].update(_panel_journal(self._p))
         if self._show_inventory:
@@ -316,6 +376,8 @@ class AnimaTUI:
         footer.append(" Inventory  ", style="grey70")
         footer.append("s", style="bold bright_yellow")
         footer.append(" Skills  ", style="grey70")
+        footer.append("m", style="bold bright_yellow")
+        footer.append(" Map  ", style="grey70")
         footer.append("q", style="bold bright_yellow")
         footer.append(" Quit", style="grey70")
         layout["footer"].update(footer)
@@ -332,6 +394,8 @@ class AnimaTUI:
                 self._show_inventory = not self._show_inventory
             elif key == "s":
                 self._show_skills = not self._show_skills
+            elif key == "m":
+                self._show_map = not self._show_map
             elif key == "q":
                 return True
         return False
