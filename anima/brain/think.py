@@ -532,24 +532,27 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
             ctx.walker.clear_denied_tile(next_x, next_y)
             break
 
+        is_turn = (current_dir != direction)
+
         ctx.walker._pending_step_tile = (next_x, next_y)
         seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
         pkt = build_walk_request(direction, seq, fastwalk)
         await ctx.conn.send_packet(pkt)
         ctx.walker.steps_count += 1
-        ctx.walker.last_step_time = (
-            asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
-        )
         steps_sent += 1
 
-        if current_dir != direction:
-            # This packet was a TURN only — position doesn't change.
-            # Next packet with same direction will move.
+        if is_turn:
+            # Turn only — no delay, immediately send step in same direction
             current_dir = direction
             ctx.perception.self_state.direction = direction
+            # Don't update last_step_time so can_walk() stays True
         else:
-            # Direction matched — this was an actual MOVE.
+            # Actual move — apply walk delay
+            ctx.walker.last_step_time = (
+                asyncio.get_event_loop().time() * 1000
+                + ctx.cfg.movement.walk_delay_ms
+            )
             cx, cy = next_x, next_y
             remaining_path.pop(0)
 
