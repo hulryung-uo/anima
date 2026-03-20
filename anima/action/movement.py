@@ -87,9 +87,14 @@ async def wander_action(ctx: BrainContext) -> Status:
     if not ctx.walker.can_walk():
         return Status.RUNNING
 
-    # Reset escape counter when movement is actually working
-    if ctx.walker.consecutive_denials == 0:
+    # Reset escape counter only when position actually changed (not just
+    # after cooldown from a failed escape — that was resetting the counter
+    # before full_clear ever triggered, causing an infinite stuck loop).
+    last_pos = ctx.blackboard.get("_last_wander_pos")
+    current_pos = (sx, sy)
+    if last_pos is not None and last_pos != current_pos:
         ctx.blackboard.pop("escape_fail_count", None)
+    ctx.blackboard["_last_wander_pos"] = current_pos
 
     # If too many consecutive denials, try to escape instead of just cooling down
     if ctx.walker.consecutive_denials >= 5:
@@ -101,8 +106,9 @@ async def wander_action(ctx: BrainContext) -> Status:
             if escaped:
                 ctx.walker.consecutive_denials = 0
                 return Status.SUCCESS
-        # Couldn't escape — cooldown
-        ctx.walker.consecutive_denials = 0
+        # Couldn't escape — cooldown, but keep denials high so we
+        # re-enter escape quickly (1 more denial) instead of wasting 5 walks.
+        ctx.walker.consecutive_denials = 4
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + 5000
         )
