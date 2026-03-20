@@ -111,6 +111,7 @@ class WalkerManager:
             self._pending_step_tile = None
 
         self.steps_count = 0
+        self.walk_sequence = 1
         self.walking_failed = False
         self.consecutive_denials += 1
         # Short cooldown — just enough for path recalculation
