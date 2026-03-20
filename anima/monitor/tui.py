@@ -360,9 +360,12 @@ class AnimaTUI:
         finally:
             key_reader.stop()
 
-        # q pressed — cancel all other tasks and exit
+        # q pressed — signal shutdown, then exit
+        self._bb["shutdown_requested"] = True
+        # Give brain_loop a moment to write final forum post
+        await asyncio.sleep(2.0)
+
         for task in asyncio.all_tasks():
             if task is not asyncio.current_task():
                 task.cancel()
-        # Force exit cleanly
         os._exit(0)

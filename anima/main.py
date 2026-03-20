@@ -264,6 +264,17 @@ async def brain_loop(brain: Brain) -> None:
             except Exception as e:
                 logger.warning("analysis_error", error=str(e))
 
+        # Check for shutdown request — write final forum post
+        if brain.context.blackboard.get("shutdown_requested"):
+            logger.info("shutdown_writing_final_post")
+            try:
+                from anima.skills.forum_action import forum_write_action
+                brain.context.blackboard["forum_last_post"] = 0.0
+                await forum_write_action(brain.context)
+            except Exception:
+                pass
+            break
+
         await brain.tick()
         await asyncio.sleep(0.2)  # 200ms tick
 
