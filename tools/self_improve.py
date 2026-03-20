@@ -237,6 +237,30 @@ def save_plan(plan: str) -> Path:
     return path
 
 
+def git_commit_and_push(message: str) -> bool:
+    """Commit any changes and push."""
+    try:
+        # Check if there are changes
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(ROOT), capture_output=True, text=True,
+        )
+        if not status.stdout.strip():
+            return False  # nothing to commit
+
+        subprocess.run(["git", "add", "-A"], cwd=str(ROOT), check=True)
+        subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=str(ROOT), check=True,
+        )
+        subprocess.run(["git", "push"], cwd=str(ROOT), check=True)
+        print(f"  Committed and pushed: {message}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  Git error: {e}")
+        return False
+
+
 def call_claude(plan_path: Path) -> bool:
     """Call Claude Code CLI to apply the improvement plan."""
     prompt = f"""Read the improvement plan at {plan_path} and fix the issues described.
@@ -245,10 +269,11 @@ Rules:
 - Only modify 1-2 files per fix
 - Run uv run pytest after changes
 - git commit with descriptive message
+- git push after commit
 - Focus on the highest severity problems first
 - Don't change architecture, only fix specific issues
 """
-    print(f"Calling Claude Code with plan: {plan_path}")
+    print(f"  Calling Claude Code with plan: {plan_path}")
     try:
         result = subprocess.run(
             ["claude", "-p", prompt],
@@ -257,7 +282,7 @@ Rules:
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"Claude Code call failed: {e}")
+        print(f"  Claude Code call failed: {e}")
         return False
 
 
@@ -284,6 +309,17 @@ def run_once(auto_fix: bool = False, call_claude_code: bool = False) -> None:
 
     if call_claude_code and any(p["severity"] in ("HIGH", "CRITICAL") for p in problems):
         call_claude(path)
+
+    # Commit analysis/plans and any changes
+    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    severity = max(
+        (p["severity"] for p in problems),
+        key=lambda s: ["LOW", "MEDIUM", "HIGH", "CRITICAL"].index(s),
+        default="LOW",
+    )
+    git_commit_and_push(
+        f"[auto-analyze] {ts_str} — {severity}, {len(problems)} issue(s)"
+    )
 
 
 def main() -> None:
