@@ -291,6 +291,10 @@ class CraftTinker(Skill):
             if tool_broke:
                 msg += " (tool broke)"
                 reward -= 1.0
+                ctx.blackboard["skill_problem"] = (
+                    "Tinker tools broke! Need to buy new ones from a vendor."
+                )
+                ctx.blackboard["last_think_time"] = 0.0
             logger.info("tinker_craft_success", item=item_text)
             return SkillResult(
                 success=True,
@@ -303,6 +307,10 @@ class CraftTinker(Skill):
             msg = "Crafting failed"
             if tool_broke:
                 msg += " (tool broke)"
+                ctx.blackboard["skill_problem"] = (
+                    "Tinker tools broke! Need to buy new ones from a vendor."
+                )
+                ctx.blackboard["last_think_time"] = 0.0
             logger.info("tinker_craft_failed", item=item_text)
             return SkillResult(
                 success=False,

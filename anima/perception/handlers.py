@@ -533,6 +533,27 @@ def register_handlers(
 
     handler.register(0x25, handle_add_item_to_container)
 
+    def handle_container_display(packet_id: int, data: bytes) -> None:
+        """0x24 ContainerDisplay — server opens a container on the client.
+
+        Records the container serial so skills (like banking) know the
+        container is open. For bank boxes (layer 0x1D), this confirms
+        the bank is ready.
+        """
+        if len(data) < 7:
+            return
+        r = PacketReader(data[1:])
+        serial = r.read_u32()
+        gump_graphic = r.read_u16()
+        p.self_state.open_container = serial
+        logger.debug(
+            "container_display",
+            serial=f"0x{serial:08X}",
+            gump=f"0x{gump_graphic:04X}",
+        )
+
+    handler.register(0x24, handle_container_display)
+
     # ------------------------------------------------------------------
     # Social packets
     # ------------------------------------------------------------------

@@ -179,12 +179,14 @@ class Avatar:
         from anima.skills.gathering.lumber import ChopWood
         from anima.skills.gathering.make_boards import MakeBoards
         from anima.skills.gathering.mine import MineOre
+        from anima.skills.trade.banking import BankDeposit
         from anima.skills.trade.vendor import BuyFromNpc, SellToNpc
 
         skill_registry = SkillRegistry()
         for skill_cls in [
             HealSelf, MeleeAttack, MineOre, ChopWood, MakeBoards,
-            SmeltOre, CraftTinker, CraftCarpentry, BuyFromNpc, SellToNpc,
+            SmeltOre, CraftTinker, CraftCarpentry,
+            BuyFromNpc, SellToNpc, BankDeposit,
         ]:
             skill_registry.register(skill_cls())
         logger.info("skills_registered", count=len(skill_registry.all_skills))

@@ -55,6 +55,16 @@ SAW_GRAPHICS = {0x1034, 0x1035}
 TINKER_TOOLS_GRAPHICS = {0x1EB8, 0x1EBC}
 PICKAXE_GRAPHICS = {0x0E85, 0x0E86}
 
+# Graphics to NEVER sell — essential tools and raw materials
+KEEP_GRAPHICS: set[int] = (
+    HATCHET_GRAPHICS | SAW_GRAPHICS | TINKER_TOOLS_GRAPHICS | PICKAXE_GRAPHICS
+    | {0x1BDD, 0x1BD7}  # logs, boards
+    | {0x19B7, 0x19B8, 0x19B9, 0x19BA}  # ore
+    | {0x1BF2}  # ingots
+    | {0x0EED}  # gold coins
+    | {0x0E21}  # bandages
+)
+
 # (graphic, max_to_buy) — tools we always want to have
 ESSENTIAL_TOOLS: list[tuple[int, int]] = [
     (0x0F43, 1),  # hatchet
@@ -169,12 +179,15 @@ class SellToNpc(Skill):
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
-        # Need items in backpack and a vendor nearby
+        # Need sellable crafted goods in backpack and a vendor nearby
         backpack = ss.equipment.get(0x15)
         if not backpack:
             return False
-        has_items = any(it.container == backpack for it in ctx.perception.world.items.values())
-        return has_items and bool(_find_vendor(ctx))
+        has_sellable = any(
+            it.container == backpack and it.graphic not in KEEP_GRAPHICS
+            for it in ctx.perception.world.items.values()
+        )
+        return has_sellable and bool(_find_vendor(ctx))
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
@@ -217,9 +230,27 @@ class SellToNpc(Skill):
                 duration_ms=elapsed,
             )
 
-        # Sell ALL items from the sell list
-        items_to_sell: list[tuple[int, int]] = [(si.serial, si.amount) for si in sell_list]
-        expected_gold = sum(si.price * si.amount for si in sell_list)
+        # Sell items but protect essential tools and raw materials
+        items_to_sell: list[tuple[int, int]] = [
+            (si.serial, si.amount)
+            for si in sell_list
+            if si.graphic not in KEEP_GRAPHICS
+        ]
+
+        if not items_to_sell:
+            ss.vendor_sell_list = []
+            ss.vendor_serial = 0
+            elapsed = (time.monotonic() - start) * 1000
+            return SkillResult(
+                success=False, reward=0.0,
+                message="Nothing worth selling",
+                duration_ms=elapsed,
+            )
+
+        expected_gold = sum(
+            si.price * si.amount for si in sell_list
+            if si.graphic not in KEEP_GRAPHICS
+        )
 
         await ctx.conn.send_packet(build_sell_items(ss.vendor_serial, items_to_sell))
         logger.info(
@@ -258,6 +289,21 @@ def _find_vendor(ctx: BrainContext) -> MobileInfo | None:
         return None
     vendors.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
     return vendors[0]
+
+
+def _protected_serials(ctx: BrainContext) -> set[int]:
+    """Return serials of items that should NOT be sold (essential tools, materials)."""
+    ss = ctx.perception.self_state
+    world = ctx.perception.world
+    backpack = ss.equipment.get(0x15)
+    if not backpack:
+        return set()
+
+    protected: set[int] = set()
+    for it in world.items.values():
+        if it.container == backpack and it.graphic in KEEP_GRAPHICS:
+            protected.add(it.serial)
+    return protected
 
 
 def _find_missing_tools(ctx: BrainContext) -> list[tuple[int, int]]:

@@ -100,6 +100,9 @@ class SelfState:
         # Combat state
         self.last_damage_taken_at: float = 0.0  # time.monotonic() of last hit
 
+        # Container state
+        self.open_container: int = 0  # serial of last opened container (0x24)
+
         # Vendor trading state (populated by 0x74 / 0x9E handlers)
         self.vendor_serial: int = 0
         self.vendor_buy_list: list[VendorBuyItem] = []

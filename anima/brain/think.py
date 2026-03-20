@@ -112,14 +112,19 @@ def _build_goal_context(ctx: BrainContext) -> str:
     if problem:
         parts.append(f"PROBLEM: {problem}")
 
-    # Include weight info
+    # Include inventory/economy status
     ss = ctx.perception.self_state
+    if ss.gold > 0:
+        parts.append(f"Gold: {ss.gold}gp")
+        if ss.gold >= 500:
+            parts.append("TIP: You have a lot of gold. Consider depositing at the bank.")
+
     if ss.weight_max > 0:
         pct = ss.weight / ss.weight_max * 100
+        parts.append(f"Weight: {ss.weight}/{ss.weight_max} ({pct:.0f}%)")
         if pct > 80:
             parts.append(
-                f"WARNING: Carrying {ss.weight}/{ss.weight_max} stones ({pct:.0f}% full)! "
-                f"Too heavy to gather more. Go sell items at a shop or drop heavy items."
+                "WARNING: Too heavy! Go sell items at a shop or deposit at bank."
             )
 
     return "\n".join(parts)

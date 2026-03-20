@@ -60,10 +60,21 @@ def _get_button_id(btn_type: int, index: int) -> int:
 # group_index matches ServUO CraftGroup order in DefCarpentry.cs
 CRAFT_TARGETS = [
     # (display_name, group_index, item_index, min_skill, boards_needed)
-    ("Barrel Staves", 0, 0, 0.0, 5),     # Other group=0, item=0
-    ("Barrel Lid", 0, 1, 11.0, 4),        # Other group=0, item=1
-    ("Small Crate", 2, 1, 10.0, 8),       # Containers group=2, item=1
-    ("Wooden Box", 2, 0, 21.0, 10),       # Containers group=2, item=0
+    # Sorted by min_skill ascending — agent picks the highest-skill item it can make
+    # Group 0=Other, 1=Furniture, 2=Containers, 3=Weapons, 4=Armor, 5=Instruments
+    ("Barrel Staves", 0, 0, 0.0, 5),        # Other
+    ("Barrel Lid", 0, 1, 11.0, 4),          # Other
+    ("Short Music Stand", 0, 2, 18.8, 8),   # Other
+    ("Small Crate", 2, 1, 10.0, 8),         # Containers
+    ("Wooden Box", 2, 0, 21.0, 10),         # Containers
+    ("Medium Crate", 2, 2, 31.0, 15),       # Containers
+    ("Wooden Bench", 1, 1, 52.6, 17),       # Furniture
+    ("Large Crate", 2, 3, 47.3, 18),        # Containers
+    ("Wooden Shield", 4, 0, 52.6, 9),       # Armor
+    ("Quarter Staff", 3, 1, 73.6, 6),       # Weapons
+    ("Shepherd's Crook", 3, 0, 78.9, 7),    # Weapons
+    ("Lap Harp", 5, 0, 63.1, 20),           # Instruments
+    ("Standing Harp", 5, 2, 81.5, 35),      # Instruments
 ]
 
 
@@ -130,15 +141,15 @@ class CraftCarpentry(Skill):
         skill_info = ss.skills.get(CARPENTRY_SKILL_ID)
         skill_val = skill_info.value if skill_info else 0.0
 
-        # Find the best item to craft — check each recipe
+        # Find the best item to craft — pick highest min_skill we can make
+        # (higher skill items give better gains and sell for more)
         target = None
         best_feasible = None
         for name, grp_idx, item_idx, min_skill, boards in CRAFT_TARGETS:
             if skill_val >= min_skill:
                 if boards_available >= boards:
-                    target = (name, grp_idx, item_idx, boards)
+                    target = (name, grp_idx, item_idx, boards)  # keeps updating → last/highest wins
                 elif best_feasible is None:
-                    # First item we have skill for but not enough materials
                     best_feasible = (name, boards)
 
         if not target:
