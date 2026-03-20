@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import time
 from pathlib import Path
 
 import structlog
@@ -217,6 +218,11 @@ async def brain_loop(brain: Brain) -> None:
     await brain.context.conn.send_packet(build_unicode_speech(f"Hello from {persona_name}!"))
     logger.info("speech_sent", text=f"Hello from {persona_name}!")
 
+    # Periodic analysis setup
+    from anima.monitor.analyzer import analyze, generate_report, save_report
+    last_analysis = time.time()
+    ANALYSIS_INTERVAL = 600.0  # 10 minutes
+
     while brain.context.conn.connected:
         # Apply pending skill locks once skills arrive from server
         if brain.context.blackboard.get("_skill_locks_pending"):
@@ -227,6 +233,36 @@ async def brain_loop(brain: Brain) -> None:
                 if pt:
                     await apply_skill_locks(brain.context, pt)
                 brain.context.blackboard["_skill_locks_pending"] = False
+
+        # Periodic analysis (every 10 minutes)
+        now = time.time()
+        if now - last_analysis >= ANALYSIS_INTERVAL:
+            last_analysis = now
+            try:
+                mc = brain.context.blackboard.get("metrics")
+                if mc:
+                    window = mc.get_window()
+                    problems = analyze(window)
+                    report = generate_report(
+                        window, problems,
+                        agent_name=persona_name,
+                    )
+                    path = save_report(report, agent_name=persona_name)
+                    logger.info("analysis_saved", path=str(path))
+                    feed = brain.context.blackboard.get("activity_feed")
+                    if feed:
+                        severity = max(
+                            (p.severity for p in problems),
+                            key=lambda s: ["LOW", "MEDIUM", "HIGH", "CRITICAL"].index(s),
+                            default="LOW",
+                        )
+                        feed.publish(
+                            "system",
+                            f"Analysis: {severity} — {len(problems)} issue(s)",
+                            importance=2 if severity in ("HIGH", "CRITICAL") else 1,
+                        )
+            except Exception as e:
+                logger.warning("analysis_error", error=str(e))
 
         await brain.tick()
         await asyncio.sleep(0.2)  # 200ms tick
@@ -336,8 +372,24 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
         journal = ActivityJournal(memory_db, agent_name=persona.name)
         logger.info("journal_ready", agent=persona.name)
 
-        # Build activity feed for monitoring
+        # Build activity feed and metrics collector
         feed = ActivityFeed(max_events=cfg.monitor.max_events)
+
+        from anima.monitor.metrics import MetricsCollector
+        metrics_collector = MetricsCollector()
+
+        # Bridge perception events → metrics
+        def _on_event_for_metrics(event):
+            etype = event.type.name.lower()
+            if etype == "walk_confirmed":
+                ss = perception.self_state
+                metrics_collector.record("walk_confirmed", {"pos": (ss.x, ss.y)})
+            elif etype == "walk_denied":
+                metrics_collector.record("walk_denied")
+            elif etype == "skill_changed" and "diff" in event.data:
+                metrics_collector.record("skill_gain", event.data)
+
+        perception.events.subscribe_sync(_on_event_for_metrics)
 
         # Build brain with behavior tree
         brain_ctx = BrainContext(
@@ -355,6 +407,7 @@ async def run(cfg: Config, delete_existing: bool = False) -> None:
                 "skill_registry": skill_registry,
                 "journal": journal,
                 "activity_feed": feed,
+                "metrics": metrics_collector,
             },
         )
         brain = Brain(brain_ctx)

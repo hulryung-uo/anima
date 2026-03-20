@@ -141,6 +141,12 @@ async def _skill_action(ctx: BrainContext) -> Status:
             ctx.blackboard.get("skill_consecutive_fails", 0) + 1
         )
 
+    # Record to metrics
+    mc = ctx.blackboard.get("metrics")
+    if mc:
+        event = f"{skill.category}_success" if result.success else f"{skill.category}_fail"
+        mc.record(event, {"skill": skill.name, "reward": result.reward})
+
     if feed:
         icon = "OK" if result.success else "FAIL"
         feed.publish(
