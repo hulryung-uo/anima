@@ -11,6 +11,7 @@ import structlog
 from anima.client.packets import (
     build_buy_items,
     build_double_click,
+    build_opl_request,
     build_sell_items,
     build_unicode_speech,
 )
@@ -91,7 +92,7 @@ class BuyFromNpc(Skill):
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
         ss = ctx.perception.self_state
-        vendor = _find_vendor(ctx)
+        vendor = await _find_vendor_async(ctx)
         if not vendor:
             return SkillResult(success=False, reward=-1.0, message="No vendor nearby")
 
@@ -192,7 +193,7 @@ class SellToNpc(Skill):
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
         ss = ctx.perception.self_state
-        vendor = _find_vendor(ctx)
+        vendor = await _find_vendor_async(ctx)
         if not vendor:
             return SkillResult(success=False, reward=-1.0, message="No vendor nearby")
 
@@ -282,27 +283,78 @@ class SellToNpc(Skill):
 
 HUMAN_BODIES = {0x0190, 0x0191}  # male, female
 
+# NPC title keywords that indicate a vendor who buys/sells
+_VENDOR_TITLES = {
+    "carpenter", "provisioner", "blacksmith", "tinker",
+    "weaponsmith", "armorer", "bowyer", "tailor", "jeweler",
+    "herbalist", "alchemist", "baker", "butcher", "cobbler",
+    "furtrader", "tanner", "mage", "scribe", "shipwright",
+    "innkeeper", "barkeep", "cook", "farmer", "fisherman",
+    "vendor", "merchant", "shopkeeper",
+}
 
-def _find_vendor(ctx: BrainContext) -> MobileInfo | None:
-    """Find nearest NPC vendor.
 
-    Priority: INVULNERABLE notoriety > human NPC (low serial).
+def _is_vendor(mob: MobileInfo) -> bool:
+    """Check if a mobile's OPL properties indicate it's a vendor."""
+    if not mob.properties:
+        return False
+    # properties[0] = name, properties[1+] = title/attributes
+    for prop in mob.properties:
+        prop_lower = prop.lower()
+        if any(t in prop_lower for t in _VENDOR_TITLES):
+            return True
+    return False
+
+
+async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
+    """Find nearest vendor NPC, requesting OPL if needed.
+
+    Priority:
+    1. INVULNERABLE notoriety (standard ServUO)
+    2. OPL properties contain vendor title
+    3. Human NPC near known shop location (last resort)
     """
     ss = ctx.perception.self_state
-    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=5)
+    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=8)
+    npcs = [
+        m for m in nearby
+        if m.serial != ss.serial and m.body in HUMAN_BODIES and m.serial < 0x10000
+    ]
+    npcs.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
 
-    # Pass 1: INVULNERABLE (standard ServUO vendors)
+    if not npcs:
+        return None
+
+    # Pass 1: INVULNERABLE
+    for m in npcs:
+        if m.notoriety == NotorietyFlag.INVULNERABLE:
+            return m
+
+    # Pass 2: check OPL properties (request if missing)
+    need_opl = [m for m in npcs if not m.properties]
+    if need_opl:
+        for m in need_opl[:5]:
+            await ctx.conn.send_packet(build_opl_request(m.serial))
+        await asyncio.sleep(0.5)  # wait for OPL responses
+
+    for m in npcs:
+        if _is_vendor(m):
+            return m
+
+    return None
+
+
+def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
+    """Synchronous vendor finder (uses cached properties only)."""
+    ss = ctx.perception.self_state
+    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=8)
+
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
         if m.serial == ss.serial:
             continue
         if m.notoriety == NotorietyFlag.INVULNERABLE:
             return m
-
-    # Pass 2: human body + NPC serial (fallback if notoriety not set)
-    for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
-        if m.serial == ss.serial:
-            continue
-        if m.body in HUMAN_BODIES and m.serial < 0x10000:
+        if m.body in HUMAN_BODIES and m.serial < 0x10000 and _is_vendor(m):
             return m
 
     return None
