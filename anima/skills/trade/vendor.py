@@ -102,7 +102,16 @@ class BuyFromNpc(Skill):
         start = time.monotonic()
         ss = ctx.perception.self_state
         vendor = await _find_vendor_async(ctx)
-        vendor_name = vendor.name if vendor else "vendor"
+        if not vendor:
+            ctx.blackboard.setdefault("skill_problem", (
+                "Vendor is nearby but need to be within 2 tiles to buy."
+            ))
+            return SkillResult(
+                success=False, reward=-0.5,
+                message="Need to get closer to vendor",
+            )
+
+        vendor_name = vendor.name or "vendor"
         missing = _find_missing_tools(ctx)
 
         from anima.core.publish import pub
@@ -111,10 +120,9 @@ class BuyFromNpc(Skill):
         # Clear any stale vendor state
         ss.vendor_buy_list = []
 
-        # Try "vendor buy" speech (12-tile range) + double-click if visible
+        # Double-click vendor to open shop + "vendor buy" speech
+        await ctx.conn.send_packet(build_double_click(vendor.serial))
         await ctx.conn.send_packet(build_unicode_speech("vendor buy"))
-        if vendor:
-            await ctx.conn.send_packet(build_double_click(vendor.serial))
         logger.info("vendor_buy_opened", vendor=vendor_name, missing=missing)
 
         # Wait for buy list to arrive
@@ -216,9 +224,18 @@ class SellToNpc(Skill):
         start = time.monotonic()
         ss = ctx.perception.self_state
 
-        # Try to find vendor for name display, but don't require it
         vendor = await _find_vendor_async(ctx)
-        vendor_name = vendor.name if vendor else "vendor"
+        if not vendor:
+            # Vendor exists nearby but too far — signal to move closer
+            ctx.blackboard.setdefault("skill_problem", (
+                "Vendor is nearby but need to be within 2 tiles to trade."
+            ))
+            return SkillResult(
+                success=False, reward=-0.5,
+                message="Need to get closer to vendor",
+            )
+
+        vendor_name = vendor.name or "vendor"
         gold_before = ss.gold
 
         # Clear any stale vendor state
@@ -339,8 +356,10 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
     3. Human NPC near known shop location (last resort)
     """
     ss = ctx.perception.self_state
-    # 12-tile range matches ServUO vendor speech range
-    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
+    # Must be within 2 tiles of vendor to buy/sell
+    nearby = ctx.perception.world.nearby_mobiles(
+        ss.x, ss.y, distance=_VENDOR_INTERACT_RANGE,
+    )
     npcs = [
         m for m in nearby
         if m.serial != ss.serial and m.body in HUMAN_BODIES and m.serial < 0x10000
@@ -374,10 +393,16 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
     return None
 
 
+# ServUO requires player within 2 tiles of vendor for buy/sell
+_VENDOR_INTERACT_RANGE = 2
+
+
 def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
-    """Synchronous vendor finder (uses cached name/properties)."""
+    """Find vendor within interaction range (2 tiles)."""
     ss = ctx.perception.self_state
-    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
+    nearby = ctx.perception.world.nearby_mobiles(
+        ss.x, ss.y, distance=_VENDOR_INTERACT_RANGE,
+    )
 
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
         if m.serial == ss.serial:
