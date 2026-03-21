@@ -217,7 +217,8 @@ _MAP_COLORS = {
 }
 
 
-def _panel_minimap(minimap: dict) -> Panel:
+def _panel_minimap(minimap: dict, width: int = 0, height: int = 0) -> Panel:
+    """Render minimap centered on player, trimmed to fit panel size."""
     t = Text()
     rows = minimap.get("rows", [])
     px = minimap.get("px", 0)
@@ -227,14 +228,30 @@ def _panel_minimap(minimap: dict) -> Panel:
         t.append(" No map data\n", style="grey50")
         return Panel(t, title=f"Map ({px},{py})", border_style="bright_blue")
 
-    for row in rows:
-        for ch in row:
+    total = len(rows)
+    center = total // 2  # player is at center of the full grid
+
+    # Panel border takes 2 chars each side, legend takes 1 row
+    avail_w = max(10, (width - 4) if width else len(rows[0]))
+    avail_h = max(5, (height - 4) if height else total)
+
+    # Calculate visible window centered on player
+    half_w = avail_w // 2
+    half_h = avail_h // 2
+    row_start = max(0, center - half_h)
+    row_end = min(total, center + half_h)
+    col_start = max(0, center - half_w)
+    col_end = min(len(rows[0]) if rows else 0, center + half_w)
+
+    for row in rows[row_start:row_end]:
+        line = row[col_start:col_end]
+        for ch in line:
             style = _MAP_COLORS.get(ch, "grey23")
             t.append(ch, style=style)
         t.append("\n")
 
     # Legend
-    t.append(" @=you #=wall T=tree M=npc +=door X=goal\n", style="grey50")
+    t.append(" @=you #=wall T=tree M=npc +=door X=goal", style="grey50")
 
     return Panel(t, title=f"Map ({px},{py})", border_style="bright_blue")
 
@@ -276,43 +293,64 @@ def build_layout(
     show_inventory: bool = False,
     show_skills: bool = False,
     show_map: bool = False,
+    term_width: int = 120,
+    term_height: int = 40,
 ) -> Layout:
     layout = Layout()
-    layout.split_column(
-        Layout(name="upper"),
-        Layout(name="lower", size=14),
-        Layout(name="footer", size=1),
-    )
 
-    upper_panels = [
-        Layout(name="status", ratio=2, minimum_size=30),
-        Layout(name="activity", ratio=3, minimum_size=40),
-    ]
     if show_map:
-        upper_panels.append(Layout(name="minimap", ratio=2, minimum_size=33))
-    layout["upper"].split_row(*upper_panels)
+        # Map mode: map takes most of the screen, sidebar for status
+        map_h = max(10, term_height - 4)  # -footer -border
+        map_w = max(20, term_width * 2 // 3)
+        layout.split_column(
+            Layout(name="main"),
+            Layout(name="footer", size=1),
+        )
+        layout["main"].split_row(
+            Layout(name="minimap", ratio=3),
+            Layout(name="sidebar", ratio=1, minimum_size=30),
+        )
+        layout["sidebar"].split_column(
+            Layout(name="status", ratio=2),
+            Layout(name="activity", ratio=3),
+        )
+        layout["minimap"].update(
+            _panel_minimap(data.get("minimap", {}), width=map_w, height=map_h)
+        )
+        layout["status"].update(_panel_status(data.get("status", {})))
+        layout["activity"].update(_panel_activity(data.get("activity", [])))
+    else:
+        # Normal mode
+        layout.split_column(
+            Layout(name="upper"),
+            Layout(name="lower", size=14),
+            Layout(name="footer", size=1),
+        )
+        layout["upper"].split_row(
+            Layout(name="status", ratio=2, minimum_size=30),
+            Layout(name="activity", ratio=3, minimum_size=40),
+        )
 
-    lower_panels = [Layout(name="nearby", ratio=1)]
-    lower_panels.append(Layout(name="journal", ratio=1))
-    if show_inventory:
-        lower_panels.append(Layout(name="inventory", ratio=1))
-    if show_skills:
-        lower_panels.append(Layout(name="skills", ratio=1))
-    lower_panels.append(Layout(name="qvalues", ratio=1))
-    layout["lower"].split_row(*lower_panels)
+        lower_panels = [Layout(name="nearby", ratio=1)]
+        lower_panels.append(Layout(name="journal", ratio=1))
+        if show_inventory:
+            lower_panels.append(Layout(name="inventory", ratio=1))
+        if show_skills:
+            lower_panels.append(Layout(name="skills", ratio=1))
+        lower_panels.append(Layout(name="qvalues", ratio=1))
+        layout["lower"].split_row(*lower_panels)
 
-    status = data.get("status", {})
-    layout["status"].update(_panel_status(status))
-    layout["activity"].update(_panel_activity(data.get("activity", [])))
-    if show_map:
-        layout["minimap"].update(_panel_minimap(data.get("minimap", {})))
-    layout["nearby"].update(_panel_nearby(data.get("nearby", [])))
-    layout["journal"].update(_panel_journal(data.get("journal", [])))
-    if show_inventory:
-        layout["inventory"].update(_panel_inventory(data.get("inventory", [])))
-    if show_skills:
-        layout["skills"].update(_panel_skills(data.get("skills", {})))
-    layout["qvalues"].update(_panel_qvalues(data.get("qvalues", {})))
+        layout["status"].update(_panel_status(data.get("status", {})))
+        layout["activity"].update(_panel_activity(data.get("activity", [])))
+        layout["nearby"].update(_panel_nearby(data.get("nearby", [])))
+        layout["journal"].update(_panel_journal(data.get("journal", [])))
+        if show_inventory:
+            layout["inventory"].update(
+                _panel_inventory(data.get("inventory", []))
+            )
+        if show_skills:
+            layout["skills"].update(_panel_skills(data.get("skills", {})))
+        layout["qvalues"].update(_panel_qvalues(data.get("qvalues", {})))
 
     # Footer
     footer = Text()
@@ -379,11 +417,14 @@ def main() -> None:
                         elif key == "s":
                             show_skills = not show_skills
 
+                    tw, th = console.size
                     live.update(build_layout(
                         data,
                         show_inventory=show_inventory,
                         show_skills=show_skills,
                         show_map=show_map,
+                        term_width=tw,
+                        term_height=th,
                     ))
                     time.sleep(args.refresh)
             except KeyboardInterrupt:

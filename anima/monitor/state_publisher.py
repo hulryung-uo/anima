@@ -180,7 +180,7 @@ class StatePublisher:
         """Build a minimap grid around the player position."""
         from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
 
-        radius = 15
+        radius = 30  # generate wide map, TUI trims to fit panel
         px = getattr(ss, "x", 0)
         py = getattr(ss, "y", 0)
 
