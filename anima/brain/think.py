@@ -514,17 +514,12 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
             )
 
         if not path:
-            goal = ctx.blackboard.pop("current_goal", None)
-            ctx.blackboard.pop("move_target", None)
-            _clear_path_cache(ctx)
+            # No path found — don't abandon goal, let the main loop retry
+            goal = ctx.blackboard.get("current_goal")
             place = goal["place"] if goal else "unknown"
-            await _record_episode(
-                ctx,
-                "go",
-                place,
-                "failure",
-                get_reward("goal_failed"),
-                summary=f"No path to {place}",
+            logger.info(
+                "step_toward_no_path",
+                pos=f"({sx},{sy},{sz})", target=f"({tx},{ty})", place=place,
             )
             return Status.SUCCESS
 
