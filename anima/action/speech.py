@@ -51,10 +51,13 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     speaker = speech.get("name", "someone")
     serial = speech.get("serial", 0)
 
-    # Don't respond to our own speech or system messages
+    # Don't respond to our own speech, system messages, or NPCs
     if serial == ctx.perception.self_state.serial:
         return Status.FAILURE
     if serial == 0xFFFFFFFF or speaker.lower() == "system":
+        return Status.FAILURE
+    if serial and serial < 0x40000000:
+        # NPC serial (not a player) — ignore, don't waste LLM calls
         return Status.FAILURE
 
     # Publish to activity feed
