@@ -18,6 +18,7 @@ from anima.client.packets import (
     build_double_click,
     build_opl_request,
     build_ping,
+    build_single_click,
     build_status_request,
     build_unicode_speech,
 )
@@ -294,12 +295,12 @@ async def brain_loop(brain: Brain) -> None:
                 pass
             break
 
-        # Request OPL for nearby NPCs that don't have properties yet
-        # (gets their name + title like "Derrick the real estate broker")
+        # Single-click nearby NPCs to get their name+title
+        # (server responds with 0x1C label: "Hastin the baker")
         ss = brain.context.perception.self_state
         for mob in brain.context.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
-            if not mob.properties and not mob.name and mob.serial != ss.serial:
-                await brain.context.conn.send_packet(build_opl_request(mob.serial))
+            if not mob.name and mob.serial != ss.serial:
+                await brain.context.conn.send_packet(build_single_click(mob.serial))
 
         await brain.tick()
         await asyncio.sleep(0.2)  # 200ms tick

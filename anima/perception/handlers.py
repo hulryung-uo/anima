@@ -571,12 +571,22 @@ def register_handlers(
         name = r.read_ascii(30)
         text = r.read_ascii_remaining()
 
+        # msg_type 6 = Label (single-click response with name + title)
+        if msg_type == 6 and serial:
+            mob = p.world.mobiles.get(serial)
+            if mob is not None and text:
+                mob.name = text  # e.g. "Hastin the baker"
+            item = p.world.items.get(serial)
+            if item is not None and text:
+                item.name = text
+
         p.social.add_speech(serial, name, text, msg_type, hue)
         p.emit(
             GameEventType.SPEECH_HEARD,
             {"serial": serial, "name": name, "text": text, "type": msg_type},
         )
-        logger.info("speech", name=name, text=text, type=msg_type)
+        if msg_type != 6:  # don't log labels as speech
+            logger.info("speech", name=name, text=text, type=msg_type)
 
     handler.register(0x1C, handle_ascii_talk)
 
