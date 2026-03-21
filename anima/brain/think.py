@@ -493,7 +493,6 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
         denied = (
             set(ctx.walker.denied_tiles.keys())
             | _impassable_world_items(ctx)
-            | _scan_building_walls(ctx, radius=25)
         )
         sz = ctx.perception.self_state.z
 
