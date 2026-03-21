@@ -1,4 +1,4 @@
-"""Vendor skills — buy from and sell to NPC merchants."""
+"""Vendor skills — buy from and sell to NPC merchants via context menu."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import structlog
 
 from anima.client.packets import (
     build_buy_items,
-    build_double_click,
+    build_context_menu_request,
+    build_context_menu_selection,
     build_opl_request,
     build_sell_items,
-    build_unicode_speech,
 )
 from anima.perception.enums import NotorietyFlag
 from anima.perception.world_state import MobileInfo
@@ -24,10 +24,18 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# Context menu cliloc IDs (from ServUO BaseVendor.cs)
+_CLILOC_VENDOR_BUY = 6103
+_CLILOC_VENDOR_SELL = 6104
+
 # Max time (seconds) to wait for vendor list packets from the server
 _VENDOR_LIST_TIMEOUT = 3.0
-# Poll interval while waiting for vendor list
+# Context menu should respond almost instantly
+_CONTEXT_MENU_TIMEOUT = 1.5
+# Poll interval while waiting
 _POLL_INTERVAL = 0.2
+# Per-vendor cooldown after refusing to buy (seconds)
+_VENDOR_REFUSE_COOLDOWN = 300.0
 
 
 async def _wait_for_sell_list(ctx: BrainContext, timeout: float = _VENDOR_LIST_TIMEOUT) -> bool:
@@ -50,15 +58,72 @@ async def _wait_for_buy_list(ctx: BrainContext, timeout: float = _VENDOR_LIST_TI
     return False
 
 
+async def _wait_for_context_menu(
+    ctx: BrainContext, timeout: float = _CONTEXT_MENU_TIMEOUT,
+) -> bool:
+    """Poll until context_menu is populated or timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ctx.perception.self_state.context_menu:
+            return True
+        await asyncio.sleep(_POLL_INTERVAL)
+    return False
+
+
+async def _request_context_menu_entry(
+    ctx: BrainContext, vendor: MobileInfo, cliloc: int,
+) -> bool:
+    """Request context menu from vendor and select the entry matching cliloc.
+
+    Returns True if the entry was found and selected.
+    """
+    ss = ctx.perception.self_state
+    ss.context_menu = []
+    ss.context_menu_serial = 0
+
+    await ctx.conn.send_packet(build_context_menu_request(vendor.serial))
+
+    if not await _wait_for_context_menu(ctx):
+        logger.warning("context_menu_timeout", vendor=vendor.name)
+        return False
+
+    # Find the entry with matching cliloc
+    for entry in ss.context_menu:
+        if entry.cliloc == cliloc and entry.flags == 0:  # 0 = enabled
+            await ctx.conn.send_packet(
+                build_context_menu_selection(vendor.serial, entry.index)
+            )
+            logger.info(
+                "context_menu_selected",
+                vendor=vendor.name,
+                cliloc=cliloc,
+                index=entry.index,
+            )
+            ss.context_menu = []
+            return True
+
+    logger.warning(
+        "context_menu_entry_not_found",
+        vendor=vendor.name,
+        cliloc=cliloc,
+        available=[(e.cliloc, e.index, e.flags) for e in ss.context_menu],
+    )
+    ss.context_menu = []
+    return False
+
+
 # Essential tool graphics — buy these when missing
 HATCHET_GRAPHICS = {0x0F43, 0x0F44, 0x0F47, 0x0F48, 0x0F4B, 0x0F4D}
 SAW_GRAPHICS = {0x1034, 0x1035}
 TINKER_TOOLS_GRAPHICS = {0x1EB8, 0x1EBC}
 PICKAXE_GRAPHICS = {0x0E85, 0x0E86}
+SMITH_HAMMER_GRAPHICS = {0x13E3, 0x13E4}
+TONGS_GRAPHICS = {0x0FBB, 0x0FBC}
 
 # Graphics to NEVER sell — essential tools and raw materials
 KEEP_GRAPHICS: set[int] = (
     HATCHET_GRAPHICS | SAW_GRAPHICS | TINKER_TOOLS_GRAPHICS | PICKAXE_GRAPHICS
+    | SMITH_HAMMER_GRAPHICS | TONGS_GRAPHICS
     | {0x1BDD, 0x1BD7}  # logs, boards
     | {0x19B7, 0x19B8, 0x19B9, 0x19BA}  # ore
     | {0x1BF2}  # ingots
@@ -70,11 +135,13 @@ KEEP_GRAPHICS: set[int] = (
 ESSENTIAL_TOOLS: list[tuple[int, int]] = [
     (0x0F43, 1),  # hatchet
     (0x1034, 1),  # saw
+    (0x0E86, 1),  # pickaxe
+    (0x13E3, 1),  # smith hammer
 ]
 
 
 class BuyFromNpc(Skill):
-    """Buy essential tools from an NPC vendor when they're missing."""
+    """Buy essential tools from an NPC vendor via context menu."""
 
     name = "buy_from_npc"
     category = "trade"
@@ -86,7 +153,6 @@ class BuyFromNpc(Skill):
             return False
         if not _find_missing_tools(ctx):
             return False
-        # Need a vendor nearby or near a known shop
         if _find_vendor(ctx):
             return True
         from anima.world_knowledge import BRITAIN_LOCATIONS
@@ -94,7 +160,7 @@ class BuyFromNpc(Skill):
             if any(w in loc.name.lower() for w in (
                 "carpenter", "tinker", "blacksmith", "provisioner",
             )):
-                if abs(ss.x - loc.x) <= 12 and abs(ss.y - loc.y) <= 12:
+                if abs(ss.x - loc.x) <= _VENDOR_RANGE and abs(ss.y - loc.y) <= _VENDOR_RANGE:
                     return True
         return False
 
@@ -103,12 +169,9 @@ class BuyFromNpc(Skill):
         ss = ctx.perception.self_state
         vendor = await _find_vendor_async(ctx)
         if not vendor:
-            ctx.blackboard.setdefault("skill_problem", (
-                "Vendor is nearby but need to be within 2 tiles to buy."
-            ))
             return SkillResult(
-                success=False, reward=-0.5,
-                message="Need to get closer to vendor",
+                success=False, reward=-1.0,
+                message="No vendor found nearby",
             )
 
         vendor_name = vendor.name or "vendor"
@@ -117,21 +180,25 @@ class BuyFromNpc(Skill):
         from anima.core.publish import pub
         pub(ctx, "action.buy_start", f"Buying tools from {vendor_name}: {missing}")
 
-        # Clear any stale vendor state
+        # Clear stale state
         ss.vendor_buy_list = []
 
-        # Double-click vendor to open shop + "vendor buy" speech
-        await ctx.conn.send_packet(build_double_click(vendor.serial))
-        await ctx.conn.send_packet(build_unicode_speech("vendor buy"))
-        logger.info("vendor_buy_opened", vendor=vendor_name, missing=missing)
+        # Open buy via context menu
+        if not await _request_context_menu_entry(ctx, vendor, _CLILOC_VENDOR_BUY):
+            _mark_refused(ctx, vendor.serial)
+            elapsed = (time.monotonic() - start) * 1000
+            return SkillResult(
+                success=False, reward=-2.0,
+                message=f"No Buy option on {vendor_name} — skipping",
+                duration_ms=elapsed,
+            )
 
         # Wait for buy list to arrive
         got_list = await _wait_for_buy_list(ctx)
         if not got_list:
             elapsed = (time.monotonic() - start) * 1000
             return SkillResult(
-                success=False,
-                reward=-0.5,
+                success=False, reward=-0.5,
                 message=f"No buy list from {vendor_name}",
                 duration_ms=elapsed,
             )
@@ -146,7 +213,7 @@ class BuyFromNpc(Skill):
 
         for bi in buy_list:
             if bi.graphic in missing_graphics:
-                want = 1  # buy one of each missing tool
+                want = 1
                 cost = want * bi.price
                 if total_cost + cost <= ss.gold:
                     items_to_buy.append((bi.serial, want))
@@ -156,12 +223,7 @@ class BuyFromNpc(Skill):
 
         if items_to_buy:
             await ctx.conn.send_packet(build_buy_items(ss.vendor_serial, items_to_buy))
-            logger.info(
-                "vendor_buy_sent",
-                items=len(items_to_buy),
-                cost=total_cost,
-            )
-            # Wait for server to process the transaction
+            logger.info("vendor_buy_sent", items=len(items_to_buy), cost=total_cost)
             await asyncio.sleep(0.5)
 
         # Clear vendor state
@@ -180,15 +242,12 @@ class BuyFromNpc(Skill):
             message = f"Browsed shop: {vendor_name} ({len(buy_list)} items)"
 
         return SkillResult(
-            success=True,
-            reward=reward,
-            message=message,
-            duration_ms=elapsed,
+            success=True, reward=reward, message=message, duration_ms=elapsed,
         )
 
 
 class SellToNpc(Skill):
-    """Sell items to an NPC vendor via 'vendor sell' speech command."""
+    """Sell items to an NPC vendor via context menu."""
 
     name = "sell_to_npc"
     category = "trade"
@@ -196,6 +255,9 @@ class SellToNpc(Skill):
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
+        # Only sell when carrying enough weight (>= 60%)
+        if ss.weight_max > 0 and ss.weight / ss.weight_max < 0.6:
+            return False
         backpack = ss.equipment.get(0x15)
         if not backpack:
             return False
@@ -206,17 +268,17 @@ class SellToNpc(Skill):
         )
         if not has_sellable:
             return False
-        # Need a vendor nearby (sync check) OR be near a known shop
-        if _find_vendor(ctx):
+        # Need a non-refused vendor nearby
+        vendor = _find_vendor(ctx)
+        if vendor and not _is_refused(ctx, vendor.serial):
             return True
-        # Near known shop locations — "vendor sell" has 12-tile range
         from anima.world_knowledge import BRITAIN_LOCATIONS
         for loc in BRITAIN_LOCATIONS:
             if any(w in loc.name.lower() for w in (
                 "carpenter", "tinker", "blacksmith", "provisioner",
                 "tailor", "jeweler", "bowyer",
             )):
-                if (abs(ss.x - loc.x) <= 12 and abs(ss.y - loc.y) <= 12):
+                if abs(ss.x - loc.x) <= _VENDOR_RANGE and abs(ss.y - loc.y) <= _VENDOR_RANGE:
                     return True
         return False
 
@@ -226,33 +288,35 @@ class SellToNpc(Skill):
 
         vendor = await _find_vendor_async(ctx)
         if not vendor:
-            # Vendor exists nearby but too far — signal to move closer
-            ctx.blackboard.setdefault("skill_problem", (
-                "Vendor is nearby but need to be within 2 tiles to trade."
-            ))
             return SkillResult(
-                success=False, reward=-0.5,
-                message="Need to get closer to vendor",
+                success=False, reward=-1.0,
+                message="No vendor found nearby",
             )
 
         vendor_name = vendor.name or "vendor"
         gold_before = ss.gold
 
-        # Clear any stale vendor state
+        # Clear stale state
         ss.vendor_sell_list = []
 
-        # Say "vendor sell" to trigger the sell list (0x9E)
-        await ctx.conn.send_packet(build_unicode_speech("vendor sell"))
-        logger.info("vendor_sell_requested", vendor=vendor_name)
+        # Open sell via context menu
+        if not await _request_context_menu_entry(ctx, vendor, _CLILOC_VENDOR_SELL):
+            _mark_refused(ctx, vendor.serial)
+            elapsed = (time.monotonic() - start) * 1000
+            return SkillResult(
+                success=False, reward=-2.0,
+                message=f"No Sell option on {vendor_name} — skipping",
+                duration_ms=elapsed,
+            )
 
         # Wait for sell list to arrive
         got_list = await _wait_for_sell_list(ctx)
         if not got_list:
+            _mark_refused(ctx, vendor.serial)
             elapsed = (time.monotonic() - start) * 1000
             return SkillResult(
-                success=False,
-                reward=-0.5,
-                message=f"No sell list from {vendor_name}",
+                success=False, reward=-2.0,
+                message=f"No sell list from {vendor_name} — skipping",
                 duration_ms=elapsed,
             )
 
@@ -261,11 +325,11 @@ class SellToNpc(Skill):
 
         if not sell_list:
             ss.vendor_serial = 0
+            _mark_refused(ctx, vendor.serial)
             elapsed = (time.monotonic() - start) * 1000
             return SkillResult(
-                success=False,
-                reward=-0.5,
-                message=f"{vendor_name} won't buy anything",
+                success=False, reward=-2.0,
+                message=f"{vendor_name} won't buy anything — skipping",
                 duration_ms=elapsed,
             )
 
@@ -298,7 +362,6 @@ class SellToNpc(Skill):
             expected_gold=expected_gold,
         )
 
-        # Wait for server to process the transaction
         await asyncio.sleep(0.5)
 
         # Clear vendor state
@@ -334,12 +397,10 @@ _VENDOR_TITLES = {
 
 def _is_vendor(mob: MobileInfo) -> bool:
     """Check if a mobile is a vendor by name or OPL properties."""
-    # Check name (from single-click label: "Marilyn the carpenter")
     if mob.name:
         name_lower = mob.name.lower()
         if any(t in name_lower for t in _VENDOR_TITLES):
             return True
-    # Check OPL properties
     for prop in (mob.properties or []):
         prop_lower = prop.lower()
         if any(t in prop_lower for t in _VENDOR_TITLES):
@@ -347,44 +408,57 @@ def _is_vendor(mob: MobileInfo) -> bool:
     return False
 
 
-async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
-    """Find nearest vendor NPC, requesting OPL if needed.
+_VENDOR_RANGE = 8
 
-    Priority:
-    1. INVULNERABLE notoriety (standard ServUO)
-    2. OPL properties contain vendor title
-    3. Human NPC near known shop location (last resort)
-    """
+
+def _mark_refused(ctx: "BrainContext", serial: int) -> None:
+    """Mark a vendor as refused — won't retry for _VENDOR_REFUSE_COOLDOWN."""
+    refused: dict[int, float] = ctx.blackboard.setdefault("refused_vendors", {})
+    refused[serial] = time.monotonic()
+
+
+def _is_refused(ctx: "BrainContext", serial: int) -> bool:
+    """Check if a vendor was recently refused."""
+    refused: dict[int, float] = ctx.blackboard.get("refused_vendors", {})
+    ts = refused.get(serial, 0.0)
+    if time.monotonic() - ts < _VENDOR_REFUSE_COOLDOWN:
+        return True
+    # Expired — clean up
+    refused.pop(serial, None)
+    return False
+
+
+async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
+    """Find nearest non-refused vendor NPC, requesting OPL if needed."""
     ss = ctx.perception.self_state
-    # Must be within 2 tiles of vendor to buy/sell
     nearby = ctx.perception.world.nearby_mobiles(
-        ss.x, ss.y, distance=_VENDOR_INTERACT_RANGE,
+        ss.x, ss.y, distance=_VENDOR_RANGE,
     )
     npcs = [
         m for m in nearby
-        if m.serial != ss.serial and m.body in HUMAN_BODIES and m.serial < 0x10000
+        if m.serial != ss.serial
+        and m.body in HUMAN_BODIES
+        and m.serial < 0x10000
+        and not _is_refused(ctx, m.serial)
     ]
     npcs.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
 
     if not npcs:
         return None
 
-    # Pass 1: INVULNERABLE
     for m in npcs:
         if m.notoriety == NotorietyFlag.INVULNERABLE:
             return m
 
-    # Pass 2: check name for vendor title (from single-click label)
     for m in npcs:
         if m.name and _is_vendor(m):
             return m
 
-    # Pass 3: check OPL properties (request if missing)
     need_opl = [m for m in npcs if not m.properties]
     if need_opl:
         for m in need_opl[:5]:
             await ctx.conn.send_packet(build_opl_request(m.serial))
-        await asyncio.sleep(0.5)  # wait for OPL responses
+        await asyncio.sleep(0.5)
 
     for m in npcs:
         if _is_vendor(m):
@@ -393,19 +467,15 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
     return None
 
 
-# ServUO requires player within 2 tiles of vendor for buy/sell
-_VENDOR_INTERACT_RANGE = 2
-
-
 def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
-    """Find vendor within interaction range (2 tiles)."""
+    """Find non-refused vendor within range (sync, for can_execute)."""
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(
-        ss.x, ss.y, distance=_VENDOR_INTERACT_RANGE,
+        ss.x, ss.y, distance=_VENDOR_RANGE,
     )
 
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
-        if m.serial == ss.serial:
+        if m.serial == ss.serial or _is_refused(ctx, m.serial):
             continue
         if m.notoriety == NotorietyFlag.INVULNERABLE:
             return m
@@ -416,21 +486,17 @@ def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
 
 
 def _find_missing_tools(ctx: BrainContext) -> list[tuple[int, int]]:
-    """Check which essential tools are missing from backpack + equipment.
-
-    Returns list of (graphic, amount) that need to be purchased.
-    """
+    """Check which essential tools are missing from backpack + equipment."""
     ss = ctx.perception.self_state
     world = ctx.perception.world
     backpack = ss.equipment.get(0x15)
 
-    # Collect all item graphics in backpack + equipment
     owned_graphics: set[int] = set()
     if backpack:
         for it in world.items.values():
             if it.container == backpack:
                 owned_graphics.add(it.graphic)
-    for layer in (0x01, 0x02):  # hand slots
+    for layer in (0x01, 0x02):
         eq = ss.equipment.get(layer)
         if eq:
             it = world.items.get(eq)
