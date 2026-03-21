@@ -156,17 +156,20 @@ class TavernForumClient(ForumClient):
 
     @staticmethod
     def _category_to_board(category: str) -> str:
+        # Valid boards: tavern, trade, qa, library
         mapping = {
-            "adventures": "general",
-            "general": "general",
+            "adventures": "tavern",
+            "general": "tavern",
+            "tavern": "tavern",
+            "roleplay": "tavern",
             "trade": "trade",
             "trading": "trade",
             "questions": "qa",
             "qa": "qa",
-            "tavern": "tavern",
-            "roleplay": "tavern",
+            "library": "library",
+            "guide": "library",
         }
-        return mapping.get(category.lower(), "general")
+        return mapping.get(category.lower(), "tavern")
 
 
 def _iso_to_ts(iso: str) -> float:
