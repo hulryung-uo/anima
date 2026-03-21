@@ -264,12 +264,16 @@ async def llm_think(ctx: BrainContext) -> Status:
         else:
             return Status.RUNNING
 
-    # Cooldown — wander while waiting for next think
+    # Cooldown — wait for next think
     if now - last_think < THINK_COOLDOWN:
-        if ctx.blackboard.get("current_goal") and not ctx.blackboard.get("move_target"):
-            ctx.blackboard.pop("current_goal", None)
-        if ctx.blackboard.get("current_goal") is None:
-            return Status.SUCCESS
+        # If we have a goal but lost move_target (pathfinding failed),
+        # re-set move_target so _step_toward can retry
+        goal = ctx.blackboard.get("current_goal")
+        if goal and not ctx.blackboard.get("move_target"):
+            loc = find_location(goal["place"])
+            if loc:
+                ctx.blackboard["move_target"] = (loc.nav_x, loc.nav_y)
+                _clear_path_cache(ctx)
         return Status.SUCCESS
 
     # If skills are succeeding, extend cooldown — no need to rethink
