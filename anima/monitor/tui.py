@@ -481,9 +481,16 @@ class AnimaMonitor:
 
     async def run(self) -> None:
         """Subscribe, render, and handle input until quit."""
+        import termios
+
         self.connect()
         console = Console()
         key_reader = _KeyReader()
+
+        # Save terminal settings before anything touches them
+        fd = sys.stdin.fileno()
+        old_term = termios.tcgetattr(fd)
+
         key_reader.start()
 
         try:
@@ -502,6 +509,7 @@ class AnimaMonitor:
         finally:
             key_reader.stop()
             self.disconnect()
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
 
         # Signal shutdown to the agent
         if self._shutdown_event:
