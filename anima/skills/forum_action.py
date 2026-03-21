@@ -35,7 +35,9 @@ async def forum_read_action(ctx: BrainContext) -> "Status":
     read_interval = ctx.cfg.forum.read_interval
 
     # Check if there's a pending problem that needs research
-    problem = ctx.blackboard.get("skill_problem")
+    # Use pop() to consume the problem — prevents deadlock where forum_read
+    # returns SUCCESS every tick, blocking SkillExec and Think from running
+    problem = ctx.blackboard.pop("skill_problem", None)
     need_research = problem is not None
 
     if not need_research and now - last_read < read_interval:
