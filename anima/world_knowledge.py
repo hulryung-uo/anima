@@ -72,8 +72,34 @@ BRITAIN_LOCATIONS: list[Location] = [
     Location("Britain East Forest", 1640, 1551, "Oak and walnut trees east of town."),
 ]
 
+# Minoc city landmarks (Felucca) — mining hub
+# Coordinates from ServUO spawn data and in-game exploration.
+MINOC_LOCATIONS: list[Location] = [
+    # --- Banks ---
+    Location("Minoc Bank", 2498, 400, "Minoc bank. Store ingots and gold.",
+             approach_x=2499, approach_y=404),
+    # --- Shops ---
+    Location("Minoc Blacksmith", 2450, 408, "Forge and anvil. Buy hammers and armor.",
+             approach_x=2453, approach_y=411),
+    Location("Minoc Tinker", 2479, 416, "Tinker tools, pickaxes, and shovels.",
+             approach_x=2480, approach_y=419),
+    Location("Minoc Provisioner", 2509, 421, "General supplies."),
+    Location("Minoc Healer", 2466, 395, "Healing and resurrection."),
+    # --- Landmarks ---
+    Location("Minoc Inn", 2476, 413, "The Barnacle inn. Rest and resupply.",
+             approach_x=2476, approach_y=416),
+    Location("Minoc Guildmaster", 2455, 395, "Mining guild hall."),
+    # --- Mining areas ---
+    Location("Minoc East Mine", 2556, 468, "Eastern mine entrance. Rich iron veins."),
+    Location("Minoc North Mine", 2514, 332, "Northern caves. Deep tunnels."),
+    Location("Minoc Mountain", 2560, 400, "Mountain area east of town. Open-pit mining."),
+]
+
+# All known locations across cities
+ALL_LOCATIONS: list[Location] = BRITAIN_LOCATIONS + MINOC_LOCATIONS
+
 # Locations indexed by name for quick lookup
-_LOCATIONS_BY_NAME: dict[str, Location] = {loc.name.lower(): loc for loc in BRITAIN_LOCATIONS}
+_LOCATIONS_BY_NAME: dict[str, Location] = {loc.name.lower(): loc for loc in ALL_LOCATIONS}
 
 
 def find_location(name: str) -> Location | None:
@@ -92,7 +118,7 @@ def find_location(name: str) -> Location | None:
 def nearest_locations(x: int, y: int, count: int = 5) -> list[tuple[Location, int]]:
     """Return nearest known locations with distances."""
     results: list[tuple[Location, int]] = []
-    for loc in BRITAIN_LOCATIONS:
+    for loc in ALL_LOCATIONS:
         dist = max(abs(loc.x - x), abs(loc.y - y))  # Chebyshev distance
         results.append((loc, dist))
     results.sort(key=lambda r: r[1])
@@ -102,7 +128,7 @@ def nearest_locations(x: int, y: int, count: int = 5) -> list[tuple[Location, in
 def format_locations_for_llm(x: int, y: int, count: int = 8) -> str:
     """Format nearby locations for LLM context."""
     nearby = nearest_locations(x, y, count)
-    lines = ["Known places in Britain:"]
+    lines = ["Known places:"]
     for loc, dist in nearby:
         desc = f" — {loc.description}" if loc.description else ""
         lines.append(f"  - {loc.name} ({loc.x}, {loc.y}), ~{dist} steps away{desc}")
