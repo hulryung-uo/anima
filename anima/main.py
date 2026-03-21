@@ -295,11 +295,12 @@ async def brain_loop(brain: Brain) -> None:
                 pass
             break
 
-        # Single-click nearby NPCs to get their name+title
-        # (server responds with 0x1C label: "Hastin the baker")
+        # Request names for nearby unnamed NPCs
+        # Try OPL first (AOS+ servers), fallback to single-click (UOR servers)
         ss = brain.context.perception.self_state
         for mob in brain.context.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
             if not mob.name and mob.serial != ss.serial:
+                await brain.context.conn.send_packet(build_opl_request(mob.serial))
                 await brain.context.conn.send_packet(build_single_click(mob.serial))
 
         await brain.tick()
