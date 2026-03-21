@@ -36,9 +36,9 @@ BRITAIN_LOCATIONS: list[Location] = [
              approach_x=1438, approach_y=1693),
     # --- Shops (from ServUO spawns) ---
     Location("Britain Carpenter", 1430, 1597, "Carpentry shop. Sells saws and wooden tools.",
-             approach_x=1430, approach_y=1600),
-    Location("Britain Tinker", 1420, 1650, "Tinker shop. Sells tinker tools, saws, pickaxes.",
-             approach_x=1420, approach_y=1653),
+             approach_x=1435, approach_y=1600),
+    Location("Britain Tinker", 1425, 1655, "Tinker shop. Sells tinker tools, saws, pickaxes.",
+             approach_x=1427, approach_y=1658),
     Location("Britain Blacksmith", 1418, 1547, "Forge and anvil. Weapons and armor.",
              approach_x=1418, approach_y=1550),
     Location("Britain Provisioner", 1470, 1664, "General supplies and tools."),
