@@ -113,13 +113,17 @@ class TavernForumClient(ForumClient):
                 return reply_id
 
     async def search(self, query: str) -> list[ForumPost]:
-        # UO Tavern doesn't have a search endpoint yet — read recent and filter
-        posts = await self.read_posts("general", limit=50)
+        """Search across library and tavern boards for matching posts."""
+        results: list[ForumPost] = []
         query_lower = query.lower()
-        return [
-            p for p in posts
-            if query_lower in p.title.lower() or query_lower in p.body.lower()
-        ]
+        # Search library first (knowledge base), then tavern
+        for board in ("library", "tavern"):
+            posts = await self.read_posts(board, limit=20)
+            for p in posts:
+                if (query_lower in p.title.lower()
+                        or query_lower in p.body.lower()):
+                    results.append(p)
+        return results
 
     async def send_experience(
         self,

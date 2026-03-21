@@ -16,7 +16,12 @@ logger = structlog.get_logger()
 
 
 async def forum_read_action(ctx: BrainContext) -> "Status":
-    """Read new forum posts and add useful info to knowledge."""
+    """Search the forum library when the agent needs knowledge.
+
+    Triggered by:
+    - skill_problem in blackboard (tool broke, need materials, etc.)
+    - Periodic library browse (read_interval cooldown)
+    """
     from anima.brain.behavior_tree import Status
 
     forum: ForumClient | None = ctx.blackboard.get("forum_client")
@@ -29,27 +34,66 @@ async def forum_read_action(ctx: BrainContext) -> "Status":
     last_read = ctx.blackboard.get("forum_last_read", 0.0)
     read_interval = ctx.cfg.forum.read_interval
 
-    if now - last_read < read_interval:
+    # Check if there's a pending problem that needs research
+    problem = ctx.blackboard.get("skill_problem")
+    need_research = problem is not None
+
+    if not need_research and now - last_read < read_interval:
         return Status.FAILURE
 
     ctx.blackboard["forum_last_read"] = now
 
-    posts = await forum.read_posts("adventures", limit=5)
+    if need_research and problem:
+        # Search library for relevant knowledge
+        query = _extract_search_query(problem)
+        logger.info("forum_research", query=query, problem=problem[:60])
+        posts = await forum.search(query)
+        if not posts:
+            # Broader fallback — search library by category
+            posts = await forum.read_posts("library", limit=10)
+    else:
+        # Periodic browse — read library for general knowledge
+        posts = await forum.read_posts("library", limit=5)
+
     new_facts = 0
-    for post in posts:
+    for post in posts[:5]:  # limit to 5 to avoid flooding
         if post.author == agent_name:
             continue
-        # Add post content as knowledge from forum
-        fact = f"{post.author} wrote: {post.title}"
+        # Store title + first ~200 chars of body as knowledge
+        snippet = post.body[:200].replace("\n", " ").strip()
+        fact = f"[Library] {post.title}: {snippet}"
         await memory_db.add_knowledge(
-            agent_name, fact, source=f"forum:{post.author}", confidence=0.3
+            agent_name, fact,
+            source=f"library:{post.post_id[:8]}",
+            confidence=0.7,
         )
         new_facts += 1
 
     if new_facts:
-        logger.info("forum_read", new_facts=new_facts)
+        logger.info("forum_learned", facts=new_facts, research=need_research)
 
     return Status.SUCCESS
+
+
+def _extract_search_query(problem: str) -> str:
+    """Extract a search query from a problem description."""
+    problem_lower = problem.lower()
+    # Map common problems to library search terms
+    if "saw" in problem_lower or "carpentry" in problem_lower:
+        return "carpentry"
+    if "tinker" in problem_lower:
+        return "tinkering"
+    if "hatchet" in problem_lower or "lumber" in problem_lower:
+        return "lumberjacking"
+    if "pickaxe" in problem_lower or "mining" in problem_lower:
+        return "mining"
+    if "ingot" in problem_lower or "smelt" in problem_lower:
+        return "blacksmithy"
+    if "bandage" in problem_lower or "heal" in problem_lower:
+        return "healing"
+    # Fallback: use first few meaningful words
+    words = [w for w in problem_lower.split() if len(w) > 3]
+    return " ".join(words[:3]) if words else "guide"
 
 
 async def forum_write_action(ctx: BrainContext) -> "Status":
