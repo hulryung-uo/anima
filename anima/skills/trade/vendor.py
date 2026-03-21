@@ -84,19 +84,25 @@ class BuyFromNpc(Skill):
         ss = ctx.perception.self_state
         if ss.gold < 10:
             return False
-        if not _find_vendor(ctx):
+        if not _find_missing_tools(ctx):
             return False
-        # Only buy if we're missing essential tools
-        return bool(_find_missing_tools(ctx))
+        # Need a vendor nearby or near a known shop
+        if _find_vendor(ctx):
+            return True
+        from anima.world_knowledge import BRITAIN_LOCATIONS
+        for loc in BRITAIN_LOCATIONS:
+            if any(w in loc.name.lower() for w in (
+                "carpenter", "tinker", "blacksmith", "provisioner",
+            )):
+                if abs(ss.x - loc.x) <= 12 and abs(ss.y - loc.y) <= 12:
+                    return True
+        return False
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
         ss = ctx.perception.self_state
         vendor = await _find_vendor_async(ctx)
-        if not vendor:
-            return SkillResult(success=False, reward=-1.0, message="No vendor nearby")
-
-        vendor_name = vendor.name or "vendor"
+        vendor_name = vendor.name if vendor else "vendor"
         missing = _find_missing_tools(ctx)
 
         from anima.core.publish import pub
@@ -105,8 +111,10 @@ class BuyFromNpc(Skill):
         # Clear any stale vendor state
         ss.vendor_buy_list = []
 
-        # Double-click vendor to open shop (triggers 0x3C + 0x74)
-        await ctx.conn.send_packet(build_double_click(vendor.serial))
+        # Try "vendor buy" speech (12-tile range) + double-click if visible
+        await ctx.conn.send_packet(build_unicode_speech("vendor buy"))
+        if vendor:
+            await ctx.conn.send_packet(build_double_click(vendor.serial))
         logger.info("vendor_buy_opened", vendor=vendor_name, missing=missing)
 
         # Wait for buy list to arrive
@@ -172,7 +180,7 @@ class BuyFromNpc(Skill):
 
 
 class SellToNpc(Skill):
-    """Sell items to an NPC vendor."""
+    """Sell items to an NPC vendor via 'vendor sell' speech command."""
 
     name = "sell_to_npc"
     category = "trade"
@@ -180,24 +188,37 @@ class SellToNpc(Skill):
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
-        # Need sellable crafted goods in backpack and a vendor nearby
         backpack = ss.equipment.get(0x15)
         if not backpack:
             return False
+        # Need sellable items in backpack
         has_sellable = any(
             it.container == backpack and it.graphic not in KEEP_GRAPHICS
             for it in ctx.perception.world.items.values()
         )
-        return has_sellable and bool(_find_vendor(ctx))
+        if not has_sellable:
+            return False
+        # Need a vendor nearby (sync check) OR be near a known shop
+        if _find_vendor(ctx):
+            return True
+        # Near known shop locations — "vendor sell" has 12-tile range
+        from anima.world_knowledge import BRITAIN_LOCATIONS
+        for loc in BRITAIN_LOCATIONS:
+            if any(w in loc.name.lower() for w in (
+                "carpenter", "tinker", "blacksmith", "provisioner",
+                "tailor", "jeweler", "bowyer",
+            )):
+                if (abs(ss.x - loc.x) <= 12 and abs(ss.y - loc.y) <= 12):
+                    return True
+        return False
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
         ss = ctx.perception.self_state
-        vendor = await _find_vendor_async(ctx)
-        if not vendor:
-            return SkillResult(success=False, reward=-1.0, message="No vendor nearby")
 
-        vendor_name = vendor.name or "vendor"
+        # Try to find vendor for name display, but don't require it
+        vendor = await _find_vendor_async(ctx)
+        vendor_name = vendor.name if vendor else "vendor"
         gold_before = ss.gold
 
         # Clear any stale vendor state
@@ -295,11 +316,14 @@ _VENDOR_TITLES = {
 
 
 def _is_vendor(mob: MobileInfo) -> bool:
-    """Check if a mobile's OPL properties indicate it's a vendor."""
-    if not mob.properties:
-        return False
-    # properties[0] = name, properties[1+] = title/attributes
-    for prop in mob.properties:
+    """Check if a mobile is a vendor by name or OPL properties."""
+    # Check name (from single-click label: "Marilyn the carpenter")
+    if mob.name:
+        name_lower = mob.name.lower()
+        if any(t in name_lower for t in _VENDOR_TITLES):
+            return True
+    # Check OPL properties
+    for prop in (mob.properties or []):
         prop_lower = prop.lower()
         if any(t in prop_lower for t in _VENDOR_TITLES):
             return True
@@ -315,7 +339,8 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
     3. Human NPC near known shop location (last resort)
     """
     ss = ctx.perception.self_state
-    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=8)
+    # 12-tile range matches ServUO vendor speech range
+    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
     npcs = [
         m for m in nearby
         if m.serial != ss.serial and m.body in HUMAN_BODIES and m.serial < 0x10000
@@ -330,7 +355,12 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
         if m.notoriety == NotorietyFlag.INVULNERABLE:
             return m
 
-    # Pass 2: check OPL properties (request if missing)
+    # Pass 2: check name for vendor title (from single-click label)
+    for m in npcs:
+        if m.name and _is_vendor(m):
+            return m
+
+    # Pass 3: check OPL properties (request if missing)
     need_opl = [m for m in npcs if not m.properties]
     if need_opl:
         for m in need_opl[:5]:
@@ -345,9 +375,9 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
 
 
 def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
-    """Synchronous vendor finder (uses cached properties only)."""
+    """Synchronous vendor finder (uses cached name/properties)."""
     ss = ctx.perception.self_state
-    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=8)
+    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
 
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
         if m.serial == ss.serial:
