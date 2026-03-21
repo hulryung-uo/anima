@@ -31,7 +31,7 @@ class Location:
 # Locations with approach_x/y are indoor — agent stops at the outdoor approach point.
 BRITAIN_LOCATIONS: list[Location] = [
     Location("West Britain Bank", 1434, 1699, "The famous gathering spot. Everyone comes here.",
-             approach_x=1434, approach_y=1703),
+             approach_x=1438, approach_y=1693),
     Location("Britain Tavern", 1610, 1591, "The Salty Dog tavern. Good place for rumors.",
              approach_x=1605, approach_y=1591),
     Location("Britain Blacksmith", 1416, 1757, "Forge and anvil. Weapons and armor."),
