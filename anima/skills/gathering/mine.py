@@ -1,4 +1,8 @@
-"""Mining skill — use a pickaxe on rocks to gather ore."""
+"""Mining skill — use a pickaxe on mountain/cave tiles to gather ore.
+
+ServUO mining targets land tiles and static tiles (not dynamic items).
+The tile ID list matches m_MountainAndCaveTiles in Mining.cs.
+"""
 
 from __future__ import annotations
 
@@ -16,20 +20,93 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-PICKAXE_GRAPHICS = {0x0E86, 0x0E85}  # Pickaxe variants
+PICKAXE_GRAPHICS = {0x0E86, 0x0E85}
 SHOVEL_GRAPHIC = 0x0F39
-
-# Rock/mountain tile IDs that can be mined
-MINEABLE_GRAPHICS = {
-    0x08B0, 0x08B1, 0x08B2, 0x08B3, 0x08B4, 0x08B5, 0x08B6, 0x08B7,
-    0x08B8, 0x08B9, 0x08BA, 0x08BB, 0x08BC, 0x08BD, 0x08BE, 0x08BF,
-    0x08C0, 0x08C1, 0x08C2, 0x08C3, 0x08C4, 0x08C5, 0x08C6, 0x08C7,
-    # Cave tiles
-    0x0555, 0x0556, 0x0557, 0x0558, 0x0559, 0x055A,
-}
 
 ORE_GRAPHICS = {0x19B7, 0x19B8, 0x19B9, 0x19BA}
 MINING_SKILL_ID = 45
+
+SEARCH_RADIUS = 2  # mining range is 2 tiles
+
+# From ServUO Mining.cs m_MountainAndCaveTiles — land and static tile IDs
+# fmt: off
+MINEABLE_TILES: set[int] = {
+    220, 221, 222, 223, 224, 225, 226, 227, 228, 229,
+    230, 231, 236, 237, 238, 239, 240, 241, 242, 243,
+    244, 245, 246, 247, 252, 253, 254, 255, 256, 257,
+    258, 259, 260, 261, 262, 263, 268, 269, 270, 271,
+    272, 273, 274, 275, 276, 277, 278, 279, 286, 287,
+    288, 289, 290, 291, 292, 293, 294, 296, 297,
+    321, 322, 323, 324, 467, 468, 469, 470, 471, 472,
+    473, 474, 476, 477, 478, 479, 480, 481, 482, 483,
+    484, 485, 486, 487, 492, 493, 494, 495, 543, 544,
+    545, 546, 547, 548, 549, 550, 551, 552, 553, 554,
+    555, 556, 557, 558, 559, 560, 561, 562, 563, 564,
+    565, 566, 567, 568, 569, 570, 571, 572, 573, 574,
+    575, 576, 577, 578, 579, 581, 582, 583, 584, 585,
+    586, 587, 588, 589, 590, 591, 592, 593, 594, 595,
+    596, 597, 598, 599, 600, 601, 610, 611, 612, 613,
+    1010,
+    1741, 1742, 1743, 1744, 1745, 1746, 1747, 1748, 1749,
+    1750, 1751, 1752, 1753, 1754, 1755, 1756, 1757,
+    1771, 1772, 1773, 1774, 1775, 1776, 1777, 1778, 1779,
+    1780, 1781, 1782, 1783, 1784, 1785, 1786, 1787, 1788, 1789, 1790,
+    1801, 1802, 1803, 1804, 1805, 1806, 1807, 1808, 1809,
+    1811, 1812, 1813, 1814, 1815, 1816, 1817, 1818, 1819,
+    1820, 1821, 1822, 1823, 1824,
+    1831, 1832, 1833, 1834, 1835, 1836, 1837, 1838, 1839,
+    1840, 1841, 1842, 1843, 1844, 1845, 1846, 1847, 1848, 1849,
+    1850, 1851, 1852, 1853, 1854,
+    1861, 1862, 1863, 1864, 1865, 1866, 1867, 1868, 1869,
+    1870, 1871, 1872, 1873, 1874, 1875, 1876, 1877, 1878, 1879,
+    1880, 1881, 1882, 1883, 1884,
+    1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989,
+    1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999,
+    2000, 2001, 2002, 2003, 2004,
+    2028, 2029, 2030, 2031, 2032, 2033,
+    2100, 2101, 2102, 2103, 2104, 2105,
+}
+# fmt: on
+
+
+def _find_mineable_tile(
+    ctx: BrainContext,
+) -> tuple[int, int, int, int, bool] | None:
+    """Find a mineable tile within SEARCH_RADIUS.
+
+    Checks map statics first, then land tiles.
+    Returns (x, y, z, graphic, is_static) or None.
+    """
+    ss = ctx.perception.self_state
+    sx, sy = ss.x, ss.y
+
+    if ctx.map_reader is None:
+        return None
+
+    best = None
+    best_dist = SEARCH_RADIUS + 1
+
+    for dy in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
+        for dx in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
+            dist = max(abs(dx), abs(dy))
+            if dist >= best_dist:
+                continue
+            tx, ty = sx + dx, sy + dy
+            tile = ctx.map_reader.get_tile(tx, ty)
+
+            # Check statics (cave walls, rock formations)
+            for s in tile.statics:
+                if s.graphic in MINEABLE_TILES:
+                    best = (tx, ty, s.z, s.graphic, True)
+                    best_dist = dist
+                    break
+
+            # Check land tile (mountain ground)
+            if best_dist > dist and tile.land.graphic in MINEABLE_TILES:
+                best = (tx, ty, tile.land.z, tile.land.graphic, False)
+                best_dist = dist
+
+    return best
 
 
 class MineOre(Skill):
@@ -37,17 +114,18 @@ class MineOre(Skill):
 
     name = "mine_ore"
     category = "gathering"
-    description = "Use a pickaxe on nearby rocks to mine ore. Requires pickaxe and rocks nearby."
-    required_items = list(PICKAXE_GRAPHICS)
-    required_nearby = list(MINEABLE_GRAPHICS)
-    required_skill = (MINING_SKILL_ID, 0.0)  # Any mining skill level
+    description = "Use a pickaxe on nearby mountain/cave tiles to mine ore."
+    required_skill = (MINING_SKILL_ID, 0.0)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
-        """Check if we have a pickaxe AND rocks nearby."""
         ss = ctx.perception.self_state
         world = ctx.perception.world
 
-        # Check for any pickaxe/shovel in backpack
+        # Weight check
+        if ss.weight_max > 0 and ss.weight >= ss.weight_max - 20:
+            return False
+
+        # Check for pickaxe/shovel in backpack
         backpack = ss.equipment.get(0x15)
         if not backpack:
             return False
@@ -59,17 +137,14 @@ class MineOre(Skill):
         if not has_tool:
             return False
 
-        # Check for nearby mineable tiles
-        nearby = world.nearby_items(ss.x, ss.y, distance=3)
-        has_rock = any(it.graphic in MINEABLE_GRAPHICS for it in nearby)
-        return has_rock
+        # Check for mineable tiles via map reader
+        return _find_mineable_tile(ctx) is not None
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state
         world = ctx.perception.world
         start = time.monotonic()
 
-        # Find pickaxe
         backpack = ss.equipment.get(0x15)
         tool = None
         for item in world.items.values():
@@ -83,16 +158,11 @@ class MineOre(Skill):
         if not tool:
             return SkillResult(success=False, reward=-1.0, message="No mining tool")
 
-        # Find nearest rock
-        nearby = world.nearby_items(ss.x, ss.y, distance=3)
-        rock = None
-        for item in nearby:
-            if item.graphic in MINEABLE_GRAPHICS:
-                rock = item
-                break
+        target = _find_mineable_tile(ctx)
+        if not target:
+            return SkillResult(success=False, reward=-1.0, message="No mineable tiles")
 
-        if not rock:
-            return SkillResult(success=False, reward=-1.0, message="No rocks nearby")
+        tx, ty, tz, graphic, is_static = target
 
         # Count ore before
         ore_before = sum(
@@ -100,21 +170,21 @@ class MineOre(Skill):
             if it.container == backpack and it.graphic in ORE_GRAPHICS
         )
 
-        # Double-click tool
+        # Double-click pickaxe to enter targeting mode
         await ctx.conn.send_packet(build_double_click(tool.serial))
         await asyncio.sleep(0.5)
 
-        # Target the rock
+        # Target the tile (static or land — both use target_type=1)
         await ctx.conn.send_packet(build_target_response(
-            target_type=1,  # ground/tile target
+            target_type=1,
             cursor_id=0,
-            x=rock.x,
-            y=rock.y,
-            z=rock.z,
-            graphic=rock.graphic,
+            x=tx,
+            y=ty,
+            z=tz,
+            graphic=graphic if is_static else 0,
         ))
 
-        # Wait for mining animation + result
+        # Wait for mining animation + result (~2 seconds)
         await asyncio.sleep(3.0)
 
         # Count ore after
@@ -128,7 +198,7 @@ class MineOre(Skill):
 
         if ore_gained > 0:
             reward = 5.0 + ore_gained
-            logger.info("mine_success", ore=ore_gained, duration_ms=f"{elapsed:.0f}")
+            logger.info("mine_success", ore=ore_gained, pos=f"({tx},{ty})")
             return SkillResult(
                 success=True,
                 reward=reward,
@@ -137,10 +207,10 @@ class MineOre(Skill):
                 duration_ms=elapsed,
             )
         else:
-            logger.info("mine_fail", duration_ms=f"{elapsed:.0f}")
+            logger.info("mine_fail", pos=f"({tx},{ty})")
             return SkillResult(
                 success=False,
-                reward=-1.0,
-                message="No ore found",
+                reward=-0.5,
+                message="Failed to mine ore",
                 duration_ms=elapsed,
             )
