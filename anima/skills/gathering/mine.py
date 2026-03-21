@@ -28,9 +28,11 @@ MINING_SKILL_ID = 45
 
 SEARCH_RADIUS = 2  # mining range is 2 tiles
 
-# From ServUO Mining.cs m_MountainAndCaveTiles — land and static tile IDs
+# From ServUO Mining.cs m_MountainAndCaveTiles
+# Land tiles use raw graphic IDs. Static tiles are checked as (graphic | 0x4000)
+# by the server, so we store the raw static graphic separately.
 # fmt: off
-MINEABLE_TILES: set[int] = {
+MINEABLE_LAND_TILES: set[int] = {
     220, 221, 222, 223, 224, 225, 226, 227, 228, 229,
     230, 231, 236, 237, 238, 239, 240, 241, 242, 243,
     244, 245, 246, 247, 252, 253, 254, 255, 256, 257,
@@ -66,6 +68,18 @@ MINEABLE_TILES: set[int] = {
     2028, 2029, 2030, 2031, 2032, 2033,
     2100, 2101, 2102, 2103, 2104, 2105,
 }
+
+# Cave floor/wall statics that are mineable
+# ServUO stores these as (graphic | 0x4000) in the tile list:
+# 0x453B-0x454F → raw statics 0x053B-0x054F
+MINEABLE_STATIC_TILES: set[int] = {
+    0x053B, 0x053C, 0x053D, 0x053E, 0x053F, 0x0540, 0x0541,
+    0x0542, 0x0543, 0x0544, 0x0545, 0x0546, 0x0547, 0x0548,
+    0x0549, 0x054A, 0x054B, 0x054C, 0x054D, 0x054E, 0x054F,
+}
+
+# Combined for backward compat
+MINEABLE_TILES: set[int] = MINEABLE_LAND_TILES | MINEABLE_STATIC_TILES
 # fmt: on
 
 
@@ -83,17 +97,18 @@ def _find_mineable_tile(
     if ctx.map_reader is None:
         return None
 
-    # Prefer mining at feet (distance 0) — target the tile we stand on.
-    # Use player's z for the target z — this is what the server expects
-    # for LandTarget (it reads the actual tile ID from map data).
+    # Prefer mining at feet (distance 0).
+    # Check statics first (cave floors) — they're at player's z level.
+    # Land tiles may be at surface z (unreachable from cave).
     tile_here = ctx.map_reader.get_tile(sx, sy)
-    if tile_here.land.graphic in MINEABLE_TILES:
-        return (sx, sy, sz, tile_here.land.graphic, False)
-
-    # Also check if we're standing on a mineable static
     for s in tile_here.statics:
-        if s.graphic in MINEABLE_TILES and abs(s.z - sz) <= 16:
+        if s.graphic in MINEABLE_STATIC_TILES and abs(s.z - sz) <= 16:
             return (sx, sy, s.z, s.graphic, True)
+
+    # Then check land tile — only if z is close to player
+    if (tile_here.land.graphic in MINEABLE_LAND_TILES
+            and abs(tile_here.land.z - sz) <= 16):
+        return (sx, sy, tile_here.land.z, tile_here.land.graphic, False)
 
     # Search nearby tiles within range
     best = None
@@ -109,9 +124,9 @@ def _find_mineable_tile(
             tx, ty = sx + dx, sy + dy
             tile = ctx.map_reader.get_tile(tx, ty)
 
-            # Check statics (cave walls, rock formations)
+            # Check statics (cave walls/floors) — preferred
             for s in tile.statics:
-                if s.graphic in MINEABLE_TILES and abs(s.z - sz) <= 16:
+                if s.graphic in MINEABLE_STATIC_TILES and abs(s.z - sz) <= 16:
                     best = (tx, ty, s.z, s.graphic, True)
                     best_dist = dist
                     break
@@ -119,7 +134,7 @@ def _find_mineable_tile(
             # Check land tile (mountain ground)
             if (
                 best_dist > dist
-                and tile.land.graphic in MINEABLE_TILES
+                and tile.land.graphic in MINEABLE_LAND_TILES
                 and abs(tile.land.z - sz) <= 16
             ):
                 best = (tx, ty, tile.land.z, tile.land.graphic, False)
@@ -211,14 +226,15 @@ class MineOre(Skill):
         ss.pending_target = None
 
         # Target the tile:
-        # - Land tile: graphic=0, z=player's z (server reads tile ID from map)
-        # - Static tile: actual graphic+z (server validates static exists)
+        # - Land tile: graphic=0, z=land tile's actual z (not player z)
+        # - Static tile: graphic=static ID, z=static's z
+        # ClassicUO sends the real tile z — server uses it for LOS check
         await ctx.conn.send_packet(build_target_response(
             target_type=1,
             cursor_id=cursor_id,
             x=tx,
             y=ty,
-            z=tz if is_static else ss.z,
+            z=tz,
             graphic=graphic if is_static else 0,
         ))
         logger.debug("mine_target_sent", cursor_id=f"0x{cursor_id:08X}", pos=f"({tx},{ty})")
