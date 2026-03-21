@@ -146,142 +146,101 @@ async def llm_think(ctx: BrainContext) -> Status:
     if in_conversation and not ctx.blackboard.get("pending_speech"):
         return Status.SUCCESS
 
-    # If we have an active goal with a move target, keep walking
+    # ---- Active goal: keep pursuing until done or definitively failed ----
+    goal = ctx.blackboard.get("current_goal")
     move_target = ctx.blackboard.get("move_target")
-    if move_target is not None:
-        tx, ty = move_target
+
+    if goal:
         sx = ctx.perception.self_state.x
         sy = ctx.perception.self_state.y
-        if abs(sx - tx) <= 2 and abs(sy - ty) <= 2:
-            goal = ctx.blackboard.get("current_goal")
-            place = goal["place"] if goal else "destination"
 
-            # If we arrived at an approach point but the actual location
-            # is further inside (indoor building), try entering
-            if goal and not goal.get("_entered"):
-                loc = find_location(place)
-                if (loc and loc.approach_x is not None
-                        and (loc.x != loc.nav_x or loc.y != loc.nav_y)):
-                    inner_x, inner_y = loc.x, loc.y
-                    if abs(sx - inner_x) > 2 or abs(sy - inner_y) > 2:
-                        # Move to inner coords — doors will be opened on the way
-                        goal["_entered"] = True
-                        ctx.blackboard["move_target"] = (inner_x, inner_y)
-                        _clear_path_cache(ctx)
-                        logger.info(
-                            "entering_building",
-                            place=place,
-                            inner=f"({inner_x},{inner_y})",
-                        )
-                        if ctx.walker.can_walk():
-                            return await _step_toward(ctx, inner_x, inner_y)
-                        return Status.RUNNING
-
-            # Actually arrived
-            ctx.blackboard.pop("current_goal", None)
-            del ctx.blackboard["move_target"]
-            _clear_path_cache(ctx)
-            logger.info("goal_arrived", place=place, pos=f"({sx},{sy})")
-            from anima.core.publish import pub
-            pub(ctx, "brain.goal_arrived", f"Arrived at {place}", importance=2)
-            await _record_episode(
-                ctx,
-                "go",
-                place,
-                "success",
-                get_reward("goal_arrived"),
-                summary=f"Arrived at {place}",
-            )
-            ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + 2.0
-        elif ctx.walker.can_walk():
-            # Before stuck check: see if denied tiles have closed doors
-            for dx, dy in list(ctx.walker.denied_tiles.keys())[:10]:
-                door = _find_closed_door_at(ctx, dx, dy)
-                if door is not None:
-                    logger.info("opening_door_on_deny", pos=f"({dx},{dy})")
-                    await ctx.conn.send_packet(build_double_click(door))
-                    ctx.walker.clear_denied_tile(dx, dy)
-                    _clear_path_cache(ctx)
-                    await asyncio.sleep(0.5)
-                    break
-
-            # Check if we're stuck
-            stuck = ctx.walker.check_stuck((tx, ty))
-            if stuck == "cooldown":
-                goal = ctx.blackboard.pop("current_goal", None)
-                ctx.blackboard.pop("move_target", None)
-                _clear_path_cache(ctx)
-                place = goal["place"] if goal else "unknown"
-                ctx.walker.last_step_time = (
-                    asyncio.get_event_loop().time() * 1000 + 5000
-                )
-                logger.warning(
-                    "movement_stuck_cooldown",
-                    target=f"({tx},{ty})",
-                    denials=ctx.walker.consecutive_denials,
-                )
-                # Ask for help occasionally
-                stuck_count = ctx.blackboard.get("stuck_count", 0) + 1
-                ctx.blackboard["stuck_count"] = stuck_count
-                if stuck_count % 3 == 1:  # every 3rd time stuck
-                    help_msgs = [
-                        f"hmm, can't seem to find my way to {place}... anyone know a good route?",
-                        "I keep getting stuck here. Is there another way around?",
-                        f"trying to get to {place} but the path is blocked...",
-                    ]
-                    import random
-                    msg = random.choice(help_msgs)
-                    await ctx.conn.send_packet(build_unicode_speech(msg))
-                    logger.info("stuck_help_request", text=msg)
-
-                await _record_episode(
-                    ctx, "go", place, "failure",
-                    get_reward("goal_failed"),
-                    summary=f"Stuck near {place}: too many walk denials",
-                )
-
-                # Report if stuck too many times
-                if stuck_count >= 5:
-                    from anima.monitor.report import report_problem
-                    await report_problem(
-                        ctx,
-                        problem=f"Cannot reach {place} — stuck {stuck_count} times",
-                        expected=f"Walk to {place} at ({tx},{ty})",
-                        actual=f"Repeatedly blocked, {ctx.walker.consecutive_denials} denials",
-                    )
-
-                return Status.RUNNING
-            elif stuck == "wander":
-                ctx.blackboard.pop("move_target", None)
-                _clear_path_cache(ctx)
-                logger.info(
-                    "movement_stuck_wander",
-                    target=f"({tx},{ty})",
-                    denials=ctx.walker.consecutive_denials,
-                )
-                return Status.SUCCESS
-            return await _step_toward(ctx, tx, ty)
-        else:
-            return Status.RUNNING
-
-    # Cooldown — wait for next think
-    if now - last_think < THINK_COOLDOWN:
-        # If we have a goal but lost move_target (pathfinding failed),
-        # re-set move_target so _step_toward can retry
-        goal = ctx.blackboard.get("current_goal")
-        if goal and not ctx.blackboard.get("move_target"):
+        # Restore move_target if lost (pathfinding failure cleared it)
+        if move_target is None:
             loc = find_location(goal["place"])
             if loc:
-                ctx.blackboard["move_target"] = (loc.nav_x, loc.nav_y)
+                move_target = (loc.nav_x, loc.nav_y)
+                ctx.blackboard["move_target"] = move_target
                 _clear_path_cache(ctx)
-        return Status.SUCCESS
 
-    # If skills are succeeding, extend cooldown — no need to rethink
+        if move_target is not None:
+            tx, ty = move_target
+
+            if abs(sx - tx) <= 2 and abs(sy - ty) <= 2:
+                place = goal["place"]
+
+                # If arrived at approach point, try entering building
+                if not goal.get("_entered"):
+                    loc = find_location(place)
+                    if (loc and loc.approach_x is not None
+                            and (loc.x != loc.nav_x or loc.y != loc.nav_y)):
+                        inner_x, inner_y = loc.x, loc.y
+                        if abs(sx - inner_x) > 2 or abs(sy - inner_y) > 2:
+                            goal["_entered"] = True
+                            ctx.blackboard["move_target"] = (inner_x, inner_y)
+                            _clear_path_cache(ctx)
+                            logger.info(
+                                "entering_building", place=place,
+                                inner=f"({inner_x},{inner_y})",
+                            )
+                            if ctx.walker.can_walk():
+                                return await _step_toward(ctx, inner_x, inner_y)
+                            return Status.RUNNING
+
+                # Actually arrived — clear goal, allow next think
+                _finish_goal(ctx, goal, "success")
+                ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + 2.0
+
+            elif ctx.walker.can_walk():
+                # Try opening closed doors on denied tiles
+                for dx, dy in list(ctx.walker.denied_tiles.keys())[:10]:
+                    door = _find_closed_door_at(ctx, dx, dy)
+                    if door is not None:
+                        logger.info("opening_door_on_deny", pos=f"({dx},{dy})")
+                        await ctx.conn.send_packet(build_double_click(door))
+                        ctx.walker.clear_denied_tile(dx, dy)
+                        _clear_path_cache(ctx)
+                        await asyncio.sleep(0.5)
+                        break
+
+                stuck = ctx.walker.check_stuck((tx, ty))
+                if stuck == "cooldown":
+                    # Stuck — retry with cleared denied tiles, don't abandon goal
+                    retries = goal.get("_stuck_retries", 0) + 1
+                    goal["_stuck_retries"] = retries
+                    ctx.walker.last_step_time = (
+                        asyncio.get_event_loop().time() * 1000 + 3000
+                    )
+                    _clear_path_cache(ctx)
+                    logger.warning(
+                        "goal_stuck_retry", place=goal["place"],
+                        target=f"({tx},{ty})", retry=retries,
+                        denials=ctx.walker.consecutive_denials,
+                    )
+                    # Give up after too many retries
+                    if retries >= 5:
+                        logger.warning("goal_stuck_give_up", place=goal["place"])
+                        _finish_goal(ctx, goal, "failure")
+                    return Status.RUNNING
+                elif stuck == "wander":
+                    # Briefly stuck — clear path cache and retry, keep goal
+                    _clear_path_cache(ctx)
+                    return Status.SUCCESS
+                return await _step_toward(ctx, tx, ty)
+            else:
+                return Status.RUNNING
+
+        # goal exists but no move_target and can't restore — abandon
+        _finish_goal(ctx, goal, "failure")
+
+    # If skills are succeeding, don't rethink
     if ctx.blackboard.get("skill_consecutive_fails", 0) == 0:
         last_skill = ctx.blackboard.get("last_skill_time", 0.0)
         if now - last_skill < 10.0:
-            # Skills ran recently and successfully — delay thinking
             return Status.FAILURE
+
+    # Cooldown between thinks
+    if now - last_think < THINK_COOLDOWN:
+        return Status.SUCCESS
 
     # Time to think
     ctx.blackboard["last_think_time"] = now
@@ -398,6 +357,15 @@ async def llm_think(ctx: BrainContext) -> Status:
 # ------------------------------------------------------------------
 # Path caching helpers
 # ------------------------------------------------------------------
+
+def _finish_goal(ctx: BrainContext, goal: dict, outcome: str) -> None:
+    """Clean up a completed or failed goal."""
+    place = goal.get("place", "unknown")
+    ctx.blackboard.pop("current_goal", None)
+    ctx.blackboard.pop("move_target", None)
+    _clear_path_cache(ctx)
+    logger.info("goal_finished", place=place, outcome=outcome)
+
 
 def _clear_path_cache(ctx: BrainContext) -> None:
     ctx.blackboard.pop("cached_path", None)
