@@ -64,8 +64,17 @@ class BankDeposit(Skill):
         ss = ctx.perception.self_state
         if ss.gold < GOLD_THRESHOLD:
             return False
-        # Can bank if a banker is visible OR we're near a known bank location
-        return bool(_find_banker(ctx)) or _near_bank(ss.x, ss.y)
+        # Must actually find a banker — _near_bank alone causes
+        # infinite loops when banker is inside and we're outside
+        if _find_banker(ctx):
+            return True
+        # Near bank but no banker visible: signal LLM to move closer
+        if _near_bank(ss.x, ss.y):
+            ctx.blackboard.setdefault("skill_problem", (
+                "Near the bank but can't see the banker. "
+                "Try moving closer to the bank entrance."
+            ))
+        return False
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state

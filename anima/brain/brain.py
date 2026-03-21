@@ -131,13 +131,36 @@ async def _skill_action(ctx: BrainContext) -> Status:
 
     result = await skill.execute(ctx)
 
-    # Track consecutive failures
+    # Track consecutive failures (total + per-skill)
     if result.success:
         ctx.blackboard["skill_consecutive_fails"] = 0
+        ctx.blackboard["last_failed_skill"] = None
+        ctx.blackboard["same_skill_fails"] = 0
     else:
         ctx.blackboard["skill_consecutive_fails"] = (
             ctx.blackboard.get("skill_consecutive_fails", 0) + 1
         )
+        # Track same-skill repeated failures
+        last_failed = ctx.blackboard.get("last_failed_skill")
+        if last_failed == skill.name:
+            same = ctx.blackboard.get("same_skill_fails", 0) + 1
+            ctx.blackboard["same_skill_fails"] = same
+            if same >= 3:
+                # Same skill failing 3+ times → force rethink
+                ctx.blackboard["same_skill_fails"] = 0
+                ctx.blackboard["last_think_time"] = time.time() - 15.0
+                ctx.blackboard.setdefault("skill_problem", (
+                    f"{skill.name} failed {same} times in a row: "
+                    f"{result.message}"
+                ))
+                logger.info(
+                    "same_skill_loop",
+                    skill=skill.name, fails=same,
+                    msg=result.message[:60],
+                )
+        else:
+            ctx.blackboard["last_failed_skill"] = skill.name
+            ctx.blackboard["same_skill_fails"] = 1
 
     # Record to metrics
     mc = ctx.blackboard.get("metrics")
