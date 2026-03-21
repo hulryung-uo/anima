@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.client.packets import (
+    build_double_click,
     build_drop_item,
     build_pick_up,
     build_unicode_speech,
@@ -91,12 +92,18 @@ class BankDeposit(Skill):
         from anima.core.publish import pub
         pub(ctx, "action.bank_start", f"Banking {ss.gold}gp with {banker_name}", importance=2)
 
-        # Say "bank" to open bank box
+        # Try to open bank box:
+        # 1. Say "bank" (standard ServUO speech handler)
+        # 2. Also double-click banker (triggers context menu / bank gump)
+        ss.gumps.clear()
+        ss.open_container = 0
         await ctx.conn.send_packet(build_unicode_speech("bank"))
+        await asyncio.sleep(0.3)
+        # Double-click banker as fallback — some servers need this
+        await ctx.conn.send_packet(build_double_click(banker.serial))
         logger.info("bank_requested", banker=banker_name, gold=ss.gold)
 
-        # Wait for bank box to open (0x24 → 0x3C sequence)
-        # The bank box serial is at equipment layer 0x1D
+        # Wait for bank box via container (0x24+0x3C) or gump (0xB0/0xDD)
         bank_serial = await _wait_for_bank_box(ctx)
         if not bank_serial:
             elapsed = (time.monotonic() - start) * 1000
@@ -167,33 +174,40 @@ class BankDeposit(Skill):
 
 
 async def _wait_for_bank_box(ctx: BrainContext) -> int | None:
-    """Wait for the bank box to open after saying 'bank'.
+    """Wait for the bank box to open.
 
-    The bank box serial comes via:
-    1. Equipment layer 0x1D (always present after login)
-    2. 0x24 ContainerDisplay (confirms the box is now open)
-    3. 0x3C ContainerContent (items inside arrive)
+    Detection methods (server-dependent):
+    1. 0x24 ContainerDisplay with new serial (not backpack)
+    2. Equipment layer 0x1D populated
+    3. 0x3C ContainerContent for a new container
+    4. Gump opened (some servers use gump-based banking)
     """
     ss = ctx.perception.self_state
+    backpack = ss.equipment.get(0x15)
     deadline = time.monotonic() + BANK_OPEN_TIMEOUT
 
     while time.monotonic() < deadline:
+        # Method 1: 0x24 opened a container that isn't the backpack
+        if ss.open_container and ss.open_container != backpack:
+            logger.debug("bank_detected_via_container", serial=f"0x{ss.open_container:08X}")
+            return ss.open_container
+
+        # Method 2: equipment layer 0x1D
         bank_serial = ss.equipment.get(LAYER_BANK)
         if bank_serial:
-            # Check if the container was just opened (0x24 received)
-            if ss.open_container == bank_serial:
-                return bank_serial
-            # Or check if items appeared inside it (0x3C received)
-            has_content = any(
-                it.container == bank_serial
-                for it in ctx.perception.world.items.values()
-            )
-            if has_content:
-                return bank_serial
+            return bank_serial
+
+        # Method 3: gump appeared (server sends bank as gump)
+        if ss.gumps:
+            gump = next(iter(ss.gumps.values()))
+            logger.debug("bank_detected_via_gump", gump_id=f"0x{gump.gump_id:08X}")
+            # For gump-based banking, we can't drag-drop into it.
+            # Close the gump and report — need different approach.
+            return None
+
         await asyncio.sleep(POLL_INTERVAL)
 
-    # Fallback: return bank serial if we have it, even without confirmation
-    return ss.equipment.get(LAYER_BANK)
+    return None
 
 
 HUMAN_BODIES = {0x0190, 0x0191}  # male, female
