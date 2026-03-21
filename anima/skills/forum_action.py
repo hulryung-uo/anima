@@ -53,7 +53,7 @@ async def forum_read_action(ctx: BrainContext) -> "Status":
 
 
 async def forum_write_action(ctx: BrainContext) -> "Status":
-    """Compose and post a forum entry about recent adventures."""
+    """Compose and post a forum entry about recent adventures (markdown)."""
     from anima.brain.behavior_tree import Status
 
     forum: ForumClient | None = ctx.blackboard.get("forum_client")
@@ -70,7 +70,7 @@ async def forum_write_action(ctx: BrainContext) -> "Status":
         return Status.FAILURE
 
     # Get recent episodes to summarize
-    episodes = await memory_db.query_episodes(agent_name, limit=10)
+    episodes = await memory_db.query_episodes(agent_name, limit=15)
     if len(episodes) < 3:
         return Status.FAILURE
 
@@ -78,22 +78,44 @@ async def forum_write_action(ctx: BrainContext) -> "Status":
     for ep in episodes:
         line = f"- {ep.action}"
         if ep.target:
-            line += f" at {ep.target}"
-        line += f": {ep.outcome}" if ep.outcome else ""
+            line += f" → {ep.target}"
+        if ep.outcome:
+            line += f" ({ep.outcome})"
         ep_lines.append(line)
 
+    # Build stats for context
+    ss = ctx.perception.self_state
+    stats = f"Gold: {ss.gold}gp, HP: {ss.hits}/{ss.hits_max}"
+    if ss.weight_max > 0:
+        stats += f", Weight: {ss.weight}/{ss.weight_max}"
+
     prompt = f"""\
-Summarize these recent adventures for a forum post. Write as {agent_name},
-a player character sharing their day in Britannia. Keep it short and interesting.
+Write a short forum post about your recent day in Britannia.
+You are {agent_name}. Write in character — casual, personal, like a real player diary.
+
+Current status: {stats}
+Position: ({ss.x}, {ss.y})
 
 Recent events:
 {chr(10).join(ep_lines)}
 
-Write a short title and body. Format:
-TITLE: <title>
-BODY: <body>"""
+Format rules:
+- Write in **Markdown**
+- Title should be catchy but short
+- Body: 2-4 short paragraphs
+- Include what you did, what went well, what went wrong
+- End with what you plan to do next
+- Stay in character
 
-    sys_msg = f"You are {agent_name}, writing a forum post about your adventures."
+Reply format:
+TITLE: <title>
+BODY:
+<markdown body>"""
+
+    sys_msg = (
+        f"You are {agent_name}, writing a diary-style forum post. "
+        f"Write naturally in markdown. Keep it under 200 words."
+    )
     result = await ctx.llm.chat([
         {"role": "system", "content": sys_msg},
         {"role": "user", "content": prompt},
@@ -107,6 +129,18 @@ BODY: <body>"""
     ctx.blackboard["forum_last_post"] = now
 
     logger.info("forum_posted", post_id=post_id, title=title)
+
+    # Also send experience summary (non-LLM, structured data)
+    if hasattr(forum, "send_experience"):
+        success_count = sum(1 for ep in episodes if ep.outcome == "success")
+        await forum.send_experience(
+            exp_type="daily_summary",
+            summary=f"{agent_name}: {success_count}/{len(episodes)} successful actions",
+            location=f"({ss.x}, {ss.y})",
+            gold_delta=0,
+            notable=success_count > 5,
+        )
+
     return Status.SUCCESS
 
 
@@ -115,11 +149,18 @@ def _parse_forum_post(text: str, fallback_author: str) -> tuple[str, str]:
     title = f"{fallback_author}'s Adventures"
     body = text
 
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
         if line.upper().startswith("TITLE:"):
             title = line[6:].strip()
         elif line.upper().startswith("BODY:"):
-            body = text[text.index(line) + len("BODY:"):].strip()
+            # Body is everything after the BODY: line
+            rest = line[5:].strip()
+            if rest:
+                body = rest + "\n" + "\n".join(lines[i + 1:])
+            else:
+                body = "\n".join(lines[i + 1:])
+            body = body.strip()
             break
 
     return title, body

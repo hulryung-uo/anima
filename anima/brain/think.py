@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-THINK_COOLDOWN = 15.0
+THINK_COOLDOWN = 30.0  # seconds between LLM think calls (was 15 — too frequent)
 CONVERSATION_TIMEOUT = 10.0
 
 THINK_PROMPT = """\
@@ -237,6 +237,13 @@ async def llm_think(ctx: BrainContext) -> Status:
         if ctx.blackboard.get("current_goal") is None:
             return await wander_action(ctx)
         return Status.SUCCESS
+
+    # If skills are succeeding, extend cooldown — no need to rethink
+    if ctx.blackboard.get("skill_consecutive_fails", 0) == 0:
+        last_skill = ctx.blackboard.get("last_skill_time", 0.0)
+        if now - last_skill < 10.0:
+            # Skills ran recently and successfully — delay thinking
+            return Status.FAILURE
 
     # Time to think
     ctx.blackboard["last_think_time"] = now

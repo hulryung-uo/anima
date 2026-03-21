@@ -85,7 +85,8 @@ async def _skill_action(ctx: BrainContext) -> Status:
     consecutive_fails = ctx.blackboard.get("skill_consecutive_fails", 0)
     if consecutive_fails >= 5:
         ctx.blackboard["skill_consecutive_fails"] = 0
-        ctx.blackboard["last_think_time"] = 0.0
+        # Schedule a rethink soon but not instantly — halve the cooldown
+        ctx.blackboard["last_think_time"] = time.time() - 15.0
         ctx.blackboard["skill_problem"] = (
             f"Last skill failed {consecutive_fails} times in a row. "
             f"May need to move elsewhere, get materials, or try something different."
