@@ -153,11 +153,34 @@ async def llm_think(ctx: BrainContext) -> Status:
         sx = ctx.perception.self_state.x
         sy = ctx.perception.self_state.y
         if abs(sx - tx) <= 2 and abs(sy - ty) <= 2:
-            # Arrived at destination
-            goal = ctx.blackboard.pop("current_goal", None)
+            goal = ctx.blackboard.get("current_goal")
+            place = goal["place"] if goal else "destination"
+
+            # If we arrived at an approach point but the actual location
+            # is further inside (indoor building), try entering
+            if goal and not goal.get("_entered"):
+                loc = find_location(place)
+                if (loc and loc.approach_x is not None
+                        and (loc.x != loc.nav_x or loc.y != loc.nav_y)):
+                    inner_x, inner_y = loc.x, loc.y
+                    if abs(sx - inner_x) > 2 or abs(sy - inner_y) > 2:
+                        # Move to inner coords — doors will be opened on the way
+                        goal["_entered"] = True
+                        ctx.blackboard["move_target"] = (inner_x, inner_y)
+                        _clear_path_cache(ctx)
+                        logger.info(
+                            "entering_building",
+                            place=place,
+                            inner=f"({inner_x},{inner_y})",
+                        )
+                        if ctx.walker.can_walk():
+                            return await _step_toward(ctx, inner_x, inner_y)
+                        return Status.RUNNING
+
+            # Actually arrived
+            ctx.blackboard.pop("current_goal", None)
             del ctx.blackboard["move_target"]
             _clear_path_cache(ctx)
-            place = goal["place"] if goal else "destination"
             logger.info("goal_arrived", place=place, pos=f"({sx},{sy})")
             from anima.core.publish import pub
             pub(ctx, "brain.goal_arrived", f"Arrived at {place}", importance=2)
