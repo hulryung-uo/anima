@@ -172,11 +172,14 @@ async def llm_think(ctx: BrainContext) -> Status:
             ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + 2.0
         elif ctx.walker.can_walk():
             # Before stuck check: see if denied tiles have doors we can open
+            opened_doors_set: set[int] = ctx.blackboard.get("_opened_doors", set())
             for dx, dy in list(ctx.walker.denied_tiles.keys())[:10]:
                 door = _find_door_at(ctx, dx, dy)
-                if door is not None:
+                if door is not None and door not in opened_doors_set:
                     logger.info("opening_door_on_deny", pos=f"({dx},{dy})")
                     await ctx.conn.send_packet(build_double_click(door))
+                    opened_doors_set.add(door)
+                    ctx.blackboard["_opened_doors"] = opened_doors_set
                     ctx.walker.clear_denied_tile(dx, dy)
                     _clear_path_cache(ctx)
                     await asyncio.sleep(0.5)
@@ -375,6 +378,7 @@ async def llm_think(ctx: BrainContext) -> Status:
 def _clear_path_cache(ctx: BrainContext) -> None:
     ctx.blackboard.pop("cached_path", None)
     ctx.blackboard.pop("cached_path_target", None)
+    ctx.blackboard.pop("_opened_doors", None)
 
 
 def _get_cached_path(
@@ -544,18 +548,20 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     current_dir = ctx.perception.self_state.direction
     remaining_path = list(path)
 
+    opened_doors: set[int] = set()  # track doors we already opened
+
     while remaining_path and ctx.walker.can_walk():
         next_x, next_y = remaining_path[0]
         direction = direction_to(cx, cy, next_x, next_y)
 
-        # Check for doors at the next tile
+        # Check for doors at the next tile (only open once)
         door_serial = _find_door_at(ctx, next_x, next_y)
-        if door_serial is not None:
+        if door_serial is not None and door_serial not in opened_doors:
             logger.debug("opening_door", serial=f"0x{door_serial:08X}", pos=f"({next_x},{next_y})")
             await ctx.conn.send_packet(build_double_click(door_serial))
+            opened_doors.add(door_serial)
             ctx.walker.clear_denied_tile(next_x, next_y)
             await asyncio.sleep(0.5)  # wait for door to open
-            continue  # try stepping through now
 
         is_turn = (current_dir != direction)
 
