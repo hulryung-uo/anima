@@ -390,6 +390,8 @@ async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = Fal
 
             try:
                 await asyncio.gather(*game_coros)
+            except asyncio.CancelledError:
+                logger.info("tasks_cancelled")
             finally:
                 await avatar.close()
 

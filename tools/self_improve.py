@@ -202,14 +202,17 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "trade",
         })
 
-    # Thinking but not acting
-    if counts.get("think_decided", 0) > 5 and counts.get("skill_executing", 0) == 0:
+    # Thinking but not acting — only if also not walking (idle agent)
+    walking = counts.get("walk_confirmed", 0) > 20
+    if (counts.get("think_decided", 0) > 5
+            and counts.get("skill_executing", 0) == 0
+            and not walking):
         problems.append({
             "severity": "HIGH",
             "name": "thinking_not_acting",
             "description": (
                 f"{counts['think_decided']} think decisions, "
-                f"0 skill executions"
+                f"0 skill executions, 0 walks"
             ),
             "fix_type": "brain",
         })
