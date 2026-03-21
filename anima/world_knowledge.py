@@ -89,9 +89,8 @@ MINOC_LOCATIONS: list[Location] = [
              approach_x=2476, approach_y=416),
     Location("Minoc Guildmaster", 2455, 395, "Mining guild hall."),
     # --- Mining areas ---
-    Location("Minoc East Mine", 2556, 468, "Eastern mine entrance. Rich iron veins."),
-    Location("Minoc North Mine", 2514, 332, "Northern caves. Deep tunnels."),
-    Location("Minoc Mountain", 2560, 400, "Mountain area east of town. Open-pit mining."),
+    Location("Minoc East Mine", 2526, 497, "Eastern mine area. Rich iron veins."),
+    Location("Minoc Mountain", 2553, 496, "Mountain mining area east of Minoc."),
 ]
 
 # All known locations across cities
