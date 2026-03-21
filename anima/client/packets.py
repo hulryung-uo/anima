@@ -322,6 +322,52 @@ def build_single_click(serial: int) -> bytes:
     return w.to_bytes()
 
 
+def _encode_keywords(keyword_ids: list[int]) -> bytes:
+    """Pack keyword IDs as 12-bit values (ClassicUO format).
+
+    Format: [count_hi byte] then alternating pairs of IDs packed
+    into 3 bytes per pair using a carried-nibble scheme.
+    """
+    count = len(keyword_ids)
+    result = bytearray()
+    result.append((count >> 4) & 0xFF)
+    carry = count & 0x0F
+    flag = False
+
+    for kw_id in keyword_ids:
+        if flag:
+            result.append((kw_id >> 4) & 0xFF)
+            carry = kw_id & 0x0F
+        else:
+            result.append(((carry << 4) | ((kw_id >> 8) & 0x0F)) & 0xFF)
+            result.append(kw_id & 0xFF)
+        flag = not flag
+
+    if not flag:
+        result.append((carry << 4) & 0xFF)
+
+    return bytes(result)
+
+
+# Common speech keywords (from speech.mul) — used by ServUO NPC dispatch
+SPEECH_KEYWORDS: dict[str, list[int]] = {
+    "bank": [0x0002],
+    "vendor sell": [0x014D],
+    "vendor buy": [0x003C],
+    "guards": [0x0007],
+}
+
+
+def _match_keywords(text: str) -> list[int]:
+    """Match text against known speech keywords."""
+    text_lower = text.lower()
+    matched: list[int] = []
+    for phrase, ids in SPEECH_KEYWORDS.items():
+        if phrase in text_lower:
+            matched.extend(ids)
+    return sorted(set(matched))
+
+
 def build_unicode_speech(
     text: str,
     msg_type: int = 0,
@@ -329,19 +375,35 @@ def build_unicode_speech(
     font: int = 3,
     lang: str = "ENU",
 ) -> bytes:
-    """Build UnicodeSpeech packet (0xAD, variable)."""
+    """Build UnicodeSpeech packet (0xAD, variable).
+
+    Automatically detects keywords (bank, vendor sell, etc.) and
+    encodes them using the 12-bit keyword format that ServUO expects.
+    Without keyword encoding, NPC speech handlers won't trigger.
+    """
+    keywords = _match_keywords(text)
+
     w = PacketWriter()
     w.write_u8(0xAD)
     w.write_u16(0)  # placeholder for length
-    w.write_u8(msg_type)
-    w.write_u16(hue)
-    w.write_u16(font)
-    w.write_ascii(lang, 4)
-    # No keyword encoding — write raw unicode
-    encoded = text.encode("utf-16-be") + b"\x00\x00"
-    w.write_bytes(encoded)
+
+    if keywords:
+        # Keyword-encoded mode: type |= 0xC0, text as UTF-8
+        w.write_u8(msg_type | 0xC0)
+        w.write_u16(hue)
+        w.write_u16(font)
+        w.write_ascii(lang, 4)
+        w.write_bytes(_encode_keywords(keywords))
+        w.write_bytes(text.encode("utf-8") + b"\x00")
+    else:
+        # Plain mode: text as UTF-16 BE
+        w.write_u8(msg_type)
+        w.write_u16(hue)
+        w.write_u16(font)
+        w.write_ascii(lang, 4)
+        w.write_bytes(text.encode("utf-16-be") + b"\x00\x00")
+
     data = bytearray(w.to_bytes())
-    # Fill in length
     length = len(data)
     data[1] = (length >> 8) & 0xFF
     data[2] = length & 0xFF
