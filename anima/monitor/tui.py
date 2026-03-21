@@ -1,7 +1,8 @@
-"""Rich Live TUI — real-time terminal dashboard for Anima.
+"""AnimaMonitor — EventBus subscriber TUI dashboard.
 
-Uses Rich Live for rendering (proven reliable) and a dedicated
-stdin reader thread for key input (non-blocking, no asyncio conflict).
+Subscribes to ``monitor.*`` topics published by StatePublisher
+and renders a Rich Live terminal dashboard. Does not access
+Perception or blackboard directly.
 """
 
 from __future__ import annotations
@@ -10,8 +11,10 @@ import asyncio
 import os
 import sys
 import threading
+import time
+from collections import deque
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 from rich.layout import Layout
@@ -20,8 +23,8 @@ from rich.panel import Panel
 from rich.text import Text
 
 if TYPE_CHECKING:
-    from anima.monitor.feed import ActivityFeed
-    from anima.perception import Perception
+    from anima.core.bus import EventBus, Subscription
+    from anima.map import MapReader
 
 # ---------------------------------------------------------------------------
 # Display constants
@@ -34,6 +37,7 @@ _NOTORIETY_COLORS = {
 _CATEGORY_ICONS = {
     "brain": "\u2b50", "skill": "\u2692", "combat": "\u2694",
     "movement": "\u2192", "social": "\U0001f4ac", "system": "\u2139",
+    "action": "\u2692", "avatar": "\u2022",
 }
 _LOCK_ICONS = {0: ("\u2191", "green"), 1: ("\u2193", "red"), 2: ("\u2022", "grey50")}
 _SKILL_NAMES = {
@@ -61,60 +65,66 @@ def _bar(cur: int, mx: int, width: int = 10) -> Text:
 
 
 # ---------------------------------------------------------------------------
-# Panel builders — each returns a Rich Panel
+# Panel builders — each takes a plain dict (from EventBus data)
 # ---------------------------------------------------------------------------
 
-def _panel_status(p: "Perception", bb: dict) -> Panel:
-    ss = p.self_state
-    persona = bb.get("persona")
-    name = persona.name if persona else "Anima"
-    title = getattr(persona, "title", "") if persona else ""
-    goal = bb.get("current_goal")
-    goal_text = goal.get("description", "")[:50] if goal else "none"
+def _panel_status(status: dict[str, Any]) -> Panel:
+    name = status.get("name", "Anima")
+    title = status.get("title", "")
+    goal = status.get("goal", "none")
 
     t = Text()
     t.append(name, style="bold bright_white")
-    t.append(f" — {title}\n\n")
-    for label, style, cur, mx, sl, sv in [
-        ("HP  ", "bold red", ss.hits, ss.hits_max, "STR", ss.strength),
-        ("Mana", "bold blue", ss.mana, ss.mana_max, "DEX", ss.dexterity),
-        ("Stam", "bold yellow", ss.stam, ss.stam_max, "INT", ss.intelligence),
+    t.append(f" \u2014 {title}\n\n")
+    for label, style, ck, mk, sl, sk in [
+        ("HP  ", "bold red", "hp", "hp_max", "STR", "str"),
+        ("Mana", "bold blue", "mana", "mana_max", "DEX", "dex"),
+        ("Stam", "bold yellow", "stam", "stam_max", "INT", "int"),
     ]:
+        cur = status.get(ck, 0)
+        mx = status.get(mk, 0)
+        sv = status.get(sk, 0)
         t.append(f"{label} ", style=style)
         t.append_text(_bar(cur, mx))
         t.append(f"  {sl} ", style="bold")
         t.append(f"{sv}\n")
-    t.append(f"\nPos ({ss.x}, {ss.y}, {ss.z})  ", style="grey70")
-    t.append(f"Gold {ss.gold:,}  ", style="bright_yellow")
-    t.append(f"Wt {ss.weight}/{ss.weight_max}\n", style="grey70")
+
+    x = status.get("x", 0)
+    y = status.get("y", 0)
+    z = status.get("z", 0)
+    gold = status.get("gold", 0)
+    weight = status.get("weight", 0)
+    weight_max = status.get("weight_max", 0)
+
+    t.append(f"\nPos ({x}, {y}, {z})  ", style="grey70")
+    t.append(f"Gold {gold:,}  ", style="bright_yellow")
+    t.append(f"Wt {weight}/{weight_max}\n", style="grey70")
     t.append("Goal ", style="bright_green")
-    t.append(goal_text)
+    t.append(goal)
     return Panel(t, title="Status", border_style="bright_blue")
 
 
-def _panel_activity(feed: "ActivityFeed") -> Panel:
-    events = feed.recent(18)
+def _panel_activity(events: list[dict[str, Any]]) -> Panel:
     t = Text()
-    for ev in events:
-        ts = datetime.fromtimestamp(ev.timestamp).strftime("%H:%M:%S")
-        icon = _CATEGORY_ICONS.get(ev.category, "\u2022")
+    for ev in events[-18:]:
+        ts = datetime.fromtimestamp(ev["timestamp"]).strftime("%H:%M:%S")
+        icon = _CATEGORY_ICONS.get(ev.get("category", ""), "\u2022")
+        imp = ev.get("importance", 1)
         t.append(f" {ts} ", style="grey50")
         t.append(f"{icon} ")
-        t.append(f"{ev.message}\n", style="bold" if ev.importance >= 3 else "")
+        t.append(f"{ev.get('message', '')}\n", style="bold" if imp >= 3 else "")
     if not events:
         t.append(" Waiting for activity...", style="grey50")
     return Panel(t, title="Activity", border_style="bright_green")
 
 
-def _panel_nearby(p: "Perception") -> Panel:
-    ss = p.self_state
-    mobs = p.world.nearby_mobiles(ss.x, ss.y, distance=18)
-    mobs.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
+def _panel_nearby(nearby: dict[str, Any]) -> Panel:
+    mobs = nearby.get("mobiles", [])
     t = Text()
     for mob in mobs[:8]:
-        name = (mob.name or f"0x{mob.body:04X}")[:18]
-        dx, dy = mob.x - ss.x, mob.y - ss.y
-        dirs = []
+        name = mob.get("name", "?")[:18]
+        dx, dy = mob.get("dx", 0), mob.get("dy", 0)
+        dirs: list[str] = []
         if dy < 0:
             dirs.append(f"{abs(dy)}N")
         elif dy > 0:
@@ -123,7 +133,7 @@ def _panel_nearby(p: "Perception") -> Panel:
             dirs.append(f"{abs(dx)}E")
         elif dx < 0:
             dirs.append(f"{abs(dx)}W")
-        nv = mob.notoriety.value if mob.notoriety else 1
+        nv = mob.get("notoriety", 1)
         t.append(name, style=_NOTORIETY_COLORS.get(nv, "white"))
         t.append(f"  {','.join(dirs) or 'here'}\n", style="grey70")
     if not mobs:
@@ -131,37 +141,34 @@ def _panel_nearby(p: "Perception") -> Panel:
     return Panel(t, title="Nearby", border_style="bright_yellow")
 
 
-def _panel_journal(p: "Perception") -> Panel:
-    entries = p.social.recent(count=10)
-    my = p.self_state.serial
+def _panel_journal(journal: dict[str, Any]) -> Panel:
+    entries = journal.get("entries", [])
     t = Text()
     for e in entries:
-        ts = datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S")
-        name = e.name or "?"
-        s = ("bright_cyan" if e.serial == my
+        ts = datetime.fromtimestamp(e["timestamp"]).strftime("%H:%M:%S")
+        name = e.get("name", "?")
+        is_self = e.get("is_self", False)
+        s = ("bright_cyan" if is_self
              else "grey50" if name.lower() == "system"
              else "bright_white")
         t.append(f"{ts} ", style="grey50")
         t.append(f"{name}: ", style=s)
-        t.append(f"{e.text[:55]}\n")
+        t.append(f"{e.get('text', '')}\n")
     if not entries:
         t.append("No speech yet...", style="grey50")
     return Panel(t, title="Journal", border_style="bright_magenta")
 
 
-def _panel_inventory(p: "Perception") -> Panel:
-    bp = p.self_state.equipment.get(0x15)
+def _panel_inventory(inventory: dict[str, Any]) -> Panel:
+    items = inventory.get("items", [])
+    has_backpack = inventory.get("has_backpack", False)
     t = Text()
-    if bp:
-        items = sorted(
-            [it for it in p.world.items.values() if it.container == bp],
-            key=lambda it: it.name or "",
-        )
+    if has_backpack:
         for it in items[:12]:
-            name = it.name or f"0x{it.graphic:04X}"
-            t.append(f"{name[:20]}")
-            if it.amount > 1:
-                t.append(f" x{it.amount}", style="grey70")
+            t.append(it.get("name", "?"))
+            amt = it.get("amount", 1)
+            if amt > 1:
+                t.append(f" x{amt}", style="grey70")
             t.append("\n")
         if not items:
             t.append("empty", style="grey50")
@@ -170,43 +177,40 @@ def _panel_inventory(p: "Perception") -> Panel:
     return Panel(t, title="Inventory", border_style="bright_white")
 
 
-def _panel_skills(p: "Perception") -> Panel:
-    skills = sorted(p.self_state.skills.values(), key=lambda s: (-s.value, s.id))
+def _panel_skills(skills_data: dict[str, Any]) -> Panel:
+    skills = skills_data.get("skills", [])
+    total = skills_data.get("total", 0.0)
     t = Text()
-    total = 0.0
-    n = 0
-    for sk in skills:
-        if sk.value == 0 and sk.lock.value == 2:
-            continue
-        total += sk.value
-        name = _SKILL_NAMES.get(sk.id, f"Skill{sk.id}")
-        icon, color = _LOCK_ICONS.get(sk.lock.value, ("?", "white"))
+    for sk in skills[:12]:
+        name = _SKILL_NAMES.get(sk["id"], f"Skill{sk['id']}")
+        icon, color = _LOCK_ICONS.get(sk.get("lock", 2), ("?", "white"))
         t.append(f"{icon} ", style=color)
         t.append(f"{name[:12]:<12} ")
-        t.append(f"{sk.value:5.1f}", style="bright_white")
-        t.append(f"/{sk.cap:.0f}\n", style="grey50")
-        n += 1
-        if n >= 12:
-            break
+        t.append(f"{sk['value']:5.1f}", style="bright_white")
+        t.append(f"/{sk['cap']:.0f}\n", style="grey50")
     t.append(f"\nTotal {total:.1f}/700", style="bold")
     return Panel(t, title="Skills", border_style="bright_yellow")
 
 
-def _panel_minimap(p: "Perception", bb: dict) -> Panel:
-    """Render a minimap showing agent position, walls, and nearby mobiles."""
-    ss = p.self_state
-    sx, sy, sz = ss.x, ss.y, ss.z
-    mr = bb.get("map_reader")
+def _panel_minimap(
+    status: dict[str, Any],
+    nearby: dict[str, Any],
+    map_reader: "MapReader | None",
+) -> Panel:
+    sx = status.get("x", 0)
+    sy = status.get("y", 0)
+    sz = status.get("z", 0)
+    move_target = status.get("move_target")
 
     radius = 12
     t = Text()
 
-    if mr is None:
+    if map_reader is None:
         t.append("No map reader", style="grey50")
         return Panel(t, title="Map", border_style="bright_blue")
 
-    mobs = {(m.x, m.y): m for m in p.world.nearby_mobiles(sx, sy, distance=radius)}
-    goal = bb.get("move_target")
+    mobs = {(m["x"], m["y"]): m for m in nearby.get("mobiles", [])}
+    goal = tuple(move_target[:2]) if move_target else None
 
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
@@ -218,11 +222,11 @@ def _panel_minimap(p: "Perception", bb: dict) -> Panel:
                 t.append("X", style="bold bright_red")
             elif (x, y) in mobs:
                 mob = mobs[(x, y)]
-                nv = mob.notoriety.value if mob.notoriety else 1
+                nv = mob.get("notoriety", 1)
                 color = _NOTORIETY_COLORS.get(nv, "white")
                 t.append("M", style=color)
             else:
-                tile = mr.get_tile(x, y)
+                tile = map_reader.get_tile(x, y)
                 can, _ = tile.walkable_z(sz)
                 if not can:
                     has_wall = any(
@@ -233,7 +237,6 @@ def _panel_minimap(p: "Perception", bb: dict) -> Panel:
                     else:
                         t.append("~", style="blue")
                 else:
-                    # Check for trees
                     has_tree = any(
                         s.graphic in range(0x0CCA, 0x0D9C) for s in tile.statics
                     )
@@ -246,13 +249,13 @@ def _panel_minimap(p: "Perception", bb: dict) -> Panel:
     return Panel(t, title="Map", border_style="bright_blue")
 
 
-def _panel_qvalues(bb: dict) -> Panel:
-    qs: dict[str, tuple[float, int]] = bb.get("q_snapshot", {})
+def _panel_qvalues(qv_data: dict[str, Any]) -> Panel:
+    values = qv_data.get("values", {})
     t = Text()
-    if qs:
-        for name, (q, v) in sorted(
-            qs.items(), key=lambda x: x[1][0], reverse=True
-        )[:8]:
+    if values:
+        for name, info in values.items():
+            q = info["q"]
+            v = info["visits"]
             c = "bright_green" if q > 0 else "red" if q < 0 else "grey70"
             t.append(f"{name[:16]:<16} ")
             t.append(f"Q={q:.2f} ", style=c)
@@ -263,7 +266,7 @@ def _panel_qvalues(bb: dict) -> Panel:
 
 
 # ---------------------------------------------------------------------------
-# Key reader thread — reads single chars from stdin in cbreak mode
+# Key reader thread
 # ---------------------------------------------------------------------------
 
 class _KeyReader:
@@ -309,26 +312,101 @@ class _KeyReader:
 
 
 # ---------------------------------------------------------------------------
-# TUI main class
+# AnimaMonitor — EventBus subscriber TUI
 # ---------------------------------------------------------------------------
 
-class AnimaTUI:
-    """Rich Live TUI with threaded key input."""
+class AnimaMonitor:
+    """Rich Live TUI that subscribes to EventBus for all state."""
 
     def __init__(
         self,
-        perception: "Perception",
-        feed: "ActivityFeed",
-        blackboard: dict,
+        bus: "EventBus",
+        map_reader: "MapReader | None" = None,
         refresh_rate: float = 0.5,
+        shutdown_event: asyncio.Event | None = None,
     ) -> None:
-        self._p = perception
-        self._feed = feed
-        self._bb = blackboard
+        self._bus = bus
+        self._map_reader = map_reader
         self._refresh = refresh_rate
+        self._shutdown_event = shutdown_event
+
+        # Subscriptions (for cleanup)
+        self._subs: list[Subscription] = []
+
+        # Cached state from EventBus
+        self._status: dict[str, Any] = {}
+        self._nearby: dict[str, Any] = {"mobiles": []}
+        self._journal: dict[str, Any] = {"entries": []}
+        self._inventory: dict[str, Any] = {"items": [], "has_backpack": False}
+        self._skills: dict[str, Any] = {"skills": [], "total": 0.0}
+        self._qvalues: dict[str, Any] = {"values": {}}
+        self._activity: deque[dict[str, Any]] = deque(maxlen=200)
+
+        # UI toggles
         self._show_inventory = False
         self._show_skills = False
         self._show_map = True
+
+    # -- Subscriber lifecycle -----------------------------------------------
+
+    def connect(self) -> None:
+        """Register with the EventBus."""
+        topic_handlers = {
+            "monitor.status": self._on_status,
+            "monitor.nearby": self._on_nearby,
+            "monitor.journal": self._on_journal,
+            "monitor.inventory": self._on_inventory,
+            "monitor.skills": self._on_skills,
+            "monitor.qvalues": self._on_qvalues,
+        }
+        for pattern, handler in topic_handlers.items():
+            self._subs.append(self._bus.subscribe(pattern, handler))
+
+        # All events for the activity panel
+        self._subs.append(self._bus.subscribe("*", self._on_activity))
+
+    def disconnect(self) -> None:
+        """Unregister from the EventBus."""
+        for sub in self._subs:
+            self._bus.unsubscribe(sub)
+        self._subs.clear()
+
+    # -- Event handlers -----------------------------------------------------
+
+    def _on_status(self, _topic: str, data: dict[str, Any]) -> None:
+        self._status = data
+
+    def _on_nearby(self, _topic: str, data: dict[str, Any]) -> None:
+        self._nearby = data
+
+    def _on_journal(self, _topic: str, data: dict[str, Any]) -> None:
+        self._journal = data
+
+    def _on_inventory(self, _topic: str, data: dict[str, Any]) -> None:
+        self._inventory = data
+
+    def _on_skills(self, _topic: str, data: dict[str, Any]) -> None:
+        self._skills = data
+
+    def _on_qvalues(self, _topic: str, data: dict[str, Any]) -> None:
+        self._qvalues = data
+
+    def _on_activity(self, topic: str, data: dict[str, Any]) -> None:
+        # Skip state-snapshot topics — they aren't user-facing activities
+        if topic.startswith("monitor."):
+            return
+        message = data.get("message", "")
+        if not message:
+            return
+        category = topic.split(".")[0]
+        self._activity.append({
+            "timestamp": time.time(),
+            "category": category,
+            "message": message,
+            "importance": data.get("importance", 1),
+        })
+
+    # -- Layout / rendering -------------------------------------------------
 
     def _build(self) -> Layout:
         layout = Layout()
@@ -337,6 +415,7 @@ class AnimaTUI:
             Layout(name="lower", size=14),
             Layout(name="footer", size=1),
         )
+
         upper_panels = [
             Layout(name="status", ratio=2, minimum_size=30),
             Layout(name="activity", ratio=3, minimum_size=40),
@@ -345,7 +424,6 @@ class AnimaTUI:
             upper_panels.append(Layout(name="minimap", ratio=2, minimum_size=26))
         layout["upper"].split_row(*upper_panels)
 
-        # Build lower panels based on toggle state
         lower_panels = [Layout(name="nearby", ratio=1)]
         lower_panels.append(Layout(name="journal", ratio=1))
         if self._show_inventory:
@@ -355,23 +433,25 @@ class AnimaTUI:
         lower_panels.append(Layout(name="qvalues", ratio=1))
         layout["lower"].split_row(*lower_panels)
 
-        # Render panels
-        layout["status"].update(_panel_status(self._p, self._bb))
-        layout["activity"].update(_panel_activity(self._feed))
+        # Render panels from cached state
+        layout["status"].update(_panel_status(self._status))
+        layout["activity"].update(_panel_activity(list(self._activity)))
         if self._show_map:
-            layout["minimap"].update(_panel_minimap(self._p, self._bb))
-        layout["nearby"].update(_panel_nearby(self._p))
-        layout["journal"].update(_panel_journal(self._p))
+            layout["minimap"].update(
+                _panel_minimap(self._status, self._nearby, self._map_reader)
+            )
+        layout["nearby"].update(_panel_nearby(self._nearby))
+        layout["journal"].update(_panel_journal(self._journal))
         if self._show_inventory:
-            layout["inventory"].update(_panel_inventory(self._p))
+            layout["inventory"].update(_panel_inventory(self._inventory))
         if self._show_skills:
-            layout["skills"].update(_panel_skills(self._p))
-        layout["qvalues"].update(_panel_qvalues(self._bb))
+            layout["skills"].update(_panel_skills(self._skills))
+        layout["qvalues"].update(_panel_qvalues(self._qvalues))
 
         # Footer
+        subs = self._bus.subscriber_count
         footer = Text()
-        footer.append(" j", style="bold bright_yellow")
-        footer.append(" Journal  ", style="grey70")
+        footer.append(f" [{subs} subs] ", style="grey50")
         footer.append("i", style="bold bright_yellow")
         footer.append(" Inventory  ", style="grey70")
         footer.append("s", style="bold bright_yellow")
@@ -385,12 +465,9 @@ class AnimaTUI:
         return layout
 
     def _handle_keys(self, keys: list[str]) -> bool:
-        """Handle key presses. Returns True if quit requested."""
+        """Returns True if quit requested."""
         for key in keys:
-            if key == "j":
-                # Journal is always shown — no toggle needed
-                pass
-            elif key == "i":
+            if key == "i":
                 self._show_inventory = not self._show_inventory
             elif key == "s":
                 self._show_skills = not self._show_skills
@@ -400,7 +477,11 @@ class AnimaTUI:
                 return True
         return False
 
+    # -- Main loop ----------------------------------------------------------
+
     async def run(self) -> None:
+        """Subscribe, render, and handle input until quit."""
+        self.connect()
         console = Console()
         key_reader = _KeyReader()
         key_reader.start()
@@ -413,21 +494,19 @@ class AnimaTUI:
                 screen=True,
             ) as live:
                 while True:
-                    # Handle key input
                     keys = key_reader.poll()
                     if self._handle_keys(keys):
                         break
-
-                    # Update display
                     live.update(self._build())
                     await asyncio.sleep(self._refresh)
         finally:
             key_reader.stop()
+            self.disconnect()
 
-        # q pressed — signal shutdown, then exit
-        self._bb["shutdown_requested"] = True
-        # Give brain_loop a moment to write final forum post
-        await asyncio.sleep(2.0)
+        # Signal shutdown to the agent
+        if self._shutdown_event:
+            self._shutdown_event.set()
+            await asyncio.sleep(2.0)
 
         for task in asyncio.all_tasks():
             if task is not asyncio.current_task():

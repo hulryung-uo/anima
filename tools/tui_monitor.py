@@ -258,7 +258,6 @@ def main() -> None:
                     elif key == "p":
                         paused = not paused
                     elif key == "c":
-                        nonlocal state
                         state = MonitorState()
                 if not paused:
                     new = tailer.read_new()
