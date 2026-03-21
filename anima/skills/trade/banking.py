@@ -88,6 +88,15 @@ class BankDeposit(Skill):
 
         banker_name = banker.name or "banker"
         gold_before = ss.gold
+        logger.info(
+            "bank_found_npc",
+            name=banker_name,
+            serial=f"0x{banker.serial:08X}",
+            body=f"0x{banker.body:04X}",
+            pos=f"({banker.x},{banker.y},{banker.z})",
+            notoriety=banker.notoriety.name if banker.notoriety else "?",
+            dist=max(abs(banker.x - ss.x), abs(banker.y - ss.y)),
+        )
 
         from anima.core.publish import pub
         pub(ctx, "action.bank_start", f"Banking {ss.gold}gp with {banker_name}", importance=2)
