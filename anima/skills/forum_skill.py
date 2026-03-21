@@ -231,7 +231,7 @@ class ForumPost(Skill):
 
         if post_id:
             return SkillResult(
-                success=True, reward=5.0,
+                success=True, reward=1.0,  # low reward — posting is secondary to gameplay
                 message=f"Posted [{post_type}]: {title}",
                 duration_ms=elapsed,
             )
@@ -322,7 +322,7 @@ class ForumRead(Skill):
         if new_facts:
             logger.info("forum_learned", facts=new_facts, research=bool(problem))
             return SkillResult(
-                success=True, reward=2.0,
+                success=True, reward=1.0,
                 message=f"Learned {new_facts} facts from library",
                 duration_ms=elapsed,
             )
