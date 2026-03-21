@@ -419,19 +419,22 @@ def _scan_building_walls(ctx: BrainContext, radius: int = 20) -> set[tuple[int, 
 
     This helps A* avoid buildings from the start instead of discovering them
     one tile at a time during pathfinding.
+
+    Uses flag-based walkability (ignores Z) so that mountainous terrain with
+    varying elevations is NOT incorrectly blocked. The A* algorithm handles
+    Z-level transitions correctly per step via walkable_z().
     """
     if ctx.map_reader is None:
         return set()
     ss = ctx.perception.self_state
-    sx, sy, sz = ss.x, ss.y, ss.z
+    sx, sy = ss.x, ss.y
     walls: set[tuple[int, int]] = set()
 
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             x, y = sx + dx, sy + dy
             tile = ctx.map_reader.get_tile(x, y)
-            can, _ = tile.walkable_z(sz)
-            if not can:
+            if not tile.walkable:
                 walls.add((x, y))
 
     return walls
