@@ -173,6 +173,7 @@ class Avatar:
         from anima.skills.base import SkillRegistry
         from anima.skills.combat.healing import HealSelf
         from anima.skills.combat.melee import MeleeAttack
+        from anima.skills.crafting.blacksmith import CraftBlacksmith
         from anima.skills.crafting.carpentry import CraftCarpentry
         from anima.skills.crafting.smelt import SmeltOre
         from anima.skills.crafting.tinker import CraftTinker
@@ -186,7 +187,7 @@ class Avatar:
         skill_registry = SkillRegistry()
         for skill_cls in [
             HealSelf, MeleeAttack, MineOre, ChopWood, MakeBoards,
-            SmeltOre, CraftTinker, CraftCarpentry,
+            SmeltOre, CraftTinker, CraftCarpentry, CraftBlacksmith,
             BuyFromNpc, SellToNpc, BankDeposit,
             ForumPost, ForumRead,
         ]:
