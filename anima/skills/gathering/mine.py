@@ -163,6 +163,11 @@ class MineOre(Skill):
             return SkillResult(success=False, reward=-1.0, message="No mineable tiles")
 
         tx, ty, tz, graphic, is_static = target
+        logger.info(
+            "mine_target_found",
+            pos=f"({tx},{ty},{tz})", graphic=f"0x{graphic:04X}",
+            is_static=is_static,
+        )
 
         # Count ore before
         ore_before = sum(
@@ -171,18 +176,34 @@ class MineOre(Skill):
         )
 
         # Double-click pickaxe to enter targeting mode
+        ss.pending_target = None
         await ctx.conn.send_packet(build_double_click(tool.serial))
-        await asyncio.sleep(0.5)
 
-        # Target the tile (static or land — both use target_type=1)
+        # Wait for server to send target cursor (0x6C)
+        for _ in range(20):
+            if ss.pending_target is not None:
+                break
+            await asyncio.sleep(0.1)
+
+        if ss.pending_target is None:
+            return SkillResult(success=False, reward=-1.0, message="No target cursor")
+
+        cursor_id = ss.pending_target.get("cursor_id", 0)
+        ss.pending_target = None
+
+        # Target the tile (static or land — both use target_type=1).
+        # Always send the tile graphic: ServUO uses LandTarget.TileID
+        # (from the graphic field) to check MountainAndCaveTiles.
+        # Sending 0 for land tiles caused mining to silently fail.
         await ctx.conn.send_packet(build_target_response(
             target_type=1,
-            cursor_id=0,
+            cursor_id=cursor_id,
             x=tx,
             y=ty,
             z=tz,
-            graphic=graphic if is_static else 0,
+            graphic=graphic,
         ))
+        logger.debug("mine_target_sent", cursor_id=f"0x{cursor_id:08X}", pos=f"({tx},{ty})")
 
         # Wait for mining animation + result (~2 seconds)
         await asyncio.sleep(3.0)

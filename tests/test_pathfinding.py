@@ -254,12 +254,18 @@ class TestWalkerDeniedTiles:
         w.deny_walk(3, 10, 20, 0, 0)
         assert w.consecutive_denials == 3
 
-    def test_confirm_resets_consecutive(self) -> None:
+    def test_confirm_resets_consecutive_only_on_move(self) -> None:
         w = self._make_walker()
         w.deny_walk(1, 10, 20, 0, 0)
         w.deny_walk(2, 10, 20, 0, 0)
+        # Turn-only confirm (no pending step) should NOT reset denials
         w.steps_count = 1
         w.confirm_walk(3)
+        assert w.consecutive_denials == 2
+        # Actual move confirm (with pending step) resets denials
+        w._pending_step_tile = (11, 20)
+        w.steps_count = 1
+        w.confirm_walk(4)
         assert w.consecutive_denials == 0
 
     def test_check_stuck_ok(self) -> None:

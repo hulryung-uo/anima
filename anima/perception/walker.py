@@ -87,12 +87,12 @@ class WalkerManager:
     def confirm_walk(self, seq: int) -> None:
         if self.steps_count > 0:
             self.steps_count -= 1
-        self.consecutive_denials = 0
-        # Predictively update position to where this step was heading.
-        # Without this, self_state stays at the old position after a
-        # successful walk, causing pathfinding to calculate from the
-        # wrong spot and cascading into more server denials.
+        # Only reset consecutive_denials and update position when an actual
+        # move was confirmed (not a turn). Turns don't set _pending_step_tile,
+        # so without this guard the turn→deny→turn→deny cycle keeps resetting
+        # the counter and the escape threshold is never reached.
         if self._pending_step_tile is not None:
+            self.consecutive_denials = 0
             nx, ny = self._pending_step_tile
             self._self_state.x = nx
             self._self_state.y = ny
