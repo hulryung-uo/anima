@@ -83,11 +83,26 @@ def _find_mineable_tile(
     if ctx.map_reader is None:
         return None
 
+    # Prefer mining at feet (distance 0) — target the tile we stand on.
+    # Use player's z for the target z — this is what the server expects
+    # for LandTarget (it reads the actual tile ID from map data).
+    tile_here = ctx.map_reader.get_tile(sx, sy)
+    if tile_here.land.graphic in MINEABLE_TILES:
+        return (sx, sy, sz, tile_here.land.graphic, False)
+
+    # Also check if we're standing on a mineable static
+    for s in tile_here.statics:
+        if s.graphic in MINEABLE_TILES and abs(s.z - sz) <= 16:
+            return (sx, sy, s.z, s.graphic, True)
+
+    # Search nearby tiles within range
     best = None
     best_dist = SEARCH_RADIUS + 1
 
     for dy in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
         for dx in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
+            if dx == 0 and dy == 0:
+                continue  # already checked
             dist = max(abs(dx), abs(dy))
             if dist >= best_dist:
                 continue
@@ -195,17 +210,16 @@ class MineOre(Skill):
         cursor_id = ss.pending_target.get("cursor_id", 0)
         ss.pending_target = None
 
-        # Target the tile (static or land — both use target_type=1).
-        # Always send the tile graphic: ServUO uses LandTarget.TileID
-        # (from the graphic field) to check MountainAndCaveTiles.
-        # Sending 0 for land tiles causes mining to silently fail.
+        # Target the tile:
+        # - Land tile: graphic=0, z=player's z (server reads tile ID from map)
+        # - Static tile: actual graphic+z (server validates static exists)
         await ctx.conn.send_packet(build_target_response(
             target_type=1,
             cursor_id=cursor_id,
             x=tx,
             y=ty,
-            z=tz,
-            graphic=graphic,
+            z=tz if is_static else ss.z,
+            graphic=graphic if is_static else 0,
         ))
         logger.debug("mine_target_sent", cursor_id=f"0x{cursor_id:08X}", pos=f"({tx},{ty})")
 
