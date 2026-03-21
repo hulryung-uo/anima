@@ -280,30 +280,32 @@ class SellToNpc(Skill):
         )
 
 
+HUMAN_BODIES = {0x0190, 0x0191}  # male, female
+
+
 def _find_vendor(ctx: BrainContext) -> MobileInfo | None:
-    """Find nearest NPC vendor (invulnerable notoriety)."""
+    """Find nearest NPC vendor.
+
+    Priority: INVULNERABLE notoriety > human NPC (low serial).
+    """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=5)
-    vendors = [m for m in nearby if m.notoriety == NotorietyFlag.INVULNERABLE]
-    if not vendors:
-        return None
-    vendors.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
-    return vendors[0]
 
+    # Pass 1: INVULNERABLE (standard ServUO vendors)
+    for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
+        if m.serial == ss.serial:
+            continue
+        if m.notoriety == NotorietyFlag.INVULNERABLE:
+            return m
 
-def _protected_serials(ctx: BrainContext) -> set[int]:
-    """Return serials of items that should NOT be sold (essential tools, materials)."""
-    ss = ctx.perception.self_state
-    world = ctx.perception.world
-    backpack = ss.equipment.get(0x15)
-    if not backpack:
-        return set()
+    # Pass 2: human body + NPC serial (fallback if notoriety not set)
+    for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
+        if m.serial == ss.serial:
+            continue
+        if m.body in HUMAN_BODIES and m.serial < 0x10000:
+            return m
 
-    protected: set[int] = set()
-    for it in world.items.values():
-        if it.container == backpack and it.graphic in KEEP_GRAPHICS:
-            protected.add(it.serial)
-    return protected
+    return None
 
 
 def _find_missing_tools(ctx: BrainContext) -> list[tuple[int, int]]:

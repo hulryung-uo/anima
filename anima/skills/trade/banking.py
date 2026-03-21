@@ -196,40 +196,54 @@ async def _wait_for_bank_box(ctx: BrainContext) -> int | None:
     return ss.equipment.get(LAYER_BANK)
 
 
+HUMAN_BODIES = {0x0190, 0x0191}  # male, female
+
+
 def _find_banker(ctx: BrainContext) -> MobileInfo | None:
-    """Find a banker NPC within speech range (12 tiles in ServUO).
+    """Find a banker NPC within speech range (12 tiles).
 
     ServUO Banker.HandlesOnSpeech checks InRange(from, 12).
-    So "bank" command works up to 12 tiles from the banker.
+    Detection priority:
+    1. Name contains "banker"
+    2. INVULNERABLE notoriety
+    3. Near known bank + human body NPC (fallback if notoriety not set)
     """
     ss = ctx.perception.self_state
-    # Search within 12 tiles — matches ServUO banker speech range
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
 
-    candidates = []
+    # Pass 1: name match (banker, minter, etc.)
+    _BANKER_NAMES = {"banker", "minter"}
     for m in nearby:
         if m.serial == ss.serial:
             continue
-        if m.notoriety != NotorietyFlag.INVULNERABLE:
-            continue
         name_lower = (m.name or "").lower()
-        if "banker" in name_lower:
-            candidates.append(m)
+        if any(n in name_lower for n in _BANKER_NAMES):
+            return m
 
-    if not candidates:
-        # Fallback: any invulnerable NPC when we're near a known bank
-        if _near_bank(ss.x, ss.y):
-            for m in nearby:
-                if m.serial == ss.serial:
-                    continue
-                if m.notoriety == NotorietyFlag.INVULNERABLE:
-                    candidates.append(m)
+    # Pass 2: INVULNERABLE notoriety
+    for m in nearby:
+        if m.serial == ss.serial:
+            continue
+        if m.notoriety == NotorietyFlag.INVULNERABLE:
+            return m
 
-    if not candidates:
-        return None
+    # Pass 3: near known bank → closest human NPC
+    if _near_bank(ss.x, ss.y):
+        npc_candidates = []
+        for m in nearby:
+            if m.serial == ss.serial:
+                continue
+            # Human body, not a player (low serial = NPC in most servers)
+            if m.body in HUMAN_BODIES and m.serial < 0x10000:
+                npc_candidates.append(m)
+        if npc_candidates:
+            # Pick closest
+            npc_candidates.sort(
+                key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y),
+            )
+            return npc_candidates[0]
 
-    candidates.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
-    return candidates[0]
+    return None
 
 
 # Known bank locations: (x, y, radius)
