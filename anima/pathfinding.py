@@ -130,7 +130,7 @@ def _astar_core(
                 continue
 
             can_walk, new_z = _is_walkable(
-                map_reader, nx, ny, denied_tiles, current_z, z_at if current_z else None, cx, cy,
+                map_reader, nx, ny, denied_tiles, current_z, z_at if current_z is not None else None, cx, cy,
             )
             if not can_walk:
                 continue
