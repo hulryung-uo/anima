@@ -93,9 +93,11 @@ def parse_recent_log(minutes: int = 10) -> dict:
             total_lines += 1
             line = _ANSI_RE.sub("", raw_line)
 
-            # Time-based filtering
+            # Time-based filtering — only count lines with a valid timestamp
             ts = _parse_ts(line)
-            if ts is not None and ts < cutoff:
+            if ts is None:
+                continue  # skip non-timestamped noise (litellm verbose, etc.)
+            if ts < cutoff:
                 continue
             recent_lines += 1
 
@@ -336,38 +338,6 @@ def save_report(report: str) -> Path:
     return path
 
 
-def git_commit_and_push(message: str) -> bool:
-    """Commit only analysis/plan files and push."""
-    try:
-        # Only add analysis and plan files — never add source code
-        for pattern in ["data/analysis/", "data/plans/"]:
-            d = ROOT / pattern
-            if d.exists():
-                subprocess.run(
-                    ["git", "add", str(d)],
-                    cwd=str(ROOT), check=True,
-                )
-
-        # Check if there's anything staged
-        status = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"],
-            cwd=str(ROOT),
-        )
-        if status.returncode == 0:
-            return False  # nothing staged
-
-        subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=str(ROOT), check=True,
-        )
-        subprocess.run(["git", "push"], cwd=str(ROOT), check=True)
-        print(f"  Committed and pushed: {message}")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"  Git error: {e}")
-        return False
-
-
 def call_claude(report_path: Path) -> bool:
     """Call Claude Code CLI to apply the improvement plan."""
     prompt = f"""Read the analysis report at {report_path} and fix the issues described.
@@ -421,26 +391,13 @@ def run_once(
         for p in problems:
             print(f"    [{p['severity']}] {p['name']}: {p['description']}")
 
+        # Call Claude Code for HIGH/CRITICAL problems — it handles commit+push
         if call_claude_code and any(
             p["severity"] in ("HIGH", "CRITICAL") for p in problems
         ):
             call_claude(path)
     else:
         print("  No problems detected.")
-
-    # Commit only analysis files
-    severity = "OK"
-    if problems:
-        severity_order = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
-        severity = max(
-            (p["severity"] for p in problems),
-            key=lambda s: severity_order.index(s) if s in severity_order else 0,
-        )
-
-    ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    git_commit_and_push(
-        f"[auto-analyze] {ts_str} — {severity}, {len(problems)} issue(s)"
-    )
 
 
 def main() -> None:
@@ -464,7 +421,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.loop:
-        print(f"Self-improvement loop started (every {args.interval}s, analyzing {args.minutes}min)")
+        print(f"Self-improvement loop (every {args.interval}s, {args.minutes}min window)")
         while True:
             run_once(minutes=args.minutes, call_claude_code=args.claude)
             time.sleep(args.interval)
