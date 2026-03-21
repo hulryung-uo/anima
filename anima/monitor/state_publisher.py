@@ -19,6 +19,7 @@ from anima.data import mobile_display_name
 
 if TYPE_CHECKING:
     from anima.core.bus import EventBus
+    from anima.map import MapReader
     from anima.perception import Perception
 
 STATE_FILE = Path("data/state.json")
@@ -32,10 +33,12 @@ class StatePublisher:
         perception: Perception,
         blackboard: dict[str, Any],
         bus: EventBus,
+        map_reader: MapReader | None = None,
     ) -> None:
         self._p = perception
         self._bb = blackboard
         self._bus = bus
+        self._map_reader = map_reader
         self._activity: list[dict] = []
         # Collect activity events from bus
         bus.subscribe("*", self._collect_activity)
@@ -173,6 +176,74 @@ class StatePublisher:
             qv_data[name] = {"q": q, "visits": v}
         self._bus.publish("monitor.qvalues", {"values": qv_data})
 
+    def _build_minimap(self, ss: object, mobs: list) -> dict:
+        """Build a minimap grid around the player position."""
+        from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
+
+        radius = 15
+        px = getattr(ss, "x", 0)
+        py = getattr(ss, "y", 0)
+
+        if not self._map_reader:
+            return {"rows": [], "px": px, "py": py, "radius": radius}
+
+        # Build mob positions for overlay
+        mob_positions: dict[tuple[int, int], str] = {}
+        for m in mobs:
+            if getattr(m, "serial", 0) == getattr(ss, "serial", -1):
+                continue
+            mob_positions[(m.x, m.y)] = "M"
+
+        # Build world item positions (doors, etc.)
+        item_positions: dict[tuple[int, int], str] = {}
+        for it in self._p.world.items.values():
+            if it.container != 0:
+                continue
+            if abs(it.x - px) <= radius and abs(it.y - py) <= radius:
+                flags = self._map_reader._get_item_flags(it.graphic)
+                if flags & FLAG_DOOR:
+                    item_positions[(it.x, it.y)] = "+"
+
+        # Goal marker
+        move_target = self._bb.get("move_target")
+        goal_pos = None
+        if move_target:
+            goal_pos = (move_target[0], move_target[1])
+
+        rows: list[str] = []
+        for dy in range(-radius, radius + 1):
+            row = ""
+            y = py + dy
+            for dx in range(-radius, radius + 1):
+                x = px + dx
+                if dx == 0 and dy == 0:
+                    row += "@"
+                elif goal_pos and x == goal_pos[0] and y == goal_pos[1]:
+                    row += "X"
+                elif (x, y) in mob_positions:
+                    row += "M"
+                elif (x, y) in item_positions:
+                    row += "+"
+                else:
+                    tile = self._map_reader.get_tile(x, y)
+                    has_wall = any(
+                        s.flags & FLAG_IMPASSABLE for s in tile.statics
+                    )
+                    has_tree = any(
+                        s.graphic in range(0x0CCA, 0x0CCF)
+                        or s.graphic in range(0x0CD0, 0x0CD9)
+                        for s in tile.statics
+                    )
+                    if has_wall:
+                        row += "#"
+                    elif has_tree:
+                        row += "T"
+                    else:
+                        row += "."
+            rows.append(row)
+
+        return {"rows": rows, "px": px, "py": py, "radius": radius}
+
     def _dump_to_file(self) -> None:
         """Write full state snapshot to data/state.json for external TUI."""
         ss = self._p.self_state
@@ -254,6 +325,7 @@ class StatePublisher:
             "skills": {"list": skills_data[:12], "total": round(total_skill, 1)},
             "qvalues": qv,
             "activity": self._activity[-30:],
+            "minimap": self._build_minimap(ss, mobs),
         }
 
         try:

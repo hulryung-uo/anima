@@ -375,7 +375,10 @@ async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = Fal
             # State publisher — feeds monitor subscribers via EventBus
             from anima.monitor.state_publisher import StatePublisher
 
-            state_pub = StatePublisher(avatar.perception, blackboard, avatar.bus)
+            state_pub = StatePublisher(
+                avatar.perception, blackboard, avatar.bus,
+                map_reader=avatar.map_reader,
+            )
 
             game_coros: list = [
                 recv_loop(avatar.conn, avatar.pkt_handler),

@@ -206,6 +206,39 @@ def _panel_skills(skills: dict) -> Panel:
     return Panel(t, title="Skills", border_style="bright_green")
 
 
+_MAP_COLORS = {
+    "@": "bold bright_white",
+    "X": "bold bright_red",
+    "M": "bold bright_yellow",
+    "#": "grey50",
+    "T": "green",
+    "+": "bright_cyan",
+    ".": "grey23",
+}
+
+
+def _panel_minimap(minimap: dict) -> Panel:
+    t = Text()
+    rows = minimap.get("rows", [])
+    px = minimap.get("px", 0)
+    py = minimap.get("py", 0)
+
+    if not rows:
+        t.append(" No map data\n", style="grey50")
+        return Panel(t, title=f"Map ({px},{py})", border_style="bright_blue")
+
+    for row in rows:
+        for ch in row:
+            style = _MAP_COLORS.get(ch, "grey23")
+            t.append(ch, style=style)
+        t.append("\n")
+
+    # Legend
+    t.append(" @=you #=wall T=tree M=npc +=door X=goal\n", style="grey50")
+
+    return Panel(t, title=f"Map ({px},{py})", border_style="bright_blue")
+
+
 def _panel_qvalues(qv: dict) -> Panel:
     t = Text()
     for name, info in qv.items():
@@ -242,6 +275,7 @@ def build_layout(
     data: dict,
     show_inventory: bool = False,
     show_skills: bool = False,
+    show_map: bool = False,
 ) -> Layout:
     layout = Layout()
     layout.split_column(
@@ -250,10 +284,13 @@ def build_layout(
         Layout(name="footer", size=1),
     )
 
-    layout["upper"].split_row(
+    upper_panels = [
         Layout(name="status", ratio=2, minimum_size=30),
         Layout(name="activity", ratio=3, minimum_size=40),
-    )
+    ]
+    if show_map:
+        upper_panels.append(Layout(name="minimap", ratio=2, minimum_size=33))
+    layout["upper"].split_row(*upper_panels)
 
     lower_panels = [Layout(name="nearby", ratio=1)]
     lower_panels.append(Layout(name="journal", ratio=1))
@@ -267,6 +304,8 @@ def build_layout(
     status = data.get("status", {})
     layout["status"].update(_panel_status(status))
     layout["activity"].update(_panel_activity(data.get("activity", [])))
+    if show_map:
+        layout["minimap"].update(_panel_minimap(data.get("minimap", {})))
     layout["nearby"].update(_panel_nearby(data.get("nearby", [])))
     layout["journal"].update(_panel_journal(data.get("journal", [])))
     if show_inventory:
@@ -283,6 +322,8 @@ def build_layout(
     else:
         footer.append(" ● LIVE ", style="bold green")
     footer.append("  ")
+    footer.append("m", style="bold bright_yellow")
+    footer.append(" Map  ", style="grey70")
     footer.append("i", style="bold bright_yellow")
     footer.append(" Inventory  ", style="grey70")
     footer.append("s", style="bold bright_yellow")
@@ -295,9 +336,15 @@ def build_layout(
 
 
 def main() -> None:
+    import termios
+
     parser = argparse.ArgumentParser(description="Anima TUI Monitor (standalone)")
     parser.add_argument("--refresh", type=float, default=0.5, help="Refresh rate")
     args = parser.parse_args()
+
+    # Save terminal settings before anything touches them
+    fd = sys.stdin.fileno()
+    old_term = termios.tcgetattr(fd)
 
     console = Console()
     key_reader = _KeyReader()
@@ -305,37 +352,44 @@ def main() -> None:
 
     show_inventory = False
     show_skills = False
+    show_map = False
 
     # Initial empty layout
     empty = {"status": {}, "activity": [], "nearby": [], "journal": []}
 
-    with Live(
-        build_layout(empty),
-        console=console,
-        refresh_per_second=int(1 / args.refresh),
-        screen=True,
-    ) as live:
-        try:
-            while True:
-                data = read_state() or empty
+    try:
+        with Live(
+            build_layout(empty),
+            console=console,
+            refresh_per_second=int(1 / args.refresh),
+            screen=True,
+        ) as live:
+            try:
+                while True:
+                    data = read_state() or empty
 
-                # Handle keys
-                for key in key_reader.drain():
-                    if key == "q":
-                        return
-                    elif key == "i":
-                        show_inventory = not show_inventory
-                    elif key == "s":
-                        show_skills = not show_skills
+                    # Handle keys
+                    for key in key_reader.drain():
+                        if key == "q":
+                            return
+                        elif key == "m":
+                            show_map = not show_map
+                        elif key == "i":
+                            show_inventory = not show_inventory
+                        elif key == "s":
+                            show_skills = not show_skills
 
-                live.update(build_layout(
-                    data,
-                    show_inventory=show_inventory,
-                    show_skills=show_skills,
-                ))
-                time.sleep(args.refresh)
-        except KeyboardInterrupt:
-            pass
+                    live.update(build_layout(
+                        data,
+                        show_inventory=show_inventory,
+                        show_skills=show_skills,
+                        show_map=show_map,
+                    ))
+                    time.sleep(args.refresh)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
 
 
 if __name__ == "__main__":
