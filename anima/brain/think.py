@@ -224,6 +224,7 @@ async def llm_think(ctx: BrainContext) -> Status:
                 elif stuck == "wander":
                     # Briefly stuck — clear path cache and retry, keep goal
                     _clear_path_cache(ctx)
+                    ctx.walker.consecutive_denials = 0
                     return Status.SUCCESS
                 return await _step_toward(ctx, tx, ty)
             else:
