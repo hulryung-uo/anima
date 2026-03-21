@@ -176,6 +176,7 @@ class Avatar:
         from anima.skills.crafting.carpentry import CraftCarpentry
         from anima.skills.crafting.smelt import SmeltOre
         from anima.skills.crafting.tinker import CraftTinker
+        from anima.skills.forum_skill import ForumPost, ForumRead
         from anima.skills.gathering.lumber import ChopWood
         from anima.skills.gathering.make_boards import MakeBoards
         from anima.skills.gathering.mine import MineOre
@@ -187,6 +188,7 @@ class Avatar:
             HealSelf, MeleeAttack, MineOre, ChopWood, MakeBoards,
             SmeltOre, CraftTinker, CraftCarpentry,
             BuyFromNpc, SellToNpc, BankDeposit,
+            ForumPost, ForumRead,
         ]:
             skill_registry.register(skill_cls())
         logger.info("skills_registered", count=len(skill_registry.all_skills))
