@@ -514,16 +514,22 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
             )
 
         if not path:
-            # No path found — don't abandon goal, let the main loop retry
             goal = ctx.blackboard.get("current_goal")
             place = goal["place"] if goal else "unknown"
+            no_path_count = ctx.blackboard.get("_no_path_count", 0) + 1
+            ctx.blackboard["_no_path_count"] = no_path_count
             logger.info(
                 "step_toward_no_path",
-                pos=f"({sx},{sy},{sz})", target=f"({tx},{ty})", place=place,
+                pos=f"({sx},{sy},{sz})", target=f"({tx},{ty})",
+                place=place, attempt=no_path_count,
             )
+            if no_path_count >= 3 and goal:
+                _finish_goal(ctx, goal, "failure")
+                ctx.blackboard.pop("_no_path_count", None)
             return Status.SUCCESS
 
-    # Cache the path
+    # Path found — reset failure counter and cache
+    ctx.blackboard.pop("_no_path_count", None)
     ctx.blackboard["cached_path"] = path
     ctx.blackboard["cached_path_target"] = (tx, ty)
 
