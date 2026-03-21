@@ -37,6 +37,11 @@ INGOT_GRAPHICS = {0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1}
 
 BLACKSMITH_SKILL_ID = 7
 
+# Anvil item/static IDs (from DefBlacksmithy.cs CheckAnvilAndForge)
+ANVIL_IDS = {0x0FAF, 0x0FB0, 0x2DD5, 0x2DD6}
+# Forge item/static IDs
+FORGE_IDS = {0x0FB1} | set(range(0x197A, 0x19AA)) | {0x2DD8, 0xA531, 0xA535}
+
 # Gump timing
 GUMP_POLL = 0.2
 GUMP_TIMEOUT = 5.0
@@ -121,6 +126,11 @@ class CraftBlacksmith(Skill):
         skill_info = ss.skills.get(BLACKSMITH_SKILL_ID)
         if skill_info is None or skill_info.value < 0.0:
             return False
+
+        # Must be near both an anvil AND a forge (within 2 tiles)
+        if not self._has_anvil_and_forge(ctx):
+            return False
+
         return True
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
@@ -285,6 +295,38 @@ class CraftBlacksmith(Skill):
                 message=f"No server response for {target_name}",
                 duration_ms=elapsed,
             )
+
+    def _has_anvil_and_forge(self, ctx: BrainContext) -> bool:
+        """Check that both an anvil and a forge are within 2 tiles."""
+        ss = ctx.perception.self_state
+        world = ctx.perception.world
+
+        has_anvil = False
+        has_forge = False
+
+        # Check dynamic world items
+        for it in world.nearby_items(ss.x, ss.y, distance=2):
+            if it.graphic in ANVIL_IDS:
+                has_anvil = True
+            if it.graphic in FORGE_IDS:
+                has_forge = True
+            if has_anvil and has_forge:
+                return True
+
+        # Check map statics
+        if ctx.map_reader is not None:
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    tile = ctx.map_reader.get_tile(ss.x + dx, ss.y + dy)
+                    for s in tile.statics:
+                        if s.graphic in ANVIL_IDS:
+                            has_anvil = True
+                        if s.graphic in FORGE_IDS:
+                            has_forge = True
+                        if has_anvil and has_forge:
+                            return True
+
+        return False
 
     async def _wait_gump(self, ctx: BrainContext) -> GumpData | None:
         deadline = time.monotonic() + GUMP_TIMEOUT

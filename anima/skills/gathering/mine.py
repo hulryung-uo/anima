@@ -78,7 +78,7 @@ def _find_mineable_tile(
     Returns (x, y, z, graphic, is_static) or None.
     """
     ss = ctx.perception.self_state
-    sx, sy = ss.x, ss.y
+    sx, sy, sz = ss.x, ss.y, ss.z
 
     if ctx.map_reader is None:
         return None
@@ -96,13 +96,17 @@ def _find_mineable_tile(
 
             # Check statics (cave walls, rock formations)
             for s in tile.statics:
-                if s.graphic in MINEABLE_TILES:
+                if s.graphic in MINEABLE_TILES and abs(s.z - sz) <= 16:
                     best = (tx, ty, s.z, s.graphic, True)
                     best_dist = dist
                     break
 
             # Check land tile (mountain ground)
-            if best_dist > dist and tile.land.graphic in MINEABLE_TILES:
+            if (
+                best_dist > dist
+                and tile.land.graphic in MINEABLE_TILES
+                and abs(tile.land.z - sz) <= 16
+            ):
                 best = (tx, ty, tile.land.z, tile.land.graphic, False)
                 best_dist = dist
 
@@ -194,7 +198,7 @@ class MineOre(Skill):
         # Target the tile (static or land — both use target_type=1).
         # Always send the tile graphic: ServUO uses LandTarget.TileID
         # (from the graphic field) to check MountainAndCaveTiles.
-        # Sending 0 for land tiles caused mining to silently fail.
+        # Sending 0 for land tiles causes mining to silently fail.
         await ctx.conn.send_packet(build_target_response(
             target_type=1,
             cursor_id=cursor_id,

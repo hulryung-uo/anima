@@ -116,23 +116,35 @@ class SmeltOre(Skill):
         )
 
         # Double-click ore → opens target cursor
+        ss.pending_target = None
         await ctx.conn.send_packet(build_double_click(ore.serial))
-        await asyncio.sleep(0.5)
+
+        # Wait for server to send target cursor
+        for _ in range(20):
+            if ss.pending_target is not None:
+                break
+            await asyncio.sleep(0.1)
+
+        if ss.pending_target is None:
+            return SkillResult(success=False, reward=-1.0, message="No target cursor")
+
+        cursor_id = ss.pending_target.get("cursor_id", 0)
+        ss.pending_target = None
 
         # Target the forge
         if forge_dyn:
             fx, fy, fz, fserial = forge_dyn
             await ctx.conn.send_packet(build_target_response(
-                target_type=0,  # object target
-                cursor_id=0,
+                target_type=0,
+                cursor_id=cursor_id,
                 serial=fserial,
                 x=fx, y=fy, z=fz, graphic=0,
             ))
         else:
             fx, fy, fz, fgraphic = forge_sta  # type: ignore[misc]
             await ctx.conn.send_packet(build_target_response(
-                target_type=1,  # static/ground target
-                cursor_id=0,
+                target_type=1,
+                cursor_id=cursor_id,
                 x=fx, y=fy, z=fz, graphic=fgraphic,
             ))
 
