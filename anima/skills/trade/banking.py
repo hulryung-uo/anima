@@ -64,7 +64,8 @@ class BankDeposit(Skill):
         ss = ctx.perception.self_state
         if ss.gold < GOLD_THRESHOLD:
             return False
-        return bool(_find_banker(ctx))
+        # Can bank if a banker is visible OR we're near a known bank location
+        return bool(_find_banker(ctx)) or _near_bank(ss.x, ss.y)
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state
@@ -187,13 +188,14 @@ async def _wait_for_bank_box(ctx: BrainContext) -> int | None:
 
 
 def _find_banker(ctx: BrainContext) -> MobileInfo | None:
-    """Find a banker NPC nearby.
+    """Find a banker NPC within speech range (12 tiles in ServUO).
 
-    Bankers are invulnerable NPCs near known bank locations.
-    We also check the name/title for 'banker'.
+    ServUO Banker.HandlesOnSpeech checks InRange(from, 12).
+    So "bank" command works up to 12 tiles from the banker.
     """
     ss = ctx.perception.self_state
-    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=8)
+    # Search within 12 tiles — matches ServUO banker speech range
+    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
 
     candidates = []
     for m in nearby:
@@ -206,14 +208,12 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
             candidates.append(m)
 
     if not candidates:
-        # Fallback: any invulnerable NPC near a known bank location
-        # Britain bank is around (1434, 1699)
-        for m in nearby:
-            if m.serial == ss.serial:
-                continue
-            if m.notoriety == NotorietyFlag.INVULNERABLE:
-                # Check if we're near a bank
-                if _near_bank(ss.x, ss.y):
+        # Fallback: any invulnerable NPC when we're near a known bank
+        if _near_bank(ss.x, ss.y):
+            for m in nearby:
+                if m.serial == ss.serial:
+                    continue
+                if m.notoriety == NotorietyFlag.INVULNERABLE:
                     candidates.append(m)
 
     if not candidates:
@@ -223,9 +223,15 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
     return candidates[0]
 
 
+# Known bank locations: (x, y, radius)
+_BANK_LOCATIONS = [
+    (1434, 1699, 20),  # West Britain Bank
+]
+
+
 def _near_bank(x: int, y: int) -> bool:
     """Check if coordinates are near a known bank location."""
-    # Britain West Bank area
-    if abs(x - 1434) < 15 and abs(y - 1699) < 15:
-        return True
-    return False
+    return any(
+        abs(x - bx) < r and abs(y - by) < r
+        for bx, by, r in _BANK_LOCATIONS
+    )
