@@ -76,9 +76,8 @@ def stop_agent(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def run_analysis(minutes: int) -> list[dict]:
-    """Run log analysis and return problems found."""
-    # Import here to avoid loading everything at startup
+def run_analysis(minutes: int) -> tuple[list[dict], str | None]:
+    """Run log analysis. Returns (problems, report_path)."""
     from self_improve import detect_problems, generate_report, parse_recent_log, save_report
 
     ts = datetime.now().strftime("%H:%M:%S")
@@ -87,7 +86,7 @@ def run_analysis(minutes: int) -> list[dict]:
     data = parse_recent_log(minutes=minutes)
     if "error" in data:
         print(f"[supervisor] Analysis error: {data['error']}")
-        return []
+        return [], None
 
     problems = detect_problems(data)
     report = generate_report(data, problems)
@@ -108,38 +107,16 @@ def run_analysis(minutes: int) -> list[dict]:
     else:
         print("[supervisor] No problems detected.")
 
-    return problems
+    return problems, str(path)
 
 
-def run_claude_fix(minutes: int) -> bool:
-    """Run analysis, call Claude Code if needed. Returns True if code changed."""
-    from self_improve import (
-        call_claude,
-        detect_problems,
-        generate_report,
-        parse_recent_log,
-        save_report,
-    )
+def run_claude_fix(report_path: str) -> bool:
+    """Call Claude Code with the given report. Returns True if code changed."""
+    from self_improve import call_claude
 
-    data = parse_recent_log(minutes=minutes)
-    if "error" in data:
-        return False
-
-    problems = detect_problems(data)
-    if not problems:
-        return False
-
-    # Only call Claude for HIGH/CRITICAL
-    severe = [p for p in problems if p["severity"] in ("HIGH", "CRITICAL")]
-    if not severe:
-        return False
-
-    report = generate_report(data, problems)
-    path = save_report(report)
-
-    print(f"[supervisor] {len(severe)} severe problem(s) — calling Claude Code...")
+    print(f"[supervisor] Calling Claude Code with report: {report_path}")
     head_before = get_git_head()
-    success = call_claude(path)
+    success = call_claude(Path(report_path))
     head_after = get_git_head()
 
     code_changed = head_before != head_after and head_after != ""
@@ -212,16 +189,16 @@ def main() -> None:
             cycle += 1
 
             # Run analysis
-            problems = run_analysis(args.minutes)
+            problems, report_path = run_analysis(args.minutes)
 
             # If Claude mode enabled and severe problems found
-            if use_claude and problems:
+            if use_claude and problems and report_path:
                 severe = [p for p in problems if p["severity"] in ("HIGH", "CRITICAL")]
                 if severe:
                     # Stop agent before Claude modifies code
                     stop_agent(agent_proc)
 
-                    code_changed = run_claude_fix(args.minutes)
+                    code_changed = run_claude_fix(report_path)
 
                     # Restart agent (with new code if changed)
                     if code_changed:

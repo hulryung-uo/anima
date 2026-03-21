@@ -84,6 +84,8 @@ def parse_recent_log(minutes: int = 10) -> dict:
 
     recent_goals: list[str] = []
     recent_problems: list[str] = []
+    recent_server_msgs: list[str] = []
+    recent_skill_logs: list[str] = []
     positions: set[str] = set()
     total_lines = 0
     recent_lines = 0
@@ -119,6 +121,18 @@ def parse_recent_log(minutes: int = 10) -> dict:
             if "stuck" in line.lower() or "unreachable" in line:
                 recent_problems.append(line.strip()[-120:])
 
+            # Collect server messages (cliloc speech) for debugging context
+            if "speech_cliloc" in line and "text=" in line:
+                recent_server_msgs.append(line.strip()[-150:])
+
+            # Collect skill execution/result logs
+            if any(k in line for k in (
+                "skill_executing", "mine_target", "mine_fail", "mine_success",
+                "chop_target", "smelt_", "blacksmith_", "skill_problem",
+                "context_menu", "vendor_",
+            )):
+                recent_skill_logs.append(line.strip()[-150:])
+
     walk_total = counts["walk_confirmed"] + counts["walk_denied"]
     chop_total = counts["chop_success"] + counts["chop_fail"]
     skill_total = (
@@ -140,6 +154,8 @@ def parse_recent_log(minutes: int = 10) -> dict:
         "unique_deny_positions": len(positions),
         "recent_goals": recent_goals[-5:],
         "recent_problems": recent_problems[-10:],
+        "recent_server_msgs": recent_server_msgs[-15:],
+        "recent_skill_logs": recent_skill_logs[-20:],
         "walk_success_rate": counts["walk_confirmed"] / max(1, walk_total),
         "chop_success_rate": counts["chop_success"] / max(1, chop_total),
         "skill_success_rate": skill_success / max(1, skill_total),
@@ -329,6 +345,29 @@ def generate_report(data: dict, problems: list[dict]) -> str:
             lines.append(f"- `{prob}`")
         lines.append("")
 
+    if data.get("recent_server_msgs"):
+        lines.append("## Recent Server Messages")
+        lines.append("")
+        # Deduplicate — show unique messages with counts
+        msg_counts: dict[str, int] = {}
+        for msg in data["recent_server_msgs"]:
+            # Extract text= value
+            if "text=" in msg:
+                text = msg.split("text=", 1)[1].strip()
+                msg_counts[text] = msg_counts.get(text, 0) + 1
+            else:
+                msg_counts[msg] = msg_counts.get(msg, 0) + 1
+        for msg, cnt in sorted(msg_counts.items(), key=lambda x: -x[1])[:10]:
+            lines.append(f"- {msg} (x{cnt})")
+        lines.append("")
+
+    if data.get("recent_skill_logs"):
+        lines.append("## Recent Skill Logs (sample)")
+        lines.append("")
+        for entry in data["recent_skill_logs"][-10:]:
+            lines.append(f"- `{entry}`")
+        lines.append("")
+
     return "\n".join(lines) + "\n"
 
 
@@ -343,20 +382,31 @@ def save_report(report: str) -> Path:
 
 def call_claude(report_path: Path) -> bool:
     """Call Claude Code CLI to apply the improvement plan."""
-    prompt = f"""Read the analysis report at {report_path} and fix the issues described.
+    prompt = f"""You are fixing issues in the Anima UO AI agent. Read the analysis report at {report_path}.
+
+The report contains:
+- Metrics (walk/skill success rates)
+- Detected problems with severity
+- Recent server messages (cliloc text the server sent back)
+- Recent skill execution logs showing what the agent tried
+
+Use the server messages and skill logs to diagnose the ROOT CAUSE.
+For example, "Target cannot be seen" means LOS/Z-height issue,
+"You must be near an anvil" means wrong location, etc.
 
 Rules:
-- Only modify 1-2 files per fix
+- Read CLAUDE.md first for project conventions
+- Check the relevant skill code (anima/skills/) and fix the actual bug
 - Focus on the highest severity problems first
-- Run uv run pytest after changes — only commit if tests pass
-- git commit with descriptive message
-- git push after commit
-- Don't change architecture, only fix specific issues
+- Run `uv run pytest` after changes — only commit if tests pass
+- `git commit` with descriptive message, then `git push`
+- Only modify files directly related to the fix
 """
     print(f"  Calling Claude Code with report: {report_path}")
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt],
+            ["claude", "-p", prompt, "--allowedTools",
+             "Read,Write,Edit,Bash,Glob,Grep"],
             cwd=str(ROOT),
             timeout=300,
         )
