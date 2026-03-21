@@ -104,25 +104,11 @@ uv run python tools/self_improve.py --loop --claude
 ### Setup
 
 ```bash
-# Clone
 git clone https://github.com/hulryung-uo/anima.git
 cd anima
-
-# Install dependencies
 uv sync
-
-# Copy and edit config
 cp config.example.yaml config.yaml
-# Edit config.yaml with your server, account, LLM settings
-
-# Run
-uv run python -m anima
-
-# Run with TUI dashboard
-uv run python -m anima --tui
-
-# Run tests
-uv run pytest
+# Edit config.yaml — server, account, LLM settings
 ```
 
 ### Configuration
@@ -148,6 +134,71 @@ llm:
 
 map:
   resource_dir: ~/path/to/uo-client-data
+```
+
+### Running
+
+There are three ways to run Anima, depending on what you need.
+
+#### 1. Agent Only
+
+Run a single AI agent that connects to the server and plays autonomously.
+
+```bash
+uv run python -m anima
+```
+
+Options:
+- `--config path/to/config.yaml` — use a specific config file
+- `--host / --port` — override server address
+- `--user / --pass` — override account credentials
+- `--recreate` — delete existing character and create a new one
+- `--tui` — enable in-process TUI dashboard (embedded in the agent process)
+
+#### 2. Supervisor (Agent + Self-Improvement)
+
+The supervisor runs the agent as a subprocess and periodically analyzes its logs. If it detects serious problems (stuck, failing skills, etc.), it can call Claude Code to automatically fix the code, then restart the agent with the updated version.
+
+```bash
+# Full auto: agent + analysis + Claude Code fixes
+uv run python tools/supervisor.py
+
+# Analysis only, no auto-fix
+uv run python tools/supervisor.py --no-claude
+
+# Custom interval (default: 600s = 10 min)
+uv run python tools/supervisor.py --interval 300
+
+# Pass extra args to the agent subprocess
+uv run python tools/supervisor.py --agent-args --recreate
+```
+
+The supervisor cycle:
+1. Start the agent
+2. Wait for the analysis interval
+3. Analyze recent logs — detect problems (stuck, low success rate, etc.)
+4. If HIGH/CRITICAL problems found — stop agent, call Claude Code to fix
+5. Restart agent (with new code if changed)
+6. Repeat
+
+#### 3. TUI Monitor (Standalone)
+
+A separate terminal dashboard that visualizes the agent's state in real time. It reads `data/state.json` written by the running agent — no shared memory needed. Run it in a separate terminal alongside the agent or supervisor.
+
+```bash
+uv run python tools/tui.py
+```
+
+Keyboard shortcuts: `m` Map | `i` Inventory | `s` Skills | `q` Quit
+
+The agent must be running for the TUI to show live data. If the data is older than 5 seconds, the footer shows a STALE warning.
+
+### Development
+
+```bash
+uv run pytest          # run tests
+uv run ruff check      # lint
+uv run ruff format     # format
 ```
 
 ## Documentation
