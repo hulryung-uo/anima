@@ -294,6 +294,13 @@ async def brain_loop(brain: Brain) -> None:
                 pass
             break
 
+        # Request OPL for nearby NPCs that don't have properties yet
+        # (gets their name + title like "Derrick the real estate broker")
+        ss = brain.context.perception.self_state
+        for mob in brain.context.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
+            if not mob.properties and not mob.name and mob.serial != ss.serial:
+                await brain.context.conn.send_packet(build_opl_request(mob.serial))
+
         await brain.tick()
         await asyncio.sleep(0.2)  # 200ms tick
 
