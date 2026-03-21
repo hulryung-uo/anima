@@ -63,8 +63,24 @@ class BankDeposit(Skill):
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
-        if ss.gold < GOLD_THRESHOLD:
+        world = ctx.perception.world
+
+        has_gold = ss.gold >= GOLD_THRESHOLD
+
+        # Check if we have heavy depositable items when overweight
+        has_heavy_items = False
+        if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.6:
+            backpack = ss.equipment.get(0x15)
+            if backpack:
+                has_heavy_items = any(
+                    it.graphic in DEPOSIT_GRAPHICS
+                    for it in world.items.values()
+                    if it.container == backpack
+                )
+
+        if not has_gold and not has_heavy_items:
             return False
+
         # Must actually find a banker — _near_bank alone causes
         # infinite loops when banker is inside and we're outside
         if _find_banker(ctx):
@@ -272,6 +288,7 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
 # Known bank locations: (x, y, radius)
 _BANK_LOCATIONS = [
     (1427, 1683, 20),  # West Britain Bank (from ServUO spawns)
+    (2512, 556, 20),   # Minoc Bank
 ]
 
 
