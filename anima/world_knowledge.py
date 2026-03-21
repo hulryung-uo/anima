@@ -76,8 +76,7 @@ BRITAIN_LOCATIONS: list[Location] = [
 # Coordinates from ServUO spawn data and in-game exploration.
 MINOC_LOCATIONS: list[Location] = [
     # --- Banks ---
-    Location("Minoc Bank", 2498, 400, "Minoc bank. Store ingots and gold.",
-             approach_x=2499, approach_y=404),
+    Location("Minoc Bank", 2512, 556, "Minoc bank. Store ingots and gold."),
     # --- Shops ---
     Location("Minoc Blacksmith", 2450, 408, "Forge and anvil. Buy hammers and armor.",
              approach_x=2453, approach_y=411),
