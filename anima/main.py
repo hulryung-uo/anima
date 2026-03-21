@@ -300,81 +300,110 @@ async def brain_loop(brain: Brain) -> None:
 # ---------------------------------------------------------------------------
 
 
+RECONNECT_DELAY = 10.0  # seconds between reconnect attempts
+MAX_RECONNECT_DELAY = 300.0  # max backoff
+
+
 async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = False) -> None:
     from anima.core.avatar import Avatar
 
-    try:
-        avatar = await Avatar.create(cfg, delete_existing=delete_existing)
+    delay = RECONNECT_DELAY
+    first_run = True
 
-        # Build brain with behavior tree (legacy bridge via blackboard)
-        blackboard = avatar.build_blackboard()
-        brain_ctx = BrainContext(
-            perception=avatar.perception,
-            conn=avatar.conn,
-            walker=avatar.walker,
-            map_reader=avatar.map_reader,
-            cfg=avatar.cfg,
-            llm=avatar.llm,
-            memory_db=avatar.memory_db,
-            blackboard=blackboard,
-        )
-        brain = Brain(brain_ctx)
+    while True:
+        try:
+            logger.info(
+                "connecting",
+                host=cfg.server.host,
+                port=cfg.server.port,
+                reconnect=not first_run,
+            )
+            avatar = await Avatar.create(
+                cfg, delete_existing=delete_existing if first_run else False,
+            )
+            first_run = False
+            delay = RECONNECT_DELAY  # reset backoff on success
 
-        # Bridge skill_change events → activity feed
-        def _on_skill_change(topic: str, data: dict) -> None:
-            diff = data.get("diff", 0)
-            if abs(diff) >= 0.1 and avatar.feed:
-                name = data.get("name", "?")
-                val = data.get("value", 0)
-                arrow = "\u2191" if diff > 0 else "\u2193"
+            # Build brain with behavior tree (legacy bridge via blackboard)
+            blackboard = avatar.build_blackboard()
+            brain_ctx = BrainContext(
+                perception=avatar.perception,
+                conn=avatar.conn,
+                walker=avatar.walker,
+                map_reader=avatar.map_reader,
+                cfg=avatar.cfg,
+                llm=avatar.llm,
+                memory_db=avatar.memory_db,
+                blackboard=blackboard,
+            )
+            brain = Brain(brain_ctx)
+
+            # Bridge skill_change events → activity feed
+            def _on_skill_change(topic: str, data: dict) -> None:
+                diff = data.get("diff", 0)
+                if abs(diff) >= 0.1 and avatar.feed:
+                    name = data.get("name", "?")
+                    val = data.get("value", 0)
+                    arrow = "\u2191" if diff > 0 else "\u2193"
+                    avatar.feed.publish(
+                        "skill",
+                        f"{arrow} {name} → {val:.1f} ({diff:+.1f})",
+                        importance=2,
+                    )
+
+            avatar.bus.subscribe("avatar.skill_change", _on_skill_change)
+
+            if avatar.feed:
                 avatar.feed.publish(
-                    "skill",
-                    f"{arrow} {name} → {val:.1f} ({diff:+.1f})",
+                    "system",
+                    f"{avatar.name} connected to {cfg.server.host}:{cfg.server.port}",
                     importance=2,
                 )
 
-        avatar.bus.subscribe("avatar.skill_change", _on_skill_change)
+            # State publisher — feeds monitor subscribers via EventBus
+            from anima.monitor.state_publisher import StatePublisher
 
-        if avatar.feed:
-            avatar.feed.publish(
-                "system",
-                f"{avatar.name} connected to {cfg.server.host}:{cfg.server.port}",
-                importance=2,
-            )
+            state_pub = StatePublisher(avatar.perception, blackboard, avatar.bus)
 
-        # State publisher — feeds monitor subscribers via EventBus
-        from anima.monitor.state_publisher import StatePublisher
+            game_coros: list = [
+                recv_loop(avatar.conn, avatar.pkt_handler),
+                inspect_self(avatar.conn, avatar.perception),
+                brain_loop(brain),
+                state_pub.run(interval=0.5),
+            ]
 
-        state_pub = StatePublisher(avatar.perception, blackboard, avatar.bus)
+            # TUI monitor — subscribes to EventBus
+            if enable_tui:
+                from anima.monitor.tui import AnimaMonitor
 
-        game_coros: list = [
-            recv_loop(avatar.conn, avatar.pkt_handler),
-            inspect_self(avatar.conn, avatar.perception),
-            brain_loop(brain),
-            state_pub.run(interval=0.5),
-        ]
+                shutdown_event = asyncio.Event()
+                blackboard["shutdown_event"] = shutdown_event
+                monitor = AnimaMonitor(
+                    bus=avatar.bus,
+                    map_reader=avatar.map_reader,
+                    shutdown_event=shutdown_event,
+                )
+                game_coros.append(monitor.run())
 
-        # TUI monitor — subscribes to EventBus
-        if enable_tui:
-            from anima.monitor.tui import AnimaMonitor
+            try:
+                await asyncio.gather(*game_coros)
+            finally:
+                await avatar.close()
 
-            shutdown_event = asyncio.Event()
-            blackboard["shutdown_event"] = shutdown_event
-            monitor = AnimaMonitor(
-                bus=avatar.bus,
-                map_reader=avatar.map_reader,
-                shutdown_event=shutdown_event,
-            )
-            game_coros.append(monitor.run())
+            # If we get here normally (all coros finished), reconnect
+            logger.warning("session_ended", reason="all tasks finished")
 
-        try:
-            await asyncio.gather(*game_coros)
-        finally:
-            await avatar.close()
-    except ConnectionError as e:
-        logger.error("connection_error", error=str(e))
-    except KeyboardInterrupt:
-        logger.info("shutting_down")
+        except KeyboardInterrupt:
+            logger.info("shutting_down")
+            return
+        except ConnectionError as e:
+            logger.error("connection_lost", error=str(e))
+        except Exception as e:
+            logger.error("unexpected_error", error=str(e), type=type(e).__name__)
+
+        logger.info("reconnecting", delay=delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, MAX_RECONNECT_DELAY)
 
 
 def main() -> None:
