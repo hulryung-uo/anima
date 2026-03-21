@@ -271,7 +271,7 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
 
 # Known bank locations: (x, y, radius)
 _BANK_LOCATIONS = [
-    (1434, 1699, 20),  # West Britain Bank
+    (1427, 1683, 20),  # West Britain Bank (from ServUO spawns)
 ]
 
 

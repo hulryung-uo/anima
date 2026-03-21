@@ -28,33 +28,48 @@ class Location:
 
 
 # Britain city landmarks (Felucca/Trammel)
+# Coordinates from ServUO trammel.xml spawn data.
 # Locations with approach_x/y are indoor — agent stops at the outdoor approach point.
 BRITAIN_LOCATIONS: list[Location] = [
-    Location("West Britain Bank", 1434, 1699, "The famous gathering spot. Everyone comes here.",
+    # --- Banks ---
+    Location("West Britain Bank", 1427, 1683, "The famous gathering spot. Banker inside.",
              approach_x=1438, approach_y=1693),
-    Location("Britain Tavern", 1610, 1591, "The Salty Dog tavern. Good place for rumors.",
-             approach_x=1605, approach_y=1591),
-    Location("Britain Blacksmith", 1416, 1757, "Forge and anvil. Weapons and armor."),
-    Location("Britain Mage Shop", 1492, 1628, "Reagents and scrolls."),
-    Location("Britain Healer", 1454, 1699, "Healing and resurrection."),
-    Location("Britain Provisioner", 1602, 1659, "General supplies and tools."),
-    Location("Britain Armorer", 1418, 1757, "Armor and shields."),
-    Location("Britain Jeweler", 1464, 1600, "Gems and jewelry."),
-    Location("Britain Cemetery", 1386, 1538, "Spooky place. Undead at night."),
-    Location("Britain Docks", 1504, 1768, "Ships and sailors. Fishing spot."),
+    # --- Shops (from ServUO spawns) ---
+    Location("Britain Carpenter", 1430, 1597, "Carpentry shop. Sells saws and wooden tools.",
+             approach_x=1430, approach_y=1600),
+    Location("Britain Tinker", 1420, 1650, "Tinker shop. Sells tinker tools, saws, pickaxes.",
+             approach_x=1420, approach_y=1653),
+    Location("Britain Blacksmith", 1418, 1547, "Forge and anvil. Weapons and armor.",
+             approach_x=1418, approach_y=1550),
+    Location("Britain Provisioner", 1470, 1664, "General supplies and tools."),
+    Location("Britain Armorer", 1447, 1647, "Armor and shields.",
+             approach_x=1447, approach_y=1650),
+    Location("Britain Healer", 1471, 1611, "Healing and resurrection.",
+             approach_x=1471, approach_y=1614),
+    Location("Britain Mage Shop", 1484, 1545, "Reagents and scrolls.",
+             approach_x=1484, approach_y=1548),
+    Location("Britain Jeweler", 1451, 1679, "Gems and jewelry."),
+    Location("Britain Tailor", 1467, 1686, "Cloth, thread, and tailored goods."),
+    Location("Britain Bowyer", 1470, 1578, "Bows and arrows.",
+             approach_x=1470, approach_y=1581),
+    Location("Britain Baker", 1450, 1617, "Fresh bread and food.",
+             approach_x=1450, approach_y=1620),
+    Location("Britain Tanner", 1427, 1609, "Leather and hides.",
+             approach_x=1427, approach_y=1612),
+    Location("Britain Butcher", 1449, 1723, "Meat and raw food."),
+    # --- Landmarks ---
+    Location("Britain Tavern", 1620, 1585, "The Salty Dog tavern. Good place for rumors.",
+             approach_x=1620, approach_y=1588),
+    Location("Sweet Dreams Inn", 1584, 1591, "A cozy inn to rest.",
+             approach_x=1584, approach_y=1594),
     Location("Britain Castle", 1323, 1624, "Lord British's castle. Grand and imposing."),
     Location("Britain Park", 1475, 1645, "Green space in the middle of town."),
     Location("Britain Stables", 1479, 1555, "Horses and pack animals."),
-    Location("Bulletin Board", 1600, 1595, "Community messages and notices.",
-             approach_x=1601, approach_y=1596),
-    Location("Sweet Dreams Inn", 1585, 1590, "A cozy inn to rest.",
-             approach_x=1585, approach_y=1598),
+    Location("Britain Cemetery", 1386, 1538, "Spooky place. Undead at night."),
+    Location("Britain Docks", 1504, 1768, "Ships and sailors. Fishing spot."),
+    # --- Forests ---
     Location("Britain North Forest", 1620, 1554, "Dense forest north of town. Good for lumber."),
     Location("Britain East Forest", 1640, 1551, "Oak and walnut trees east of town."),
-    Location("Britain Carpenter", 1424, 1691, "Carpentry shop. Buy saws and wooden tools.",
-             approach_x=1424, approach_y=1694),
-    Location("Britain Tinker", 1458, 1696, "Tinker shop. Buy tinker tools.",
-             approach_x=1458, approach_y=1698),
 ]
 
 # Locations indexed by name for quick lookup
