@@ -673,12 +673,23 @@ def register_handlers(
     # Movement packets
     # ------------------------------------------------------------------
 
+    _dir_names = {0: "N", 1: "NE", 2: "E", 3: "SE", 4: "S", 5: "SW", 6: "W", 7: "NW"}
+
     def handle_confirm_walk(packet_id: int, data: bytes) -> None:
         """0x22 ConfirmWalk."""
         r = PacketReader(data[1:])
         seq = r.read_u8()
+        pending = walker._pending_step_tile
         walker.confirm_walk(seq)
-        logger.debug("walk_confirmed", seq=seq)
+        ss = p.self_state
+        if pending:
+            logger.debug(
+                "walk_confirmed", seq=seq,
+                pos=f"({ss.x},{ss.y},{ss.z})",
+                dir=_dir_names.get(ss.direction, "?"),
+            )
+        else:
+            logger.debug("walk_turn_confirmed", seq=seq, dir=_dir_names.get(ss.direction, "?"))
 
     handler.register(0x22, handle_confirm_walk)
 
@@ -690,8 +701,15 @@ def register_handlers(
         y = r.read_u16()
         direction = r.read_u8() & 0x07
         z = r.read_i8()
+        denied_tile = walker._pending_step_tile
         walker.deny_walk(seq, x, y, z, direction)
-        logger.info("walk_denied", seq=seq, pos=f"({x},{y},{z})")
+        logger.info(
+            "walk_denied", seq=seq,
+            pos=f"({x},{y},{z})",
+            dir=_dir_names.get(direction, "?"),
+            blocked=f"({denied_tile[0]},{denied_tile[1]})" if denied_tile else "turn",
+            denials=walker.consecutive_denials,
+        )
 
     handler.register(0x21, handle_deny_walk)
 

@@ -17,24 +17,68 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+_DIR_NAMES = {
+    0: "N", 1: "NE", 2: "E", 3: "SE", 4: "S", 5: "SW", 6: "W", 7: "NW",
+}
+
 
 async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
     """Pathfind and walk step-by-step to (target_x, target_y).
 
     Returns True if destination reached (within 1 tile), False if failed.
-    Sends walk packets and waits for confirmation, with retry on deny.
+    Calculates a path once, follows it step by step. On denial,
+    records the blocked tile and recalculates a new route around it.
     """
     ss = ctx.perception.self_state
-    max_attempts = 30  # max walk steps before giving up
-    attempts = 0
+    max_steps = 50
+    max_recalc = 5  # max path recalculations before giving up
+    step_delay = ctx.cfg.movement.walk_delay_ms / 1000.0
 
-    while attempts < max_attempts and ctx.conn.connected:
+    dist = max(abs(target_x - ss.x), abs(target_y - ss.y))
+    logger.info(
+        "go_to_start",
+        pos=f"({ss.x},{ss.y},{ss.z})",
+        target=f"({target_x},{target_y})",
+        dist=dist,
+    )
+
+    steps_taken = 0
+    recalcs = 0
+    path: list[tuple[int, int]] = []
+
+    while steps_taken < max_steps and ctx.conn.connected:
         sx, sy = ss.x, ss.y
-        dist = max(abs(target_x - sx), abs(target_y - sy))
-        if dist <= 1:
+        remaining = max(abs(target_x - sx), abs(target_y - sy))
+        if remaining <= 1:
+            logger.info("go_to_arrived", pos=f"({sx},{sy})", steps=steps_taken)
             return True
 
-        # Wait until we can walk
+        # Calculate path if we don't have one
+        if not path:
+            if recalcs >= max_recalc:
+                logger.info(
+                    "go_to_give_up", pos=f"({sx},{sy})",
+                    target=f"({target_x},{target_y})", recalcs=recalcs,
+                )
+                return False
+            denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
+            path = find_path(
+                ctx.map_reader, sx, sy, target_x, target_y,
+                denied_tiles=denied, current_z=ss.z,
+            )
+            recalcs += 1
+            if not path:
+                logger.info(
+                    "go_to_no_path", pos=f"({sx},{sy},{ss.z})",
+                    target=f"({target_x},{target_y})", recalc=recalcs,
+                )
+                return False
+            logger.debug(
+                "go_to_path_found", pos=f"({sx},{sy})",
+                path_len=len(path), recalc=recalcs,
+            )
+
+        # Wait until walker is ready
         for _ in range(20):
             if ctx.walker.can_walk():
                 break
@@ -42,34 +86,54 @@ async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
         else:
             return False
 
-        # Pathfind
-        denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
-        sz = ss.z
-        path = find_path(
-            ctx.map_reader, sx, sy, target_x, target_y,
-            denied_tiles=denied, current_z=sz,
-        )
-        if not path:
-            return False
-
-        # Send walk packet for first step
+        # Take next step from path
         next_x, next_y = path[0]
+
+        # If we're already past this waypoint (e.g. position changed), skip it
+        if (next_x, next_y) == (sx, sy):
+            path.pop(0)
+            continue
+
         direction = direction_to(sx, sy, next_x, next_y)
+        dir_name = _DIR_NAMES.get(direction, "?")
+
+        # Remember position before step to detect success/failure
+        prev_x, prev_y = sx, sy
 
         ctx.walker._pending_step_tile = (next_x, next_y)
         seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
-        pkt = build_walk_request(direction, seq, fastwalk)
-        await ctx.conn.send_packet(pkt)
+        await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
         ctx.walker.steps_count += 1
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
         )
-        attempts += 1
+        steps_taken += 1
 
-        # Wait for server to confirm/deny
-        await asyncio.sleep(ctx.cfg.movement.walk_delay_ms / 1000.0 + 0.05)
+        logger.debug(
+            "go_to_step",
+            pos=f"({sx},{sy})", next=f"({next_x},{next_y})",
+            dir=dir_name, seq=seq, step=steps_taken, remaining=remaining,
+        )
 
+        # Wait for server response
+        await asyncio.sleep(step_delay + 0.05)
+
+        # Check if we moved
+        if ss.x != prev_x or ss.y != prev_y:
+            path.pop(0)
+        else:
+            logger.info(
+                "go_to_denied",
+                pos=f"({sx},{sy})", blocked=f"({next_x},{next_y})",
+                dir=dir_name, recalc=recalcs,
+            )
+            path = []  # force recalculation on next iteration
+
+    logger.info(
+        "go_to_max_steps", pos=f"({ss.x},{ss.y})",
+        target=f"({target_x},{target_y})", steps=steps_taken,
+    )
     return max(abs(target_x - ss.x), abs(target_y - ss.y)) <= 1
 
 
@@ -202,22 +266,30 @@ async def wander_action(ctx: BrainContext) -> Status:
     nx, ny = sx + dx, sy + dy
     current_dir = ctx.perception.self_state.direction
 
-    # UO: if direction differs, first packet turns only (no move).
-    # Need to send turn first, then step in same direction.
+    dir_name = _DIR_NAMES.get(direction, "?")
+
+    # UO: if direction differs, first walk packet turns only (no move).
+    # Send turn immediately, then send the actual step right after.
     if current_dir != direction:
-        # Send turn packet
+        old_dir_name = _DIR_NAMES.get(current_dir, "?")
+        logger.debug(
+            "wander_turn",
+            pos=f"({sx},{sy})", from_dir=old_dir_name, to_dir=dir_name,
+        )
         seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
         pkt = build_walk_request(direction, seq, fastwalk)
         await ctx.conn.send_packet(pkt)
         ctx.walker.steps_count += 1
-        ctx.walker.last_step_time = (
-            asyncio.get_event_loop().time() * 1000 + 100  # turn is fast
-        )
         ctx.perception.self_state.direction = direction
-        return Status.SUCCESS  # Next tick will send the actual step
+        # Brief pause for server to process the turn
+        await asyncio.sleep(0.1)
 
-    # Direction already matches — send actual move
+    # Send actual move step
+    logger.debug(
+        "wander_step",
+        pos=f"({sx},{sy})", next=f"({nx},{ny})", dir=dir_name,
+    )
     ctx.walker._pending_step_tile = (nx, ny)
     seq = ctx.walker.next_sequence()
     fastwalk = ctx.walker.pop_fast_walk_key()

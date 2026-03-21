@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.action.movement import wander_action
+# wander_action disabled — agent stays still instead of random walking
 from anima.brain.prompt import build_system_prompt
 from anima.client.packets import build_double_click, build_unicode_speech, build_walk_request
 from anima.data import item_name
@@ -135,7 +135,7 @@ async def llm_think(ctx: BrainContext) -> Status:
     from anima.brain.behavior_tree import Status
 
     if ctx.llm is None:
-        return await wander_action(ctx)
+        return Status.SUCCESS
 
     now = time.time()
     last_think = ctx.blackboard.get("last_think_time", 0.0)
@@ -259,7 +259,7 @@ async def llm_think(ctx: BrainContext) -> Status:
                     target=f"({tx},{ty})",
                     denials=ctx.walker.consecutive_denials,
                 )
-                return await wander_action(ctx)
+                return Status.SUCCESS
             return await _step_toward(ctx, tx, ty)
         else:
             return Status.RUNNING
@@ -269,7 +269,7 @@ async def llm_think(ctx: BrainContext) -> Status:
         if ctx.blackboard.get("current_goal") and not ctx.blackboard.get("move_target"):
             ctx.blackboard.pop("current_goal", None)
         if ctx.blackboard.get("current_goal") is None:
-            return await wander_action(ctx)
+            return Status.SUCCESS
         return Status.SUCCESS
 
     # If skills are succeeding, extend cooldown — no need to rethink
@@ -300,7 +300,7 @@ async def llm_think(ctx: BrainContext) -> Status:
         [{"role": "system", "content": system}, {"role": "user", "content": user_msg}]
     )
     if not result.text:
-        return await wander_action(ctx)
+        return Status.SUCCESS
 
     # Record LLM thinking to journal (if model supports extended thinking)
     if result.thinking:
@@ -318,7 +318,7 @@ async def llm_think(ctx: BrainContext) -> Status:
     action = _parse_action(result.text)
     if action is None:
         logger.warning("think_parse_failed", raw=result.text[:100])
-        return await wander_action(ctx)
+        return Status.SUCCESS
 
     act = action.get("action", "explore")
     reason = action.get("reason", "")
@@ -376,7 +376,7 @@ async def llm_think(ctx: BrainContext) -> Status:
                 get_reward("goal_failed"),
                 summary=f"Unknown place: {place_name}",
             )
-            return await wander_action(ctx)
+            return Status.SUCCESS
 
     elif act == "speak":
         await _record_episode(ctx, "speak", say[:50], "success", 0.0)
@@ -388,7 +388,7 @@ async def llm_think(ctx: BrainContext) -> Status:
     else:
         # explore
         await _record_episode(ctx, "explore", "", "success", 0.0)
-        return await wander_action(ctx)
+        return Status.SUCCESS
 
 
 # ------------------------------------------------------------------
@@ -507,7 +507,7 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
         return Status.RUNNING
 
     if ctx.map_reader is None:
-        return await wander_action(ctx)
+        return Status.SUCCESS
 
     # Invalidate path cache if walker was denied
     if ctx.walker._path_dirty:
@@ -554,7 +554,7 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
                 get_reward("goal_failed"),
                 summary=f"No path to {place}",
             )
-            return await wander_action(ctx)
+            return Status.SUCCESS
 
     # Cache the path
     ctx.blackboard["cached_path"] = path

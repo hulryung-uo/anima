@@ -101,11 +101,10 @@ class TileInfo:
         max_step = 16  # DEFAULT_BLOCK_HEIGHT from ClassicUO
         char_height = 16  # DEFAULT_CHARACTER_HEIGHT
 
-        if self.land.impassable:
-            return False, current_z
-
-        # Start with land as the best standing surface
-        best_z = self.land.z
+        # Start with land as the best standing surface (if walkable)
+        land_ok = not self.land.impassable
+        best_z = self.land.z if land_ok else current_z
+        has_surface = land_ok  # track whether we found any walkable surface
 
         for s in self.statics:
             standing_z = s.z + (s.height // 2 if s.flags & FLAG_BRIDGE else s.height)
@@ -117,11 +116,14 @@ class TileInfo:
                 if top_z > current_z and s.z < current_z + char_height:
                     return False, current_z
             elif s.surface:
-                # Only consider surfaces reachable by stepping (within max_step)
+                # Static surface (e.g. cave floor) — walkable even if land is void
                 if abs(standing_z - current_z) <= max_step:
-                    # Prefer the surface closest to our current Z
-                    if abs(standing_z - current_z) < abs(best_z - current_z):
+                    if not has_surface or abs(standing_z - current_z) < abs(best_z - current_z):
                         best_z = standing_z
+                        has_surface = True
+
+        if not has_surface:
+            return False, current_z
 
         # Final check: can we step from current_z to best_z?
         if abs(best_z - current_z) > max_step:
