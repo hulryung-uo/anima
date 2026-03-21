@@ -32,10 +32,13 @@ FORGE_ITEM_IDS = {4017} | set(range(6522, 6570)) | {0x2DD8, 0xA531, 0xA535}
 FORGE_STATIC_IDS = FORGE_ITEM_IDS
 
 
+_FORGE_SEARCH_RANGE = 12
+
+
 def _find_forge_dynamic(ctx: "BrainContext") -> tuple[int, int, int, int] | None:
     """Find a forge from dynamic world items. Returns (x, y, z, serial)."""
     ss = ctx.perception.self_state
-    for it in ctx.perception.world.nearby_items(ss.x, ss.y, distance=2):
+    for it in ctx.perception.world.nearby_items(ss.x, ss.y, distance=_FORGE_SEARCH_RANGE):
         if it.graphic in FORGE_ITEM_IDS:
             return (it.x, it.y, it.z, it.serial)
     return None
@@ -46,8 +49,8 @@ def _find_forge_static(ctx: "BrainContext") -> tuple[int, int, int, int] | None:
     if ctx.map_reader is None:
         return None
     ss = ctx.perception.self_state
-    for dy in range(-2, 3):
-        for dx in range(-2, 3):
+    for dy in range(-_FORGE_SEARCH_RANGE, _FORGE_SEARCH_RANGE + 1):
+        for dx in range(-_FORGE_SEARCH_RANGE, _FORGE_SEARCH_RANGE + 1):
             tx, ty = ss.x + dx, ss.y + dy
             tile = ctx.map_reader.get_tile(tx, ty)
             for s in tile.statics:
@@ -102,12 +105,27 @@ class SmeltOre(Skill):
         if not ore:
             return SkillResult(success=False, reward=-1.0, message="No ore")
 
-        # Find forge
+        # Find forge — must be within 1 tile for LOS
         forge_dyn = _find_forge_dynamic(ctx)
         forge_sta = _find_forge_static(ctx)
 
         if not forge_dyn and not forge_sta:
             return SkillResult(success=False, reward=-1.0, message="No forge nearby")
+
+        # Walk to forge if too far (need to be within 1 tile)
+        if forge_dyn:
+            fx, fy = forge_dyn[0], forge_dyn[1]
+        else:
+            fx, fy = forge_sta[0], forge_sta[1]  # type: ignore[index]
+        dist = max(abs(fx - ss.x), abs(fy - ss.y))
+        if dist > 1:
+            from anima.action.movement import go_to
+            logger.info("smelt_walking_to_forge", pos=f"({fx},{fy})", dist=dist)
+            await go_to(ctx, fx, fy)
+            return SkillResult(
+                success=False, reward=0.0,
+                message=f"Walking to forge ({fx},{fy})",
+            )
 
         # Count ingots before
         ingots_before = sum(

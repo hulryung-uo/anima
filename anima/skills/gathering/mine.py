@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.client.packets import build_double_click, build_target_response
+from anima.client.packets import (
+    build_double_click,
+    build_drop_item,
+    build_pick_up,
+    build_target_response,
+)
 from anima.skills.base import Skill, SkillResult
 
 if TYPE_CHECKING:
@@ -27,6 +32,8 @@ ORE_GRAPHICS = {0x19B7, 0x19B8, 0x19B9, 0x19BA}
 MINING_SKILL_ID = 45
 
 SEARCH_RADIUS = 2  # mining range is 2 tiles
+DEPLETED_COOLDOWN = 120.0  # seconds before retrying a depleted spot
+MOVE_RADIUS = 8  # how far to look for new mining spots
 
 # From ServUO Mining.cs m_MountainAndCaveTiles
 # Land tiles use raw graphic IDs. Static tiles are checked as (graphic | 0x4000)
@@ -86,9 +93,10 @@ MINEABLE_TILES: set[int] = MINEABLE_LAND_TILES | MINEABLE_STATIC_TILES
 def _find_mineable_tile(
     ctx: BrainContext,
 ) -> tuple[int, int, int, int, bool] | None:
-    """Find a mineable tile within SEARCH_RADIUS.
+    """Find a mineable tile, skipping depleted spots.
 
-    Checks map statics first, then land tiles.
+    Checks within SEARCH_RADIUS first. If nothing found, searches
+    up to MOVE_RADIUS for tiles the player can walk to.
     Returns (x, y, z, graphic, is_static) or None.
     """
     ss = ctx.perception.self_state
@@ -97,50 +105,58 @@ def _find_mineable_tile(
     if ctx.map_reader is None:
         return None
 
-    # Prefer mining at feet (distance 0).
-    # Check statics first (cave floors) — they're at player's z level.
-    # Land tiles may be at surface z (unreachable from cave).
-    tile_here = ctx.map_reader.get_tile(sx, sy)
-    for s in tile_here.statics:
-        if s.graphic in MINEABLE_STATIC_TILES and abs(s.z - sz) <= 16:
-            return (sx, sy, s.z, s.graphic, True)
+    depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+        "depleted_mines", {}
+    )
+    now = time.time()
 
-    # Then check land tile — only if z is close to player
-    if (tile_here.land.graphic in MINEABLE_LAND_TILES
-            and abs(tile_here.land.z - sz) <= 16):
-        return (sx, sy, tile_here.land.z, tile_here.land.graphic, False)
+    def _is_depleted(x: int, y: int) -> bool:
+        ts = depleted.get((x, y))
+        if ts and now - ts < DEPLETED_COOLDOWN:
+            return True
+        if ts:
+            del depleted[(x, y)]
+        return False
 
-    # Search nearby tiles within range
-    best = None
-    best_dist = SEARCH_RADIUS + 1
+    def _check_tile(x: int, y: int) -> tuple[int, int, int, int, bool] | None:
+        if _is_depleted(x, y):
+            return None
+        tile = ctx.map_reader.get_tile(x, y)
+        for s in tile.statics:
+            if s.graphic in MINEABLE_STATIC_TILES and abs(s.z - sz) <= 16:
+                return (x, y, s.z, s.graphic, True)
+        if (tile.land.graphic in MINEABLE_LAND_TILES
+                and abs(tile.land.z - sz) <= 16):
+            return (x, y, tile.land.z, tile.land.graphic, False)
+        return None
 
-    for dy in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
-        for dx in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
-            if dx == 0 and dy == 0:
-                continue  # already checked
-            dist = max(abs(dx), abs(dy))
-            if dist >= best_dist:
-                continue
-            tx, ty = sx + dx, sy + dy
-            tile = ctx.map_reader.get_tile(tx, ty)
+    # Check at feet first
+    result = _check_tile(sx, sy)
+    if result:
+        return result
 
-            # Check statics (cave walls/floors) — preferred
-            for s in tile.statics:
-                if s.graphic in MINEABLE_STATIC_TILES and abs(s.z - sz) <= 16:
-                    best = (tx, ty, s.z, s.graphic, True)
-                    best_dist = dist
-                    break
+    # Search nearby within mining range
+    for dist in range(1, SEARCH_RADIUS + 1):
+        for dy in range(-dist, dist + 1):
+            for dx in range(-dist, dist + 1):
+                if max(abs(dx), abs(dy)) != dist:
+                    continue
+                result = _check_tile(sx + dx, sy + dy)
+                if result:
+                    return result
 
-            # Check land tile (mountain ground)
-            if (
-                best_dist > dist
-                and tile.land.graphic in MINEABLE_LAND_TILES
-                and abs(tile.land.z - sz) <= 16
-            ):
-                best = (tx, ty, tile.land.z, tile.land.graphic, False)
-                best_dist = dist
+    # Nothing nearby — search wider for walkable mining spots
+    for dist in range(SEARCH_RADIUS + 1, MOVE_RADIUS + 1):
+        for dy in range(-dist, dist + 1):
+            for dx in range(-dist, dist + 1):
+                if max(abs(dx), abs(dy)) != dist:
+                    continue
+                tx, ty = sx + dx, sy + dy
+                result = _check_tile(tx, ty)
+                if result:
+                    return result
 
-    return best
+    return None
 
 
 class MineOre(Skill):
@@ -197,6 +213,19 @@ class MineOre(Skill):
             return SkillResult(success=False, reward=-1.0, message="No mineable tiles")
 
         tx, ty, tz, graphic, is_static = target
+
+        # If target is beyond mining range, walk there first
+        dist = max(abs(tx - ss.x), abs(ty - ss.y))
+        if dist > SEARCH_RADIUS:
+            from anima.action.movement import go_to
+            logger.info("mine_walking_to", pos=f"({tx},{ty})", dist=dist)
+            await go_to(ctx, tx, ty)
+            # Re-check after walking
+            return SkillResult(
+                success=False, reward=0.0,
+                message=f"Walking to mining spot ({tx},{ty})",
+            )
+
         logger.info(
             "mine_target_found",
             pos=f"({tx},{ty},{tz})", graphic=f"0x{graphic:04X}",
@@ -252,6 +281,25 @@ class MineOre(Skill):
         ore_gained = ore_after - ore_before
 
         if ore_gained > 0:
+            # Reset fail counter on success
+            ctx.blackboard.pop("_mine_consec_fail", None)
+
+            # Drop ore on the ground at feet — stacks with existing ore
+            for item in world.items.values():
+                if item.container == backpack and item.graphic in ORE_GRAPHICS:
+                    await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+                    await asyncio.sleep(0.3)
+                    # Drop at player's feet — server auto-stacks same type
+                    await ctx.conn.send_packet(
+                        build_drop_item(item.serial, ss.x, ss.y, ss.z)
+                    )
+                    await asyncio.sleep(0.3)
+                    logger.info(
+                        "mine_ore_dropped",
+                        amount=item.amount, pos=f"({ss.x},{ss.y})",
+                    )
+                    break
+
             reward = 5.0 + ore_gained
             logger.info("mine_success", ore=ore_gained, pos=f"({tx},{ty})")
             return SkillResult(
@@ -262,7 +310,19 @@ class MineOre(Skill):
                 duration_ms=elapsed,
             )
         else:
-            logger.info("mine_fail", pos=f"({tx},{ty})")
+            # Track consecutive failures at this spot
+            fails = ctx.blackboard.get("_mine_consec_fail", 0) + 1
+            ctx.blackboard["_mine_consec_fail"] = fails
+            if fails >= 3:
+                # Mark this tile as depleted — move on
+                depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+                    "depleted_mines", {}
+                )
+                depleted[(tx, ty)] = time.time()
+                ctx.blackboard["_mine_consec_fail"] = 0
+                logger.info("mine_depleted", pos=f"({tx},{ty})", fails=fails)
+            else:
+                logger.info("mine_fail", pos=f"({tx},{ty})", fails=fails)
             return SkillResult(
                 success=False,
                 reward=-0.5,
