@@ -171,6 +171,17 @@ async def llm_think(ctx: BrainContext) -> Status:
             )
             ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + 2.0
         elif ctx.walker.can_walk():
+            # Before stuck check: see if denied tiles have doors we can open
+            for dx, dy in list(ctx.walker.denied_tiles.keys())[:10]:
+                door = _find_door_at(ctx, dx, dy)
+                if door is not None:
+                    logger.info("opening_door_on_deny", pos=f"({dx},{dy})")
+                    await ctx.conn.send_packet(build_double_click(door))
+                    ctx.walker.clear_denied_tile(dx, dy)
+                    _clear_path_cache(ctx)
+                    await asyncio.sleep(0.5)
+                    break
+
             # Check if we're stuck
             stuck = ctx.walker.check_stuck((tx, ty))
             if stuck == "cooldown":
@@ -436,16 +447,24 @@ def _scan_building_walls(ctx: BrainContext, radius: int = 20) -> set[tuple[int, 
 # ------------------------------------------------------------------
 
 def _find_door_at(ctx: BrainContext, x: int, y: int) -> int | None:
-    """Find a closed door world item at (x, y). Returns serial or None."""
+    """Find a door world item at or adjacent to (x, y). Returns serial or None.
+
+    Doors are dynamic world items created by the server (not map statics).
+    They have FLAG_DOOR in their tiledata flags.
+    """
     if ctx.map_reader is None:
         return None
+
     for it in ctx.perception.world.items.values():
         if it.container != 0:
             continue
-        if it.x == x and it.y == y:
+        # Check at exact position or 1 tile adjacent (doors are sometimes
+        # at slightly different coords than the blocking tile)
+        if abs(it.x - x) <= 1 and abs(it.y - y) <= 1:
             flags = ctx.map_reader._get_item_flags(it.graphic)
             if flags & FLAG_DOOR:
                 return it.serial
+
     return None
 
 
@@ -532,9 +551,11 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
         # Check for doors at the next tile
         door_serial = _find_door_at(ctx, next_x, next_y)
         if door_serial is not None:
+            logger.debug("opening_door", serial=f"0x{door_serial:08X}", pos=f"({next_x},{next_y})")
             await ctx.conn.send_packet(build_double_click(door_serial))
             ctx.walker.clear_denied_tile(next_x, next_y)
-            break
+            await asyncio.sleep(0.5)  # wait for door to open
+            continue  # try stepping through now
 
         is_turn = (current_dir != direction)
 
