@@ -1008,14 +1008,15 @@ def register_handlers(
     _original_general_info = handler._handlers.get(0xBF)
 
     def handle_general_info_extended(packet_id: int, data: bytes) -> None:
-        """0xBF GeneralInfo — extended to handle CloseGump sub-command."""
+        """0xBF GeneralInfo — extended to handle CloseGump and ContextMenu."""
         if _original_general_info:
             _original_general_info(packet_id, data)
 
-        if len(data) < 13:
+        if len(data) < 5:
             return
         subcmd = struct.unpack(">H", data[3:5])[0]
-        if subcmd == 0x04:
+
+        if subcmd == 0x04 and len(data) >= 13:
             # CloseGump: subcmd(2) + gump_id(4) + button_id(4)
             gump_id = struct.unpack(">I", data[5:9])[0]
             button_id = struct.unpack(">I", data[9:13])[0]
@@ -1030,6 +1031,35 @@ def register_handlers(
                     gump_id=f"0x{gump_id:08X}",
                     button_id=button_id,
                 )
+
+        elif subcmd == 0x14 and len(data) >= 12:
+            # DisplayContextMenu: subcmd(2) + unk(2) + serial(4) + count(1)
+            # Per entry: cliloc(4) + index(2) + flags(2) = 8 bytes each
+            from anima.perception.self_state import ContextMenuEntry as CMEntry
+
+            raw = data[5:]
+            # unk(2) + serial(4) + count(1)
+            serial = struct.unpack(">I", raw[2:6])[0]
+            count = raw[6]
+            entry_offset = 7
+            entries: list[CMEntry] = []
+            for i in range(count):
+                off = entry_offset + i * 8
+                if off + 8 > len(raw):
+                    break
+                cliloc = struct.unpack(">I", raw[off : off + 4])[0]
+                index = struct.unpack(">H", raw[off + 4 : off + 6])[0]
+                flags = struct.unpack(">H", raw[off + 6 : off + 8])[0]
+                entries.append(CMEntry(cliloc=cliloc, index=index, flags=flags))
+
+            p.self_state.context_menu_serial = serial
+            p.self_state.context_menu = entries
+            logger.debug(
+                "context_menu_received",
+                serial=f"0x{serial:08X}",
+                count=len(entries),
+                entries=[(e.cliloc, e.index) for e in entries],
+            )
 
     handler.register(0xBF, handle_general_info_extended)
 

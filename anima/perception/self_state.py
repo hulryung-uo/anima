@@ -42,6 +42,15 @@ class VendorSellItem:
     name: str
 
 
+@dataclass
+class ContextMenuEntry:
+    """A single entry from a context menu (0xBF sub 0x14)."""
+
+    cliloc: int
+    index: int
+    flags: int
+
+
 class SelfState:
     """Player's own character state — stats, skills, equipment."""
 
@@ -107,6 +116,10 @@ class SelfState:
         self.vendor_serial: int = 0
         self.vendor_buy_list: list[VendorBuyItem] = []
         self.vendor_sell_list: list[VendorSellItem] = []
+
+        # Context menu state (populated by 0xBF sub 0x14)
+        self.context_menu_serial: int = 0
+        self.context_menu: list[ContextMenuEntry] = []
 
     @property
     def hp_percent(self) -> float:

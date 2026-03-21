@@ -648,6 +648,35 @@ def build_skill_lock(skill_id: int, lock_state: int) -> bytes:
     return bytes(data)
 
 
+def build_context_menu_request(serial: int) -> bytes:
+    """Build ContextMenuRequest packet (0xBF subcommand 0x13, variable)."""
+    w = PacketWriter()
+    w.write_u8(0xBF)
+    w.write_u16(0)  # length placeholder
+    w.write_u16(0x0013)
+    w.write_u32(serial)
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
+
+
+def build_context_menu_selection(serial: int, index: int) -> bytes:
+    """Build ContextMenuResponse packet (0xBF subcommand 0x15, variable)."""
+    w = PacketWriter()
+    w.write_u8(0xBF)
+    w.write_u16(0)  # length placeholder
+    w.write_u16(0x0015)
+    w.write_u32(serial)
+    w.write_u16(index)
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
+
+
 def build_stat_lock(stat_index: int, lock_state: int) -> bytes:
     """Build StatLock packet (0xBF subcommand 0x1A, variable).
 
