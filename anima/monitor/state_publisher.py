@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from anima.data import mobile_display_name
+
 if TYPE_CHECKING:
     from anima.core.bus import EventBus
     from anima.perception import Perception
@@ -96,7 +98,7 @@ class StatePublisher:
         mobs.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
         mob_data = []
         for mob in mobs[:8]:
-            name = (mob.name or f"0x{mob.body:04X}")[:18]
+            name = mobile_display_name(mob)[:18]
             nv = mob.notoriety.value if mob.notoriety else 1
             mob_data.append({
                 "name": name,
@@ -233,7 +235,7 @@ class StatePublisher:
             },
             "nearby": [
                 {
-                    "name": (m.name or f"0x{m.body:04X}")[:18],
+                    "name": mobile_display_name(m)[:18],
                     "x": m.x, "y": m.y,
                     "dx": m.x - ss.x, "dy": m.y - ss.y,
                     "notoriety": m.notoriety.value if m.notoriety else 1,

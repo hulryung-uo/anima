@@ -22,7 +22,7 @@ from anima.client.packets import (
     build_unicode_speech,
 )
 from anima.config import Config, load_config
-from anima.data import item_name
+from anima.data import item_name, mobile_display_name
 from anima.perception import Perception
 from anima.perception.enums import Layer
 
@@ -161,9 +161,12 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
     else:
         logger.info("backpack_not_found")
 
-    # --- Request OPL for all known entities ---
+    # --- Request OPL for all known entities + nearby mobiles ---
     sx, sy = ss.x, ss.y
-    opl_serials = list(perception.world.opl_revisions.keys())
+    opl_serials = set(perception.world.opl_revisions.keys())
+    # Also request OPL for nearby mobiles (to get NPC titles)
+    for mob in perception.world.nearby_mobiles(sx, sy, distance=18):
+        opl_serials.add(mob.serial)
     for s in opl_serials:
         await conn.send_packet(build_opl_request(s))
     if opl_serials:
@@ -178,7 +181,7 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
             props = ", ".join(mob.properties[1:]) if len(mob.properties) > 1 else ""
             logger.info(
                 "nearby_mobile",
-                name=mob.name or f"body=0x{mob.body:04X}",
+                name=mobile_display_name(mob),
                 serial=f"0x{mob.serial:08X}",
                 pos=f"({mob.x},{mob.y},{mob.z})",
                 dist=f"({dx:+d},{dy:+d})",

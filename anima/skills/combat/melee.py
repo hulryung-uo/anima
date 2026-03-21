@@ -74,7 +74,8 @@ class MeleeAttack(Skill):
             )
 
         target_serial = target.serial
-        target_name = target.name or f"creature (0x{target.body:04X})"
+        from anima.data import body_name
+        target_name = target.name or body_name(target.body)
 
         # Enter war mode
         await ctx.conn.send_packet(build_war_mode(True))
