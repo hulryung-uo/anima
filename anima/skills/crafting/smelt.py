@@ -1,4 +1,8 @@
-"""Smelting skill — convert ore into ingots at a forge."""
+"""Smelting skill — convert ore into ingots at a forge.
+
+Flow: double-click ore → target forge (static or dynamic item).
+ServUO forge IDs: 4017, 6522-6569, 0x2DD8, 0xA531, 0xA535.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.client.packets import build_double_click
+from anima.client.packets import build_double_click, build_target_response
 from anima.skills.base import Skill, SkillResult
 
 if TYPE_CHECKING:
@@ -18,8 +22,38 @@ logger = structlog.get_logger()
 
 ORE_GRAPHICS = {0x19B7, 0x19B8, 0x19B9, 0x19BA}
 INGOT_GRAPHICS = {0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1}
-FORGE_GRAPHICS = {0x0FB1, 0x197A, 0x197E, 0x19A9, 0x0DE3, 0x0DE6}
 MINING_SKILL_ID = 45
+
+# Forge item IDs (from DefBlacksmithy.cs CheckAnvilAndForge)
+FORGE_ITEM_IDS = {4017} | set(range(6522, 6570)) | {0x2DD8, 0xA531, 0xA535}
+
+# Forge static tile IDs (statics use graphic | 0x4000 internally,
+# but map reader returns raw graphic without the flag)
+FORGE_STATIC_IDS = FORGE_ITEM_IDS
+
+
+def _find_forge_dynamic(ctx: "BrainContext") -> tuple[int, int, int, int] | None:
+    """Find a forge from dynamic world items. Returns (x, y, z, serial)."""
+    ss = ctx.perception.self_state
+    for it in ctx.perception.world.nearby_items(ss.x, ss.y, distance=2):
+        if it.graphic in FORGE_ITEM_IDS:
+            return (it.x, it.y, it.z, it.serial)
+    return None
+
+
+def _find_forge_static(ctx: "BrainContext") -> tuple[int, int, int, int] | None:
+    """Find a forge from map statics. Returns (x, y, z, graphic)."""
+    if ctx.map_reader is None:
+        return None
+    ss = ctx.perception.self_state
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            tx, ty = ss.x + dx, ss.y + dy
+            tile = ctx.map_reader.get_tile(tx, ty)
+            for s in tile.statics:
+                if s.graphic in FORGE_STATIC_IDS:
+                    return (tx, ty, s.z, s.graphic)
+    return None
 
 
 class SmeltOre(Skill):
@@ -27,7 +61,7 @@ class SmeltOre(Skill):
 
     name = "smelt_ore"
     category = "crafting"
-    description = "Convert ore into metal ingots using a forge. Requires ore and a forge nearby."
+    description = "Double-click ore and target a forge to smelt into ingots."
     required_skill = (MINING_SKILL_ID, 0.0)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
@@ -46,14 +80,16 @@ class SmeltOre(Skill):
         if not has_ore:
             return False
 
-        nearby = world.nearby_items(ss.x, ss.y, distance=3)
-        return any(it.graphic in FORGE_GRAPHICS for it in nearby)
+        # Check for forge — dynamic items or map statics
+        return (
+            _find_forge_dynamic(ctx) is not None
+            or _find_forge_static(ctx) is not None
+        )
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state
         world = ctx.perception.world
         start = time.monotonic()
-
         backpack = ss.equipment.get(0x15)
 
         # Find ore in backpack
@@ -66,14 +102,41 @@ class SmeltOre(Skill):
         if not ore:
             return SkillResult(success=False, reward=-1.0, message="No ore")
 
+        # Find forge
+        forge_dyn = _find_forge_dynamic(ctx)
+        forge_sta = _find_forge_static(ctx)
+
+        if not forge_dyn and not forge_sta:
+            return SkillResult(success=False, reward=-1.0, message="No forge nearby")
+
         # Count ingots before
         ingots_before = sum(
             it.amount for it in world.items.values()
             if it.container == backpack and it.graphic in INGOT_GRAPHICS
         )
 
-        # Double-click ore — server auto-detects nearby forge
+        # Double-click ore → opens target cursor
         await ctx.conn.send_packet(build_double_click(ore.serial))
+        await asyncio.sleep(0.5)
+
+        # Target the forge
+        if forge_dyn:
+            fx, fy, fz, fserial = forge_dyn
+            await ctx.conn.send_packet(build_target_response(
+                target_type=0,  # object target
+                cursor_id=0,
+                serial=fserial,
+                x=fx, y=fy, z=fz, graphic=0,
+            ))
+        else:
+            fx, fy, fz, fgraphic = forge_sta  # type: ignore[misc]
+            await ctx.conn.send_packet(build_target_response(
+                target_type=1,  # static/ground target
+                cursor_id=0,
+                x=fx, y=fy, z=fz, graphic=fgraphic,
+            ))
+
+        logger.info("smelt_targeting_forge", pos=f"({fx},{fy})")
 
         # Wait for smelting result
         await asyncio.sleep(2.0)
@@ -97,8 +160,7 @@ class SmeltOre(Skill):
             )
         else:
             return SkillResult(
-                success=False, reward=-2.0,
+                success=False, reward=-0.5,
                 message="Smelting failed",
-                items_consumed=[ore.serial],
                 duration_ms=elapsed,
             )
