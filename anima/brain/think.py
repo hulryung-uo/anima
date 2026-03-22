@@ -350,8 +350,9 @@ async def llm_think(ctx: BrainContext) -> Status:
         return Status.SUCCESS
 
     else:
-        # explore
-        await _record_episode(ctx, "explore", "", "success", 0.0)
+        # Unknown action (e.g. LLM said "mine_ore") or "explore"
+        # — stay put and let skill_exec handle it on next tick
+        logger.info("think_action_passthrough", action=act, reason=reason)
         return Status.SUCCESS
 
 

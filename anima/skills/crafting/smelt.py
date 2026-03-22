@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.client.packets import build_double_click, build_target_response
+from anima.client.packets import (
+    build_double_click,
+    build_drop_item,
+    build_pick_up,
+    build_target_response,
+)
 from anima.skills.base import Skill, SkillResult
 
 if TYPE_CHECKING:
@@ -75,11 +80,18 @@ class SmeltOre(Skill):
         if not backpack:
             return False
 
+        # Check ore in backpack OR on ground nearby
         has_ore = any(
             it.graphic in ORE_GRAPHICS
             for it in world.items.values()
             if it.container == backpack
         )
+        if not has_ore:
+            has_ore = any(
+                it.graphic in ORE_GRAPHICS and it.container == 0
+                and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 2
+                for it in world.items.values()
+            )
         if not has_ore:
             return False
 
@@ -95,12 +107,27 @@ class SmeltOre(Skill):
         start = time.monotonic()
         backpack = ss.equipment.get(0x15)
 
-        # Find ore in backpack
+        # Find ore in backpack first, then on ground nearby
         ore = None
         for item in world.items.values():
             if item.container == backpack and item.graphic in ORE_GRAPHICS:
                 ore = item
                 break
+
+        if not ore:
+            # Pick up ore from ground
+            for item in world.items.values():
+                if (item.graphic in ORE_GRAPHICS and item.container == 0
+                        and max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2):
+                    await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+                    await asyncio.sleep(0.3)
+                    await ctx.conn.send_packet(
+                        build_drop_item(item.serial, 0xFFFF, 0xFFFF, 0, backpack)
+                    )
+                    await asyncio.sleep(0.5)
+                    ore = item
+                    logger.info("smelt_picked_up_ore", amount=item.amount)
+                    break
 
         if not ore:
             return SkillResult(success=False, reward=-1.0, message="No ore")
