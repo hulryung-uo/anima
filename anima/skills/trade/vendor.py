@@ -270,10 +270,21 @@ class BuyFromNpc(Skill):
 
         gold_before = ss.gold
 
-        if items_to_buy:
-            await ctx.conn.send_packet(build_buy_items(ss.vendor_serial, items_to_buy))
-            logger.info("vendor_buy_sent", items=len(items_to_buy), cost=total_cost)
-            await asyncio.sleep(0.5)
+        if not items_to_buy:
+            # Vendor doesn't sell what we need — mark refused so we don't loop
+            ss.vendor_buy_list = []
+            ss.vendor_serial = 0
+            _mark_refused(ctx, vendor.serial)
+            elapsed = (time.monotonic() - start) * 1000
+            return SkillResult(
+                success=False, reward=-1.0,
+                message=f"{vendor_name} doesn't sell needed tools — skipping",
+                duration_ms=elapsed,
+            )
+
+        await ctx.conn.send_packet(build_buy_items(ss.vendor_serial, items_to_buy))
+        logger.info("vendor_buy_sent", items=len(items_to_buy), cost=total_cost)
+        await asyncio.sleep(0.5)
 
         # Clear vendor state
         ss.vendor_buy_list = []
@@ -283,12 +294,8 @@ class BuyFromNpc(Skill):
         gold_spent = max(0, gold_before - gold_after)
         elapsed = (time.monotonic() - start) * 1000
 
-        if items_to_buy:
-            reward = 1.0 + gold_spent * 0.01
-            message = f"Bought {len(items_to_buy)} item(s) from {vendor_name} for {gold_spent}gp"
-        else:
-            reward = 0.5
-            message = f"Browsed shop: {vendor_name} ({len(buy_list)} items)"
+        reward = 1.0 + gold_spent * 0.01
+        message = f"Bought {len(items_to_buy)} item(s) from {vendor_name} for {gold_spent}gp"
 
         return SkillResult(
             success=True, reward=reward, message=message, duration_ms=elapsed,
@@ -511,7 +518,7 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
         return None
 
     for m in npcs:
-        if m.notoriety == NotorietyFlag.INVULNERABLE:
+        if m.notoriety == NotorietyFlag.INVULNERABLE and _is_vendor(m):
             return m
 
     for m in npcs:
@@ -543,7 +550,7 @@ def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
             continue
         if m.body not in HUMAN_BODIES or m.serial >= 0x10000:
             continue
-        if m.notoriety == NotorietyFlag.INVULNERABLE:
+        if m.notoriety == NotorietyFlag.INVULNERABLE and _is_vendor(m):
             return m
         if _is_vendor(m):
             return m
