@@ -80,8 +80,7 @@ MINOC_LOCATIONS: list[Location] = [
     # --- Shops ---
     Location("Minoc Blacksmith", 2450, 408, "Forge and anvil. Buy hammers and armor.",
              approach_x=2453, approach_y=411),
-    Location("Minoc Tinker", 2479, 416, "Tinker tools, pickaxes, and shovels.",
-             approach_x=2480, approach_y=419),
+    Location("Minoc Tinker", 2461, 457, "Tinker tools, pickaxes, and shovels."),
     Location("Minoc Provisioner", 2509, 421, "General supplies."),
     Location("Minoc Healer", 2466, 395, "Healing and resurrection."),
     # --- Landmarks ---
