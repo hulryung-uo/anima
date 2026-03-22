@@ -107,6 +107,13 @@ async def _skill_action(ctx: BrainContext) -> Status:
     agent_name = _agent_name(ctx)
     available = await registry.available_skills(ctx)
     if not available:
+        # Tell LLM why we can't act so it can decide to move/buy tools
+        all_names = [s.name for s in registry.all_skills]
+        ctx.blackboard.setdefault(
+            "skill_problem",
+            f"No skills available (registered: {', '.join(all_names)}). "
+            "May need to buy tools or move to a location with required resources.",
+        )
         return Status.FAILURE
 
     logger.debug(

@@ -314,9 +314,16 @@ async def llm_think(ctx: BrainContext) -> Status:
         place_name = action.get("place", "")
         loc = find_location(place_name)
         if loc:
-            pub(ctx, "brain.goal_set", f"Goal: go to {loc.name}", importance=2)
             # Use approach point for indoor locations
             nav_x, nav_y = loc.nav_x, loc.nav_y
+
+            # Already at destination — don't set a goal that completes instantly
+            if abs(ss.x - nav_x) <= 2 and abs(ss.y - nav_y) <= 2:
+                logger.info("already_at_goal", place=loc.name, pos=f"({ss.x},{ss.y})")
+                pub(ctx, "brain.think", f"Already at {loc.name}, looking for work", importance=1)
+                return Status.SUCCESS
+
+            pub(ctx, "brain.goal_set", f"Goal: go to {loc.name}", importance=2)
             ctx.blackboard["current_goal"] = {
                 "place": loc.name,
                 "description": reason or f"Going to {loc.name}",
