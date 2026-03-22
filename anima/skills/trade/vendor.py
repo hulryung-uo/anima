@@ -174,6 +174,13 @@ class BuyFromNpc(Skill):
                 message="No vendor found nearby",
             )
 
+        # Walk closer if vendor is far
+        dist = max(abs(vendor.x - ss.x), abs(vendor.y - ss.y))
+        if dist > 2:
+            from anima.action.movement import go_to
+            logger.info("vendor_walking_closer", vendor=vendor.name, dist=dist)
+            await go_to(ctx, vendor.x, vendor.y)
+
         vendor_name = vendor.name or "vendor"
         missing = _find_missing_tools(ctx)
 
@@ -292,6 +299,13 @@ class SellToNpc(Skill):
                 success=False, reward=-1.0,
                 message="No vendor found nearby",
             )
+
+        # Walk closer if vendor is far
+        dist = max(abs(vendor.x - ss.x), abs(vendor.y - ss.y))
+        if dist > 2:
+            from anima.action.movement import go_to
+            logger.info("vendor_walking_closer", vendor=vendor.name, dist=dist)
+            await go_to(ctx, vendor.x, vendor.y)
 
         vendor_name = vendor.name or "vendor"
         gold_before = ss.gold
