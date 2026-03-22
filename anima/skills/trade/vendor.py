@@ -25,8 +25,9 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 # Context menu cliloc IDs (from ServUO BaseVendor.cs)
-_CLILOC_VENDOR_BUY = 6103
-_CLILOC_VENDOR_SELL = 6104
+# Generic clilocs use the 3006xxx range (base 3000000 + index)
+_CLILOC_VENDOR_BUY = 3006103
+_CLILOC_VENDOR_SELL = 3006104
 
 # Max time (seconds) to wait for vendor list packets from the server
 _VENDOR_LIST_TIMEOUT = 3.0
