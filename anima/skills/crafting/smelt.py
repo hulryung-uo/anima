@@ -112,7 +112,7 @@ class SmeltOre(Skill):
         if not forge_dyn and not forge_sta:
             return SkillResult(success=False, reward=-1.0, message="No forge nearby")
 
-        # Walk to forge if too far (need to be within 1 tile)
+        # Walk to forge if too far (need to be adjacent)
         if forge_dyn:
             fx, fy = forge_dyn[0], forge_dyn[1]
         else:
@@ -121,11 +121,17 @@ class SmeltOre(Skill):
         if dist > 1:
             from anima.action.movement import go_to
             logger.info("smelt_walking_to_forge", pos=f"({fx},{fy})", dist=dist)
-            await go_to(ctx, fx, fy)
-            return SkillResult(
-                success=False, reward=0.0,
-                message=f"Walking to forge ({fx},{fy})",
-            )
+            arrived = await go_to(ctx, fx, fy)
+            if not arrived:
+                return SkillResult(
+                    success=False, reward=0.0,
+                    message=f"Could not reach forge ({fx},{fy})",
+                )
+            # Re-find forge from new position
+            forge_dyn = _find_forge_dynamic(ctx)
+            forge_sta = _find_forge_static(ctx)
+            if not forge_dyn and not forge_sta:
+                return SkillResult(success=False, reward=-1.0, message="Lost forge")
 
         # Count ingots before
         ingots_before = sum(
