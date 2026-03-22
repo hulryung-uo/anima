@@ -80,6 +80,9 @@ def parse_recent_log(minutes: int = 10) -> dict:
         "stuck": 0,
         "escape_stuck": 0,
         "think_decided": 0,
+        "go_to_no_path": 0,
+        "smelt_walking_to_forge": 0,
+        "mine_walking_to": 0,
     }
 
     recent_goals: list[str] = []
@@ -168,8 +171,14 @@ def detect_problems(data: dict) -> list[dict]:
     problems = []
     counts = data.get("counts", {})
 
-    # No movement at all
-    if counts.get("walk_confirmed", 0) == 0 and counts.get("walk_denied", 0) > 0:
+    # --- CRITICAL ---
+
+    # No movement at all (tried but failed, or go_to_no_path loop)
+    no_path = counts.get("go_to_no_path", 0)
+    walk_ok = counts.get("walk_confirmed", 0)
+    walk_deny = counts.get("walk_denied", 0)
+
+    if walk_ok == 0 and walk_deny > 0:
         problems.append({
             "severity": "CRITICAL",
             "name": "cannot_move",
@@ -177,21 +186,75 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "movement",
         })
 
+    # Pathfinding loop — go_to_no_path repeating (agent frozen)
+    if no_path > 20:
+        problems.append({
+            "severity": "CRITICAL",
+            "name": "pathfinding_loop",
+            "description": (
+                f"go_to_no_path called {no_path} times — "
+                f"agent cannot reach any destination"
+            ),
+            "fix_type": "movement",
+        })
+
+    # Agent doing nothing useful — many skill calls but zero results
+    skill_exec = counts.get("skill_executing", 0)
+    skill_rate = data.get("skill_success_rate", 1.0)
+    if skill_exec > 50 and skill_rate == 0.0 and walk_ok == 0:
+        problems.append({
+            "severity": "CRITICAL",
+            "name": "agent_frozen",
+            "description": (
+                f"{skill_exec} skill executions, 0% success, 0 walks — "
+                f"agent is stuck in a loop"
+            ),
+            "fix_type": "brain",
+        })
+
+    # --- HIGH ---
+
     # Stuck in place (many denials, few positions)
-    if counts.get("walk_denied", 0) > 10 and data.get("unique_deny_positions", 0) < 5:
+    if walk_deny > 10 and data.get("unique_deny_positions", 0) < 5:
         problems.append({
             "severity": "HIGH",
             "name": "stuck_in_place",
             "description": (
-                f"{counts['walk_denied']} denials, "
+                f"{walk_deny} denials, "
                 f"{data['unique_deny_positions']} unique positions"
             ),
             "fix_type": "movement",
         })
 
+    # Pathfinding failures (moderate)
+    if 5 < no_path <= 20:
+        problems.append({
+            "severity": "HIGH",
+            "name": "pathfinding_failures",
+            "description": f"go_to_no_path {no_path} times",
+            "fix_type": "movement",
+        })
+
+    # Thinking but not acting
+    walking = walk_ok > 20
+    if (counts.get("think_decided", 0) > 5
+            and skill_exec == 0
+            and not walking):
+        problems.append({
+            "severity": "HIGH",
+            "name": "thinking_not_acting",
+            "description": (
+                f"{counts['think_decided']} think decisions, "
+                f"0 skill executions, 0 walks"
+            ),
+            "fix_type": "brain",
+        })
+
+    # --- MEDIUM ---
+
     # Low walk success rate
     walk_rate = data.get("walk_success_rate", 1.0)
-    walk_total = counts.get("walk_confirmed", 0) + counts.get("walk_denied", 0)
+    walk_total = walk_ok + walk_deny
     if walk_total > 20 and walk_rate < 0.6:
         problems.append({
             "severity": "MEDIUM",
@@ -218,28 +281,12 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "trade",
         })
 
-    # Thinking but not acting — only if also not walking (idle agent)
-    walking = counts.get("walk_confirmed", 0) > 20
-    if (counts.get("think_decided", 0) > 5
-            and counts.get("skill_executing", 0) == 0
-            and not walking):
-        problems.append({
-            "severity": "HIGH",
-            "name": "thinking_not_acting",
-            "description": (
-                f"{counts['think_decided']} think decisions, "
-                f"0 skill executions, 0 walks"
-            ),
-            "fix_type": "brain",
-        })
-
-    # Many skill executions but zero success
-    skill_rate = data.get("skill_success_rate", 1.0)
-    if counts.get("skill_executing", 0) > 10 and skill_rate < 0.1:
+    # Many skill executions but low success
+    if skill_exec > 10 and skill_rate < 0.1:
         problems.append({
             "severity": "MEDIUM",
             "name": "low_skill_success",
-            "description": f"Skill success rate: {skill_rate:.0%}",
+            "description": f"Skill success rate: {skill_rate:.0%} ({skill_exec} executions)",
             "fix_type": "parameter",
         })
 
