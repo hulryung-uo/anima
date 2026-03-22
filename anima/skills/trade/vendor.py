@@ -184,27 +184,19 @@ class BuyFromNpc(Skill):
     description = "Buy tools from an NPC vendor when missing essential tools."
 
     async def can_execute(self, ctx: BrainContext) -> bool:
-        ss = ctx.perception.self_state
         # No gold check — ServUO auto-withdraws from bank (Banker.Withdraw)
         missing = _find_missing_tools(ctx)
         if not missing:
             return False
         vendor = _find_vendor(ctx)
-        if vendor:
-            logger.debug(
-                "buy_can_execute",
-                missing=[f"0x{g:04X}" for g, _ in missing],
-                vendor=vendor.name,
-            )
-            return True
-        from anima.world_knowledge import ALL_LOCATIONS
-        for loc in ALL_LOCATIONS:
-            if any(w in loc.name.lower() for w in (
-                "carpenter", "tinker", "blacksmith", "provisioner",
-            )):
-                if abs(ss.x - loc.x) <= _VENDOR_RANGE and abs(ss.y - loc.y) <= _VENDOR_RANGE:
-                    return True
-        return False
+        if not vendor:
+            return False
+        logger.debug(
+            "buy_can_execute",
+            missing=[f"0x{g:04X}" for g, _ in missing],
+            vendor=vendor.name,
+        )
+        return True
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
@@ -324,19 +316,9 @@ class SellToNpc(Skill):
         )
         if not has_sellable:
             return False
-        # Need a non-refused vendor nearby
+        # Need a non-refused vendor actually detected nearby
         vendor = _find_vendor(ctx)
-        if vendor and not _is_refused(ctx, vendor.serial):
-            return True
-        from anima.world_knowledge import ALL_LOCATIONS
-        for loc in ALL_LOCATIONS:
-            if any(w in loc.name.lower() for w in (
-                "carpenter", "tinker", "blacksmith", "provisioner",
-                "tailor", "jeweler", "bowyer",
-            )):
-                if abs(ss.x - loc.x) <= _VENDOR_RANGE and abs(ss.y - loc.y) <= _VENDOR_RANGE:
-                    return True
-        return False
+        return vendor is not None and not _is_refused(ctx, vendor.serial)
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         start = time.monotonic()
