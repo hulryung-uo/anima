@@ -235,20 +235,34 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "movement",
         })
 
-    # Thinking but not acting
-    walking = walk_ok > 20
-    if (counts.get("think_decided", 0) > 5
-            and skill_exec == 0
-            and not walking):
+    # Thinking but not acting — even if walking, 0 skill execution is a problem
+    think_count = counts.get("think_decided", 0)
+    if think_count > 5 and skill_exec == 0:
         problems.append({
             "severity": "HIGH",
             "name": "thinking_not_acting",
             "description": (
-                f"{counts['think_decided']} think decisions, "
-                f"0 skill executions, 0 walks"
+                f"{think_count} think decisions, "
+                f"0 skill executions, {walk_ok} walks — "
+                f"walking but never doing any work"
             ),
             "fix_type": "brain",
         })
+
+    # Repeating same goal — agent is going back and forth
+    goals = data.get("recent_goals", [])
+    if len(goals) >= 3:
+        unique_goals = set(goals)
+        if len(unique_goals) <= 2:
+            problems.append({
+                "severity": "HIGH",
+                "name": "goal_loop",
+                "description": (
+                    f"Repeating same goals: {', '.join(unique_goals)} "
+                    f"({len(goals)} times)"
+                ),
+                "fix_type": "brain",
+            })
 
     # --- MEDIUM ---
 
