@@ -210,14 +210,23 @@ class BuyFromNpc(Skill):
                 message="No vendor found nearby",
             )
 
+        vendor_name = vendor.name or "vendor"
+        logger.info(
+            "vendor_buy_attempt",
+            vendor=vendor_name,
+            serial=f"0x{vendor.serial:08X}",
+            vendor_pos=f"({vendor.x},{vendor.y})",
+            player_pos=f"({ss.x},{ss.y})",
+            dist=max(abs(vendor.x - ss.x), abs(vendor.y - ss.y)),
+        )
+
         # Walk closer if vendor is far
         dist = max(abs(vendor.x - ss.x), abs(vendor.y - ss.y))
         if dist > 2:
             from anima.action.movement import go_to
-            logger.info("vendor_walking_closer", vendor=vendor.name, dist=dist)
+            logger.info("vendor_walking_closer", vendor=vendor_name, dist=dist)
             await go_to(ctx, vendor.x, vendor.y)
 
-        vendor_name = vendor.name or "vendor"
         missing = _find_missing_tools(ctx)
 
         from anima.core.publish import pub
@@ -336,14 +345,23 @@ class SellToNpc(Skill):
                 message="No vendor found nearby",
             )
 
+        vendor_name = vendor.name or "vendor"
+        logger.info(
+            "vendor_sell_attempt",
+            vendor=vendor_name,
+            serial=f"0x{vendor.serial:08X}",
+            vendor_pos=f"({vendor.x},{vendor.y})",
+            player_pos=f"({ss.x},{ss.y})",
+            dist=max(abs(vendor.x - ss.x), abs(vendor.y - ss.y)),
+        )
+
         # Walk closer if vendor is far
         dist = max(abs(vendor.x - ss.x), abs(vendor.y - ss.y))
         if dist > 2:
             from anima.action.movement import go_to
-            logger.info("vendor_walking_closer", vendor=vendor.name, dist=dist)
+            logger.info("vendor_walking_closer", vendor=vendor_name, dist=dist)
             await go_to(ctx, vendor.x, vendor.y)
 
-        vendor_name = vendor.name or "vendor"
         gold_before = ss.gold
 
         # Clear stale state
@@ -444,15 +462,24 @@ _VENDOR_TITLES = {
     "vendor", "merchant", "shopkeeper",
 }
 
+# NPCs with these titles look like vendors but don't sell items
+_NON_VENDOR_TITLES = {
+    "guildmaster", "guildmistress", "guild master", "guild mistress",
+}
+
 
 def _is_vendor(mob: MobileInfo) -> bool:
     """Check if a mobile is a vendor by name or OPL properties."""
-    if mob.name:
-        name_lower = mob.name.lower()
-        if any(t in name_lower for t in _VENDOR_TITLES):
-            return True
+    name_lower = (mob.name or "").lower()
+    # Exclude guildmasters — they don't sell items
+    if any(t in name_lower for t in _NON_VENDOR_TITLES):
+        return False
+    if any(t in name_lower for t in _VENDOR_TITLES):
+        return True
     for prop in (mob.properties or []):
         prop_lower = prop.lower()
+        if any(t in prop_lower for t in _NON_VENDOR_TITLES):
+            return False
         if any(t in prop_lower for t in _VENDOR_TITLES):
             return True
     return False
