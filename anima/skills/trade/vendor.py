@@ -171,7 +171,7 @@ KEEP_GRAPHICS: set[int] = (
 ESSENTIAL_TOOLS: list[tuple[int, int]] = [
     (0x0F43, 1),  # hatchet
     (0x1034, 1),  # saw
-    (0x0E86, 1),  # pickaxe
+    (0x0E86, 3),  # pickaxe — buy 3
     (0x13E3, 1),  # smith hammer
 ]
 
@@ -267,15 +267,13 @@ class BuyFromNpc(Skill):
         # Buy missing tools
         items_to_buy: list[tuple[int, int]] = []  # (serial, amount)
         total_cost = 0
-        missing_graphics = {g for g, _ in missing}
+        missing_want = {g: amt for g, amt in missing}
 
         for bi in buy_list:
-            if bi.graphic in missing_graphics:
-                want = 1
-                cost = want * bi.price
-                if total_cost + cost <= ss.gold:
-                    items_to_buy.append((bi.serial, want))
-                    total_cost += cost
+            if bi.graphic in missing_want:
+                want = missing_want[bi.graphic]
+                items_to_buy.append((bi.serial, want))
+                total_cost += want * bi.price
 
         gold_before = ss.gold
 
