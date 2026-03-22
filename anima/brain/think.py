@@ -356,9 +356,33 @@ async def llm_think(ctx: BrainContext) -> Status:
     elif act == "idle":
         return Status.SUCCESS
 
+    elif act == "explore":
+        # Wander randomly — for now just let skill_exec pick something
+        logger.info("think_explore", reason=reason)
+        return Status.SUCCESS
+
     else:
-        # Unknown action (e.g. LLM said "mine_ore") or "explore"
-        # — stay put and let skill_exec handle it on next tick
+        # LLM may have output a skill name (e.g. "mine_ore") instead of
+        # a valid action.  Check if it's a known skill and diagnose why
+        # it can't run, so the *next* think call gets actionable feedback.
+        from anima.skills.base import SkillRegistry
+        registry: SkillRegistry | None = ctx.blackboard.get("skill_registry")
+        if registry:
+            skill = registry.get(act)
+            if skill:
+                reason_str = await skill.diagnose(ctx)
+                if reason_str:
+                    ctx.blackboard["skill_problem"] = (
+                        f"You tried '{act}' but it cannot execute: {reason_str}. "
+                        "Use a valid action: go/explore/idle. "
+                        "Go buy tools or move to the right location."
+                    )
+                    logger.info("think_skill_blocked", skill=act, reason=reason_str)
+                else:
+                    # Skill IS available — skill_exec will handle it next tick
+                    logger.info("think_skill_deferred", skill=act)
+                return Status.SUCCESS
+
         logger.info("think_action_passthrough", action=act, reason=reason)
         return Status.SUCCESS
 

@@ -86,6 +86,41 @@ class Skill(ABC):
 
         return True
 
+    async def diagnose(self, ctx: BrainContext) -> str | None:
+        """Return None if can execute, or a short reason why not."""
+        if await self.can_execute(ctx):
+            return None
+
+        ss = ctx.perception.self_state
+        world = ctx.perception.world
+
+        if self.required_items:
+            backpack = ss.equipment.get(0x15)
+            if not backpack:
+                return "no backpack"
+            bp_graphics = {
+                it.graphic for it in world.items.values()
+                if it.container == backpack
+            }
+            missing = [g for g in self.required_items if g not in bp_graphics]
+            if missing:
+                from anima.data import item_name
+                names = [item_name(g) or f"0x{g:04X}" for g in missing]
+                return f"missing {', '.join(names)}"
+
+        if self.required_nearby:
+            return "required object not nearby"
+
+        if self.required_skill:
+            skill_id, min_val = self.required_skill
+            skill_info = ss.skills.get(skill_id)
+            if skill_info is None:
+                return f"missing skill #{skill_id}"
+            if skill_info.value < min_val:
+                return f"skill too low ({skill_info.value:.1f}/{min_val})"
+
+        return "preconditions not met"
+
     @abstractmethod
     async def execute(self, ctx: BrainContext) -> SkillResult:
         """Execute the skill. Returns result with reward signal."""

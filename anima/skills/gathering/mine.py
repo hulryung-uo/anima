@@ -167,6 +167,32 @@ class MineOre(Skill):
     description = "Use a pickaxe on nearby mountain/cave tiles to mine ore."
     required_skill = (MINING_SKILL_ID, 0.0)
 
+    async def diagnose(self, ctx: BrainContext) -> str | None:
+        if await self.can_execute(ctx):
+            return None
+        ss = ctx.perception.self_state
+        world = ctx.perception.world
+
+        if ss.weight_max > 0 and ss.weight >= ss.weight_max - 20:
+            return "overweight"
+
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return "no backpack"
+
+        has_tool = any(
+            it.graphic in PICKAXE_GRAPHICS or it.graphic == SHOVEL_GRAPHIC
+            for it in world.items.values()
+            if it.container == backpack
+        )
+        if not has_tool:
+            return "no pickaxe or shovel in backpack"
+
+        if _find_mineable_tile(ctx) is None:
+            return "no mineable tiles nearby"
+
+        return "preconditions not met"
+
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
         world = ctx.perception.world
