@@ -185,14 +185,20 @@ class BuyFromNpc(Skill):
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         ss = ctx.perception.self_state
-        if ss.gold < 10:
+        # No gold check — ServUO auto-withdraws from bank (Banker.Withdraw)
+        missing = _find_missing_tools(ctx)
+        if not missing:
             return False
-        if not _find_missing_tools(ctx):
-            return False
-        if _find_vendor(ctx):
+        vendor = _find_vendor(ctx)
+        if vendor:
+            logger.debug(
+                "buy_can_execute",
+                missing=[f"0x{g:04X}" for g, _ in missing],
+                vendor=vendor.name,
+            )
             return True
-        from anima.world_knowledge import BRITAIN_LOCATIONS
-        for loc in BRITAIN_LOCATIONS:
+        from anima.world_knowledge import ALL_LOCATIONS
+        for loc in ALL_LOCATIONS:
             if any(w in loc.name.lower() for w in (
                 "carpenter", "tinker", "blacksmith", "provisioner",
             )):
@@ -324,8 +330,8 @@ class SellToNpc(Skill):
         vendor = _find_vendor(ctx)
         if vendor and not _is_refused(ctx, vendor.serial):
             return True
-        from anima.world_knowledge import BRITAIN_LOCATIONS
-        for loc in BRITAIN_LOCATIONS:
+        from anima.world_knowledge import ALL_LOCATIONS
+        for loc in ALL_LOCATIONS:
             if any(w in loc.name.lower() for w in (
                 "carpenter", "tinker", "blacksmith", "provisioner",
                 "tailor", "jeweler", "bowyer",
