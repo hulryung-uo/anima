@@ -58,6 +58,10 @@ async def _skill_action(ctx: BrainContext) -> Status:
     from anima.skills.base import SkillRegistry
     from anima.skills.selector import SkillSelector
 
+    # Prevent concurrent execution — skill may be awaiting server responses
+    if ctx.blackboard.get("skill_running"):
+        return Status.FAILURE
+
     # Don't execute skills while actively walking to a destination
     move_target = ctx.blackboard.get("move_target")
     if move_target is not None:
@@ -132,12 +136,16 @@ async def _skill_action(ctx: BrainContext) -> Status:
         return Status.FAILURE
 
     logger.info("skill_executing", skill=skill.name, category=skill.category)
-    ctx.blackboard["last_skill_time"] = now
+    ctx.blackboard["skill_running"] = True
 
     from anima.core.publish import pub
     pub(ctx, "action.start", f"Executing {skill.name}", skill=skill.name)
 
-    result = await skill.execute(ctx)
+    try:
+        result = await skill.execute(ctx)
+    finally:
+        ctx.blackboard["skill_running"] = False
+        ctx.blackboard["last_skill_time"] = time.time()
 
     # Track consecutive failures (total + per-skill)
     if result.success:
