@@ -540,9 +540,11 @@ def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
         if m.serial == ss.serial or _is_refused(ctx, m.serial):
             continue
+        if m.body not in HUMAN_BODIES or m.serial >= 0x10000:
+            continue
         if m.notoriety == NotorietyFlag.INVULNERABLE:
             return m
-        if m.body in HUMAN_BODIES and m.serial < 0x10000 and _is_vendor(m):
+        if _is_vendor(m):
             return m
 
     return None
