@@ -89,18 +89,54 @@ async def _request_context_menu_entry(
 
     # Find the entry with matching cliloc
     for entry in ss.context_menu:
-        if entry.cliloc == cliloc and entry.flags == 0:  # 0 = enabled
-            await ctx.conn.send_packet(
-                build_context_menu_selection(vendor.serial, entry.index)
-            )
-            logger.info(
-                "context_menu_selected",
-                vendor=vendor.name,
-                cliloc=cliloc,
-                index=entry.index,
-            )
-            ss.context_menu = []
-            return True
+        if entry.cliloc == cliloc:
+            if entry.flags == 0:  # enabled
+                await ctx.conn.send_packet(
+                    build_context_menu_selection(vendor.serial, entry.index)
+                )
+                logger.info(
+                    "context_menu_selected",
+                    vendor=vendor.name,
+                    cliloc=cliloc,
+                    index=entry.index,
+                )
+                ss.context_menu = []
+                return True
+            else:
+                # Entry exists but disabled — walk closer and retry
+                logger.info(
+                    "context_menu_disabled",
+                    vendor=vendor.name,
+                    cliloc=cliloc,
+                    flags=entry.flags,
+                )
+                ss.context_menu = []
+                from anima.action.movement import go_to
+                await go_to(ctx, vendor.x, vendor.y)
+                # Retry once after walking closer
+                ss.context_menu = []
+                ss.context_menu_serial = 0
+                await ctx.conn.send_packet(
+                    build_context_menu_request(vendor.serial)
+                )
+                if not await _wait_for_context_menu(ctx):
+                    return False
+                for retry_entry in ss.context_menu:
+                    if retry_entry.cliloc == cliloc and retry_entry.flags == 0:
+                        await ctx.conn.send_packet(
+                            build_context_menu_selection(
+                                vendor.serial, retry_entry.index,
+                            )
+                        )
+                        logger.info(
+                            "context_menu_selected_after_walk",
+                            vendor=vendor.name,
+                            cliloc=cliloc,
+                        )
+                        ss.context_menu = []
+                        return True
+                ss.context_menu = []
+                return False
 
     logger.warning(
         "context_menu_entry_not_found",
