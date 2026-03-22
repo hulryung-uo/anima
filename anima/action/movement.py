@@ -61,15 +61,32 @@ async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
                     target=f"({target_x},{target_y})", recalcs=recalcs,
                 )
                 return False
-            denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
+            walker_denied = set(ctx.walker.denied_tiles.keys())
+            denied = walker_denied | _impassable_world_items(ctx)
             path = find_path(
                 ctx.map_reader, sx, sy, target_x, target_y,
                 denied_tiles=denied, current_z=ss.z,
+                adjacent=True,
             )
             recalcs += 1
             if not path:
+                # Try without denied tiles — maybe they're stale
+                path = find_path(
+                    ctx.map_reader, sx, sy, target_x, target_y,
+                    current_z=ss.z,
+                    adjacent=True,
+                )
+                if path:
+                    # Denied tiles were blocking — clear them
+                    logger.info(
+                        "go_to_clear_denied",
+                        cleared=len(walker_denied),
+                    )
+                    ctx.walker.clear_all_denied_tiles()
+                    continue
                 logger.info(
                     "go_to_no_path", pos=f"({sx},{sy},{ss.z})",
+                    denied=len(denied),
                     target=f"({target_x},{target_y})", recalc=recalcs,
                 )
                 return False

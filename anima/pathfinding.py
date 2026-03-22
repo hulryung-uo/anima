@@ -81,14 +81,21 @@ def _astar_core(
     denied_tiles: set[tuple[int, int]] | None,
     current_z: int | None,
     heuristic_weight: float = 1.0,
+    adjacent: bool = False,
 ) -> list[tuple[int, int]]:
     """Core A* implementation with configurable heuristic weight.
 
     weight=1.0: standard A* (optimal)
     weight>1.0: weighted A* (faster, near-optimal)
     weight=inf: greedy best-first (fastest, not optimal)
+
+    If adjacent=True, the goal is any tile within 1 Chebyshev distance
+    of (tx, ty) — useful when the target itself is impassable (e.g. forge, anvil).
     """
     if sx == tx and sy == ty:
+        return []
+
+    if adjacent and max(abs(sx - tx), abs(sy - ty)) <= 1:
         return []
 
     counter = 0
@@ -106,9 +113,14 @@ def _astar_core(
     while open_set:
         _, _, cx, cy = heapq.heappop(open_set)
 
-        if cx == tx and cy == ty:
+        goal_reached = (
+            max(abs(cx - tx), abs(cy - ty)) <= 1
+            if adjacent
+            else (cx == tx and cy == ty)
+        )
+        if goal_reached:
             path: list[tuple[int, int]] = []
-            node = (tx, ty)
+            node = (cx, cy)
             while node in came_from:
                 path.append(node)
                 node = came_from[node]
@@ -160,13 +172,20 @@ def find_path(
     max_steps: int = 200,
     denied_tiles: set[tuple[int, int]] | None = None,
     current_z: int | None = None,
+    adjacent: bool = False,
 ) -> list[tuple[int, int]]:
     """Smart pathfinding: tries fast algorithm first, falls back to thorough.
 
     1. Weighted A* (weight=1.5, max_steps) — fast, near-optimal
     2. If no path: standard A* (weight=1.0, max_steps*2) — thorough
+
+    If adjacent=True, pathfinding succeeds when reaching any tile within 1
+    Chebyshev distance of the target (useful for impassable targets like forges).
     """
     if sx == tx and sy == ty:
+        return []
+
+    if adjacent and max(abs(sx - tx), abs(sy - ty)) <= 1:
         return []
 
     # Try weighted A* first (faster)
@@ -176,6 +195,7 @@ def find_path(
         denied_tiles=denied_tiles,
         current_z=current_z,
         heuristic_weight=1.5,
+        adjacent=adjacent,
     )
     if path:
         return path
@@ -187,4 +207,5 @@ def find_path(
         denied_tiles=denied_tiles,
         current_z=current_z,
         heuristic_weight=1.0,
+        adjacent=adjacent,
     )
