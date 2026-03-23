@@ -37,6 +37,8 @@ _CONTEXT_MENU_TIMEOUT = 1.5
 _POLL_INTERVAL = 0.2
 # Per-vendor cooldown after refusing to buy (seconds)
 _VENDOR_REFUSE_COOLDOWN = 300.0
+# Global cooldown after buy failure due to no gold (seconds)
+_BUY_NO_GOLD_COOLDOWN = 600.0
 
 
 async def _wait_for_sell_list(ctx: BrainContext, timeout: float = _VENDOR_LIST_TIMEOUT) -> bool:
@@ -185,7 +187,10 @@ class BuyFromNpc(Skill):
     description = "Buy tools from an NPC vendor when missing essential tools."
 
     async def can_execute(self, ctx: BrainContext) -> bool:
-        # No gold check — ServUO auto-withdraws from bank (Banker.Withdraw)
+        # Global cooldown — don't retry buying if we recently failed (no gold)
+        buy_cooldown_until = ctx.blackboard.get("buy_cooldown_until", 0.0)
+        if time.monotonic() < buy_cooldown_until:
+            return False
         missing = _find_missing_tools(ctx)
         if not missing:
             return False
@@ -282,6 +287,8 @@ class BuyFromNpc(Skill):
                 duration_ms=elapsed,
             )
 
+        missing_before = set(missing_want.keys())
+
         await ctx.conn.send_packet(build_buy_items(ss.vendor_serial, items_to_buy))
         logger.info("vendor_buy_sent", items=len(items_to_buy), cost=total_cost)
         await asyncio.sleep(0.5)
@@ -292,10 +299,40 @@ class BuyFromNpc(Skill):
 
         gold_after = ss.gold
         gold_spent = max(0, gold_before - gold_after)
+
+        # Verify purchase: check if missing tools actually arrived
+        still_missing = _find_missing_tools(ctx)
+        missing_after = {g for g, _ in still_missing}
+        items_received = len(missing_before - missing_after)
+
         elapsed = (time.monotonic() - start) * 1000
 
+        if items_received == 0 and gold_spent == 0:
+            # Nothing changed — purchase failed (likely no gold)
+            # Set global buy cooldown so we stop trying ALL vendors
+            ctx.blackboard["buy_cooldown_until"] = (
+                time.monotonic() + _BUY_NO_GOLD_COOLDOWN
+            )
+            # Trigger rethink so LLM picks a different plan
+            ctx.blackboard["skill_problem"] = (
+                f"Cannot buy tools — no gold (have {gold_after}gp). "
+                "Need to earn gold first: mine ore, chop wood, craft items and sell."
+            )
+            ctx.blackboard["last_think_time"] = 0.0  # force immediate rethink
+            logger.warning(
+                "vendor_buy_failed",
+                vendor=vendor_name,
+                reason="no items received, no gold spent",
+                cooldown_s=_BUY_NO_GOLD_COOLDOWN,
+            )
+            return SkillResult(
+                success=False, reward=-2.0,
+                message=f"Buy from {vendor_name} failed — no gold? (have {gold_after}gp)",
+                duration_ms=elapsed,
+            )
+
         reward = 1.0 + gold_spent * 0.01
-        message = f"Bought {len(items_to_buy)} item(s) from {vendor_name} for {gold_spent}gp"
+        message = f"Bought {items_received} item(s) from {vendor_name} for {gold_spent}gp"
 
         return SkillResult(
             success=True, reward=reward, message=message, duration_ms=elapsed,

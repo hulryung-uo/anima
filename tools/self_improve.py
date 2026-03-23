@@ -441,8 +441,11 @@ def save_report(report: str) -> Path:
     return path
 
 
-def call_claude(report_path: Path) -> bool:
-    """Call Claude Code CLI to apply the improvement plan."""
+def call_claude(report_path: Path) -> tuple[bool, str]:
+    """Call Claude Code CLI to apply the improvement plan.
+
+    Returns (success, output) — output contains Claude's stdout+stderr.
+    """
     prompt = f"""You are fixing issues in the Anima UO AI agent. Read the analysis report at {report_path}.
 
 The report contains:
@@ -469,12 +472,25 @@ Rules:
             ["claude", "-p", prompt, "--allowedTools",
              "Read,Write,Edit,Bash,Glob,Grep"],
             cwd=str(ROOT),
+            capture_output=True,
+            text=True,
             timeout=300,
         )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        print(f"  Claude Code call failed: {e}")
-        return False
+        output = result.stdout or ""
+        if result.stderr:
+            output += "\n--- stderr ---\n" + result.stderr
+        return result.returncode == 0, output
+    except FileNotFoundError as e:
+        msg = f"Claude Code not found: {e}"
+        print(f"  {msg}")
+        return False, msg
+    except subprocess.TimeoutExpired as e:
+        msg = f"Claude Code timed out after 300s"
+        partial = ""
+        if e.stdout:
+            partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout
+        print(f"  {msg}")
+        return False, f"{msg}\n--- partial output ---\n{partial}"
 
 
 def run_once(
@@ -509,7 +525,9 @@ def run_once(
         if call_claude_code and any(
             p["severity"] in ("HIGH", "CRITICAL") for p in problems
         ):
-            call_claude(path)
+            success, output = call_claude(path)
+            if output:
+                print(f"  Claude Code output:\n{output[:500]}")
     else:
         print("  No problems detected.")
 

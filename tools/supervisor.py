@@ -110,23 +110,42 @@ def run_analysis(minutes: int) -> tuple[list[dict], str | None]:
     return problems, str(path)
 
 
+CLAUDE_LOG = ROOT / "data" / "claude_code.log"
+
+
 def run_claude_fix(report_path: str) -> bool:
     """Call Claude Code with the given report. Returns True if code changed."""
     from self_improve import call_claude
 
     print(f"[supervisor] Calling Claude Code with report: {report_path}")
     head_before = get_git_head()
-    success = call_claude(Path(report_path))
+    success, output = call_claude(Path(report_path))
     head_after = get_git_head()
+
+    # Log Claude Code output to file
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(CLAUDE_LOG, "a") as f:
+        f.write(f"\n{'='*72}\n")
+        f.write(f"[{ts}] Report: {report_path}\n")
+        f.write(f"Success: {success} | Code changed: {head_before != head_after}\n")
+        f.write(f"{'='*72}\n")
+        f.write(output)
+        f.write("\n")
 
     code_changed = head_before != head_after and head_after != ""
     if code_changed:
         print("[supervisor] Claude Code made changes — agent will restart")
+        print(f"[supervisor] Claude output logged to {CLAUDE_LOG}")
     elif success:
         print("[supervisor] Claude Code ran but no changes committed")
     else:
         print("[supervisor] Claude Code failed")
+        # Print last few lines of output for quick diagnosis
+        lines = output.strip().splitlines()
+        for line in lines[-5:]:
+            print(f"[supervisor]   {line}")
 
+    print(f"[supervisor] Full Claude output: {CLAUDE_LOG}")
     return code_changed
 
 
