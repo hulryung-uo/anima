@@ -30,12 +30,19 @@ class Subscriber(ABC):
 
 
 class LogSubscriber(Subscriber):
-    """Writes structured JSON log lines to a file."""
+    """Writes structured JSON log lines to a file with automatic rotation."""
+
+    # Rotate when file exceeds 10 MB, keep last 5 MB worth of lines
+    MAX_SIZE = 10 * 1024 * 1024
+    KEEP_SIZE = 5 * 1024 * 1024
+    # Check file size every N writes to avoid stat() on every event
+    _CHECK_INTERVAL = 500
 
     def __init__(self, path: str | Path = "data/events.jsonl") -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(self._path, "a")  # noqa: SIM115
+        self._write_count = 0
 
     def topics(self) -> list[str]:
         return ["*"]
@@ -48,6 +55,30 @@ class LogSubscriber(Subscriber):
         }
         self._file.write(json.dumps(entry, default=str) + "\n")
         self._file.flush()
+
+        self._write_count += 1
+        if self._write_count >= self._CHECK_INTERVAL:
+            self._write_count = 0
+            self._maybe_rotate()
+
+    def _maybe_rotate(self) -> None:
+        """Truncate file if it exceeds MAX_SIZE, keeping the tail."""
+        try:
+            size = self._path.stat().st_size
+        except OSError:
+            return
+        if size <= self.MAX_SIZE:
+            return
+
+        self._file.close()
+        raw = self._path.read_bytes()
+        # Keep the last KEEP_SIZE bytes, aligned to a newline boundary
+        tail = raw[-self.KEEP_SIZE :]
+        first_nl = tail.find(b"\n")
+        if first_nl >= 0:
+            tail = tail[first_nl + 1 :]
+        self._path.write_bytes(tail)
+        self._file = open(self._path, "a")  # noqa: SIM115
 
     def close(self) -> None:
         self._file.close()
