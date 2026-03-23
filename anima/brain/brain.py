@@ -62,13 +62,12 @@ async def _skill_action(ctx: BrainContext) -> Status:
     if ctx.blackboard.get("skill_running"):
         return Status.FAILURE
 
-    # Don't execute skills while actively walking to a destination
+    # Quick sync checks — safe before the guard since no awaits
     move_target = ctx.blackboard.get("move_target")
     if move_target is not None:
         sx = ctx.perception.self_state.x
         sy = ctx.perception.self_state.y
         tx, ty = move_target
-        # Only run skills if we've arrived (within 2 tiles)
         if abs(sx - tx) > 2 or abs(sy - ty) > 2:
             return Status.FAILURE
 
@@ -81,12 +80,9 @@ async def _skill_action(ctx: BrainContext) -> Status:
     if registry is None or ctx.memory_db is None:
         return Status.FAILURE
 
-    # If a skill has failed too many times in a row, skip skill_exec
-    # and let Think/LLM figure out what to do
     consecutive_fails = ctx.blackboard.get("skill_consecutive_fails", 0)
     if consecutive_fails >= 5:
         ctx.blackboard["skill_consecutive_fails"] = 0
-        # Schedule a rethink soon but not instantly — halve the cooldown
         ctx.blackboard["last_think_time"] = time.time() - 15.0
         ctx.blackboard["skill_problem"] = (
             f"Last skill failed {consecutive_fails} times in a row. "
@@ -96,7 +92,6 @@ async def _skill_action(ctx: BrainContext) -> Status:
         from anima.core.publish import pub
         pub(ctx, "brain.rethink", "Too many skill failures, rethinking...", importance=2)
 
-        # Generate problem report after 10+ failures
         if consecutive_fails >= 10:
             from anima.monitor.report import report_problem
             await report_problem(
@@ -108,40 +103,43 @@ async def _skill_action(ctx: BrainContext) -> Status:
 
         return Status.FAILURE
 
-    agent_name = _agent_name(ctx)
-    available = await registry.available_skills(ctx)
-    if not available:
-        # Build detailed diagnostic so LLM can take corrective action
-        reasons: list[str] = []
-        for s in registry.all_skills:
-            reason = await s.diagnose(ctx)
-            if reason:
-                reasons.append(f"{s.name}: {reason}")
-        detail = "; ".join(reasons) if reasons else "unknown"
-        ctx.blackboard["skill_problem"] = (
-            f"No skills can execute right now. {detail}. "
-            "Consider going to a shop to buy tools, or moving to a new area."
-        )
-        return Status.FAILURE
-
-    logger.debug(
-        "skills_available",
-        skills=[s.name for s in available],
-        count=len(available),
-    )
-
-    selector = SkillSelector(ctx.memory_db)
-    skill = await selector.select(ctx, available, agent_name)
-    if skill is None:
-        return Status.FAILURE
-
-    logger.info("skill_executing", skill=skill.name, category=skill.category)
+    # Set guard BEFORE first await that leads to skill execution.
+    # Previous bug: guard was set after multiple awaits (available_skills,
+    # selector.select), allowing concurrent ticks to pass the check and
+    # execute skills in parallel — causing vendor buy spam (208 buys/10min).
     ctx.blackboard["skill_running"] = True
-
-    from anima.core.publish import pub
-    pub(ctx, "action.start", f"Executing {skill.name}", skill=skill.name)
-
     try:
+        agent_name = _agent_name(ctx)
+        available = await registry.available_skills(ctx)
+        if not available:
+            reasons: list[str] = []
+            for s in registry.all_skills:
+                reason = await s.diagnose(ctx)
+                if reason:
+                    reasons.append(f"{s.name}: {reason}")
+            detail = "; ".join(reasons) if reasons else "unknown"
+            ctx.blackboard["skill_problem"] = (
+                f"No skills can execute right now. {detail}. "
+                "Consider going to a shop to buy tools, or moving to a new area."
+            )
+            return Status.FAILURE
+
+        logger.debug(
+            "skills_available",
+            skills=[s.name for s in available],
+            count=len(available),
+        )
+
+        selector = SkillSelector(ctx.memory_db)
+        skill = await selector.select(ctx, available, agent_name)
+        if skill is None:
+            return Status.FAILURE
+
+        logger.info("skill_executing", skill=skill.name, category=skill.category)
+
+        from anima.core.publish import pub
+        pub(ctx, "action.start", f"Executing {skill.name}", skill=skill.name)
+
         result = await skill.execute(ctx)
     finally:
         ctx.blackboard["skill_running"] = False
@@ -192,13 +190,8 @@ async def _skill_action(ctx: BrainContext) -> Status:
         skill=skill.name, reward=result.reward, success=result.success,
     )
 
-    # Update Q-values
-    next_available = await registry.available_skills(ctx)
-    await selector.update(ctx, skill, result, agent_name, next_available)
-
-    # Snapshot Q-values for TUI
-    q_values = await selector._db.get_q_values(agent_name, encode_state(ctx))
-    ctx.blackboard["q_snapshot"] = q_values
+    # Q-learning disabled — skip Q-value update
+    await selector.update(ctx, skill, result, agent_name)
 
     # Record episode in memory
     if ctx.memory_db:
