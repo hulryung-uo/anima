@@ -72,16 +72,29 @@ logger = structlog.get_logger()
 # ---------------------------------------------------------------------------
 
 
+# If no packet arrives for this long, assume connection is dead
+_RECV_DEAD_TIMEOUT = 120.0  # 2 minutes
+
+
 async def recv_loop(conn: UoConnection, handler: PacketHandler) -> None:
     """Receive and dispatch all game packets."""
+    last_packet = asyncio.get_event_loop().time()
+
     while conn.connected:
         try:
             packet_id, data = await conn.recv_packet(timeout=1.0)
         except asyncio.TimeoutError:
+            # Check for dead connection — server sends pings every ~30s
+            now = asyncio.get_event_loop().time()
+            if now - last_packet > _RECV_DEAD_TIMEOUT:
+                logger.error("connection_dead", silence_s=now - last_packet)
+                break
             continue
         except (ConnectionError, EOFError):
             logger.error("connection_lost")
             break
+
+        last_packet = asyncio.get_event_loop().time()
 
         # Ping is protocol-level — handle inline (requires I/O)
         if packet_id == 0x73:
@@ -401,14 +414,22 @@ async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = Fal
                 game_coros.append(monitor.run())
 
             try:
-                await asyncio.gather(*game_coros)
-            except asyncio.CancelledError:
+                # Use TaskGroup so that if ANY coro exits (e.g. recv_loop
+                # on disconnect), all others are cancelled → triggers reconnect.
+                async with asyncio.TaskGroup() as tg:
+                    for coro in game_coros:
+                        tg.create_task(coro)
+            except* ConnectionError as eg:
+                logger.error("connection_lost_in_task", errors=[str(e) for e in eg.exceptions])
+            except* asyncio.CancelledError:
                 logger.info("tasks_cancelled")
+            except* Exception as eg:
+                logger.error("task_crashed", errors=[str(e) for e in eg.exceptions])
             finally:
                 await avatar.close()
 
-            # If we get here normally (all coros finished), reconnect
-            logger.warning("session_ended", reason="all tasks finished")
+            # If we get here, reconnect
+            logger.warning("session_ended", reason="task group exited")
 
         except KeyboardInterrupt:
             logger.info("shutting_down")
