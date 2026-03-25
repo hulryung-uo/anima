@@ -58,6 +58,7 @@ async def go_to(
     path: list[tuple[int, int]] = []
     permanent_denied: set[tuple[int, int]] = set()  # tiles that always block
     _door_tried: set[tuple[int, int]] = set()  # door tiles already attempted
+    _opened_door_positions: set[tuple[int, int]] = set()  # positions where opened doors moved TO
     consecutive_denials_without_progress = 0
     last_progress_pos: tuple[int, int] = (ss.x, ss.y)
 
@@ -144,12 +145,14 @@ async def go_to(
             continue
 
         # --- DOOR CHECK: if next tile has a closed door, run traversal routine ---
-        door_serial = _find_closed_door_at(ctx, next_x, next_y)
+        door_serial = _find_closed_door_at(ctx, next_x, next_y, _opened_door_positions)
         if door_serial is not None and (next_x, next_y) not in _door_tried:
             _door_tried.add((next_x, next_y))
-            ok = await _traverse_door(ctx, door_serial, sx, sy, next_x, next_y, step_delay)
+            ok, opened_new_pos = await _traverse_door(ctx, door_serial, sx, sy, next_x, next_y, step_delay)
+            if opened_new_pos:
+                _opened_door_positions.add(opened_new_pos)
+                permanent_denied.add(opened_new_pos)  # opened door graphic is impassable
             if ok:
-                # Successfully passed through door — recalculate from new position
                 path = []
             else:
                 permanent_denied.add((next_x, next_y))
@@ -509,7 +512,7 @@ def _cardinal_direction(from_x: int, from_y: int, to_x: int, to_y: int) -> int:
         return 4 if dy > 0 else 0  # South or North
 
 
-async def _traverse_door(
+async def _traverse_door(  # noqa: C901
     ctx: BrainContext,
     door_serial: int,
     player_x: int,
@@ -517,7 +520,7 @@ async def _traverse_door(
     door_x: int,
     door_y: int,
     step_delay: float,
-) -> bool:
+) -> tuple[bool, tuple[int, int] | None]:
     """Full door traversal routine:
 
     1. Approach door from cardinal direction (N/E/S/W)
@@ -526,7 +529,7 @@ async def _traverse_door(
     4. Walk 2 tiles through (door tile + 1 past)
     5. Close door (double-click from other side)
 
-    Returns True if successfully passed through.
+    Returns (success, opened_door_new_position).
     """
     from anima.client.packets import build_double_click
 
@@ -561,12 +564,12 @@ async def _traverse_door(
     # Must be exactly 1 tile away in a cardinal direction (not diagonal)
     if not ((dx_to_door == 1 and dy_to_door == 0) or (dx_to_door == 0 and dy_to_door == 1)):
         logger.info("door_not_adjacent_cardinal", pos=f"({ss.x},{ss.y})", door=f"({door_x},{door_y})")
-        return False
+        return False, None
 
     # Step 2: Open the door
     door_item = ctx.perception.world.items.get(door_serial)
     if not door_item:
-        return False
+        return False, None
     old_door_pos = (door_item.x, door_item.y)
 
     await ctx.conn.send_packet(build_double_click(door_serial))
@@ -575,12 +578,12 @@ async def _traverse_door(
     # Step 3: Verify door opened (position changed)
     door_item = ctx.perception.world.items.get(door_serial)
     if not door_item:
-        return False
+        return False, None
     new_door_pos = (door_item.x, door_item.y)
 
     if new_door_pos == old_door_pos:
         logger.info("door_didnt_open", pos=f"{old_door_pos}")
-        return False
+        return False, None
 
     logger.info("door_opened", old=f"{old_door_pos}", new=f"{new_door_pos}")
 
@@ -589,11 +592,9 @@ async def _traverse_door(
         moved = await _walk_one_step(ctx, walk_dir, step_delay)
         if not moved:
             logger.info("door_walk_through_failed", step=step + 1)
-            # Still try to close the door
             break
 
     # Step 5: Close the door (double-click from other side)
-    # Re-find the door item (it may have updated)
     door_item = ctx.perception.world.items.get(door_serial)
     if door_item and max(abs(door_item.x - ss.x), abs(door_item.y - ss.y)) <= 2:
         old_close_pos = (door_item.x, door_item.y)
@@ -612,8 +613,9 @@ async def _traverse_door(
         "door_traverse_done",
         pos=f"({ss.x},{ss.y})",
         started=f"({player_x},{player_y})",
+        opened_door_at=f"{new_door_pos}",
     )
-    return True
+    return True, new_door_pos
 
 
 
@@ -717,11 +719,16 @@ def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
     return blocked
 
 
-def _find_closed_door_at(ctx: BrainContext, x: int, y: int) -> int | None:
+def _find_closed_door_at(
+    ctx: BrainContext,
+    x: int,
+    y: int,
+    exclude_positions: set[tuple[int, int]] | None = None,
+) -> int | None:
     """Find a closed door world item at or adjacent to (x, y).
 
     Returns serial or None. Only returns doors that are impassable (closed).
-    Open doors have FLAG_DOOR but NOT FLAG_IMPASSABLE.
+    Skips positions in exclude_positions (already-opened doors).
     """
     if ctx.map_reader is None:
         return None
@@ -731,6 +738,9 @@ def _find_closed_door_at(ctx: BrainContext, x: int, y: int) -> int | None:
         if it.container != 0:
             continue
         if abs(it.x - x) <= 1 and abs(it.y - y) <= 1:
+            # Skip positions where we know an opened door moved to
+            if exclude_positions and (it.x, it.y) in exclude_positions:
+                continue
             flags = ctx.map_reader._get_item_flags(it.graphic)
             if (flags & FLAG_DOOR) and (flags & FLAG_IMPASSABLE):
                 return it.serial
