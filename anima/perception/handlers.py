@@ -1195,3 +1195,102 @@ def register_handlers(
         )
 
     handler.register(0x9E, handle_vendor_sell_list)
+
+    # ------------------------------------------------------------------
+    # Cosmetic / informational packets — log and ignore
+    # ------------------------------------------------------------------
+
+    def handle_play_sound(packet_id: int, data: bytes) -> None:
+        """0x54 PlaySound."""
+        r = PacketReader(data[1:])
+        flags = r.read_u8()
+        sound_id = r.read_u16()
+        logger.debug("play_sound", sound_id=f"0x{sound_id:04X}")
+
+    handler.register(0x54, handle_play_sound)
+
+    def handle_char_animation(packet_id: int, data: bytes) -> None:
+        """0x6E CharacterAnimation."""
+        pass  # silently ignore
+
+    handler.register(0x6E, handle_char_animation)
+
+    def handle_weather(packet_id: int, data: bytes) -> None:
+        """0x65 WeatherChange."""
+        r = PacketReader(data[1:])
+        weather_type = r.read_u8()
+        particle_count = r.read_u8()
+        temperature = r.read_u8()
+        logger.debug("weather", type=weather_type, particles=particle_count, temp=temperature)
+
+    handler.register(0x65, handle_weather)
+
+    def handle_light_level(packet_id: int, data: bytes) -> None:
+        """0x4F OverallLightLevel."""
+        pass  # silently ignore
+
+    handler.register(0x4F, handle_light_level)
+
+    def handle_personal_light(packet_id: int, data: bytes) -> None:
+        """0x4E PersonalLightLevel."""
+        pass  # silently ignore
+
+    handler.register(0x4E, handle_personal_light)
+
+    def handle_play_music(packet_id: int, data: bytes) -> None:
+        """0x6D PlayMusic."""
+        r = PacketReader(data[1:])
+        music_id = r.read_u16()
+        logger.debug("play_music", music_id=music_id)
+
+    handler.register(0x6D, handle_play_music)
+
+    def handle_season(packet_id: int, data: bytes) -> None:
+        """0xBC SeasonChange."""
+        r = PacketReader(data[1:])
+        season = r.read_u8()
+        cursor = r.read_u8()
+        logger.debug("season_change", season=season)
+
+    handler.register(0xBC, handle_season)
+
+    def handle_war_mode(packet_id: int, data: bytes) -> None:
+        """0x72 WarMode."""
+        r = PacketReader(data[1:])
+        war_mode = r.read_u8()
+        p.self_state.direction = (
+            p.self_state.direction | 0x80 if war_mode else p.self_state.direction & 0x7F
+        )
+        logger.debug("war_mode", enabled=bool(war_mode))
+
+    handler.register(0x72, handle_war_mode)
+
+    def handle_game_time(packet_id: int, data: bytes) -> None:
+        """0x5B GameTime."""
+        r = PacketReader(data[1:])
+        hour = r.read_u8()
+        minute = r.read_u8()
+        second = r.read_u8()
+        logger.debug("game_time", time=f"{hour:02d}:{minute:02d}:{second:02d}")
+
+    handler.register(0x5B, handle_game_time)
+
+    def handle_open_paperdoll(packet_id: int, data: bytes) -> None:
+        """0x88 OpenPaperDoll."""
+        pass  # silently ignore
+
+    handler.register(0x88, handle_open_paperdoll)
+
+    def handle_health_bar_status(packet_id: int, data: bytes) -> None:
+        """0x17 HealthBarStatusUpdate."""
+        pass  # silently ignore
+
+    handler.register(0x17, handle_health_bar_status)
+
+    def handle_close_vendor(packet_id: int, data: bytes) -> None:
+        """0x3B CloseVendorInterface — vendor buy window closed."""
+        r = PacketReader(data[3:])  # skip packet id + length
+        serial = r.read_u32()
+        logger.debug("vendor_closed", serial=f"0x{serial:08X}")
+
+    handler.register(0x3B, handle_close_vendor)
