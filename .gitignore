@@ -13,3 +13,7 @@ config.yaml
 .playwright-mcp/
 *.log
 data/events.jsonl
+data/analysis/
+data/plans/
+data/state.json
+data/claude_code.log
