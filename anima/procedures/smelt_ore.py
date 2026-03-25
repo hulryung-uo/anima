@@ -142,6 +142,8 @@ class SmeltOre(Procedure):
         ingots_gained = ingots_after - ingots_before
 
         if ingots_gained > 0:
+            # Reset fail counter for this ore type on success
+            ctx.blackboard.pop("_smelt_fail_count", None)
             return ProcedureResult(
                 success=True,
                 message=f"Smelted {ingots_gained} ingots",
@@ -149,8 +151,33 @@ class SmeltOre(Procedure):
                 details={"ingots": ingots_gained},
             )
         else:
+            # Track consecutive smelt failures — some ore can't be smelted
+            fail_count = ctx.blackboard.get("_smelt_fail_count", 0) + 1
+            ctx.blackboard["_smelt_fail_count"] = fail_count
+
+            if fail_count >= 3:
+                # Give up on this ore — drop it on the ground
+                ctx.blackboard["_smelt_fail_count"] = 0
+                from anima.client.packets import build_drop_item, build_pick_up
+                dropped = 0
+                for item in list(world.items.values()):
+                    if item.container == backpack and item.graphic in ORE_GRAPHICS:
+                        await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+                        await asyncio.sleep(0.3)
+                        await ctx.conn.send_packet(
+                            build_drop_item(item.serial, ss.x, ss.y, ss.z)
+                        )
+                        await asyncio.sleep(0.3)
+                        dropped += 1
+                logger.info("smelt_gave_up_ore", dropped=dropped, fails=fail_count)
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.PERMANENT,
+                    message=f"Ore unsmelable, dropped {dropped} stacks",
+                )
+
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
-                message="Smelting failed",
+                message=f"Smelting failed ({fail_count}/3)",
             )

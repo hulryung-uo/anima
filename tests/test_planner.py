@@ -173,7 +173,8 @@ class TestGameplayLoop:
         reg.register(StubProcedure("buy_from_vendor", can=False))
         planner = Planner(reg)
 
-        ctx = _make_ctx()
+        # Position near Minoc so shops are within max_dist
+        ctx = _make_ctx(x=2500, y=500)
         proc = await planner.select_procedure(ctx)
         assert proc is not None
         assert "move_to" in proc.name
