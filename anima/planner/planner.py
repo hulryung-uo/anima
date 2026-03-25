@@ -39,6 +39,10 @@ class Planner:
         self._running = False
         self._last_trade_time: float = 0.0
         self._move_fail_until: float = 0.0  # cooldown after move-to failure
+        self._failed_destinations: dict[tuple[int, int], float] = {}  # (x,y) → time
+
+    def stop(self) -> None:
+        self._running = False
 
     async def run(self, ctx: AgentContext) -> None:
         """Main planner loop. Runs until connection drops."""
@@ -80,6 +84,11 @@ class Planner:
             })
 
         result = await proc.run(ctx)
+
+        # Track failed move destinations to prevent retry loops
+        if result and not result.success and isinstance(proc, _MoveToProcedure):
+            import time
+            self._failed_destinations[(proc._x, proc._y)] = time.time()
 
         # Publish result
         if ctx.bus and result:
@@ -192,7 +201,10 @@ class Planner:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 return proc
-            return await self._move_to_location(ctx, "blacksmith", "weaponsmith", "provisioner")
+            move = await self._move_to_location(ctx, "blacksmith", "weaponsmith", "provisioner")
+            if move:
+                return move
+            # No reachable vendor — fall through to mining
 
         # --- Priority 6: Gold > 200 → bank ---
         if ss.gold > 200:
@@ -233,6 +245,17 @@ class Planner:
                 result.append(it)
         return result
 
+    def _is_destination_failed(self, x: int, y: int) -> bool:
+        """Check if a destination recently failed to be reached (5-min cooldown)."""
+        import time
+        ts = self._failed_destinations.get((x, y))
+        if ts is None:
+            return False
+        if time.time() - ts < 300.0:
+            return True
+        del self._failed_destinations[(x, y)]
+        return False
+
     async def _move_to_location(self, ctx: AgentContext, *keywords: str):
         """Find nearest location matching any keyword and move there."""
         from anima.world_knowledge import ALL_LOCATIONS
@@ -244,11 +267,13 @@ class Planner:
             name_lower = loc.name.lower()
             if any(kw in name_lower for kw in keywords):
                 dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
-                if dist < best_dist:
+                if dist > 3 and dist < best_dist:
+                    if self._is_destination_failed(loc.x, loc.y):
+                        continue
                     best_dist = dist
                     best = loc
 
-        if best and best_dist > 3:
+        if best:
             logger.info("planner_move_to", target=best.name, dist=best_dist)
             if ctx.bus:
                 ctx.bus.publish("movement.start", {
@@ -275,6 +300,8 @@ class Planner:
         for loc in ALL_LOCATIONS:
             name_lower = loc.name.lower()
             if any(kw in name_lower for kw in _ACTIVITY_KEYWORDS):
+                if self._is_destination_failed(loc.x, loc.y):
+                    continue
                 dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
                 if dist < best_dist:
                     best_dist = dist
@@ -344,9 +371,6 @@ def _find_waypoint_toward(sx, sy, tx, ty, locations) -> object | None:
             best = loc
 
     return best
-
-    def stop(self) -> None:
-        self._running = False
 
 
 class _PickUpAndSmelt:
