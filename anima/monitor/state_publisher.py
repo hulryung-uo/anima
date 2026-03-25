@@ -268,6 +268,8 @@ class StatePublisher:
         entries = self._p.social.recent(count=10)
         my_serial = ss.serial
 
+        from anima.data import item_name as _item_name
+
         bp = ss.equipment.get(0x15)
         items = []
         if bp:
@@ -275,8 +277,12 @@ class StatePublisher:
                 [i for i in self._p.world.items.values() if i.container == bp],
                 key=lambda i: i.name or "",
             )[:12]:
+                # Prefer readable name: OPL name → tiledata name → hex graphic
+                name = it.name or ""
+                if not name or "#" in name:
+                    name = _item_name(it.graphic) or f"0x{it.graphic:04X}"
                 items.append({
-                    "name": (it.name or f"0x{it.graphic:04X}")[:20],
+                    "name": name[:20],
                     "amount": it.amount,
                 })
 
