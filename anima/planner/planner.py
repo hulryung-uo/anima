@@ -71,7 +71,25 @@ class Planner:
             return None
 
         logger.info("planner_selected", procedure=proc.name)
-        return await proc.run(ctx)
+
+        # Publish activity to bus for TUI display
+        if ctx.bus:
+            ctx.bus.publish("action.start", {
+                "message": f"▶ {proc.name}",
+                "importance": 1,
+            })
+
+        result = await proc.run(ctx)
+
+        # Publish result
+        if ctx.bus and result:
+            icon = "✓" if result.success else "✗"
+            ctx.bus.publish("action.end", {
+                "message": f"{icon} {proc.name}: {result.message}",
+                "importance": 2 if result.success else 1,
+            })
+
+        return result
 
     async def select_procedure(self, ctx: AgentContext):
         """Select the highest-priority procedure based on gameplay loop.
@@ -232,6 +250,11 @@ class Planner:
 
         if best and best_dist > 3:
             logger.info("planner_move_to", target=best.name, dist=best_dist)
+            if ctx.bus:
+                ctx.bus.publish("movement.start", {
+                    "message": f"→ Moving to {best.name} (dist {best_dist})",
+                    "importance": 2,
+                })
             return _MoveToProcedure(best.name, best.x, best.y)
         return None
 
@@ -280,6 +303,11 @@ class Planner:
             pos=f"({target.x},{target.y})",
             dist=best_dist,
         )
+        if ctx.bus:
+            ctx.bus.publish("movement.start", {
+                "message": f"⛏ Heading to {target.name} (dist {best_dist})",
+                "importance": 2,
+            })
         return _MoveToProcedure(target.name, target.x, target.y)
 
 
