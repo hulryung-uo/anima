@@ -10,6 +10,7 @@ import structlog
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.trade.vendor import (
     _CLILOC_VENDOR_SELL,
+    _mark_refused,
     _request_context_menu_entry,
     _find_vendor,
 )
@@ -25,16 +26,9 @@ class SellToVendor(Procedure):
     description = "Sell items to a nearby NPC vendor."
 
     async def can_start(self, ctx: AgentContext) -> bool:
+        # _find_vendor already skips refused vendors via _is_refused()
         vendor = _find_vendor(ctx)
-        if not vendor:
-            return False
-        # Skip vendors that refused us recently (5 min cooldown)
-        import time
-        refused = ctx.blackboard.get("refused_vendors", {})
-        if vendor.serial in refused:
-            if time.time() - refused[vendor.serial] < 300:
-                return False
-        return True
+        return vendor is not None
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
@@ -79,9 +73,7 @@ class SellToVendor(Procedure):
         if _rejected["hit"]:
             # This vendor doesn't want our items — mark and try elsewhere
             vendor_name = vendor.name or "vendor"
-            refused = ctx.blackboard.setdefault("refused_vendors", {})
-            import time
-            refused[vendor.serial] = time.time()
+            _mark_refused(ctx, vendor.serial)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,

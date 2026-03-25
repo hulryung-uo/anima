@@ -197,7 +197,10 @@ class Planner:
             return None
 
         # --- Priority 5: Has ingots → sell ---
-        if ingot_count > 0:
+        # Only sell if we have a meaningful amount (≥10).
+        # With fewer ingots and mining tools, it's better to mine more
+        # than walk far to a blacksmith for a tiny sale.
+        if ingot_count >= 10:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 return proc
@@ -289,25 +292,28 @@ class Planner:
         Uses waypoint routing: if the target is far, finds intermediate
         waypoints along the way to avoid getting stuck on building walls.
         """
+        import re
         from anima.world_knowledge import ALL_LOCATIONS
 
         ss = ctx.perception.self_state
 
-        # Find nearest activity location
-        _ACTIVITY_KEYWORDS = {"mine", "mountain", "forest"}
+        # Find nearest activity location using word boundaries so that
+        # "mine" matches "East Mine" but not "Miners Guild".
+        _ACTIVITY_RE = re.compile(r'\b(mine|mining|mountain|forest)\b', re.IGNORECASE)
         mine_loc = None
         best_dist = 999999
         for loc in ALL_LOCATIONS:
-            name_lower = loc.name.lower()
-            if any(kw in name_lower for kw in _ACTIVITY_KEYWORDS):
+            if _ACTIVITY_RE.search(loc.name):
                 if self._is_destination_failed(loc.x, loc.y):
                     continue
                 dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
+                if dist <= 5:
+                    continue  # Already here — skip to find next location
                 if dist < best_dist:
                     best_dist = dist
                     mine_loc = loc
 
-        if not mine_loc or best_dist <= 5:
+        if not mine_loc:
             return None
 
         # If far away, find intermediate waypoints
@@ -315,7 +321,7 @@ class Planner:
         target = mine_loc
         if best_dist > 30:
             waypoint = _find_waypoint_toward(ss.x, ss.y, target.x, target.y, ALL_LOCATIONS)
-            if waypoint:
+            if waypoint and not self._is_destination_failed(waypoint.x, waypoint.y):
                 logger.info(
                     "planner_waypoint_routing",
                     via=waypoint.name,
