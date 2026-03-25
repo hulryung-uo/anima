@@ -59,14 +59,25 @@ def _is_walkable(
     z_at: dict[tuple[int, int], int] | None,
     cx: int, cy: int,
     doors_passable: bool = False,
+    door_tiles: set[tuple[int, int]] | None = None,
 ) -> tuple[bool, int]:
     """Check if tile (x,y) is walkable. Returns (can_walk, new_z).
 
     If doors_passable=True, tiles blocked only by door statics are treated
     as walkable (the agent can open them during movement).
+
+    If door_tiles is provided, tiles in this set are forced walkable
+    (dynamic door world items detected at runtime).
     """
     if denied_tiles and (x, y) in denied_tiles:
         return False, 0
+
+    # Dynamic door world items — force walkable
+    if door_tiles and (x, y) in door_tiles:
+        node_z = current_z or 0
+        if z_at is not None:
+            node_z = z_at.get((cx, cy), node_z)
+        return True, node_z
 
     tile = map_reader.get_tile(x, y)
 
@@ -74,7 +85,6 @@ def _is_walkable(
         node_z = z_at.get((cx, cy), current_z)
         can_walk, new_z = tile.walkable_z(node_z)
         if not can_walk and doors_passable:
-            # Check if the only blocker is a door
             if _only_door_blocks(tile):
                 return True, new_z if new_z != 0 else node_z
         return can_walk, new_z
@@ -111,6 +121,7 @@ def _astar_core(
     heuristic_weight: float = 1.0,
     adjacent: bool = False,
     doors_passable: bool = False,
+    door_tiles: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     """Core A* implementation with configurable heuristic weight.
 
@@ -172,7 +183,7 @@ def _astar_core(
 
             can_walk, new_z = _is_walkable(
                 map_reader, nx, ny, denied_tiles, current_z, z_at if current_z is not None else None, cx, cy,
-                doors_passable=doors_passable,
+                doors_passable=doors_passable, door_tiles=door_tiles,
             )
             if not can_walk:
                 continue
@@ -204,6 +215,7 @@ def find_path(
     current_z: int | None = None,
     adjacent: bool = False,
     doors_passable: bool = True,
+    door_tiles: set[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     """Smart pathfinding: tries fast algorithm first, falls back to thorough.
 
@@ -231,6 +243,7 @@ def find_path(
         heuristic_weight=1.5,
         adjacent=adjacent,
         doors_passable=doors_passable,
+        door_tiles=door_tiles,
     )
     if path:
         return path
@@ -244,4 +257,5 @@ def find_path(
         heuristic_weight=1.0,
         adjacent=adjacent,
         doors_passable=doors_passable,
+        door_tiles=door_tiles,
     )

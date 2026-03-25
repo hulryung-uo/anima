@@ -84,11 +84,11 @@ async def go_to(
                 return False
 
             # Combine denied tiles: walker denials + permanent (from server denies)
-            # Note: _impassable_world_items() excluded from pathfinding —
-            # dynamic item flags are unreliable and block valid routes.
-            # Server deny will catch actual obstacles at walk time.
             walker_denied = set(ctx.walker.denied_tiles.keys())
             denied = walker_denied | permanent_denied
+
+            # Collect dynamic door world items → force passable in pathfinder
+            door_positions = _get_door_positions(ctx)
 
             search_steps = max(5000, dist * 20)  # 4-directional needs large search
             path = find_path(
@@ -96,6 +96,7 @@ async def go_to(
                 max_steps=search_steps,
                 denied_tiles=denied, current_z=ss.z,
                 adjacent=True,
+                door_tiles=door_positions,
             )
             recalcs += 1
 
@@ -105,6 +106,7 @@ async def go_to(
                     ctx.map_reader, sx, sy, target_x, target_y,
                     max_steps=search_steps,
                     denied_tiles=permanent_denied,
+                    door_tiles=door_positions,
                     current_z=ss.z,
                     adjacent=True,
                 )
@@ -676,6 +678,22 @@ def _calc_detour(
     else:
         # Primarily north/south — detour east or west
         return (sx + detour_dist, sy)
+
+
+def _get_door_positions(ctx: BrainContext) -> set[tuple[int, int]]:
+    """Collect positions of door world items (dynamic) for pathfinder."""
+    if ctx.map_reader is None:
+        return set()
+    from anima.map import FLAG_DOOR
+
+    doors: set[tuple[int, int]] = set()
+    for it in ctx.perception.world.items.values():
+        if it.container != 0:
+            continue
+        flags = ctx.map_reader._get_item_flags(it.graphic)
+        if flags & FLAG_DOOR:
+            doors.add((it.x, it.y))
+    return doors
 
 
 def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
