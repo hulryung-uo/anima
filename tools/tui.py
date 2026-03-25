@@ -135,18 +135,40 @@ def _panel_status(status: dict) -> Panel:
     return Panel(t, title="Status", border_style="bright_blue")
 
 
-def _panel_activity(activity: list[dict]) -> Panel:
+def _panel_activity(activity: list[dict], scroll_offset: int = 0, max_lines: int = 15) -> Panel:
+    from datetime import datetime
+
+    total = len(activity)
+    # scroll_offset: 0 = latest at bottom, positive = scroll up
+    end = max(0, total - scroll_offset)
+    start = max(0, end - max_lines)
+    visible = activity[start:end]
+
     t = Text()
-    for entry in activity[-15:]:
+    for entry in visible:
         cat = entry.get("topic", "").split(".")[0]
         icon = _CATEGORY_ICONS.get(cat, "·")
-        msg = entry.get("message", "")[:70]
+        msg = entry.get("message", "")[:60]
         imp = entry.get("importance", 1)
         style = "bold bright_white" if imp >= 3 else "" if imp >= 2 else "grey70"
-        t.append(f" {icon} {msg}\n", style=style)
+
+        # Time from timestamp
+        ts = entry.get("ts", 0)
+        if ts:
+            time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+        else:
+            time_str = "        "
+
+        t.append(f" {time_str} ", style="grey50")
+        t.append(f"{icon} {msg}\n", style=style)
+
     if not activity:
         t.append(" Waiting for events...\n", style="grey50")
-    return Panel(t, title="Activity", border_style="green")
+
+    scroll_info = ""
+    if total > max_lines:
+        scroll_info = f" [{start+1}-{end}/{total}] j↑ k↓"
+    return Panel(t, title=f"Activity{scroll_info}", border_style="green")
 
 
 def _panel_nearby(nearby: list[dict]) -> Panel:
@@ -234,8 +256,9 @@ def _panel_minimap(minimap: dict, width: int = 0, height: int = 0) -> Panel:
     center = total // 2  # player is at center of the full grid
 
     # Panel border takes 2 chars each side, legend takes 1 row
-    avail_w = max(10, (width - 4) if width else len(rows[0]))
-    avail_h = max(5, (height - 4) if height else total)
+    # Max 40x40 tiles visible
+    avail_w = min(40, max(10, (width - 4) if width else len(rows[0])))
+    avail_h = min(40, max(5, (height - 4) if height else total))
 
     # Calculate visible window centered on player
     half_w = avail_w // 2
@@ -253,7 +276,7 @@ def _panel_minimap(minimap: dict, width: int = 0, height: int = 0) -> Panel:
         t.append("\n")
 
     # Legend
-    t.append(" @=you #=wall T=tree M=npc +=door X=goal", style="grey50")
+    t.append(" @=you #=wall ^=mine o=cave +=door M=npc", style="grey50")
 
     return Panel(t, title=f"Map ({px},{py})", border_style="bright_blue")
 
@@ -297,6 +320,7 @@ def build_layout(
     show_map: bool = False,
     term_width: int = 120,
     term_height: int = 40,
+    activity_scroll: int = 0,
 ) -> Layout:
     layout = Layout()
 
@@ -320,7 +344,7 @@ def build_layout(
             _panel_minimap(data.get("minimap", {}), width=map_w, height=map_h)
         )
         layout["status"].update(_panel_status(data.get("status", {})))
-        layout["activity"].update(_panel_activity(data.get("activity", [])))
+        layout["activity"].update(_panel_activity(data.get("activity", []), scroll_offset=activity_scroll))
     else:
         # Normal mode
         layout.split_column(
@@ -343,7 +367,7 @@ def build_layout(
         layout["lower"].split_row(*lower_panels)
 
         layout["status"].update(_panel_status(data.get("status", {})))
-        layout["activity"].update(_panel_activity(data.get("activity", [])))
+        layout["activity"].update(_panel_activity(data.get("activity", []), scroll_offset=activity_scroll))
         layout["nearby"].update(_panel_nearby(data.get("nearby", [])))
         layout["journal"].update(_panel_journal(data.get("journal", [])))
         if show_inventory:
@@ -368,6 +392,10 @@ def build_layout(
     footer.append(" Inventory  ", style="grey70")
     footer.append("s", style="bold bright_yellow")
     footer.append(" Skills  ", style="grey70")
+    footer.append("j", style="bold bright_yellow")
+    footer.append("/", style="grey70")
+    footer.append("k", style="bold bright_yellow")
+    footer.append(" Scroll  ", style="grey70")
     footer.append("q", style="bold bright_yellow")
     footer.append(" Quit", style="grey70")
 
@@ -402,6 +430,7 @@ def main() -> None:
     show_inventory = False
     show_skills = False
     show_map = False
+    activity_scroll = 0  # 0 = latest, positive = scroll up
 
     # Initial empty layout
     empty = {"status": {}, "activity": [], "nearby": [], "journal": []}
@@ -427,6 +456,11 @@ def main() -> None:
                             show_inventory = not show_inventory
                         elif key == "s":
                             show_skills = not show_skills
+                        elif key == "j":
+                            activity_scroll = max(0, activity_scroll - 5)
+                        elif key == "k":
+                            total_act = len(data.get("activity", []))
+                            activity_scroll = min(max(0, total_act - 5), activity_scroll + 5)
 
                     tw, th = console.size
                     live.update(build_layout(
@@ -436,6 +470,7 @@ def main() -> None:
                         show_map=show_map,
                         term_width=tw,
                         term_height=th,
+                        activity_scroll=activity_scroll,
                     ))
                     time.sleep(args.refresh)
             except KeyboardInterrupt:
