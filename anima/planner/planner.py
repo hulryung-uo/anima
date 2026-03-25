@@ -204,7 +204,7 @@ class Planner:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 return proc
-            move = await self._move_to_location(ctx, "blacksmith", "weaponsmith", "provisioner")
+            move = await self._move_to_location(ctx, "blacksmith", "weaponsmith")
             if move:
                 return move
             # No reachable vendor — fall through to mining
@@ -261,9 +261,21 @@ class Planner:
 
     async def _move_to_location(self, ctx: AgentContext, *keywords: str):
         """Find nearest location matching any keyword and move there."""
+        import time as _time
         from anima.world_knowledge import ALL_LOCATIONS
 
         ss = ctx.perception.self_state
+
+        # Mark locations we're already standing at as temporarily failed.
+        # This prevents ping-pong: arrive at vendor location → can't sell →
+        # walk to next vendor → can't sell → walk back to first one → repeat.
+        for loc in ALL_LOCATIONS:
+            name_lower = loc.name.lower()
+            if any(kw in name_lower for kw in keywords):
+                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
+                if dist <= 3 and (loc.x, loc.y) not in self._failed_destinations:
+                    self._failed_destinations[(loc.x, loc.y)] = _time.time()
+
         best = None
         best_dist = 999999
         for loc in ALL_LOCATIONS:
