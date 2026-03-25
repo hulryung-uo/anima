@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from anima.brain.llm import LLMClient
     from anima.memory.database import MemoryDB
     from anima.monitor.feed import ActivityFeed
+    from anima.procedures.base import ProcedureRegistry
     from anima.skills.base import SkillRegistry
 
 logger = structlog.get_logger()
@@ -50,6 +51,7 @@ class Avatar:
         memory_db: MemoryDB | None = None,
         feed: ActivityFeed | None = None,
         skill_registry: SkillRegistry | None = None,
+        procedure_registry: ProcedureRegistry | None = None,
     ) -> None:
         self.cfg = cfg
         self.conn = conn
@@ -63,6 +65,7 @@ class Avatar:
         self.memory_db = memory_db
         self.feed = feed
         self.skill_registry = skill_registry
+        self.procedure_registry = procedure_registry
         self.goals = GoalManager()
 
         # Subscribers (kept for cleanup)
@@ -193,6 +196,26 @@ class Avatar:
             skill_registry.register(skill_cls())
         logger.info("skills_registered", count=len(skill_registry.all_skills))
 
+        # 9b. Procedures (v2) — coexists with skills during migration
+        from anima.procedures.base import ProcedureRegistry
+        from anima.procedures.bank_deposit import BankDeposit as BankDepositProc
+        from anima.procedures.buy_from_vendor import BuyFromVendor as BuyFromVendorProc
+        from anima.procedures.chop_wood import ChopWood as ChopWoodProc
+        from anima.procedures.craft_blacksmith import CraftBlacksmith as CraftBlacksmithProc
+        from anima.procedures.make_tools import MakeTools as MakeToolsProc
+        from anima.procedures.mine_ore import MineOre as MineOreProc
+        from anima.procedures.sell_to_vendor import SellToVendor as SellToVendorProc
+        from anima.procedures.smelt_ore import SmeltOre as SmeltOreProc
+
+        procedure_registry = ProcedureRegistry()
+        for proc_cls in [
+            MineOreProc, SmeltOreProc, ChopWoodProc, MakeToolsProc,
+            CraftBlacksmithProc, BuyFromVendorProc, SellToVendorProc,
+            BankDepositProc,
+        ]:
+            procedure_registry.register(proc_cls())
+        logger.info("procedures_registered", count=len(procedure_registry.all_procedures))
+
         # 10. Forum
         forum_client = None
         if cfg.forum.enabled and cfg.forum.api_key:
@@ -220,6 +243,7 @@ class Avatar:
             memory_db=memory_db,
             feed=feed,
             skill_registry=skill_registry,
+            procedure_registry=procedure_registry,
         )
         avatar._forum_client = forum_client
         avatar._metrics_collector = metrics_collector
@@ -227,8 +251,54 @@ class Avatar:
         avatar._metrics_sub = metrics_sub
         return avatar
 
+    def build_context(self) -> AgentContext:
+        """Build a typed AgentContext for the brain and planner."""
+        from anima.core.context import AgentContext
+        from anima.memory.journal import ActivityJournal
+
+        journal = ActivityJournal(self.memory_db, agent_name=self.name)
+
+        # Populate blackboard with infrastructure items for backward compat.
+        # Old code reads ctx.blackboard.get("persona"), ctx.blackboard.get("bus"), etc.
+        # These will be migrated to typed field access in later steps.
+        blackboard: dict = {
+            "persona": self.persona,
+            "persona_type": self.cfg.character.persona,
+            "forum_client": getattr(self, "_forum_client", None),
+            "skill_registry": self.skill_registry,
+            "journal": journal,
+            "activity_feed": self.feed,
+            "metrics": getattr(self, "_metrics_collector", None),
+            "map_reader": self.map_reader,
+            "bus": self.bus,
+            "goals": self.goals,
+        }
+
+        return AgentContext(
+            perception=self.perception,
+            conn=self.conn,
+            walker=self.walker,
+            cfg=self.cfg,
+            map_reader=self.map_reader,
+            llm=self.llm,
+            memory_db=self.memory_db,
+            persona=self.persona,
+            bus=self.bus,
+            feed=self.feed,
+            goals=self.goals,
+            skill_registry=self.skill_registry,
+            journal=journal,
+            forum_client=getattr(self, "_forum_client", None),
+            metrics=getattr(self, "_metrics_collector", None),
+            blackboard=blackboard,
+        )
+
     def build_blackboard(self) -> dict:
-        """Build the blackboard dict for BrainContext (legacy bridge)."""
+        """Build the blackboard dict for BrainContext (legacy bridge).
+
+        Deprecated: use build_context() instead. Kept for backward compat
+        during migration — callers that still use this get the old dict format.
+        """
         from anima.memory.journal import ActivityJournal
 
         journal = ActivityJournal(self.memory_db, agent_name=self.name)

@@ -47,9 +47,8 @@ def direction_to(fx: int, fy: int, tx: int, ty: int) -> int:
 
 
 def _octile_distance(x1: int, y1: int, x2: int, y2: int) -> float:
-    dx = abs(x2 - x1)
-    dy = abs(y2 - y1)
-    return max(dx, dy) + (SQRT2 - 1) * min(dx, dy)
+    # Manhattan distance — 4-directional movement only
+    return abs(x2 - x1) + abs(y2 - y1)
 
 
 def _is_walkable(
@@ -59,8 +58,13 @@ def _is_walkable(
     current_z: int | None,
     z_at: dict[tuple[int, int], int] | None,
     cx: int, cy: int,
+    doors_passable: bool = False,
 ) -> tuple[bool, int]:
-    """Check if tile (x,y) is walkable. Returns (can_walk, new_z)."""
+    """Check if tile (x,y) is walkable. Returns (can_walk, new_z).
+
+    If doors_passable=True, tiles blocked only by door statics are treated
+    as walkable (the agent can open them during movement).
+    """
     if denied_tiles and (x, y) in denied_tiles:
         return False, 0
 
@@ -68,9 +72,33 @@ def _is_walkable(
 
     if current_z is not None and z_at is not None:
         node_z = z_at.get((cx, cy), current_z)
-        return tile.walkable_z(node_z)
+        can_walk, new_z = tile.walkable_z(node_z)
+        if not can_walk and doors_passable:
+            # Check if the only blocker is a door
+            if _only_door_blocks(tile):
+                return True, new_z if new_z != 0 else node_z
+        return can_walk, new_z
     else:
-        return tile.walkable, 0
+        walkable = tile.walkable
+        if not walkable and doors_passable:
+            if _only_door_blocks(tile):
+                return True, 0
+        return walkable, 0
+
+
+def _only_door_blocks(tile) -> bool:
+    """Check if the tile is blocked only by door statics (can be opened)."""
+    from anima.map import FLAG_DOOR, FLAG_IMPASSABLE, FLAG_SURFACE
+
+    if tile.land.impassable:
+        return False  # land itself is impassable — not a door issue
+
+    for s in tile.statics:
+        if s.impassable and not s.surface:
+            # This static blocks the tile — is it a door?
+            if not (s.flags & FLAG_DOOR):
+                return False  # non-door blocker exists
+    return True  # all blockers are doors
 
 
 def _astar_core(
@@ -82,6 +110,7 @@ def _astar_core(
     current_z: int | None,
     heuristic_weight: float = 1.0,
     adjacent: bool = False,
+    doors_passable: bool = False,
 ) -> list[tuple[int, int]]:
     """Core A* implementation with configurable heuristic weight.
 
@@ -134,7 +163,7 @@ def _astar_core(
         if len(closed) > max_steps:
             return []
 
-        for direction in range(8):
+        for direction in (0, 2, 4, 6):  # N, E, S, W only — no diagonals
             dx, dy = DIRECTION_DELTAS[direction]
             nx, ny = cx + dx, cy + dy
 
@@ -143,11 +172,12 @@ def _astar_core(
 
             can_walk, new_z = _is_walkable(
                 map_reader, nx, ny, denied_tiles, current_z, z_at if current_z is not None else None, cx, cy,
+                doors_passable=doors_passable,
             )
             if not can_walk:
                 continue
 
-            move_cost = SQRT2 if (dx != 0 and dy != 0) else 1.0
+            move_cost = 1.0
             tentative_g = g_score[(cx, cy)] + move_cost
 
             if tentative_g < g_score.get((nx, ny), float("inf")):
@@ -173,6 +203,7 @@ def find_path(
     denied_tiles: set[tuple[int, int]] | None = None,
     current_z: int | None = None,
     adjacent: bool = False,
+    doors_passable: bool = True,
 ) -> list[tuple[int, int]]:
     """Smart pathfinding: tries fast algorithm first, falls back to thorough.
 
@@ -181,6 +212,9 @@ def find_path(
 
     If adjacent=True, pathfinding succeeds when reaching any tile within 1
     Chebyshev distance of the target (useful for impassable targets like forges).
+
+    If doors_passable=True (default), door tiles are treated as walkable during
+    path planning. The movement code opens doors when the agent walks into them.
     """
     if sx == tx and sy == ty:
         return []
@@ -196,6 +230,7 @@ def find_path(
         current_z=current_z,
         heuristic_weight=1.5,
         adjacent=adjacent,
+        doors_passable=doors_passable,
     )
     if path:
         return path
@@ -208,4 +243,5 @@ def find_path(
         current_z=current_z,
         heuristic_weight=1.0,
         adjacent=adjacent,
+        doors_passable=doors_passable,
     )

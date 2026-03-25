@@ -210,6 +210,8 @@ class StatePublisher:
         if move_target:
             goal_pos = (move_target[0], move_target[1])
 
+        from anima.skills.gathering.mine import MINEABLE_LAND_TILES, MINEABLE_STATIC_TILES
+
         rows: list[str] = []
         for dy in range(-radius, radius + 1):
             row = ""
@@ -226,6 +228,10 @@ class StatePublisher:
                     row += "+"
                 else:
                     tile = self._map_reader.get_tile(x, y)
+                    is_mountain = tile.land.graphic in MINEABLE_LAND_TILES
+                    is_cave = any(
+                        s.graphic in MINEABLE_STATIC_TILES for s in tile.statics
+                    )
                     has_wall = any(
                         s.flags & FLAG_IMPASSABLE for s in tile.statics
                     )
@@ -234,7 +240,11 @@ class StatePublisher:
                         or s.graphic in range(0x0CD0, 0x0CD9)
                         for s in tile.statics
                     )
-                    if has_wall:
+                    if is_cave:
+                        row += "o"  # cave / mine entrance
+                    elif is_mountain:
+                        row += "^"
+                    elif has_wall:
                         row += "#"
                     elif has_tree:
                         row += "T"
@@ -327,6 +337,13 @@ class StatePublisher:
             "activity": self._activity[-30:],
             "minimap": self._build_minimap(ss, mobs),
         }
+
+        # Add ping latency
+        try:
+            from anima.main import _ping_tracker
+            snapshot["ping_ms"] = round(_ping_tracker.latency_ms, 1)
+        except Exception:
+            snapshot["ping_ms"] = 0
 
         try:
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)

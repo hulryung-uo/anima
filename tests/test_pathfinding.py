@@ -116,7 +116,7 @@ class TestFindPath:
     def test_diagonal(self) -> None:
         m = MockMapReader()
         path = find_path(m, 0, 0, 3, 3)
-        assert len(path) == 3
+        assert len(path) == 6  # 4-directional: 3 east + 3 south
         assert path[-1] == (3, 3)
 
     def test_obstacle_avoidance(self) -> None:

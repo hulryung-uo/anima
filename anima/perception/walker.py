@@ -45,6 +45,8 @@ class WalkerManager:
 
         # Pending step tile — set before sending walk, cleared on confirm/deny
         self._pending_step_tile: tuple[int, int] | None = None
+        # Pending direction — set before sending turn, applied on confirm
+        self._pending_direction: int | None = None
 
         # Set to True on deny — signals path cache should be invalidated
         self._path_dirty: bool = False
@@ -87,10 +89,12 @@ class WalkerManager:
     def confirm_walk(self, seq: int) -> None:
         if self.steps_count > 0:
             self.steps_count -= 1
-        # Only reset consecutive_denials and update position when an actual
-        # move was confirmed (not a turn). Turns don't set _pending_step_tile,
-        # so without this guard the turn→deny→turn→deny cycle keeps resetting
-        # the counter and the escape threshold is never reached.
+        # Apply pending direction (from turn packets)
+        if self._pending_direction is not None:
+            self._self_state.direction = self._pending_direction
+            self._pending_direction = None
+        # Update position ONLY when _pending_step_tile is set (actual move).
+        # Turn packets set _pending_step_tile = None, so turns don't affect position.
         if self._pending_step_tile is not None:
             self.consecutive_denials = 0
             nx, ny = self._pending_step_tile

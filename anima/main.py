@@ -10,8 +10,8 @@ from pathlib import Path
 
 import structlog
 
-from anima.brain.behavior_tree import BrainContext
 from anima.brain.brain import Brain
+from anima.core.context import AgentContext
 from anima.client.connection import UoConnection
 from anima.client.handler import PacketHandler
 from anima.client.packets import (
@@ -75,6 +75,51 @@ logger = structlog.get_logger()
 # If no packet arrives for this long, assume connection is dead
 _RECV_DEAD_TIMEOUT = 120.0  # 2 minutes
 
+# Ping latency tracking (ClassicUO-style: 5-slot rolling average)
+
+class PingTracker:
+    """Measures server latency using 0x73 ping packets."""
+
+    def __init__(self) -> None:
+        self._pings: list[float] = [0.0] * 5
+        self._idx: int = 0
+        self._send_time: float = 0.0
+
+    @property
+    def latency_ms(self) -> float:
+        """Average latency in ms (non-zero pings only)."""
+        vals = [p for p in self._pings if p > 0]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    def on_send(self) -> int:
+        """Record send time, return seq to use."""
+        self._send_time = asyncio.get_event_loop().time()
+        seq = self._idx % 5
+        self._idx = (self._idx + 1) % 5
+        return seq
+
+    def on_recv(self, seq: int) -> None:
+        """Record received pong."""
+        if self._send_time > 0:
+            ms = (asyncio.get_event_loop().time() - self._send_time) * 1000
+            self._pings[seq % 5] = ms
+
+
+_ping_tracker = PingTracker()
+
+
+async def ping_loop(conn: UoConnection) -> None:
+    """Send periodic pings to measure server latency (every 5s)."""
+    while conn.connected:
+        await asyncio.sleep(5.0)
+        if not conn.connected:
+            break
+        seq = _ping_tracker.on_send()
+        try:
+            await conn.send_packet(build_ping(seq))
+        except Exception:
+            break
+
 
 async def recv_loop(conn: UoConnection, handler: PacketHandler) -> None:
     """Receive and dispatch all game packets."""
@@ -96,9 +141,10 @@ async def recv_loop(conn: UoConnection, handler: PacketHandler) -> None:
 
         last_packet = asyncio.get_event_loop().time()
 
-        # Ping is protocol-level — handle inline (requires I/O)
+        # Ping response — measure latency
         if packet_id == 0x73:
-            await conn.send_packet(build_ping(data[1] if len(data) > 1 else 0))
+            seq = data[1] if len(data) > 1 else 0
+            _ping_tracker.on_recv(seq)
             continue
 
         # Dispatch to perception handlers
@@ -230,6 +276,38 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def planner_loop(ctx: AgentContext) -> None:
+    """Run the v2 rule-based planner instead of behavior tree brain."""
+    from anima.planner.planner import Planner
+
+    # Wait until equipment is loaded (backpack available)
+    for _ in range(30):  # up to 15 seconds
+        await asyncio.sleep(0.5)
+        if ctx.perception.self_state.equipment.get(0x15):
+            break
+    else:
+        logger.warning("planner_no_backpack_after_wait")
+
+    # Apply skill locks
+    persona_type = ctx.blackboard.get("persona_type", "")
+    if persona_type:
+        from anima.skills.skill_manager import apply_skill_locks
+        await apply_skill_locks(ctx, persona_type)
+
+    # Say hello
+    persona_name = ctx.persona.name if ctx.persona else "Anima"
+    await ctx.conn.send_packet(build_unicode_speech(f"Hello from {persona_name}!"))
+    logger.info("planner_started", agent=persona_name)
+
+    if not ctx.blackboard.get("procedure_registry"):
+        logger.error("planner_no_registry")
+        return
+
+    registry = ctx.blackboard["procedure_registry"]
+    planner = Planner(registry)
+    await planner.run(ctx)
+
+
 async def brain_loop(brain: Brain) -> None:
     """Run the behavior tree brain at ~5Hz after initial settle time."""
     await asyncio.sleep(3.0)  # wait for world to load and fastwalk keys
@@ -329,7 +407,11 @@ RECONNECT_DELAY = 10.0  # seconds between reconnect attempts
 MAX_RECONNECT_DELAY = 300.0  # max backoff
 
 
-async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = False) -> None:
+async def run(
+    cfg: Config,
+    delete_existing: bool = False,
+    use_planner: bool = True,
+) -> None:
     from anima.core.avatar import Avatar
 
     delay = RECONNECT_DELAY
@@ -349,18 +431,11 @@ async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = Fal
             first_run = False
             delay = RECONNECT_DELAY  # reset backoff on success
 
-            # Build brain with behavior tree (legacy bridge via blackboard)
-            blackboard = avatar.build_blackboard()
-            brain_ctx = BrainContext(
-                perception=avatar.perception,
-                conn=avatar.conn,
-                walker=avatar.walker,
-                map_reader=avatar.map_reader,
-                cfg=avatar.cfg,
-                llm=avatar.llm,
-                memory_db=avatar.memory_db,
-                blackboard=blackboard,
-            )
+            # Build typed context (v2 migration Step 1)
+            brain_ctx = avatar.build_context()
+            # Store procedure_registry in blackboard for planner access
+            if avatar.procedure_registry:
+                brain_ctx.blackboard["procedure_registry"] = avatar.procedure_registry
             brain = Brain(brain_ctx)
 
             # Bridge skill_change events → activity feed
@@ -389,29 +464,25 @@ async def run(cfg: Config, delete_existing: bool = False, enable_tui: bool = Fal
             from anima.monitor.state_publisher import StatePublisher
 
             state_pub = StatePublisher(
-                avatar.perception, blackboard, avatar.bus,
+                avatar.perception, brain_ctx.blackboard, avatar.bus,
                 map_reader=avatar.map_reader,
             )
+
+            # Select brain engine: v2 planner or legacy behavior tree
+            if use_planner:
+                engine_coro = planner_loop(brain_ctx)
+                logger.info("engine_mode", mode="v2_planner")
+            else:
+                engine_coro = brain_loop(brain)
+                logger.info("engine_mode", mode="v1_brain")
 
             game_coros: list = [
                 recv_loop(avatar.conn, avatar.pkt_handler),
                 inspect_self(avatar.conn, avatar.perception),
-                brain_loop(brain),
+                engine_coro,
                 state_pub.run(interval=0.5),
+                ping_loop(avatar.conn),
             ]
-
-            # TUI monitor — subscribes to EventBus
-            if enable_tui:
-                from anima.monitor.tui import AnimaMonitor
-
-                shutdown_event = asyncio.Event()
-                blackboard["shutdown_event"] = shutdown_event
-                monitor = AnimaMonitor(
-                    bus=avatar.bus,
-                    map_reader=avatar.map_reader,
-                    shutdown_event=shutdown_event,
-                )
-                game_coros.append(monitor.run())
 
             try:
                 # Use TaskGroup so that if ANY coro exits (e.g. recv_loop
@@ -455,7 +526,7 @@ def main() -> None:
         "--recreate", action="store_true", help="Delete existing character and recreate"
     )
     parser.add_argument(
-        "--tui", action="store_true", help="Enable TUI monitor (subscribes to EventBus)"
+        "--legacy", action="store_true", help="Use legacy v1 behavior tree instead of v2 planner"
     )
     args = parser.parse_args()
 
@@ -471,7 +542,11 @@ def main() -> None:
     if args.password:
         cfg.account.password = args.password
 
-    asyncio.run(run(cfg, delete_existing=args.recreate, enable_tui=args.tui))
+    asyncio.run(run(
+        cfg,
+        delete_existing=args.recreate,
+        use_planner=not args.legacy,
+    ))
 
 
 if __name__ == "__main__":

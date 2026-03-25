@@ -128,6 +128,26 @@ CREATE INDEX IF NOT EXISTS idx_relationships_agent ON relationships(agent_name, 
 CREATE INDEX IF NOT EXISTS idx_action_stats_agent
     ON action_stats(agent_name, context_pattern, action);
 
+CREATE TABLE IF NOT EXISTS action_logs (
+    id INTEGER PRIMARY KEY,
+    timestamp REAL NOT NULL,
+    agent TEXT NOT NULL,
+    procedure TEXT NOT NULL,
+    location_x INTEGER,
+    location_y INTEGER,
+    result TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    duration_ms REAL,
+    details TEXT NOT NULL DEFAULT '{}',
+    importance REAL DEFAULT 1.0
+);
+CREATE INDEX IF NOT EXISTS idx_action_logs_agent_proc
+    ON action_logs(agent, procedure);
+CREATE INDEX IF NOT EXISTS idx_action_logs_agent_loc
+    ON action_logs(agent, location_x, location_y);
+CREATE INDEX IF NOT EXISTS idx_action_logs_agent_ts
+    ON action_logs(agent, timestamp DESC);
+
 CREATE TABLE IF NOT EXISTS q_values (
     id INTEGER PRIMARY KEY,
     agent_name TEXT NOT NULL,
@@ -172,6 +192,7 @@ class MemoryDB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self.db_path))
         self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
         logger.info("memory_db_ready", path=str(self.db_path))

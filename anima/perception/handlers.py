@@ -111,7 +111,7 @@ def register_handlers(
         notoriety = r.read_u8()
 
         if serial == p.self_state.serial:
-            return  # self position managed by walker
+            return  # self position tracked by confirm_walk / deny_walk / 0x20
 
         mob = p.world.get_or_create_mobile(serial)
         mob.body = body

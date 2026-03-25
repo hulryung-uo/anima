@@ -38,6 +38,8 @@ KEEP_GRAPHICS = {
     0x1034, 0x1035,  # saws
     0x1EB8, 0x1EBC,  # tinker tools
     0x0E85, 0x0E86,  # pickaxes
+    0x0F39,  # shovels
+    0x0FBB, 0x0FBC,  # tongs (smith hammer)
     0x0E21,  # bandages
 }
 

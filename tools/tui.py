@@ -211,6 +211,8 @@ _MAP_COLORS = {
     "X": "bold bright_red",
     "M": "bold bright_yellow",
     "#": "grey50",
+    "^": "bright_yellow",  # mountain / mineable
+    "o": "dark_orange",    # cave / mine entrance
     "T": "green",
     "+": "bright_cyan",
     ".": "grey23",
@@ -368,6 +370,15 @@ def build_layout(
     footer.append(" Skills  ", style="grey70")
     footer.append("q", style="bold bright_yellow")
     footer.append(" Quit", style="grey70")
+
+    # Ping latency (from state.json)
+    ping_ms = data.get("ping_ms", 0)
+    if ping_ms > 0:
+        ping_color = "green" if ping_ms < 100 else "yellow" if ping_ms < 200 else "red"
+        footer.append(f"    PING {ping_ms:.0f}ms", style=f"bold {ping_color}")
+    else:
+        footer.append("    PING ---", style="grey50")
+
     layout["footer"].update(footer)
 
     return layout

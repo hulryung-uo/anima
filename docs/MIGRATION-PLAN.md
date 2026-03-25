@@ -45,45 +45,68 @@ Extracting these enables composition in procedures.
 - `inventory.py` — `find_in_backpack(ctx, graphics)`, `count_items(ctx, graphics)`, `drag_drop(ctx, item, target)`
 - `journal.py` — `wait_for_journal(ctx, patterns, timeout)` — replaces ad-hoc journal polling in skills
 
+**Modify**:
+- `core/bus.py` — add `wait_for_condition(predicate, timeout)` using asyncio.Event (event-driven, zero polling)
+- `action/movement.py` — add optional `interrupt_check` callback to `go_to()` (checked between each walk step; returns early on interrupt)
+
 **Source patterns extracted from**:
 - `skills/gathering/mine.py` lines 100-160 (target_tile pattern)
 - `skills/crafting/blacksmith.py` lines 80-150 (gump pattern)
 - `skills/trade/vendor.py` lines 74-149 (context menu pattern)
 
-**Existing reusable code**: `action/movement.py` (go_to), `action/interaction.py` (use_item) already exist — keep and reference.
+**Existing reusable code**: `action/movement.py` (go_to), `action/interaction.py` (use_item) already exist — keep and extend.
 
-**Test**: Unit tests per primitive. Skills remain unchanged (still use their inline code).
+**Test**: `tests/test_actions.py` — unit tests per primitive + wait_for_condition tests.
 
 ---
 
 ## Step 3: Procedure base class + ProcedureRegistry
 
-**Why**: Define the contract for state-machine workflows that replace Skills.
+**Why**: Define the contract for async workflows that replace Skills.
 
 **Create** (`anima/procedures/`):
-- `base.py` — `Procedure` ABC, `ProcedureResult`, `ProcedureRegistry`
+- `base.py` — `Procedure` ABC, `ProcedureResult`, `FailureReason`, `ProcedureRegistry`
 
 **Design** (modeled after existing `Skill` ABC at `skills/base.py`):
 ```python
+class FailureReason(Enum):
+    BLOCKED = "blocked"               # can't reach location / path blocked
+    INTERRUPTED = "interrupted"       # attacked, HP low
+    MISSING_RESOURCE = "missing_resource"  # no tools, no materials
+    WRONG_LOCATION = "wrong_location"     # not near forge/anvil/bank
+    PERMANENT = "permanent"           # skill too low, impossible
+
+@dataclass
 class ProcedureResult:
-    status: Literal["running", "success", "failure"]
+    success: bool
+    reason: FailureReason | None = None   # None when success=True
     message: str = ""
+    items_gained: list[Item] = field(default_factory=list)
+    gold_changed: int = 0
+    skill_gains: dict[int, float] = field(default_factory=dict)
+    next_suggestion: str | None = None    # continuation hint for planner
 
 class Procedure(ABC):
     name: str
     description: str
 
     async def can_start(self, ctx: AgentContext) -> bool: ...
-    async def tick(self, ctx: AgentContext) -> ProcedureResult: ...
+    async def execute(self, ctx: AgentContext) -> ProcedureResult: ...
     async def diagnose(self, ctx: AgentContext) -> str | None: ...
 ```
 
-Key difference from `Skill`: `tick()` returns RUNNING (multi-tick state machine) vs
-`execute()` which blocks until done. This prevents the stuck-skill problem.
+Uses `async execute()` — linear async code with `asyncio.wait_for()` timeouts.
+The stuck-skill problem is solved by timeouts and cancellation, not tick-based polling.
+Interrupts are handled by checking world state between awaits (check-between-steps).
+
+**ActionLog**: Base class auto-records every `ProcedureResult` to SQLite with
+procedure_name, location, duration_ms, params, result. Foundation for memory system.
+
+**Modify**: `memory/database.py` — add ActionLog table + `PRAGMA journal_mode=WAL`
 
 `ProcedureRegistry` mirrors `SkillRegistry` at `skills/base.py:133-165`.
 
-**Test**: Registry tests, ProcedureResult tests.
+**Test**: `tests/test_procedures_base.py` — registry, ProcedureResult, FailureReason, ActionLog recording.
 
 **Note**: Steps 2 and 3 are independent — can be done in parallel.
 
@@ -133,16 +156,21 @@ Replace with explicit priority rules.
 ```
 Priority 1: Survival (hp < 30% → flee/heal)
 Priority 2: Social (pending speech → respond)
-Priority 3: Continue running procedure (if one is in RUNNING state)
-Priority 4: Weight management (> 85% → smelt or bank)
-Priority 5: Tool management (no tools → make or buy)
-Priority 6: Primary activity (mine/craft based on character)
-Priority 7: Secondary activities (sell, bank)
-Priority 8: LLM strategic decision (where to go, what to focus on)
+Priority 3: Weight management (> 85% → smelt or bank)
+Priority 4: Tool management (no tools → make or buy)
+Priority 5: Primary activity (mine/craft based on character)
+Priority 6: Secondary activities (sell, bank)
+Priority 7: LLM strategic decision (where to go, what to focus on)
 ```
 
+**Continuation hints**: Planner tracks `continuation_hint: str | None`. When a
+procedure returns `next_suggestion` (e.g., "continue_mining"), planner respects it
+unless a higher-priority interrupt fires. Prevents thrashing between procedures.
+
+**Main loop**: `pick procedure → await execute() → log ActionLog → sleep(0.2) → repeat`
+
 **Modify**:
-- `main.py` — `brain_loop` calls `planner.tick()` instead of `brain.tick()`
+- `main.py` — `brain_loop` calls `planner.run()` instead of `brain.tick()`
 - `core/avatar.py` — wire ProcedureRegistry + Planner instead of SkillRegistry + Brain
 
 **Move** (not rewrite):
@@ -153,8 +181,10 @@ Priority 8: LLM strategic decision (where to go, what to focus on)
 - `skills/selector.py` (Q-learning, already disabled)
 - `skills/state.py` (Q-learning state encoder)
 - `brain/brain.py` `_skill_action` function
+- Q-learning tests: `test_update_q_value`, `test_update_location_value`, `test_exploitation_over_time`
+- Clean Q-state references in `monitor/state_publisher.py` and `memory/database.py`
 
-**Test**: Verify planner selects correct procedure given mock world states.
+**Test**: `tests/test_planner.py` — priority evaluation, continuation hints, LLM fallback.
 
 ---
 
@@ -183,7 +213,7 @@ readable by both humans and LLM.
 - Optional rename: `anima/client/` → `anima/protocol/`
 - Delete old skills that have been fully migrated to procedures
 - Delete `brain/behavior_tree.py` (after all `BrainContext` imports updated)
-- Add ActionLog data collection (foundation for Phase 2 AI evolution)
+- ActionLog data collection already added in Step 3
 
 ---
 

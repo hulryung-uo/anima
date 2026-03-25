@@ -83,6 +83,17 @@ def parse_recent_log(minutes: int = 10) -> dict:
         "go_to_no_path": 0,
         "smelt_walking_to_forge": 0,
         "mine_walking_to": 0,
+        # v2 planner/procedure counts
+        "planner_selected": 0,
+        "planner_no_procedure_available": 0,
+        "planner_move_to": 0,
+        "planner_restock": 0,
+        "procedure_result": 0,
+        "mine_depleted": 0,
+        "door_opened": 0,
+        "go_to_arrived": 0,
+        "go_to_denied": 0,
+        "go_to_give_up": 0,
     }
 
     recent_goals: list[str] = []
@@ -128,11 +139,15 @@ def parse_recent_log(minutes: int = 10) -> dict:
             if "speech_cliloc" in line and "text=" in line:
                 recent_server_msgs.append(line.strip()[-150:])
 
-            # Collect skill execution/result logs
+            # Collect skill/procedure execution logs
             if any(k in line for k in (
                 "skill_executing", "mine_target", "mine_fail", "mine_success",
                 "chop_target", "smelt_", "blacksmith_", "skill_problem",
                 "context_menu", "vendor_",
+                # v2 procedure logs
+                "procedure_result", "planner_selected", "planner_restock",
+                "planner_move_to", "mine_depleted", "planner_stuck",
+                "picked_up_ore", "door_opened",
             )):
                 recent_skill_logs.append(line.strip()[-150:])
 
@@ -286,6 +301,40 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "gathering",
         })
 
+    # v2 planner idle — no procedures available for extended period
+    no_proc = counts.get("planner_no_procedure_available", 0)
+    proc_selected = counts.get("planner_selected", 0)
+    if no_proc > 50 and proc_selected < 3:
+        problems.append({
+            "severity": "HIGH",
+            "name": "planner_idle",
+            "description": (
+                f"Planner idle {no_proc} ticks, only {proc_selected} procedures selected. "
+                f"Agent may be missing tools or stuck."
+            ),
+            "fix_type": "planner",
+        })
+
+    # v2 mine depleted loop — same area depleted repeatedly
+    depleted = counts.get("mine_depleted", 0)
+    if depleted > 10:
+        problems.append({
+            "severity": "MEDIUM",
+            "name": "mine_exhausted",
+            "description": f"Mine area depleted {depleted} times — should move to new area",
+            "fix_type": "planner",
+        })
+
+    # v2 go_to failures
+    go_give_up = counts.get("go_to_give_up", 0)
+    if go_give_up > 5:
+        problems.append({
+            "severity": "HIGH",
+            "name": "navigation_failure",
+            "description": f"go_to gave up {go_give_up} times — pathfinding issues",
+            "fix_type": "movement",
+        })
+
     # Tool breakage without replacement
     if counts.get("carpentry_tool_broke", 0) > 0 and counts.get("vendor_buy_sent", 0) == 0:
         problems.append({
@@ -359,6 +408,19 @@ def generate_report(data: dict, problems: list[dict]) -> str:
         f"(escapes: {counts.get('escape_stuck', 0)})",
         f"- Think decisions: {counts.get('think_decided', 0)}",
         f"- Goals: {', '.join(data.get('recent_goals', [])) or 'none'}",
+        "",
+        "## v2 Planner Metrics",
+        "",
+        f"- Procedures selected: {counts.get('planner_selected', 0)}",
+        f"- Procedure results: {counts.get('procedure_result', 0)}",
+        f"- Planner idle ticks: {counts.get('planner_no_procedure_available', 0)}",
+        f"- Move-to commands: {counts.get('planner_move_to', 0)}",
+        f"- Restock trips: {counts.get('planner_restock', 0)}",
+        f"- Mine depleted: {counts.get('mine_depleted', 0)}",
+        f"- Doors opened: {counts.get('door_opened', 0)}",
+        f"- Navigation: arrived={counts.get('go_to_arrived', 0)}, "
+        f"denied={counts.get('go_to_denied', 0)}, "
+        f"gave_up={counts.get('go_to_give_up', 0)}",
         "",
     ]
 
@@ -448,19 +510,27 @@ def call_claude(report_path: Path) -> tuple[bool, str]:
     """
     prompt = f"""You are fixing issues in the Anima UO AI agent. Read the analysis report at {report_path}.
 
-The report contains:
-- Metrics (walk/skill success rates)
-- Detected problems with severity
-- Recent server messages (cliloc text the server sent back)
-- Recent skill execution logs showing what the agent tried
+Also read these for current state:
+- data/state.json — current agent state (position, inventory, skills, ping)
+- data/events.jsonl (last 50 lines) — recent events
 
-Use the server messages and skill logs to diagnose the ROOT CAUSE.
-For example, "Target cannot be seen" means LOS/Z-height issue,
-"You must be near an anvil" means wrong location, etc.
+The agent uses v2 architecture:
+- Planner: anima/planner/planner.py — rule-based procedure selection (gameplay loop)
+- Procedures: anima/procedures/ — async game workflows (mine_ore, smelt_ore, etc.)
+- Action primitives: anima/actions/ — packet sequences (target, gump, vendor, etc.)
+- Movement: anima/action/movement.py — go_to() with 4-directional pathfinding, door handling
+- World knowledge: anima/world_knowledge.py — location coordinates (from ServUO Common.map)
+
+Gameplay loop: mine → smelt → sell → bank → buy tools → mine
+
+Use the server messages and logs to diagnose the ROOT CAUSE.
+For example, "Target cannot be seen" means LOS issue,
+"no metal here" means vein depleted and should move,
+"too far away" means need to walk closer, etc.
 
 Rules:
 - Read CLAUDE.md first for project conventions
-- Check the relevant skill code (anima/skills/) and fix the actual bug
+- Focus on v2 code: anima/planner/, anima/procedures/, anima/actions/
 - Focus on the highest severity problems first
 - Run `uv run pytest` after changes — only commit if tests pass
 - `git commit` with descriptive message, then `git push`

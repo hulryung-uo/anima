@@ -13,9 +13,11 @@ Subscribers can use wildcards:
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import time
 from collections import defaultdict
+from collections.abc import Callable as CallableABC
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -109,3 +111,36 @@ class EventBus:
     @property
     def subscriber_count(self) -> int:
         return len(self._subs)
+
+    # --- Event-driven wait (v2 migration Step 2) ---
+
+    async def wait_for_condition(
+        self,
+        predicate: CallableABC[[], bool],
+        timeout: float = 5.0,
+    ) -> bool:
+        """Wait until predicate() returns True, or timeout expires.
+
+        Event-driven: wakes on every bus event and rechecks the predicate.
+        Returns True if predicate was satisfied, False on timeout.
+        """
+        if predicate():
+            return True
+
+        event = asyncio.Event()
+
+        def _check(_topic: str, _data: dict) -> None:
+            if predicate():
+                event.set()
+
+        sub = self.subscribe("*", _check)
+        try:
+            # Check again after subscribing (race window)
+            if predicate():
+                return True
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self.unsubscribe(sub)

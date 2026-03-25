@@ -4,37 +4,18 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
 
-from anima.brain.llm import LLMClient
-from anima.client.connection import UoConnection
-from anima.config import Config
-from anima.map import MapReader
-from anima.memory.database import MemoryDB
-from anima.perception import Perception
-from anima.perception.walker import WalkerManager
+from anima.core.context import AgentContext
+
+# Backward-compat alias — all existing code that imports BrainContext keeps working.
+BrainContext = AgentContext
 
 
 class Status(Enum):
     SUCCESS = auto()
     FAILURE = auto()
     RUNNING = auto()
-
-
-@dataclass
-class BrainContext:
-    """Shared context passed to every behavior tree node."""
-
-    perception: Perception
-    conn: UoConnection
-    walker: WalkerManager
-    map_reader: MapReader | None
-    cfg: Config
-    llm: LLMClient | None = None
-    memory_db: MemoryDB | None = None
-    blackboard: dict[str, Any] = field(default_factory=dict)
 
 
 class Node(ABC):

@@ -247,62 +247,6 @@ class TestSkillSelector:
         result = await selector.select(ctx, [], "Anima")
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_selects_untried_first(self, db: MemoryDB) -> None:
-        selector = SkillSelector(db)
-        ctx = make_ctx()
-
-        # Give dummy a Q-value, leave fail_skill untried
-        state_key = encode_state(ctx)
-        await db.update_q_value("Anima", state_key, "dummy", 5.0, 10)
-
-        skills = [DummySkill(), FailSkill()]
-        result = await selector.select(ctx, skills, "Anima")
-        # Should pick the untried skill (fail_skill)
-        assert result is not None
-        assert result.name == "fail_skill"
-
-    @pytest.mark.asyncio
-    async def test_update_q_value(self, db: MemoryDB) -> None:
-        selector = SkillSelector(db)
-        ctx = make_ctx()
-
-        skill = DummySkill()
-        result = SkillResult(success=True, reward=10.0)
-        await selector.update(ctx, skill, result, "Anima")
-
-        state_key = encode_state(ctx)
-        q = await db.get_q_value("Anima", state_key, "dummy")
-        assert q > 0.0
-
-    @pytest.mark.asyncio
-    async def test_update_location_value(self, db: MemoryDB) -> None:
-        selector = SkillSelector(db)
-        ctx = make_ctx()
-
-        skill = DummySkill()
-        result = SkillResult(success=True, reward=10.0)
-        await selector.update(ctx, skill, result, "Anima")
-
-        rx, ry = region_coords(1000, 2000)
-        locs = await db.get_location_values("Anima", rx, ry)
-        assert len(locs) == 1
-        assert locs[0][0] == "dummy"  # activity
-        assert locs[0][1] == 10.0     # total_reward
-
-    @pytest.mark.asyncio
-    async def test_exploitation_over_time(self, db: MemoryDB) -> None:
-        """After many updates, high-reward skill should be preferred."""
-        selector = SkillSelector(db)
-        ctx = make_ctx()
-        state_key = encode_state(ctx)
-
-        # Give dummy high Q, fail_skill low Q, both tried many times
-        await db.update_q_value("Anima", state_key, "dummy", 8.0, 50)
-        await db.update_q_value("Anima", state_key, "fail_skill", -2.0, 50)
-
-        skills = [DummySkill(), FailSkill()]
-        # With many visits, exploitation dominates — should pick dummy
-        result = await selector.select(ctx, skills, "Anima")
-        assert result is not None
-        assert result.name == "dummy"
+    # Q-learning tests removed in v2 migration Step 5.
+    # Q-learning is disabled (selector uses random selection).
+    # These tests are replaced by tests/test_planner.py.

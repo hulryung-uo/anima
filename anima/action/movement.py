@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import structlog
@@ -22,31 +23,50 @@ _DIR_NAMES = {
 }
 
 
-async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
+async def go_to(
+    ctx: BrainContext,
+    target_x: int,
+    target_y: int,
+    interrupt_check: Callable[[], bool] | None = None,
+) -> bool:
     """Pathfind and walk step-by-step to (target_x, target_y).
 
     Returns True if destination reached (within 1 tile), False if failed.
-    Calculates a path once, follows it step by step. On denial,
-    records the blocked tile and recalculates a new route around it.
+
+    Features:
+    - Recalculates path around permanently denied tiles
+    - Opens closed doors automatically when blocked
+    - Interrupt callback for survival checks between steps
+    - Scales max_steps with distance (long-distance travel supported)
     """
     ss = ctx.perception.self_state
-    max_steps = 50
-    max_recalc = 5  # max path recalculations before giving up
     step_delay = ctx.cfg.movement.walk_delay_ms / 1000.0
 
     dist = max(abs(target_x - ss.x), abs(target_y - ss.y))
+    max_steps = max(200, dist * 3)  # scale with distance, minimum 200
+    max_recalc = 20  # enough to route around a full building wall
+
     logger.info(
         "go_to_start",
         pos=f"({ss.x},{ss.y},{ss.z})",
         target=f"({target_x},{target_y})",
-        dist=dist,
+        dist=dist, max_steps=max_steps,
     )
 
     steps_taken = 0
     recalcs = 0
     path: list[tuple[int, int]] = []
+    permanent_denied: set[tuple[int, int]] = set()  # tiles that always block
+    _door_tried: set[tuple[int, int]] = set()  # door tiles already attempted
+    consecutive_denials_without_progress = 0
+    last_progress_pos: tuple[int, int] = (ss.x, ss.y)
 
     while steps_taken < max_steps and ctx.conn.connected:
+        # Check for interrupt between each step (e.g., HP low → flee)
+        if interrupt_check is not None and interrupt_check():
+            logger.info("go_to_interrupted", pos=f"({ss.x},{ss.y})", steps=steps_taken)
+            return False
+
         sx, sy = ss.x, ss.y
         remaining = max(abs(target_x - sx), abs(target_y - sy))
         if remaining <= 1:
@@ -59,37 +79,47 @@ async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
                 logger.info(
                     "go_to_give_up", pos=f"({sx},{sy})",
                     target=f"({target_x},{target_y})", recalcs=recalcs,
+                    permanent_denied=len(permanent_denied),
                 )
                 return False
+
+            # Combine denied tiles: walker denials + permanent (from server denies)
+            # Note: _impassable_world_items() excluded from pathfinding —
+            # dynamic item flags are unreliable and block valid routes.
+            # Server deny will catch actual obstacles at walk time.
             walker_denied = set(ctx.walker.denied_tiles.keys())
-            denied = walker_denied | _impassable_world_items(ctx)
+            denied = walker_denied | permanent_denied
+
+            search_steps = max(1000, dist * 8)  # large search for urban areas
             path = find_path(
                 ctx.map_reader, sx, sy, target_x, target_y,
+                max_steps=search_steps,
                 denied_tiles=denied, current_z=ss.z,
                 adjacent=True,
             )
             recalcs += 1
+
             if not path:
-                # Try without denied tiles — maybe they're stale
+                # Try without walker denied (might be stale), keep permanent
                 path = find_path(
                     ctx.map_reader, sx, sy, target_x, target_y,
+                    max_steps=search_steps,
+                    denied_tiles=permanent_denied,
                     current_z=ss.z,
                     adjacent=True,
                 )
                 if path:
-                    # Denied tiles were blocking — clear them
-                    logger.info(
-                        "go_to_clear_denied",
-                        cleared=len(walker_denied),
-                    )
+                    logger.info("go_to_clear_walker_denied", cleared=len(walker_denied))
                     ctx.walker.clear_all_denied_tiles()
                     continue
+
                 logger.info(
                     "go_to_no_path", pos=f"({sx},{sy},{ss.z})",
                     denied=len(denied),
                     target=f"({target_x},{target_y})", recalc=recalcs,
                 )
                 return False
+
             logger.debug(
                 "go_to_path_found", pos=f"({sx},{sy})",
                 path_len=len(path), recalc=recalcs,
@@ -106,21 +136,51 @@ async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
         # Take next step from path
         next_x, next_y = path[0]
 
-        # If we're already past this waypoint (e.g. position changed), skip it
+        # Skip waypoints we've already passed
         if (next_x, next_y) == (sx, sy):
             path.pop(0)
             continue
 
+        # --- DOOR CHECK: if next tile has a closed door, run traversal routine ---
+        door_serial = _find_closed_door_at(ctx, next_x, next_y)
+        if door_serial is not None and (next_x, next_y) not in _door_tried:
+            _door_tried.add((next_x, next_y))
+            ok = await _traverse_door(ctx, door_serial, sx, sy, next_x, next_y, step_delay)
+            if ok:
+                # Successfully passed through door — recalculate from new position
+                path = []
+            else:
+                permanent_denied.add((next_x, next_y))
+                path = []
+            continue
+
         direction = direction_to(sx, sy, next_x, next_y)
         dir_name = _DIR_NAMES.get(direction, "?")
-
-        # Remember position before step to detect success/failure
         prev_x, prev_y = sx, sy
 
+        current_facing = ss.direction & 0x07
+        need_turn = (current_facing != direction)
+
+        if need_turn:
+            # Turn packet — _pending_step_tile MUST be None
+            ctx.walker._pending_step_tile = None
+            ctx.walker._pending_direction = direction
+            seq = ctx.walker.next_sequence()
+            fastwalk = ctx.walker.pop_fast_walk_key()
+            await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
+            ctx.walker.steps_count += 1
+            ctx.walker.last_step_time = asyncio.get_event_loop().time() * 1000 + 50
+            # Wait for turn confirm before sending move
+            await asyncio.sleep(step_delay + 0.05)
+            await asyncio.sleep(0)  # yield to process confirm
+            # Don't count turn as a step
+            continue
+
+        # Move packet — set _pending_step_tile for position tracking
         ctx.walker._pending_step_tile = (next_x, next_y)
-        seq = ctx.walker.next_sequence()
+        move_seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
-        await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
+        await ctx.conn.send_packet(build_walk_request(direction, move_seq, fastwalk))
         ctx.walker.steps_count += 1
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
@@ -130,22 +190,88 @@ async def go_to(ctx: BrainContext, target_x: int, target_y: int) -> bool:
         logger.debug(
             "go_to_step",
             pos=f"({sx},{sy})", next=f"({next_x},{next_y})",
-            dir=dir_name, seq=seq, step=steps_taken, remaining=remaining,
+            dir=dir_name, seq=move_seq, step=steps_taken, remaining=remaining,
         )
 
-        # Wait for server response
-        await asyncio.sleep(step_delay + 0.05)
+        # Wait for server to process — poll until position changes or timeout
+        deadline = asyncio.get_event_loop().time() + 1.0  # 1 second max
+        polls = 0
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+            polls += 1
+            if ss.x != prev_x or ss.y != prev_y:
+                logger.debug("go_to_confirmed", polls=polls, pos=f"({ss.x},{ss.y})")
+                break
 
-        # Check if we moved
         if ss.x != prev_x or ss.y != prev_y:
             path.pop(0)
         else:
+            # Not a door — add to permanent denied and recalculate.
+            # Also probe adjacent tiles in the same wall direction:
+            # if a tile is blocked, its neighbors along the perpendicular
+            # axis are likely also blocked (wall segment).
+            permanent_denied.add((next_x, next_y))
+            # Probe 2 tiles in each perpendicular direction
+            dx, dy = next_x - sx, next_y - sy
+            for probe_dist in (1, 2):
+                if dx != 0 and dy != 0:
+                    # Diagonal denial — probe both axis-aligned neighbors
+                    permanent_denied.add((next_x + probe_dist * (1 if dx > 0 else -1), next_y))
+                    permanent_denied.add((next_x, next_y + probe_dist * (1 if dy > 0 else -1)))
+                elif dx != 0:
+                    permanent_denied.add((next_x, next_y + probe_dist))
+                    permanent_denied.add((next_x, next_y - probe_dist))
+                else:
+                    permanent_denied.add((next_x + probe_dist, next_y))
+                    permanent_denied.add((next_x - probe_dist, next_y))
+
+            # Track if we're making progress or stuck in the same spot
+            if abs(sx - last_progress_pos[0]) <= 2 and abs(sy - last_progress_pos[1]) <= 2:
+                consecutive_denials_without_progress += 1
+            else:
+                consecutive_denials_without_progress = 0
+                last_progress_pos = (sx, sy)
+
             logger.info(
                 "go_to_denied",
                 pos=f"({sx},{sy})", blocked=f"({next_x},{next_y})",
                 dir=dir_name, recalc=recalcs,
+                permanent_denied=len(permanent_denied),
+                stuck_count=consecutive_denials_without_progress,
             )
-            path = []  # force recalculation on next iteration
+
+            # If stuck in same area for 3+ denials, try escaping:
+            # 1. Try opening ALL nearby doors (might be trapped in a building)
+            # 2. Walk perpendicular to the blocked direction
+            if consecutive_denials_without_progress >= 3:
+                # Try to open any nearby doors first
+                doors_opened = await _try_open_nearby_doors(ctx)
+                if doors_opened > 0:
+                    logger.info("go_to_opened_nearby_doors", count=doors_opened)
+                    # Clear walker denials since doors changed walkability
+                    ctx.walker.clear_all_denied_tiles()
+                    consecutive_denials_without_progress = 0
+                    path = []  # recalculate with doors open
+                    continue
+
+                # No doors found — try a detour
+                detour_target = _calc_detour(sx, sy, target_x, target_y)
+                if detour_target:
+                    dx2, dy2 = detour_target
+                    logger.info("go_to_detour", target=f"({dx2},{dy2})")
+                    detour_path = find_path(
+                        ctx.map_reader, sx, sy, dx2, dy2,
+                        max_steps=100,
+                        denied_tiles=_impassable_world_items(ctx) | permanent_denied,
+                        current_z=ss.z,
+                        adjacent=True,
+                    )
+                    if detour_path:
+                        path = detour_path
+                        consecutive_denials_without_progress = 0
+                        continue
+
+            path = []  # force recalculation with expanded denied set
 
     logger.info(
         "go_to_max_steps", pos=f"({ss.x},{ss.y})",
@@ -217,7 +343,7 @@ async def wander_action(ctx: BrainContext) -> Status:
 
     sz = ctx.perception.self_state.z
 
-    for direction in range(8):
+    for direction in (0, 2, 4, 6):  # N, E, S, W only
         dx, dy = DIRECTION_DELTAS[direction]
         nx, ny = sx + dx, sy + dy
 
@@ -320,16 +446,246 @@ async def wander_action(ctx: BrainContext) -> Status:
     return Status.SUCCESS
 
 
-def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
-    """Collect (x, y) of ground-level world items that actually have the IMPASSABLE flag.
+async def _walk_one_step(
+    ctx: BrainContext, direction: int, step_delay: float,
+) -> bool:
+    """Walk one tile in the given direction. Handles turn-then-move.
 
-    Previously this blocked ALL ground items, which incorrectly treated walkable
-    items (logs, ore, etc.) as obstacles — trapping the agent after gathering.
-    Items that block without the flag are handled by the denied_tiles cache.
+    Returns True if position changed.
+    """
+    ss = ctx.perception.self_state
+    prev_x, prev_y = ss.x, ss.y
+
+    # Wait until walker is ready
+    for _ in range(20):
+        if ctx.walker.can_walk():
+            break
+        await asyncio.sleep(0.1)
+    else:
+        return False
+
+    # Turn first if not facing the right direction
+    current_facing = ss.direction & 0x07
+    if current_facing != direction:
+        ctx.walker._pending_step_tile = None  # turn only — no position update
+        ctx.walker._pending_direction = direction
+        seq = ctx.walker.next_sequence()
+        fastwalk = ctx.walker.pop_fast_walk_key()
+        await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
+        ctx.walker.steps_count += 1
+        ctx.walker.last_step_time = asyncio.get_event_loop().time() * 1000 + 50
+        await asyncio.sleep(0.05)
+        for _ in range(5):
+            if ctx.walker.can_walk():
+                break
+            await asyncio.sleep(0.02)
+
+    # Now move — set _pending_step_tile for position tracking
+    ctx.walker._pending_step_tile = (
+        ss.x + DIRECTION_DELTAS[direction][0],
+        ss.y + DIRECTION_DELTAS[direction][1],
+    )
+    seq = ctx.walker.next_sequence()
+    fastwalk = ctx.walker.pop_fast_walk_key()
+    await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
+    ctx.walker.steps_count += 1
+    ctx.walker.last_step_time = (
+        asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
+    )
+    await asyncio.sleep(step_delay + 0.05)
+
+    return ss.x != prev_x or ss.y != prev_y
+
+
+def _cardinal_direction(from_x: int, from_y: int, to_x: int, to_y: int) -> int:
+    """Get the nearest cardinal direction (N/E/S/W only, no diagonals)."""
+    dx = to_x - from_x
+    dy = to_y - from_y
+    if abs(dx) >= abs(dy):
+        return 2 if dx > 0 else 6  # East or West
+    else:
+        return 4 if dy > 0 else 0  # South or North
+
+
+async def _traverse_door(
+    ctx: BrainContext,
+    door_serial: int,
+    player_x: int,
+    player_y: int,
+    door_x: int,
+    door_y: int,
+    step_delay: float,
+) -> bool:
+    """Full door traversal routine:
+
+    1. Approach door from cardinal direction (N/E/S/W)
+    2. Open door (double-click)
+    3. Verify it opened (position changed)
+    4. Walk 2 tiles through (door tile + 1 past)
+    5. Close door (double-click from other side)
+
+    Returns True if successfully passed through.
+    """
+    from anima.client.packets import build_double_click
+
+    ss = ctx.perception.self_state
+
+    # Determine approach direction (cardinal only)
+    walk_dir = _cardinal_direction(player_x, player_y, door_x, door_y)
+    dx, dy = DIRECTION_DELTAS[walk_dir]
+    approach_x = door_x - dx
+    approach_y = door_y - dy
+
+    dir_name = _DIR_NAMES.get(walk_dir, "?")
+    logger.info(
+        "door_traverse_start",
+        door=f"({door_x},{door_y})",
+        approach=f"({approach_x},{approach_y})",
+        direction=dir_name,
+    )
+
+    # Step 1: Walk to approach tile (adjacent to door, cardinal direction)
+    if ss.x != approach_x or ss.y != approach_y:
+        # Simple direct walk to approach tile
+        for _ in range(5):
+            if max(abs(ss.x - approach_x), abs(ss.y - approach_y)) == 0:
+                break
+            d = direction_to(ss.x, ss.y, approach_x, approach_y)
+            if not await _walk_one_step(ctx, d, step_delay):
+                break
+
+    dx_to_door = abs(ss.x - door_x)
+    dy_to_door = abs(ss.y - door_y)
+    # Must be exactly 1 tile away in a cardinal direction (not diagonal)
+    if not ((dx_to_door == 1 and dy_to_door == 0) or (dx_to_door == 0 and dy_to_door == 1)):
+        logger.info("door_not_adjacent_cardinal", pos=f"({ss.x},{ss.y})", door=f"({door_x},{door_y})")
+        return False
+
+    # Step 2: Open the door
+    door_item = ctx.perception.world.items.get(door_serial)
+    if not door_item:
+        return False
+    old_door_pos = (door_item.x, door_item.y)
+
+    await ctx.conn.send_packet(build_double_click(door_serial))
+    await asyncio.sleep(1.0)
+
+    # Step 3: Verify door opened (position changed)
+    door_item = ctx.perception.world.items.get(door_serial)
+    if not door_item:
+        return False
+    new_door_pos = (door_item.x, door_item.y)
+
+    if new_door_pos == old_door_pos:
+        logger.info("door_didnt_open", pos=f"{old_door_pos}")
+        return False
+
+    logger.info("door_opened", old=f"{old_door_pos}", new=f"{new_door_pos}")
+
+    # Step 4: Walk 2 tiles through the door (through old door pos + 1 more)
+    for step in range(2):
+        moved = await _walk_one_step(ctx, walk_dir, step_delay)
+        if not moved:
+            logger.info("door_walk_through_failed", step=step + 1)
+            # Still try to close the door
+            break
+
+    # Step 5: Close the door (double-click from other side)
+    # Re-find the door item (it may have updated)
+    door_item = ctx.perception.world.items.get(door_serial)
+    if door_item and max(abs(door_item.x - ss.x), abs(door_item.y - ss.y)) <= 2:
+        old_close_pos = (door_item.x, door_item.y)
+        await ctx.conn.send_packet(build_double_click(door_serial))
+        await asyncio.sleep(1.0)
+
+        door_item = ctx.perception.world.items.get(door_serial)
+        if door_item:
+            new_close_pos = (door_item.x, door_item.y)
+            if new_close_pos != old_close_pos:
+                logger.info("door_closed", old=f"{old_close_pos}", new=f"{new_close_pos}")
+            else:
+                logger.debug("door_close_unchanged")
+
+    logger.info(
+        "door_traverse_done",
+        pos=f"({ss.x},{ss.y})",
+        started=f"({player_x},{player_y})",
+    )
+    return True
+
+
+
+
+async def _try_open_nearby_doors(ctx: BrainContext) -> int:
+    """Find and open closed doors within 3 tiles. Returns number opened.
+
+    Detects successful opening by checking if the door item moved position
+    (UO doors shift position when opened).
+    """
+    if ctx.map_reader is None:
+        return 0
+    from anima.client.packets import build_double_click
+    from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
+
+    ss = ctx.perception.self_state
+    opened = 0
+    for it in list(ctx.perception.world.items.values()):
+        if it.container != 0:
+            continue
+        dist = max(abs(it.x - ss.x), abs(it.y - ss.y))
+        if dist > 3:
+            continue
+        flags = ctx.map_reader._get_item_flags(it.graphic)
+        if (flags & FLAG_DOOR) and (flags & FLAG_IMPASSABLE):
+            old_pos = (it.x, it.y)
+            await ctx.conn.send_packet(build_double_click(it.serial))
+            await asyncio.sleep(1.0)
+            # Check if door moved
+            updated = ctx.perception.world.items.get(it.serial)
+            if updated and (updated.x, updated.y) != old_pos:
+                logger.info("door_opened", old=f"{old_pos}", new=f"({updated.x},{updated.y})")
+                # Old pos is now walkable; new pos has the open door (impassable)
+                ctx.walker.clear_denied_tile(old_pos[0], old_pos[1])
+                opened += 1
+            else:
+                logger.debug("door_no_change", pos=f"{old_pos}")
+    return opened
+
+
+def _calc_detour(
+    sx: int, sy: int,
+    target_x: int, target_y: int,
+) -> tuple[int, int] | None:
+    """Calculate a detour point perpendicular to the blocked direction.
+
+    When the agent is stuck hitting a wall, this calculates a point
+    20 tiles perpendicular to the wall (away from the target axis).
+    The agent walks there first, then resumes toward the target.
+    """
+    # Direction from agent to target
+    dx = target_x - sx
+    dy = target_y - sy
+
+    # Perpendicular direction: rotate 90 degrees
+    # Try both sides, pick the one that doesn't go toward the target
+    detour_dist = 20
+    if abs(dx) >= abs(dy):
+        # Primarily east/west movement — detour north or south
+        # Pick north (negative y) first
+        return (sx, sy - detour_dist)
+    else:
+        # Primarily north/south — detour east or west
+        return (sx + detour_dist, sy)
+
+
+def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
+    """Collect (x, y) of ground-level world items that have IMPASSABLE flag.
+
+    Excludes doors — those are opened automatically by go_to().
     """
     if ctx.map_reader is None:
         return set()
-    from anima.map import FLAG_IMPASSABLE
+    from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
 
     blocked: set[tuple[int, int]] = set()
     for it in ctx.perception.world.items.values():
@@ -338,9 +694,29 @@ def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
         if it.serial & 0x40000000 == 0:
             continue
         flags = ctx.map_reader._get_item_flags(it.graphic)
-        if flags & FLAG_IMPASSABLE:
+        if (flags & FLAG_IMPASSABLE) and not (flags & FLAG_DOOR):
             blocked.add((it.x, it.y))
     return blocked
+
+
+def _find_closed_door_at(ctx: BrainContext, x: int, y: int) -> int | None:
+    """Find a closed door world item at or adjacent to (x, y).
+
+    Returns serial or None. Only returns doors that are impassable (closed).
+    Open doors have FLAG_DOOR but NOT FLAG_IMPASSABLE.
+    """
+    if ctx.map_reader is None:
+        return None
+    from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
+
+    for it in ctx.perception.world.items.values():
+        if it.container != 0:
+            continue
+        if abs(it.x - x) <= 1 and abs(it.y - y) <= 1:
+            flags = ctx.map_reader._get_item_flags(it.graphic)
+            if (flags & FLAG_DOOR) and (flags & FLAG_IMPASSABLE):
+                return it.serial
+    return None
 
 
 async def _escape_stuck(ctx: BrainContext, full_clear: bool = False) -> bool:
@@ -446,7 +822,7 @@ async def _escape_stuck(ctx: BrainContext, full_clear: bool = False) -> bool:
     # Last resort: brute-force walk in all 8 directions ignoring map data
     logger.warning("escape_brute_force", pos=f"({sx},{sy})")
     ctx.walker.clear_all_denied_tiles()
-    for direction in range(8):
+    for direction in (0, 2, 4, 6):  # N, E, S, W only
         if not ctx.walker.can_walk():
             await asyncio.sleep(0.5)
             if not ctx.walker.can_walk():

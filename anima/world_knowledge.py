@@ -31,41 +31,36 @@ class Location:
 # Coordinates from ServUO trammel.xml spawn data.
 # Locations with approach_x/y are indoor — agent stops at the outdoor approach point.
 BRITAIN_LOCATIONS: list[Location] = [
-    # --- Banks ---
-    Location("West Britain Bank", 1427, 1683, "The famous gathering spot. Banker inside.",
-             approach_x=1438, approach_y=1693),
-    # --- Shops (from ServUO spawns) ---
-    Location("Britain Carpenter", 1430, 1597, "Carpentry shop. Sells saws and wooden tools.",
-             approach_x=1435, approach_y=1600),
-    Location("Britain Tinker", 1425, 1655, "Tinker shop. Sells tinker tools, saws, pickaxes.",
-             approach_x=1427, approach_y=1658),
-    Location("Britain Blacksmith", 1418, 1547, "Forge and anvil. Weapons and armor.",
-             approach_x=1418, approach_y=1550),
-    Location("Britain Provisioner", 1470, 1664, "General supplies and tools."),
-    Location("Britain Armorer", 1447, 1647, "Armor and shields.",
-             approach_x=1447, approach_y=1650),
-    Location("Britain Healer", 1471, 1611, "Healing and resurrection.",
-             approach_x=1471, approach_y=1614),
-    Location("Britain Mage Shop", 1484, 1545, "Reagents and scrolls.",
-             approach_x=1484, approach_y=1548),
-    Location("Britain Jeweler", 1451, 1679, "Gems and jewelry."),
-    Location("Britain Tailor", 1467, 1686, "Cloth, thread, and tailored goods."),
-    Location("Britain Bowyer", 1470, 1578, "Bows and arrows.",
-             approach_x=1470, approach_y=1581),
-    Location("Britain Baker", 1450, 1617, "Fresh bread and food.",
-             approach_x=1450, approach_y=1620),
-    Location("Britain Tanner", 1427, 1609, "Leather and hides.",
-             approach_x=1427, approach_y=1612),
-    Location("Britain Butcher", 1449, 1723, "Meat and raw food."),
+    # --- Banks --- (from ServUO Common.map)
+    Location("West Britain Bank", 1425, 1690, "The First Bank of Britain."),
+    Location("East Britain Bank", 1655, 1606, "East Britain Bank."),
+    # --- Shops ---
+    Location("Britain Tinker", 1422, 1654, "Tinker's Guild. Tools, pickaxes, shovels."),
+    Location("Britain Carpenter", 1430, 1597, "The Saw Horse."),
+    Location("Britain Blacksmith", 1365, 1575, "The Lord's Arms. Forge and anvil."),
+    Location("Britain Provisioner", 1469, 1668, "Britain's Premier Provisioners."),
+    Location("Britain Provisioner East", 1602, 1712, "Profuse Provisions."),
+    Location("Britain Armorer", 1637, 1693, "Artistic Armour."),
+    Location("Britain Arms", 1443, 1650, "Heavy Metal Armorer."),
+    Location("Britain Arms North", 1481, 1584, "Strength and Steel."),
+    Location("Britain Healer", 1472, 1607, "Healer of Britain."),
+    Location("Britain Mage Shop", 1590, 1654, "Incantations & Enchantments."),
+    Location("Britain Reagents", 1498, 1659, "Ethereal Goods."),
+    Location("Britain Jeweler", 1655, 1642, "A Girl's Best Friend."),
+    Location("Britain Jeweler West", 1451, 1679, "Premier Gems."),
+    Location("Britain Tailor", 1467, 1686, "The Lord's Clothiers."),
+    Location("Britain Tailor East", 1547, 1659, "The Right Fit."),
+    Location("Britain Bowyer", 1470, 1578, "Quality Fletching."),
+    Location("Britain Baker", 1450, 1617, "Good Eats."),
+    Location("Britain Tanner", 1431, 1612, "The Best Hides of Britain."),
+    Location("Britain Butcher", 1449, 1723, "The Cleaver."),
     # --- Landmarks ---
-    Location("Britain Tavern", 1620, 1585, "The Salty Dog tavern. Good place for rumors.",
-             approach_x=1620, approach_y=1588),
-    Location("Sweet Dreams Inn", 1584, 1591, "A cozy inn to rest.",
-             approach_x=1584, approach_y=1594),
-    Location("Britain Castle", 1323, 1624, "Lord British's castle. Grand and imposing."),
-    Location("Britain Park", 1475, 1645, "Green space in the middle of town."),
-    Location("Britain Stables", 1479, 1555, "Horses and pack animals."),
-    Location("Britain Cemetery", 1386, 1538, "Spooky place. Undead at night."),
+    Location("Britain Tavern", 1620, 1586, "The Salty Dog."),
+    Location("Britain Blue Boar", 1498, 1691, "The Blue Boar tavern."),
+    Location("Britain Cat's Lair", 1427, 1716, "The Cat's Lair tavern."),
+    Location("Sweet Dreams Inn", 1493, 1619, "Sweet Dreams inn."),
+    Location("Wayfarer's Inn", 1585, 1591, "The Wayfarer's Inn."),
+    Location("Britain Stables", 1385, 1658, "The Stables."),
     Location("Britain Docks", 1504, 1768, "Ships and sailors. Fishing spot."),
     # --- Forests ---
     Location("Britain North Forest", 1620, 1554, "Dense forest north of town. Good for lumber."),
@@ -75,21 +70,27 @@ BRITAIN_LOCATIONS: list[Location] = [
 # Minoc city landmarks (Felucca) — mining hub
 # Coordinates from ServUO spawn data and in-game exploration.
 MINOC_LOCATIONS: list[Location] = [
-    # --- Banks ---
-    Location("Minoc Bank", 2512, 556, "Minoc bank. Store ingots and gold."),
+    # --- Banks --- (from ServUO Common.map)
+    Location("Minoc Bank", 2503, 552, "Bank of Minoc."),
     # --- Shops ---
-    Location("Minoc Blacksmith", 2450, 408, "Forge and anvil. Buy hammers and armor.",
-             approach_x=2453, approach_y=411),
-    Location("Minoc Tinker", 2461, 457, "Tinker tools, pickaxes, and shovels."),
-    Location("Minoc Provisioner", 2509, 421, "General supplies."),
-    Location("Minoc Healer", 2466, 395, "Healing and resurrection."),
+    Location("Minoc Blacksmith", 2471, 564, "The Forgery. Forge and anvil."),
+    Location("Minoc Tinker", 2461, 457, "Gears and Gadgets. Tinker tools, pickaxes, shovels."),
+    Location("Minoc Provisioner", 2456, 428, "The Old Miners' Supplies."),
+    Location("Minoc Provisioner South", 2530, 551, "The Survival Shop."),
+    Location("Minoc Healer", 2577, 599, "The Healing Hand."),
+    Location("Minoc Carpenter", 2513, 477, "The Oak Throne."),
+    Location("Minoc Arms", 2533, 576, "Warrior's Battle Gear."),
     # --- Landmarks ---
-    Location("Minoc Inn", 2476, 413, "The Barnacle inn. Rest and resupply.",
-             approach_x=2476, approach_y=416),
-    Location("Minoc Guildmaster", 2455, 395, "Mining guild hall."),
+    Location("Minoc Tavern", 2475, 397, "The Barnacle inn."),
+    Location("Minoc Miners Guild", 2505, 432, "The Golden Pick Axe."),
+    Location("Minoc Mining Camp", 2590, 532, "Mining camp east of town."),
+    # --- Forge ---
+    Location("Minoc Mine Forge", 2569, 482, "Forge near the mine entrance."),
+    # --- Waypoints ---
+    Location("Minoc Road North", 2475, 415, "Main road north of town center."),
     # --- Mining areas ---
-    Location("Minoc East Mine", 2559, 497, "Eastern mine area. Rich iron veins."),
-    Location("Minoc Mountain", 2553, 496, "Mountain mining area east of Minoc."),
+    Location("Minoc East Mine", 2553, 496, "Eastern mine area. Rich iron veins."),
+    Location("Minoc Mountain", 2553, 495, "Mountain mining area east of Minoc."),
 ]
 
 # All known locations across cities
