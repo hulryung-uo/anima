@@ -97,14 +97,15 @@ class MineOre(Procedure):
         # Wait for mining animation + check for "no metal here" via bus
         import time as _time
         mine_start = _time.time()
-        _depleted_flag = {"hit": False}
+        _mine_flags = {"depleted": False, "los_fail": False}
 
         def _check_speech(_topic: str, data: dict) -> None:
             text = data.get("text", "")
             tl = text.lower()
-            if ("no metal here" in tl or "no ore here" in tl
-                    or "target cannot be seen" in tl or "too far away" in tl):
-                _depleted_flag["hit"] = True
+            if "no metal here" in tl or "no ore here" in tl:
+                _mine_flags["depleted"] = True
+            elif "target cannot be seen" in tl or "too far away" in tl:
+                _mine_flags["los_fail"] = True
 
         sub = None
         if ctx.bus:
@@ -118,7 +119,7 @@ class MineOre(Procedure):
             ctx.bus.unsubscribe(sub)
             ctx.bus.unsubscribe(sub2)  # type: ignore[possibly-undefined]
 
-        if _depleted_flag["hit"]:
+        if _mine_flags["depleted"]:
             # Mark tile as depleted in blackboard
             depleted = ctx.blackboard.setdefault("depleted_mines", {})
             depleted[(tx, ty)] = _time.time()
@@ -129,6 +130,17 @@ class MineOre(Procedure):
                 message=f"Vein depleted at ({tx},{ty})",
                 next_suggestion="mine_ore",
                 details={"tile": (tx, ty), "depleted": True},
+            )
+
+        if _mine_flags["los_fail"]:
+            # LOS failure — tile exists but can't be seen from here.
+            # Don't mark as depleted; the agent needs to reposition.
+            logger.info("mine_los_fail", pos=f"({tx},{ty})")
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Cannot see mining target at ({tx},{ty})",
+                next_suggestion="mine_ore",
             )
 
         # Count ore after
