@@ -169,6 +169,13 @@ class SmeltOre(Procedure):
                         )
                         await asyncio.sleep(0.3)
                         dropped += 1
+                # Mark these ore as junk so planner won't pick them up again
+                junk = ctx.blackboard.setdefault("_junk_ore_serials", set())
+                for item in world.items.values():
+                    if item.container == 0 and item.graphic in ORE_GRAPHICS:
+                        if max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2:
+                            junk.add(item.serial)
+
                 logger.info("smelt_gave_up_ore", dropped=dropped, fails=fail_count)
                 return ProcedureResult(
                     success=False,

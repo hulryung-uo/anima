@@ -238,12 +238,14 @@ class Planner:
         return None
 
     def _find_ground_ore(self, ctx: AgentContext, ss) -> list:
-        """Find ore items on the ground near the player."""
+        """Find ore items on the ground near the player (excluding junk)."""
         from anima.skills.gathering.mine import ORE_GRAPHICS
+        junk = ctx.blackboard.get("_junk_ore_serials", set())
         result = []
         for it in ctx.perception.world.items.values():
             if (it.container == 0
                     and it.graphic in ORE_GRAPHICS
+                    and it.serial not in junk
                     and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
                 result.append(it)
         return result
@@ -259,8 +261,12 @@ class Planner:
         del self._failed_destinations[(x, y)]
         return False
 
-    async def _move_to_location(self, ctx: AgentContext, *keywords: str):
-        """Find nearest location matching any keyword and move there."""
+    async def _move_to_location(self, ctx: AgentContext, *keywords: str, max_dist: int = 300):
+        """Find nearest location matching any keyword and move there.
+
+        max_dist caps the search radius to avoid cross-city navigation attempts
+        (e.g., trying Britain vendors when in Minoc).
+        """
         import time as _time
         from anima.world_knowledge import ALL_LOCATIONS
 
@@ -282,6 +288,8 @@ class Planner:
             name_lower = loc.name.lower()
             if any(kw in name_lower for kw in keywords):
                 dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
+                if dist > max_dist:
+                    continue  # skip locations in other cities
                 if dist > 3 and dist < best_dist:
                     if self._is_destination_failed(loc.x, loc.y):
                         continue
