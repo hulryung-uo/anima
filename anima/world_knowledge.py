@@ -70,27 +70,36 @@ BRITAIN_LOCATIONS: list[Location] = [
 # Minoc city landmarks (Felucca) — mining hub
 # Coordinates from ServUO spawn data and in-game exploration.
 MINOC_LOCATIONS: list[Location] = [
-    # --- Banks --- (from ServUO Common.map)
+    # --- Bank ---
     Location("Minoc Bank", 2503, 552, "Bank of Minoc."),
-    # --- Shops ---
-    Location("Minoc Blacksmith", 2471, 564, "The Forgery. Forge and anvil."),
-    Location("Minoc Tinker", 2461, 457, "Gears and Gadgets. Tinker tools, pickaxes, shovels."),
+    # --- Shops (from ServUO Common.map) ---
+    Location("Minoc Blacksmith", 2471, 564, "The Forgery. Forge and anvil. Buys ingots/weapons."),
+    Location("Minoc Tinker", 2461, 457, "Gears and Gadgets. Sells pickaxes, shovels, tinker tools."),
     Location("Minoc Provisioner", 2456, 428, "The Old Miners' Supplies."),
     Location("Minoc Provisioner South", 2530, 551, "The Survival Shop."),
     Location("Minoc Healer", 2577, 599, "The Healing Hand."),
     Location("Minoc Carpenter", 2513, 477, "The Oak Throne."),
     Location("Minoc Arms", 2533, 576, "Warrior's Battle Gear."),
+    Location("Minoc Tanner", 2524, 524, "The Stretched Hide."),
+    Location("Minoc Butcher", 2438, 410, "The Slaughtered Cow."),
+    Location("Minoc Bard", 2424, 555, "The Mystical Lute."),
+    # --- Guilds ---
+    Location("Minoc Miners Guild North", 2505, 432, "The Golden Pick Axe."),
+    Location("Minoc Miners Guild South", 2455, 487, "The Matewan."),
+    Location("Minoc Warriors Guild", 2482, 428, "The New World Order."),
+    Location("Minoc Counselor Guild", 2434, 438, "Counselor's Guild."),
     # --- Landmarks ---
     Location("Minoc Tavern", 2475, 397, "The Barnacle inn."),
-    Location("Minoc Miners Guild", 2505, 432, "The Golden Pick Axe."),
-    Location("Minoc Mining Camp", 2590, 532, "Mining camp east of town."),
-    # --- Forge ---
+    Location("Minoc Stables", 2526, 375, "Stables."),
+    Location("Minoc Town Hall", 2429, 528, "Minoc Town Hall."),
+    Location("Minoc Statues", 2465, 522, "Town center statues."),
+    # --- Forge (near mine) ---
     Location("Minoc Mine Forge", 2569, 482, "Forge near the mine entrance."),
+    # --- Mining areas ---
+    Location("Minoc East Mine", 2553, 496, "The East Mines. Rich iron veins."),
+    Location("Minoc Mining Camp", 2590, 532, "Mining camp east of town."),
     # --- Waypoints ---
     Location("Minoc Road North", 2475, 415, "Main road north of town center."),
-    # --- Mining areas ---
-    Location("Minoc East Mine", 2553, 496, "Eastern mine area. Rich iron veins."),
-    Location("Minoc Mountain", 2553, 495, "Mountain mining area east of Minoc."),
 ]
 
 # All known locations across cities
