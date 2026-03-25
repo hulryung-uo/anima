@@ -90,7 +90,7 @@ async def go_to(
             walker_denied = set(ctx.walker.denied_tiles.keys())
             denied = walker_denied | permanent_denied
 
-            search_steps = max(1000, dist * 8)  # large search for urban areas
+            search_steps = max(5000, dist * 20)  # 4-directional needs large search
             path = find_path(
                 ctx.map_reader, sx, sy, target_x, target_y,
                 max_steps=search_steps,
