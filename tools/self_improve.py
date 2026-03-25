@@ -94,6 +94,8 @@ def parse_recent_log(minutes: int = 10) -> dict:
         "go_to_arrived": 0,
         "go_to_denied": 0,
         "go_to_give_up": 0,
+        "go_to_step": 0,
+        "smelt_gave_up_ore": 0,
     }
 
     recent_goals: list[str] = []
@@ -335,6 +337,27 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "movement",
         })
 
+    # v2: smelt failure loop — repeatedly failing to smelt
+    smelt_gave_up = counts.get("smelt_gave_up_ore", 0)
+    if smelt_gave_up > 3:
+        problems.append({
+            "severity": "MEDIUM",
+            "name": "smelt_loop",
+            "description": f"Gave up smelting ore {smelt_gave_up} times — picking up junk ore?",
+            "fix_type": "planner",
+        })
+
+    # v2: procedure spam — many procedure calls but no movement
+    proc_selected = counts.get("planner_selected", 0)
+    go_steps = counts.get("go_to_step", 0)
+    if proc_selected > 100 and go_steps == 0:
+        problems.append({
+            "severity": "HIGH",
+            "name": "procedure_spam",
+            "description": f"{proc_selected} procedures selected but 0 walk steps — stuck in loop",
+            "fix_type": "planner",
+        })
+
     # Tool breakage without replacement
     if counts.get("carpentry_tool_broke", 0) > 0 and counts.get("vendor_buy_sent", 0) == 0:
         problems.append({
@@ -423,6 +446,31 @@ def generate_report(data: dict, problems: list[dict]) -> str:
         f"gave_up={counts.get('go_to_give_up', 0)}",
         "",
     ]
+
+    # Append current agent state from state.json
+    state_file = ROOT / "data" / "state.json"
+    if state_file.exists():
+        try:
+            import json as _json
+            state = _json.loads(state_file.read_text())
+            s = state.get("status", {})
+            lines.append("## Current Agent State")
+            lines.append("")
+            lines.append(f"- Position: ({s.get('x',0)}, {s.get('y',0)}, z={s.get('z',0)})")
+            lines.append(f"- HP: {s.get('hp',0)}/{s.get('hp_max',0)}  Gold: {s.get('gold',0)}  Weight: {s.get('weight',0)}/{s.get('weight_max',0)}")
+            inv = state.get("inventory", [])
+            if inv:
+                inv_str = ", ".join(f"{i['amount']}x {i['name']}" for i in inv[:8])
+                lines.append(f"- Inventory: {inv_str}")
+            act = state.get("activity", [])
+            if act:
+                lines.append("- Recent activity:")
+                for a in act[-5:]:
+                    lines.append(f"  - {a.get('message', '')}")
+            lines.append(f"- Ping: {state.get('ping_ms', 0):.0f}ms")
+            lines.append("")
+        except Exception:
+            pass
 
     lines.append("## Problems")
     lines.append("")
@@ -544,7 +592,7 @@ Rules:
             cwd=str(ROOT),
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
         )
         output = result.stdout or ""
         if result.stderr:
@@ -555,7 +603,7 @@ Rules:
         print(f"  {msg}")
         return False, msg
     except subprocess.TimeoutExpired as e:
-        msg = f"Claude Code timed out after 300s"
+        msg = f"Claude Code timed out after 600s"
         partial = ""
         if e.stdout:
             partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else e.stdout
