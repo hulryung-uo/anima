@@ -80,7 +80,8 @@ class SellToVendor(Procedure):
             # This vendor doesn't want our items — mark and try elsewhere
             vendor_name = vendor.name or "vendor"
             refused = ctx.blackboard.setdefault("refused_vendors", {})
-            refused[vendor.serial] = asyncio.get_event_loop().time()
+            import time
+            refused[vendor.serial] = time.time()
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
