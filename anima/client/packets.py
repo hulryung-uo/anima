@@ -558,9 +558,10 @@ def build_buy_items(vendor_serial: int, items: list[tuple[int, int]]) -> bytes:
     w.write_u8(0x3B)
     w.write_u16(0)  # length placeholder
     w.write_u32(vendor_serial)
-    for layer_serial, amount in items:
-        w.write_u8(0x01)  # flag
-        w.write_u32(layer_serial)
+    w.write_u8(0x02 if items else 0x00)  # flag: 0x02 = items follow
+    for item_serial, amount in items:
+        w.write_u8(0x1A)  # item layer flag
+        w.write_u32(item_serial)
         w.write_u16(amount)
     data = bytearray(w.to_bytes())
     length = len(data)
