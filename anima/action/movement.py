@@ -212,23 +212,11 @@ async def go_to(
             path.pop(0)
         else:
             # Not a door — add to permanent denied and recalculate.
-            # Also probe adjacent tiles in the same wall direction:
-            # if a tile is blocked, its neighbors along the perpendicular
-            # axis are likely also blocked (wall segment).
+            # Only deny the exact tile the server rejected.
+            # Speculative probing of perpendicular tiles was removed because
+            # it creates false denials at building corners, blocking the
+            # only valid route around the wall.
             permanent_denied.add((next_x, next_y))
-            # Probe 2 tiles in each perpendicular direction
-            dx, dy = next_x - sx, next_y - sy
-            for probe_dist in (1, 2):
-                if dx != 0 and dy != 0:
-                    # Diagonal denial — probe both axis-aligned neighbors
-                    permanent_denied.add((next_x + probe_dist * (1 if dx > 0 else -1), next_y))
-                    permanent_denied.add((next_x, next_y + probe_dist * (1 if dy > 0 else -1)))
-                elif dx != 0:
-                    permanent_denied.add((next_x, next_y + probe_dist))
-                    permanent_denied.add((next_x, next_y - probe_dist))
-                else:
-                    permanent_denied.add((next_x + probe_dist, next_y))
-                    permanent_denied.add((next_x - probe_dist, next_y))
 
             # Track if we're making progress or stuck in the same spot
             if abs(sx - last_progress_pos[0]) <= 2 and abs(sy - last_progress_pos[1]) <= 2:

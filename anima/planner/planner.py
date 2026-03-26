@@ -320,6 +320,7 @@ class Planner:
         # Find nearest activity location using word boundaries so that
         # "mine" matches "East Mine" but not "Miners Guild".
         _ACTIVITY_RE = re.compile(r'\b(mine|mining|mountain|forest)\b', re.IGNORECASE)
+        max_activity_dist = 300  # prevent cross-city routing
         mine_loc = None
         best_dist = 999999
         for loc in ALL_LOCATIONS:
@@ -329,6 +330,8 @@ class Planner:
                 dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
                 if dist <= 5:
                     continue  # Already here — skip to find next location
+                if dist > max_activity_dist:
+                    continue  # Skip locations in other cities
                 if dist < best_dist:
                     best_dist = dist
                     mine_loc = loc
