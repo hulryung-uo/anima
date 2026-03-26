@@ -173,7 +173,9 @@ class Planner:
                 return await self._move_to_location(ctx, "forge", "blacksmith")
 
             # 4b: Has tinker tools + ingots → craft shovel/pickaxe
-            if has_tinker_tools and ingot_count >= 4:
+            #     Skip if crafting already gave up (buy instead)
+            if (has_tinker_tools and ingot_count >= 4
+                    and not ctx.blackboard.get("_make_tools_gave_up")):
                 proc = self.registry.get("make_tools")
                 if proc and await proc.can_start(ctx):
                     return proc

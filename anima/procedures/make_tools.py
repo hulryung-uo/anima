@@ -112,7 +112,9 @@ class MakeTools(Procedure):
 
         # 1. Open tinkering gump by double-clicking tinker tools
         from anima.client.packets import build_double_click
+        ss.gumps.clear()  # clear stale gumps before opening new one
         await ctx.conn.send_packet(build_double_click(tool_serial))
+        await asyncio.sleep(0.5)  # wait for server to send gump
 
         result = await wait_for_gump(ctx, timeout=3.0)
         if not result.success:
@@ -134,7 +136,7 @@ class MakeTools(Procedure):
                 message=f"'{category_text}' category not found in gump",
             )
 
-        ss.gumps.pop(gump.gump_id, None)
+        ss.gumps.clear()
         await ctx.conn.send_packet(
             build_gump_response(
                 serial=gump.serial,
@@ -142,6 +144,7 @@ class MakeTools(Procedure):
                 button_id=cat_btn.button_id,
             )
         )
+        await asyncio.sleep(0.5)
 
         # 3. Wait for updated gump with the item list
         result = await wait_for_gump(ctx, timeout=3.0)
@@ -168,7 +171,7 @@ class MakeTools(Procedure):
                 message=f"'{craft_target}' not found in gump",
             )
 
-        ss.gumps.pop(gump.gump_id, None)
+        ss.gumps.clear()
         await ctx.conn.send_packet(
             build_gump_response(
                 serial=gump.serial,
@@ -178,7 +181,7 @@ class MakeTools(Procedure):
         )
 
         # 5. Wait for crafting result
-        await asyncio.sleep(3.0)
+        await asyncio.sleep(4.0)
 
         # Check success by inventory change
         items_after = count_items(ctx, target_graphics)
@@ -220,6 +223,7 @@ class MakeTools(Procedure):
         await self._close_all_gumps(ctx)
         if fail_count >= 5:
             ctx.blackboard["_make_tools_fails"] = 0
+            ctx.blackboard["_make_tools_gave_up"] = True  # planner should buy instead
             logger.warning("make_tools_gave_up", item=craft_target, fails=fail_count)
             return ProcedureResult(
                 success=False,
