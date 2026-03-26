@@ -223,6 +223,25 @@ def main() -> None:
             last_analysis = now
             cycle += 1
 
+            # Check if agent is stuck (no activity in state.json)
+            state_file = ROOT / "data" / "state.json"
+            if state_file.exists():
+                import json
+                try:
+                    state = json.loads(state_file.read_text())
+                    state_ts = state.get("ts", 0)
+                    state_age = now - state_ts
+                    if state_age > 60:
+                        print(f"[supervisor] ⚠ state.json is {state_age:.0f}s stale — agent may be stuck")
+                    activity = state.get("activity", [])
+                    if activity:
+                        last_act = activity[-1].get("ts", 0)
+                        act_age = now - last_act
+                        if act_age > 300:
+                            print(f"[supervisor] ⚠ No activity for {act_age:.0f}s — agent idle")
+                except Exception:
+                    pass
+
             # Run analysis
             problems, report_path = run_analysis(args.minutes)
 
