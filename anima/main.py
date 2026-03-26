@@ -33,26 +33,41 @@ LOG_PATH = Path("data/anima.log")
 def _colored_renderer() -> structlog.dev.ConsoleRenderer:
     """Build a color-coded console renderer.
 
-    Colors by category (event name prefix):
-      planner_/procedure_ → cyan
-      go_to_/door_        → yellow
-      mine_/smelt_/chop_  → green
-      speech/vendor/bank   → magenta
-      packet/walk          → dim grey (debug noise)
-      error/warning        → red/orange (from log level)
+    Theme auto-selected by ANIMA_THEME env var:
+      ANIMA_THEME=light  → dark text on light background
+      ANIMA_THEME=dark   → bright text on dark background (default)
     """
-    # ANSI color codes
+    import os
+
+    theme = os.environ.get("ANIMA_THEME", "dark").lower()
+
+    # ANSI codes
     RESET = "\033[0m"
     DIM = "\033[2m"
     BOLD = "\033[1m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    BLUE = "\033[34m"
-    MAGENTA = "\033[35m"
-    CYAN = "\033[36m"
-    GREY = "\033[90m"
-    WHITE = "\033[37m"
+
+    if theme == "light":
+        # Dark colors for light backgrounds
+        RED = "\033[31m"
+        GREEN = "\033[32m"
+        YELLOW = "\033[33m"
+        BLUE = "\033[34m"
+        MAGENTA = "\033[35m"
+        CYAN = "\033[36m"
+        GREY = "\033[90m"
+        TEXT = "\033[30m"       # black text
+        DIM_TEXT = "\033[90m"   # dark grey
+    else:
+        # Bright colors for dark backgrounds
+        RED = "\033[91m"
+        GREEN = "\033[92m"
+        YELLOW = "\033[93m"
+        BLUE = "\033[94m"
+        MAGENTA = "\033[95m"
+        CYAN = "\033[96m"
+        GREY = "\033[90m"
+        TEXT = "\033[37m"       # white text
+        DIM_TEXT = "\033[90m"
 
     _EVENT_COLORS = {
         "planner_": CYAN,
@@ -69,19 +84,19 @@ def _colored_renderer() -> structlog.dev.ConsoleRenderer:
         "skill_": BLUE,
         "equip": BLUE,
         "backpack": BLUE,
-        "packet_": GREY + DIM,
-        "walk_": GREY,
-        "entity_": GREY + DIM,
-        "play_sound": GREY + DIM,
-        "play_music": GREY + DIM,
-        "game_time": GREY + DIM,
-        "weather": GREY + DIM,
-        "season": GREY + DIM,
+        "packet_": DIM_TEXT + DIM,
+        "walk_": DIM_TEXT,
+        "entity_": DIM_TEXT + DIM,
+        "play_sound": DIM_TEXT + DIM,
+        "play_music": DIM_TEXT + DIM,
+        "game_time": DIM_TEXT + DIM,
+        "weather": DIM_TEXT + DIM,
+        "season": DIM_TEXT + DIM,
     }
 
     _LEVEL_COLORS = {
-        "debug": GREY,
-        "info": WHITE,
+        "debug": DIM_TEXT,
+        "info": TEXT,
         "warning": YELLOW + BOLD,
         "error": RED + BOLD,
         "critical": RED + BOLD,
@@ -107,7 +122,7 @@ def _colored_renderer() -> structlog.dev.ConsoleRenderer:
         # Format key=value pairs
         kv_parts = []
         for k, v in event_dict.items():
-            kv_parts.append(f"{GREY}{k}{RESET}={CYAN}{v}{RESET}")
+            kv_parts.append(f"{DIM_TEXT}{k}{RESET}={CYAN}{v}{RESET}")
         kv_str = " ".join(kv_parts)
 
         # Timestamp dim
