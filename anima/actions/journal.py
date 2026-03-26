@@ -43,7 +43,7 @@ async def wait_for_journal(
         else:
             compiled.append(p)
 
-    journal = ctx.perception.self_state.journal
+    journal = ctx.perception.social.journal
 
     def _check() -> tuple[int, str] | None:
         for entry in journal:
