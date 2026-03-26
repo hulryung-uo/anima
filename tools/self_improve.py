@@ -587,12 +587,13 @@ Rules:
     print(f"  Calling Claude Code with report: {report_path}")
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt, "--allowedTools",
-             "Read,Write,Edit,Bash,Glob,Grep"],
+            ["claude", "-p", prompt,
+             "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep"],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
             timeout=600,
+            stdin=subprocess.DEVNULL,
         )
         output = result.stdout or ""
         if result.stderr:
