@@ -30,6 +30,104 @@ from anima.perception.enums import Layer
 LOG_PATH = Path("data/anima.log")
 
 
+def _colored_renderer() -> structlog.dev.ConsoleRenderer:
+    """Build a color-coded console renderer.
+
+    Colors by category (event name prefix):
+      planner_/procedure_ → cyan
+      go_to_/door_        → yellow
+      mine_/smelt_/chop_  → green
+      speech/vendor/bank   → magenta
+      packet/walk          → dim grey (debug noise)
+      error/warning        → red/orange (from log level)
+    """
+    # ANSI color codes
+    RESET = "\033[0m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+    GREY = "\033[90m"
+    WHITE = "\033[37m"
+
+    _EVENT_COLORS = {
+        "planner_": CYAN,
+        "procedure_": CYAN + BOLD,
+        "go_to_": YELLOW,
+        "door_": YELLOW,
+        "mine_": GREEN,
+        "smelt_": GREEN,
+        "chop_": GREEN,
+        "picked_up": GREEN,
+        "speech": MAGENTA,
+        "vendor_": MAGENTA,
+        "bank_": MAGENTA,
+        "skill_": BLUE,
+        "equip": BLUE,
+        "backpack": BLUE,
+        "packet_": GREY + DIM,
+        "walk_": GREY,
+        "entity_": GREY + DIM,
+        "play_sound": GREY + DIM,
+        "play_music": GREY + DIM,
+        "game_time": GREY + DIM,
+        "weather": GREY + DIM,
+        "season": GREY + DIM,
+    }
+
+    _LEVEL_COLORS = {
+        "debug": GREY,
+        "info": WHITE,
+        "warning": YELLOW + BOLD,
+        "error": RED + BOLD,
+        "critical": RED + BOLD,
+    }
+
+    def _render(_, __, event_dict: dict) -> str:
+        ts = event_dict.pop("timestamp", "")
+        level = event_dict.pop("level", "info")
+        event = event_dict.pop("event", "")
+
+        # Pick event color
+        ev_color = ""
+        for prefix, color in _EVENT_COLORS.items():
+            if event.startswith(prefix):
+                ev_color = color
+                break
+
+        # Level color overrides for warnings/errors
+        lv_color = _LEVEL_COLORS.get(level, WHITE)
+        if level in ("warning", "error", "critical"):
+            ev_color = lv_color
+
+        # Format key=value pairs
+        kv_parts = []
+        for k, v in event_dict.items():
+            kv_parts.append(f"{GREY}{k}{RESET}={CYAN}{v}{RESET}")
+        kv_str = " ".join(kv_parts)
+
+        # Timestamp dim
+        ts_str = f"{DIM}{ts}{RESET}"
+
+        # Level tag
+        lv_tag = f"[{lv_color}{level:>8}{RESET}]"
+
+        # Event name colored
+        ev_str = f"{ev_color}{event}{RESET}"
+
+        parts = [ts_str, lv_tag, ev_str]
+        if kv_str:
+            parts.append(kv_str)
+
+        return " ".join(parts)
+
+    return _render
+
+
 def _setup_logging() -> None:
     """Configure structlog to write to both console and data/anima.log."""
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -56,7 +154,7 @@ def _setup_logging() -> None:
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.stdlib.add_log_level,
-            structlog.dev.ConsoleRenderer(),
+            _colored_renderer(),
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
