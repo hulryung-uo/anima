@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
-"""Supervisor — run agent + self-improvement in one process.
+"""Supervisor — run agent + 3-level self-improvement.
 
-Cycle:
-  1. Start agent (uv run python -m anima)
-  2. Wait for analysis interval
-  3. Analyze logs → detect problems
-  4. If HIGH/CRITICAL → call Claude Code to fix
-  5. If code changed → restart agent
-  6. Repeat
+Level 1: Automatic recovery (no Claude Code)
+  - Agent crash → restart
+  - Agent stuck (no activity 5min) → restart with fresh state
+  - Agent idle (no progress 10min) → clear blackboard, restart
+
+Level 2: Targeted diagnosis (Claude Code, focused prompt)
+  - Query action_logs DB for failure patterns
+  - Send specific procedure + error to Claude Code
+  - Small, focused fixes only
+
+Level 3: Full analysis (Claude Code, comprehensive)
+  - Periodic full log + DB analysis
+  - Broad prompt for structural issues
 
 Usage:
     uv run python tools/supervisor.py
-    uv run python tools/supervisor.py --no-claude     # analyze only, no auto-fix
-    uv run python tools/supervisor.py --interval 300  # analyze every 5 min
+    uv run python tools/supervisor.py --no-claude
+    uv run python tools/supervisor.py --interval 600
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -27,13 +35,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 AGENT_CMD = [sys.executable, "-m", "anima"]
+STATE_FILE = ROOT / "data" / "state.json"
+DB_FILE = ROOT / "data" / "anima.db"
+CLAUDE_LOG = ROOT / "data" / "claude_code.log"
+IMPROVEMENTS_LOG = ROOT / "data" / "improvements.jsonl"
 
-# How long to let the agent run before first analysis
-WARMUP_SECONDS = 60
+WARMUP_SECONDS = 90
+STUCK_THRESHOLD = 300      # 5 minutes no activity → stuck
+IDLE_THRESHOLD = 600       # 10 minutes no progress → idle
+MAX_RESTARTS_PER_HOUR = 6  # prevent restart loop
 
 
 def get_git_head() -> str:
-    """Get current git HEAD commit hash."""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -45,43 +58,240 @@ def get_git_head() -> str:
 
 
 def start_agent(extra_args: list[str] | None = None) -> subprocess.Popen:
-    """Start the agent as a subprocess."""
     cmd = AGENT_CMD + (extra_args or [])
     print(f"[supervisor] Starting agent: {' '.join(cmd)}")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(ROOT),
-        # Share stdout/stderr so we can see agent logs
-        stdout=None,
-        stderr=None,
-    )
-    print(f"[supervisor] Agent started (PID {proc.pid})")
+    proc = subprocess.Popen(cmd, cwd=str(ROOT))
+    print(f"[supervisor] Agent PID {proc.pid}")
     return proc
 
 
 def stop_agent(proc: subprocess.Popen) -> None:
-    """Gracefully stop the agent subprocess."""
     if proc.poll() is not None:
-        print(f"[supervisor] Agent already exited (code {proc.returncode})")
         return
-
-    print(f"[supervisor] Stopping agent (PID {proc.pid})...")
+    print(f"[supervisor] Stopping agent PID {proc.pid}...")
     proc.send_signal(signal.SIGINT)
     try:
         proc.wait(timeout=10)
-        print(f"[supervisor] Agent stopped (code {proc.returncode})")
     except subprocess.TimeoutExpired:
-        print("[supervisor] Agent didn't stop, killing...")
         proc.kill()
         proc.wait()
 
 
-def run_analysis(minutes: int) -> tuple[list[dict], str | None]:
-    """Run log analysis. Returns (problems, report_path)."""
+# ---------------------------------------------------------------------------
+# Level 1: Automatic recovery
+# ---------------------------------------------------------------------------
+
+def read_agent_state() -> dict | None:
+    if not STATE_FILE.exists():
+        return None
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except Exception:
+        return None
+
+
+def check_agent_health(state: dict | None) -> str | None:
+    """Returns a problem description if agent is unhealthy, None if OK."""
+    if state is None:
+        return None  # no state yet
+
+    now = time.time()
+    state_ts = state.get("ts", 0)
+
+    # state.json too old → agent not updating
+    if now - state_ts > 120:
+        return f"state.json is {now - state_ts:.0f}s stale"
+
+    # No activity for STUCK_THRESHOLD
+    activity = state.get("activity", [])
+    if activity:
+        last_act_ts = activity[-1].get("ts", 0)
+        if now - last_act_ts > STUCK_THRESHOLD:
+            last_msg = activity[-1].get("message", "")
+            return f"no activity for {now - last_act_ts:.0f}s (last: {last_msg})"
+
+    return None
+
+
+def auto_recover(proc: subprocess.Popen, reason: str, extra_args: list[str]) -> subprocess.Popen:
+    """Level 1: Stop agent, clear transient state, restart."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[supervisor] [{ts}] AUTO-RECOVER: {reason}")
+
+    stop_agent(proc)
+
+    # Log the recovery
+    _log_improvement("auto_recover", reason, success=True, code_changed=False)
+
+    time.sleep(3)
+    return start_agent(extra_args)
+
+
+# ---------------------------------------------------------------------------
+# Level 2: Targeted diagnosis
+# ---------------------------------------------------------------------------
+
+def get_top_failures(minutes: int = 30) -> list[dict]:
+    """Query action_logs DB for procedures with high failure rates."""
+    if not DB_FILE.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(DB_FILE))
+        cutoff = time.time() - minutes * 60
+        rows = conn.execute("""
+            SELECT procedure, result, COUNT(*) as cnt
+            FROM action_logs WHERE timestamp > ?
+            GROUP BY procedure, result ORDER BY cnt DESC
+        """, (cutoff,)).fetchall()
+        conn.close()
+
+        # Find procedures that fail much more than succeed
+        stats: dict[str, dict] = {}
+        for proc, result, cnt in rows:
+            if proc not in stats:
+                stats[proc] = {"success": 0, "fail": 0, "fail_types": {}}
+            if result == "success":
+                stats[proc]["success"] += cnt
+            else:
+                stats[proc]["fail"] += cnt
+                stats[proc]["fail_types"][result] = cnt
+
+        problems = []
+        for proc, s in stats.items():
+            total = s["success"] + s["fail"]
+            if total < 3:
+                continue
+            fail_rate = s["fail"] / total
+            if fail_rate > 0.8:
+                top_fail = max(s["fail_types"].items(), key=lambda x: x[1])
+                problems.append({
+                    "procedure": proc,
+                    "fail_rate": fail_rate,
+                    "total": total,
+                    "top_failure": top_fail[0],
+                    "top_count": top_fail[1],
+                })
+        return sorted(problems, key=lambda x: -x["total"])
+    except Exception:
+        return []
+
+
+def build_targeted_prompt(failure: dict) -> str:
+    """Build a focused Claude Code prompt for one specific failure."""
+    proc = failure["procedure"]
+    fail_type = failure["top_failure"]
+    fail_rate = failure["fail_rate"]
+    total = failure["total"]
+
+    # Read current state for context
+    state = read_agent_state()
+    state_info = ""
+    if state:
+        s = state.get("status", {})
+        inv = state.get("inventory", [])
+        inv_str = ", ".join(f"{i['amount']}x {i['name']}" for i in inv[:6])
+        act = state.get("activity", [])
+        act_str = "\n".join(f"  - {a.get('message','')}" for a in act[-5:])
+        state_info = f"""
+Current agent state:
+- Position: ({s.get('x',0)}, {s.get('y',0)}, z={s.get('z',0)})
+- Gold: {s.get('gold',0)}, Weight: {s.get('weight',0)}/{s.get('weight_max',0)}
+- Inventory: {inv_str}
+- Recent activity:
+{act_str}
+"""
+
+    return f"""Fix ONE specific issue in the Anima UO AI agent.
+
+PROBLEM: Procedure `{proc}` fails {fail_rate:.0%} of the time ({total} attempts).
+Most common failure: `{fail_type}`
+{state_info}
+Files to check:
+- anima/procedures/{proc}.py (the procedure itself)
+- anima/planner/planner.py (when/why it's selected)
+- anima/action/movement.py (if movement-related)
+
+Rules:
+- Read CLAUDE.md first
+- Fix ONLY this one issue
+- Run `uv run pytest` — only commit if tests pass
+- `git commit` with descriptive message, then `git push`
+- Keep changes minimal
+"""
+
+
+def run_targeted_fix(failure: dict) -> bool:
+    """Level 2: Focused Claude Code fix for one procedure."""
+    from self_improve import call_claude
+
+    prompt = build_targeted_prompt(failure)
+    proc_name = failure["procedure"]
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"[supervisor] [{ts}] TARGETED FIX: {proc_name} ({failure['top_failure']})")
+
+    head_before = get_git_head()
+    success, output = call_claude_with_prompt(prompt)
+    head_after = get_git_head()
+
+    code_changed = head_before != head_after and head_after != ""
+    _log_improvement(
+        f"targeted_fix:{proc_name}",
+        f"{failure['top_failure']} (fail rate {failure['fail_rate']:.0%})",
+        success=success,
+        code_changed=code_changed,
+        output_preview=output[:500],
+    )
+
+    if code_changed:
+        print(f"[supervisor] Targeted fix committed for {proc_name}")
+    elif success:
+        print(f"[supervisor] Claude ran but no changes for {proc_name}")
+    else:
+        print(f"[supervisor] Claude failed for {proc_name}")
+
+    return code_changed
+
+
+def call_claude_with_prompt(prompt: str) -> tuple[bool, str]:
+    """Call Claude Code CLI with a prompt. Returns (success, output)."""
+    try:
+        result = subprocess.run(
+            ["claude", "-p", prompt,
+             "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            stdin=subprocess.DEVNULL,
+        )
+        output = result.stdout or ""
+        if result.stderr:
+            output += "\n--- stderr ---\n" + result.stderr
+
+        # Log to claude_code.log
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(CLAUDE_LOG, "a") as f:
+            f.write(f"\n{'='*72}\n[{ts}]\n{'='*72}\n")
+            f.write(output[:2000])
+            f.write("\n")
+
+        return result.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, "Claude Code timed out after 600s"
+    except FileNotFoundError:
+        return False, "Claude Code CLI not found"
+
+
+# ---------------------------------------------------------------------------
+# Level 3: Full analysis (existing self_improve.py)
+# ---------------------------------------------------------------------------
+
+def run_full_analysis(minutes: int) -> tuple[list[dict], str | None]:
+    """Run comprehensive log + DB analysis."""
     from self_improve import detect_problems, generate_report, parse_recent_log, save_report
 
     ts = datetime.now().strftime("%H:%M:%S")
-    print(f"\n[supervisor] [{ts}] Analyzing last {minutes} min...")
+    print(f"[supervisor] [{ts}] Full analysis (last {minutes} min)...")
 
     data = parse_recent_log(minutes=minutes)
     if "error" in data:
@@ -92,175 +302,132 @@ def run_analysis(minutes: int) -> tuple[list[dict], str | None]:
     report = generate_report(data, problems)
     path = save_report(report)
 
-    counts = data.get("counts", {})
-    print(f"[supervisor] Log: {data.get('recent_lines', 0)} recent lines")
-    print(
-        f"[supervisor] Walk: {counts.get('walk_confirmed', 0)} OK / "
-        f"{counts.get('walk_denied', 0)} denied"
-    )
-    print(f"[supervisor] Skills: {data.get('skill_success_rate', 0):.0%} success")
     print(f"[supervisor] Report: {path}")
-
     if problems:
         for p in problems:
             print(f"[supervisor]   [{p['severity']}] {p['name']}: {p['description']}")
     else:
-        print("[supervisor] No problems detected.")
+        print(f"[supervisor] No problems detected.")
 
-    return problems, str(path)
-
-
-CLAUDE_LOG = ROOT / "data" / "claude_code.log"
+    return problems, str(path) if path else None
 
 
-def run_claude_fix(report_path: str) -> bool:
-    """Call Claude Code with the given report. Returns True if code changed."""
-    from self_improve import call_claude
+# ---------------------------------------------------------------------------
+# Improvement log
+# ---------------------------------------------------------------------------
 
-    print(f"[supervisor] Calling Claude Code with report: {report_path}")
-    head_before = get_git_head()
-    success, output = call_claude(Path(report_path))
-    head_after = get_git_head()
-
-    # Log Claude Code output to file
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(CLAUDE_LOG, "a") as f:
-        f.write(f"\n{'='*72}\n")
-        f.write(f"[{ts}] Report: {report_path}\n")
-        f.write(f"Success: {success} | Code changed: {head_before != head_after}\n")
-        f.write(f"{'='*72}\n")
-        f.write(output)
-        f.write("\n")
-
-    code_changed = head_before != head_after and head_after != ""
-
-    # Record improvement attempt as structured jsonl
-    import json
-    improvement_log = ROOT / "data" / "improvements.jsonl"
-    improvement_log.parent.mkdir(parents=True, exist_ok=True)
-    with open(improvement_log, "a") as f:
-        entry = {
-            "ts": ts,
-            "report": report_path,
-            "success": success,
-            "code_changed": code_changed,
-            "commit_before": head_before[:8],
-            "commit_after": head_after[:8] if head_after else "",
-            "output_lines": len(output.strip().splitlines()),
-            "output_preview": output.strip()[:500],
-        }
+def _log_improvement(action: str, reason: str, success: bool,
+                     code_changed: bool, output_preview: str = "") -> None:
+    IMPROVEMENTS_LOG.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "reason": reason,
+        "success": success,
+        "code_changed": code_changed,
+        "commit": get_git_head()[:8],
+        "output_preview": output_preview[:300],
+    }
+    with open(IMPROVEMENTS_LOG, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
-    if code_changed:
-        print("[supervisor] Claude Code made changes — agent will restart")
-    elif success:
-        print("[supervisor] Claude Code ran but no changes committed")
-    else:
-        print("[supervisor] Claude Code failed")
-        lines = output.strip().splitlines()
-        for line in lines[-5:]:
-            print(f"[supervisor]   {line}")
 
-    print(f"[supervisor] Full Claude output: {CLAUDE_LOG}")
-    return code_changed
-
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Anima supervisor — agent + self-improvement")
-    parser.add_argument(
-        "--interval", type=int, default=600,
-        help="Analysis interval in seconds (default: 600 = 10min)",
-    )
-    parser.add_argument(
-        "--minutes", type=int, default=10,
-        help="Minutes of log to analyze (default: 10)",
-    )
-    parser.add_argument(
-        "--no-claude", action="store_true",
-        help="Analyze only — don't call Claude Code for fixes",
-    )
-    parser.add_argument(
-        "--agent-args", nargs="*", default=[],
-        help="Extra args to pass to the agent (e.g. --tui --recreate)",
-    )
+    parser = argparse.ArgumentParser(description="Anima supervisor — 3-level self-improvement")
+    parser.add_argument("--interval", type=int, default=600, help="Analysis interval (seconds)")
+    parser.add_argument("--minutes", type=int, default=10, help="Minutes of log to analyze")
+    parser.add_argument("--no-claude", action="store_true", help="Level 1 only — no Claude Code")
+    parser.add_argument("--agent-args", nargs="*", default=[], help="Extra args for agent")
     args = parser.parse_args()
 
     use_claude = not args.no_claude
-    mode = "analyze + fix" if use_claude else "analyze only"
+    mode = "Level 1-3" if use_claude else "Level 1 only"
     print(f"[supervisor] Starting ({mode}, interval={args.interval}s)")
-    print(f"[supervisor] Agent args: {args.agent_args}")
-    print()
 
-    # Add tools/ to path so we can import self_improve
     tools_dir = str(Path(__file__).parent)
     if tools_dir not in sys.path:
         sys.path.insert(0, tools_dir)
 
     agent_proc = start_agent(args.agent_args)
     last_analysis = time.time()
+    last_health_check = time.time()
+    restarts_this_hour: list[float] = []
     cycle = 0
 
     try:
         while True:
-            # Check if agent is still running
+            now = time.time()
+
+            # Check if agent process is alive
             if agent_proc.poll() is not None:
-                print(
-                    f"[supervisor] Agent exited (code {agent_proc.returncode})"
-                    f" — restarting in 10s..."
-                )
+                print(f"[supervisor] Agent exited (code {agent_proc.returncode})")
                 time.sleep(10)
                 agent_proc = start_agent(args.agent_args)
-                last_analysis = time.time()  # reset timer after restart
+                last_analysis = now
                 continue
 
-            now = time.time()
-            # First analysis after warmup, then every interval
+            # --- Level 1: Health check every 30s ---
+            if now - last_health_check >= 30:
+                last_health_check = now
+                state = read_agent_state()
+                problem = check_agent_health(state)
+
+                if problem:
+                    # Rate-limit restarts
+                    restarts_this_hour = [t for t in restarts_this_hour if now - t < 3600]
+                    if len(restarts_this_hour) < MAX_RESTARTS_PER_HOUR:
+                        restarts_this_hour.append(now)
+                        agent_proc = auto_recover(agent_proc, problem, args.agent_args)
+                        last_analysis = now
+                        continue
+                    else:
+                        print(f"[supervisor] ⚠ Too many restarts ({len(restarts_this_hour)}/hr), skipping")
+
+            # --- Level 2 & 3: Periodic analysis ---
             wait_time = WARMUP_SECONDS if cycle == 0 else args.interval
             if now - last_analysis < wait_time:
-                time.sleep(5)  # poll every 5s
+                time.sleep(5)
                 continue
 
             last_analysis = now
             cycle += 1
 
-            # Check if agent is stuck (no activity in state.json)
-            state_file = ROOT / "data" / "state.json"
-            if state_file.exists():
-                import json
-                try:
-                    state = json.loads(state_file.read_text())
-                    state_ts = state.get("ts", 0)
-                    state_age = now - state_ts
-                    if state_age > 60:
-                        print(f"[supervisor] ⚠ state.json is {state_age:.0f}s stale — agent may be stuck")
-                    activity = state.get("activity", [])
-                    if activity:
-                        last_act = activity[-1].get("ts", 0)
-                        act_age = now - last_act
-                        if act_age > 300:
-                            print(f"[supervisor] ⚠ No activity for {act_age:.0f}s — agent idle")
-                except Exception:
-                    pass
+            if use_claude:
+                # Level 2: Check DB for specific procedure failures
+                failures = get_top_failures(minutes=args.minutes)
+                if failures:
+                    worst = failures[0]
+                    if worst["fail_rate"] > 0.8 and worst["total"] > 10:
+                        stop_agent(agent_proc)
+                        code_changed = run_targeted_fix(worst)
+                        agent_proc = start_agent(args.agent_args)
+                        last_analysis = time.time()
+                        continue
 
-            # Run analysis
-            problems, report_path = run_analysis(args.minutes)
-
-            # If Claude mode enabled and severe problems found
-            if use_claude and problems and report_path:
-                severe = [p for p in problems if p["severity"] in ("HIGH", "CRITICAL")]
-                if severe:
-                    # Stop agent before Claude modifies code
-                    stop_agent(agent_proc)
-
-                    code_changed = run_claude_fix(report_path)
-
-                    # Restart agent (with new code if changed)
-                    if code_changed:
-                        print("[supervisor] Restarting agent with updated code...")
-                    else:
-                        print("[supervisor] Restarting agent...")
-                    agent_proc = start_agent(args.agent_args)
-                    last_analysis = time.time()
+                # Level 3: Full analysis for structural issues
+                problems, report_path = run_full_analysis(args.minutes)
+                if problems and report_path:
+                    severe = [p for p in problems if p["severity"] in ("HIGH", "CRITICAL")]
+                    if severe:
+                        stop_agent(agent_proc)
+                        _, output = call_claude_with_prompt(
+                            f"Read the analysis report at {report_path}. "
+                            f"Fix the highest severity issue. "
+                            f"Read CLAUDE.md first. "
+                            f"Run uv run pytest, commit and push if tests pass."
+                        )
+                        _log_improvement("full_analysis", severe[0]["name"],
+                                         success=True, code_changed=get_git_head()[:8] != "",
+                                         output_preview=output[:500])
+                        agent_proc = start_agent(args.agent_args)
+                        last_analysis = time.time()
+            else:
+                # Level 1 only — just run analysis for logging
+                run_full_analysis(args.minutes)
 
     except KeyboardInterrupt:
         print("\n[supervisor] Shutting down...")
