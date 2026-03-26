@@ -133,14 +133,30 @@ def run_claude_fix(report_path: str) -> bool:
         f.write("\n")
 
     code_changed = head_before != head_after and head_after != ""
+
+    # Record improvement attempt as structured jsonl
+    import json
+    improvement_log = ROOT / "data" / "improvements.jsonl"
+    improvement_log.parent.mkdir(parents=True, exist_ok=True)
+    with open(improvement_log, "a") as f:
+        entry = {
+            "ts": ts,
+            "report": report_path,
+            "success": success,
+            "code_changed": code_changed,
+            "commit_before": head_before[:8],
+            "commit_after": head_after[:8] if head_after else "",
+            "output_lines": len(output.strip().splitlines()),
+            "output_preview": output.strip()[:500],
+        }
+        f.write(json.dumps(entry) + "\n")
+
     if code_changed:
         print("[supervisor] Claude Code made changes — agent will restart")
-        print(f"[supervisor] Claude output logged to {CLAUDE_LOG}")
     elif success:
         print("[supervisor] Claude Code ran but no changes committed")
     else:
         print("[supervisor] Claude Code failed")
-        # Print last few lines of output for quick diagnosis
         lines = output.strip().splitlines()
         for line in lines[-5:]:
             print(f"[supervisor]   {line}")

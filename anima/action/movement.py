@@ -116,6 +116,25 @@ async def go_to(
                     ctx.walker.clear_all_denied_tiles()
                     continue
 
+                # Try alternate z levels (cave z=0 vs surface z=15)
+                for alt_z in (0, 15, 25, 35):
+                    if alt_z == ss.z:
+                        continue
+                    path = find_path(
+                        ctx.map_reader, sx, sy, target_x, target_y,
+                        max_steps=search_steps,
+                        denied_tiles=permanent_denied,
+                        door_tiles=door_positions,
+                        current_z=alt_z,
+                        adjacent=True,
+                    )
+                    if path:
+                        logger.info("go_to_alt_z", z=alt_z, path_len=len(path))
+                        break
+
+                if path:
+                    continue
+
                 logger.info(
                     "go_to_no_path", pos=f"({sx},{sy},{ss.z})",
                     denied=len(denied),

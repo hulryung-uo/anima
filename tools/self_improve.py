@@ -167,6 +167,9 @@ def parse_recent_log(minutes: int = 10) -> dict:
         + counts["make_boards_success"] + counts["smelt_success"]
     )
 
+    # Query action_logs DB for procedure stats
+    db_stats = _query_action_logs(minutes)
+
     return {
         "counts": counts,
         "total_lines": total_lines,
@@ -180,7 +183,34 @@ def parse_recent_log(minutes: int = 10) -> dict:
         "chop_success_rate": counts["chop_success"] / max(1, chop_total),
         "skill_success_rate": skill_success / max(1, skill_total),
         "minutes_analyzed": minutes,
+        "db_stats": db_stats,
     }
+
+
+def _query_action_logs(minutes: int) -> dict:
+    """Query action_logs SQLite table for procedure performance stats."""
+    import sqlite3
+    db_path = ROOT / "data" / "anima.db"
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cutoff = time.time() - minutes * 60
+        rows = conn.execute(
+            """SELECT procedure, result, COUNT(*) as cnt,
+                      ROUND(AVG(duration_ms)) as avg_ms
+               FROM action_logs WHERE timestamp > ?
+               GROUP BY procedure, result ORDER BY cnt DESC""",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+        stats = {}
+        for proc, result, cnt, avg_ms in rows:
+            key = f"{proc}:{result}"
+            stats[key] = {"count": cnt, "avg_ms": int(avg_ms or 0)}
+        return stats
+    except Exception:
+        return {}
 
 
 def detect_problems(data: dict) -> list[dict]:
@@ -471,6 +501,18 @@ def generate_report(data: dict, problems: list[dict]) -> str:
             lines.append("")
         except Exception:
             pass
+
+    # DB procedure stats
+    db_stats = data.get("db_stats", {})
+    if db_stats:
+        lines.append("## Procedure Stats (from DB)")
+        lines.append("")
+        lines.append("| Procedure | Result | Count | Avg ms |")
+        lines.append("|-----------|--------|-------|--------|")
+        for key, info in sorted(db_stats.items(), key=lambda x: -x[1]["count"]):
+            proc, result = key.split(":", 1)
+            lines.append(f"| {proc} | {result} | {info['count']} | {info['avg_ms']} |")
+        lines.append("")
 
     lines.append("## Problems")
     lines.append("")
