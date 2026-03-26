@@ -115,7 +115,7 @@ def _colored_renderer() -> structlog.dev.ConsoleRenderer:
                 break
 
         # Level color overrides for warnings/errors
-        lv_color = _LEVEL_COLORS.get(level, WHITE)
+        lv_color = _LEVEL_COLORS.get(level, TEXT)
         if level in ("warning", "error", "critical"):
             ev_color = lv_color
 
