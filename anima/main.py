@@ -169,7 +169,7 @@ def _setup_logging() -> None:
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.stdlib.add_log_level,
-            _colored_renderer(),
+            structlog.dev.ConsoleRenderer(colors=False),
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
