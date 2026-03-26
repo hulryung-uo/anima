@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
 import structlog
 
 from anima.actions.gump import wait_for_gump, click_gump_button
 from anima.actions.inventory import find_in_backpack, count_items
-from anima.actions.journal import wait_for_journal
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.crafting.tinker import (
     INGOT_GRAPHIC,
@@ -25,6 +23,16 @@ logger = structlog.get_logger()
 
 # Minimum ingots needed to craft a tool
 MIN_INGOTS_FOR_TOOL = 4
+
+SHOVEL_GRAPHICS = {0x0F39}
+
+# Map craft target name → item graphics to count
+_CRAFT_TARGET_GRAPHICS: dict[str, set[int]] = {
+    "Pickaxe": PICKAXE_GRAPHICS,
+    "Hatchet": HATCHET_GRAPHICS,
+    "Tinker's Tools": TINKER_TOOLS_GRAPHICS,
+    "Shovel": SHOVEL_GRAPHICS,
+}
 
 
 class MakeTools(Procedure):
@@ -128,7 +136,10 @@ class MakeTools(Procedure):
                 message=f"'{craft_target}' not found in gump",
             )
 
-        since = time.time()
+        # Count target items before crafting
+        target_graphics = _CRAFT_TARGET_GRAPHICS.get(craft_target, set())
+        items_before = count_items(ctx, target_graphics) if target_graphics else 0
+
         result = await click_gump_button(ctx, gump, item_btn.button_id)
         if not result.success:
             return ProcedureResult(
@@ -137,34 +148,53 @@ class MakeTools(Procedure):
                 message=f"failed to click {craft_target}",
             )
 
-        # 5. Wait for crafting result via journal
-        result = await wait_for_journal(
-            ctx,
-            patterns=["You create", "You fail", "You don't have"],
-            timeout=4.0,
-            since=since,
-        )
+        # 5. Wait for crafting — server sends a new gump after crafting
+        import asyncio
+        await asyncio.sleep(3.0)
 
-        if result.success:
-            text = result.data.get("text", "")
-            if "you create" in text.lower():
-                logger.info("make_tools_crafted", item=craft_target)
+        # Check success by inventory change
+        items_after = count_items(ctx, target_graphics) if target_graphics else 0
+        if items_after > items_before:
+            logger.info("make_tools_crafted", item=craft_target)
+            return ProcedureResult(
+                success=True,
+                message=f"Crafted {craft_target}",
+                next_suggestion="make_tools",
+            )
+
+        # Also check journal as fallback
+        journal = ctx.perception.social.recent(count=5)
+        for entry in journal:
+            tl = entry.text.lower()
+            if "you create" in tl:
+                logger.info("make_tools_crafted_journal", item=craft_target)
                 return ProcedureResult(
                     success=True,
                     message=f"Crafted {craft_target}",
                     next_suggestion="make_tools",
                 )
-            else:
-                logger.info("make_tools_craft_failed", item=craft_target, journal=text)
+            if "you fail" in tl or "you don't have" in tl:
+                logger.info("make_tools_craft_failed", item=craft_target, journal=entry.text)
                 return ProcedureResult(
                     success=False,
                     reason=FailureReason.BLOCKED,
-                    message=f"Craft failed: {text}",
+                    message=f"Craft failed: {entry.text}",
                 )
 
-        # No journal response — crafting may have silently failed
+        # Track consecutive failures — give up after 5 to prevent loop
+        fail_count = ctx.blackboard.get("_make_tools_fails", 0) + 1
+        ctx.blackboard["_make_tools_fails"] = fail_count
+        if fail_count >= 5:
+            ctx.blackboard["_make_tools_fails"] = 0
+            logger.warning("make_tools_gave_up", item=craft_target, fails=fail_count)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.PERMANENT,
+                message=f"Gave up crafting {craft_target} after {fail_count} attempts",
+            )
+
         return ProcedureResult(
             success=False,
             reason=FailureReason.BLOCKED,
-            message=f"No craft result for {craft_target}",
+            message=f"Craft result unclear for {craft_target} ({fail_count}/5)",
         )
