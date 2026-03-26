@@ -1,13 +1,21 @@
-"""MakeTools procedure — craft tools using tinkering gump."""
+"""MakeTools procedure — craft tools using tinkering gump.
+
+Uses ServUO CraftGump button scheme:
+  GetButtonID(type, index) = 1 + type + (index * 7)
+  type 0 = Show group (category)
+  type 1 = Create item
+"""
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.actions.gump import wait_for_gump, click_gump_button
+from anima.actions.gump import wait_for_gump
 from anima.actions.inventory import find_in_backpack, count_items
+from anima.client.packets import build_gump_response
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.crafting.tinker import (
     INGOT_GRAPHIC,
@@ -26,12 +34,21 @@ MIN_INGOTS_FOR_TOOL = 4
 
 SHOVEL_GRAPHICS = {0x0F39}
 
-# Map craft target name → item graphics to count
-_CRAFT_TARGET_GRAPHICS: dict[str, set[int]] = {
-    "Pickaxe": PICKAXE_GRAPHICS,
-    "Hatchet": HATCHET_GRAPHICS,
-    "Tinker's Tools": TINKER_TOOLS_GRAPHICS,
-    "Shovel": SHOVEL_GRAPHICS,
+
+def _get_button_id(btn_type: int, index: int) -> int:
+    """Match ServUO's GetButtonID(type, index)."""
+    return 1 + btn_type + (index * 7)
+
+
+# Tinkering gump indices from DefTinkering.cs
+TOOLS_GROUP_INDEX = 2  # "Tools" category is group 2
+
+# Map craft target → (item_index_within_group, item_graphics)
+_CRAFT_TARGETS: dict[str, tuple[int, set[int]]] = {
+    "Tinker's Tools": (3, TINKER_TOOLS_GRAPHICS),
+    "Hatchet": (4, HATCHET_GRAPHICS),
+    "Pickaxe": (16, PICKAXE_GRAPHICS),
+    "Shovel": (10, SHOVEL_GRAPHICS),
 }
 
 
@@ -80,7 +97,17 @@ class MakeTools(Procedure):
         if not craft_target:
             return ProcedureResult(success=True, message="All tools available")
 
+        target_entry = _CRAFT_TARGETS.get(craft_target)
+        if not target_entry:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.PERMANENT,
+                message=f"Unknown craft target: {craft_target}",
+            )
+        item_index, target_graphics = target_entry
+
         tool_serial = tools[0].serial
+        ss = ctx.perception.self_state
 
         # 1. Open tinkering gump by double-clicking tinker tools
         from anima.client.packets import build_double_click
@@ -96,25 +123,17 @@ class MakeTools(Procedure):
 
         gump = result.data["gump"]
 
-        # 2. Click "Tools" category using text-based button matching
-        tools_btn = gump.find_button_near_text("Tools")
-        if tools_btn is None:
-            # Fallback: button ID 1 is typically "Tools" in ServUO gumps
-            tools_btn = gump.find_button_by_id(1)
-        if tools_btn is None:
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message="tools category button not found in gump",
+        # 2. Click "Tools" category (type 0 = show group)
+        cat_btn_id = _get_button_id(0, TOOLS_GROUP_INDEX)
+        # Pop gump BEFORE sending to avoid race with server response
+        ss.gumps.pop(gump.gump_id, None)
+        await ctx.conn.send_packet(
+            build_gump_response(
+                serial=gump.serial,
+                gump_id=gump.gump_id,
+                button_id=cat_btn_id,
             )
-
-        result = await click_gump_button(ctx, gump, tools_btn.button_id)
-        if not result.success:
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message="failed to select tools category",
-            )
+        )
 
         # 3. Wait for updated gump with the tool list
         result = await wait_for_gump(ctx, timeout=3.0)
@@ -127,35 +146,34 @@ class MakeTools(Procedure):
 
         gump = result.data["gump"]
 
-        # 4. Click the specific tool to craft
-        item_btn = gump.find_button_near_text(craft_target)
-        if item_btn is None:
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message=f"'{craft_target}' not found in gump",
-            )
-
         # Count target items before crafting
-        target_graphics = _CRAFT_TARGET_GRAPHICS.get(craft_target, set())
-        items_before = count_items(ctx, target_graphics) if target_graphics else 0
+        items_before = count_items(ctx, target_graphics)
 
-        result = await click_gump_button(ctx, gump, item_btn.button_id)
-        if not result.success:
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message=f"failed to click {craft_target}",
+        # 4. Click "Create item" (type 1) — NOT "show details" (type 0)
+        create_btn_id = _get_button_id(1, item_index)
+        ss.gumps.pop(gump.gump_id, None)
+        await ctx.conn.send_packet(
+            build_gump_response(
+                serial=gump.serial,
+                gump_id=gump.gump_id,
+                button_id=create_btn_id,
             )
+        )
 
-        # 5. Wait for crafting — server sends a new gump after crafting
-        import asyncio
+        # 5. Wait for crafting result
         await asyncio.sleep(3.0)
 
         # Check success by inventory change
-        items_after = count_items(ctx, target_graphics) if target_graphics else 0
+        items_after = count_items(ctx, target_graphics)
         if items_after > items_before:
+            ctx.blackboard.pop("_make_tools_fails", None)
             logger.info("make_tools_crafted", item=craft_target)
+            # Close any remaining gump
+            for g in list(ss.gumps.values()):
+                ss.gumps.pop(g.gump_id, None)
+                await ctx.conn.send_packet(
+                    build_gump_response(g.serial, g.gump_id, 0)
+                )
             return ProcedureResult(
                 success=True,
                 message=f"Crafted {craft_target}",
@@ -167,7 +185,13 @@ class MakeTools(Procedure):
         for entry in journal:
             tl = entry.text.lower()
             if "you create" in tl:
+                ctx.blackboard.pop("_make_tools_fails", None)
                 logger.info("make_tools_crafted_journal", item=craft_target)
+                for g in list(ss.gumps.values()):
+                    ss.gumps.pop(g.gump_id, None)
+                    await ctx.conn.send_packet(
+                        build_gump_response(g.serial, g.gump_id, 0)
+                    )
                 return ProcedureResult(
                     success=True,
                     message=f"Crafted {craft_target}",
