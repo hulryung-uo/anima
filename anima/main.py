@@ -278,7 +278,11 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
     """Request own stats and open backpack to discover equipment/items."""
     serial = perception.self_state.serial
 
-    await asyncio.sleep(1.0)  # let initial packets settle
+    await asyncio.sleep(3.0)  # let server send 0x78 MobileIncoming with equipment
+
+    # Check if equipment already arrived from 0x78 during login
+    if perception.self_state.equipment.get(Layer.BACKPACK):
+        logger.info("backpack_from_login", serial=f"0x{perception.self_state.equipment[Layer.BACKPACK]:08X}")
 
     # Request full stats and skills
     await conn.send_packet(build_status_request(4, serial))

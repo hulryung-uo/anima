@@ -43,7 +43,7 @@ IMPROVEMENTS_LOG = ROOT / "data" / "improvements.jsonl"
 WARMUP_SECONDS = 90
 STUCK_THRESHOLD = 300      # 5 minutes no activity → stuck
 IDLE_THRESHOLD = 600       # 10 minutes no progress → idle
-MAX_RESTARTS_PER_HOUR = 6  # prevent restart loop
+MAX_RESTARTS_PER_HOUR = 4  # prevent restart loop — too fast kills server sessions
 
 
 def get_git_head() -> str:
