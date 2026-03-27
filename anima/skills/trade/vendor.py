@@ -36,7 +36,7 @@ _CONTEXT_MENU_TIMEOUT = 1.5
 # Poll interval while waiting
 _POLL_INTERVAL = 0.2
 # Per-vendor cooldown after refusing to buy (seconds)
-_VENDOR_REFUSE_COOLDOWN = 300.0
+_VENDOR_REFUSE_COOLDOWN = 3600.0  # 1 hour — vendor type won't change
 # Global cooldown after buy failure due to no gold (seconds)
 _BUY_NO_GOLD_COOLDOWN = 600.0
 
