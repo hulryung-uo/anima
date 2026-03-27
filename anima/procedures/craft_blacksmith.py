@@ -169,11 +169,18 @@ class CraftBlacksmith(Procedure):
         gump = result.data["gump"]
 
         # Log gump contents for debugging
+        # Log full gump details for debugging
+        all_labels = []
+        for t in gump.texts:
+            if 0 <= t.text_id < len(gump.text_lines):
+                all_labels.append(f"({t.x},{t.y})={gump.text_lines[t.text_id][:30]}")
         logger.info(
             "craft_bs_gump",
             gump_id=f"0x{gump.gump_id:08X}",
             buttons=len(gump.buttons),
-            texts=[t[:40] for t in gump.text_lines],
+            text_count=len(gump.text_lines),
+            label_count=len(gump.texts),
+            labels=all_labels[:15],
             button_ids=[b.button_id for b in gump.buttons],
         )
 
