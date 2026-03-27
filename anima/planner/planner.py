@@ -269,18 +269,25 @@ class Planner:
             if move:
                 return move
 
-        # --- Priority 5b: Has crafted items → sell ---
+        # --- Priority 5b: Has crafted items → sell to appropriate vendor ---
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
-        backpack = ss.equipment.get(0x15)
-        crafted_count = sum(
-            1 for it in ctx.perception.world.items.values()
-            if it.container == backpack and it.graphic in CRAFTED_ITEM_GRAPHICS
-        ) if backpack else 0
+        from anima.procedures.vendor_knowledge import get_vendor_keywords_for_items
+
+        sell_graphics: set[int] = set()
+        if backpack:
+            for it in ctx.perception.world.items.values():
+                if it.container == backpack and it.graphic in CRAFTED_ITEM_GRAPHICS:
+                    sell_graphics.add(it.graphic)
+                    crafted_count += 1
+
         if crafted_count > 0:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 return proc
-            move = await self._move_to_location(ctx, "weaponsmith", "blacksmith", "arms")
+            # Find vendor that buys these specific items
+            vendor_kw = get_vendor_keywords_for_items(sell_graphics)
+            logger.info("planner_sell_crafted", items=crafted_count, vendor_keywords=vendor_kw)
+            move = await self._move_to_location(ctx, *vendor_kw)
             if move:
                 return move
 
@@ -289,7 +296,8 @@ class Planner:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 return proc
-            move = await self._move_to_location(ctx, "blacksmith", "weaponsmith")
+            vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
+            move = await self._move_to_location(ctx, *vendor_kw)
             if move:
                 return move
 
