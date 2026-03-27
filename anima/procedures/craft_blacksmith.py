@@ -15,6 +15,7 @@ from anima.actions.gump import wait_for_gump
 from anima.actions.inventory import count_items, find_in_backpack
 from anima.client.packets import build_double_click, build_gump_response
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
+from anima.skills.crafting.blacksmith import ANVIL_IDS, FORGE_IDS
 
 if TYPE_CHECKING:
     from anima.core.context import AgentContext
@@ -53,6 +54,39 @@ CRAFTED_ARMOR_GRAPHICS = {
 CRAFTED_ITEM_GRAPHICS = CRAFTED_WEAPON_GRAPHICS | CRAFTED_ARMOR_GRAPHICS
 
 
+def _has_anvil_and_forge(ctx: AgentContext) -> bool:
+    """Check that both an anvil and a forge are within 2 tiles."""
+    ss = ctx.perception.self_state
+    world = ctx.perception.world
+
+    has_anvil = False
+    has_forge = False
+
+    # Check dynamic world items
+    for it in world.nearby_items(ss.x, ss.y, distance=2):
+        if it.graphic in ANVIL_IDS:
+            has_anvil = True
+        if it.graphic in FORGE_IDS:
+            has_forge = True
+        if has_anvil and has_forge:
+            return True
+
+    # Check map statics
+    if ctx.map_reader is not None:
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                tile = ctx.map_reader.get_tile(ss.x + dx, ss.y + dy)
+                for s in tile.statics:
+                    if s.graphic in ANVIL_IDS:
+                        has_anvil = True
+                    if s.graphic in FORGE_IDS:
+                        has_forge = True
+                    if has_anvil and has_forge:
+                        return True
+
+    return False
+
+
 class CraftBlacksmith(Procedure):
     name = "craft_blacksmith"
     description = "Craft weapons or armor from ingots to sell for profit."
@@ -60,7 +94,9 @@ class CraftBlacksmith(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         if not find_in_backpack(ctx, TONGS_GRAPHICS):
             return False
-        return count_items(ctx, {INGOT_GRAPHIC}) >= MIN_INGOTS
+        if count_items(ctx, {INGOT_GRAPHIC}) < MIN_INGOTS:
+            return False
+        return _has_anvil_and_forge(ctx)
 
     def _pick_recipe(self, ctx: AgentContext) -> tuple[str, str, int] | None:
         """Pick best recipe based on skill level and available ingots."""
@@ -85,6 +121,13 @@ class CraftBlacksmith(Procedure):
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
                 message="no tongs",
+            )
+
+        if not _has_anvil_and_forge(ctx):
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.WRONG_LOCATION,
+                message="no anvil or forge within 2 tiles",
             )
 
         recipe = self._pick_recipe(ctx)
