@@ -302,7 +302,7 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
             await asyncio.sleep(1.0)
             break
 
-        # Fallback: scan world items for equipment on our character
+        # Fallback 1: scan world items for equipment on our character
         for it in perception.world.items.values():
             if it.container == serial and it.layer > 0:
                 perception.self_state.equipment[it.layer] = it.serial
@@ -314,10 +314,36 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
             await asyncio.sleep(1.0)
             break
 
+        # Fallback 2: try known backpack serial pattern
+        # In UO, backpack is often created right after the character.
+        # Scan container content requests to find it.
+        if attempt >= 2:
+            # Request stats which sometimes triggers equipment send
+            await conn.send_packet(build_status_request(4, serial))
+            await asyncio.sleep(0.5)
+
         # Re-request equipment
         logger.debug("inspect_self_retry", attempt=attempt + 1)
         await conn.send_packet(build_double_click(serial))
         await asyncio.sleep(2.0)
+
+    # Final fallback: if backpack still not found, try container_content
+    # by requesting paperdoll items
+    if not perception.self_state.equipment.get(Layer.BACKPACK):
+        # Some servers need a specific packet to reveal equipment
+        await conn.send_packet(build_status_request(4, serial))
+        await conn.send_packet(build_double_click(serial))
+        await asyncio.sleep(3.0)
+
+        # Last resort: scan all items for possible backpack (graphic 0x0E75/0x0E76)
+        BACKPACK_GRAPHICS = {0x0E75, 0x0E76, 0x09B2}
+        for it in perception.world.items.values():
+            if it.graphic in BACKPACK_GRAPHICS and (it.container == serial or it.layer == 0x15):
+                perception.self_state.equipment[Layer.BACKPACK] = it.serial
+                logger.info("backpack_found_by_graphic", serial=f"0x{it.serial:08X}")
+                await conn.send_packet(build_double_click(it.serial))
+                await asyncio.sleep(1.0)
+                break
 
     # Log equipment
     ss = perception.self_state
