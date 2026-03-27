@@ -27,15 +27,15 @@ INGOT_GRAPHIC = 0x1BF2
 MIN_INGOTS = 8  # most weapons need 8-12 ingots
 
 # Recipes: (category_text, item_text, ingots_needed, min_skill)
-# Ordered by profitability — try highest first
+# Category names from ServUO CraftGump clilocs
 _RECIPES = [
-    ("Weapons", "Cutlass", 8, 24.3),
-    ("Weapons", "Katana", 8, 44.1),
-    ("Weapons", "Scimitar", 10, 31.7),
-    ("Armor", "Ringmail Gloves", 10, 12.0),
-    ("Armor", "Ringmail Sleeves", 14, 16.9),
-    ("Armor", "Ringmail Leggings", 16, 19.4),
-    ("Armor", "Ringmail Tunic", 18, 21.9),
+    ("Bladed", "Cutlass", 8, 24.3),
+    ("Bladed", "Katana", 8, 44.1),
+    ("Bladed", "Scimitar", 10, 31.7),
+    ("Metal Armor", "Ringmail Gloves", 10, 12.0),
+    ("Metal Armor", "Ringmail Sleeves", 14, 16.9),
+    ("Metal Armor", "Ringmail Leggings", 16, 19.4),
+    ("Metal Armor", "Ringmail Tunic", 18, 21.9),
 ]
 
 # Graphics of items we crafted (to detect in inventory and to sell)
