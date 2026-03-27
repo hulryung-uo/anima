@@ -355,6 +355,7 @@ def main() -> None:
     agent_proc = start_agent(args.agent_args)
     last_analysis = time.time()
     last_health_check = time.time()
+    last_git_head = get_git_head()
     restarts_this_hour: list[float] = []
     cycle = 0
 
@@ -373,6 +374,17 @@ def main() -> None:
             # --- Level 1: Health check every 30s ---
             if now - last_health_check >= 30:
                 last_health_check = now
+
+                # Check if code changed (git commit) → restart agent with new code
+                current_head = get_git_head()
+                if current_head and current_head != last_git_head:
+                    print(f"[supervisor] Code changed ({last_git_head[:8]} → {current_head[:8]}) — restarting agent")
+                    last_git_head = current_head
+                    stop_agent(agent_proc)
+                    agent_proc = start_agent(args.agent_args)
+                    last_analysis = now
+                    continue
+
                 state = read_agent_state()
                 problem = check_agent_health(state)
 
