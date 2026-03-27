@@ -91,13 +91,22 @@ class Planner:
             import time
             self._failed_destinations[(proc._x, proc._y)] = time.time()
 
-        # Publish result
-        if ctx.bus and result:
+        # Log and publish result
+        if result:
             icon = "✓" if result.success else "✗"
-            ctx.bus.publish("action.end", {
-                "message": f"{icon} {proc.name}: {result.message}",
-                "importance": 2 if result.success else 1,
-            })
+            logger.info(
+                "planner_result",
+                procedure=proc.name,
+                success=result.success,
+                reason=result.reason.value if result.reason else None,
+                message=result.message[:80] if result.message else "",
+                hint=result.next_suggestion,
+            )
+            if ctx.bus:
+                ctx.bus.publish("action.end", {
+                    "message": f"{icon} {proc.name}: {result.message}",
+                    "importance": 2 if result.success else 1,
+                })
 
         return result
 
@@ -156,6 +165,29 @@ class Planner:
         has_tinker_tools = bool(find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS))
         ore_count = count_items(ctx, ORE_GRAPHICS)
         ingot_count = count_items(ctx, INGOT_GRAPHICS)
+
+        from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
+        crafted_count = sum(
+            1 for it in ctx.perception.world.items.values()
+            if it.container == backpack and it.graphic in CRAFTED_ITEM_GRAPHICS
+        )
+
+        # Periodic state snapshot (every 30s)
+        now = time.time()
+        if now - getattr(self, '_last_state_log', 0) > 30:
+            self._last_state_log = now
+            logger.info(
+                "planner_state",
+                pos=f"({ss.x},{ss.y},z={ss.z})",
+                gold=ss.gold,
+                weight=f"{ss.weight}/{ss.weight_max}",
+                tool=has_mining_tool,
+                tinker=has_tinker_tools,
+                ore=ore_count,
+                ingot=ingot_count,
+                crafted=crafted_count,
+                gave_up_craft=bool(ctx.blackboard.get("_make_tools_gave_up")),
+            )
 
         # --- Priority 1: Survival ---
         if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:

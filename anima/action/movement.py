@@ -53,8 +53,11 @@ async def go_to(
         dist=dist, max_steps=max_steps,
     )
 
+    import time as _time
+    _start_time = _time.monotonic()
     steps_taken = 0
     recalcs = 0
+    doors_opened = 0
     path: list[tuple[int, int]] = []
     permanent_denied: set[tuple[int, int]] = set()  # tiles that always block
     _door_tried: set[tuple[int, int]] = set()  # door tiles already attempted
@@ -71,7 +74,12 @@ async def go_to(
         sx, sy = ss.x, ss.y
         remaining = max(abs(target_x - sx), abs(target_y - sy))
         if remaining <= 1:
-            logger.info("go_to_arrived", pos=f"({sx},{sy})", steps=steps_taken)
+            elapsed = _time.monotonic() - _start_time
+            logger.info(
+                "go_to_arrived",
+                pos=f"({sx},{sy})", steps=steps_taken,
+                time=f"{elapsed:.1f}s", recalcs=recalcs, doors=doors_opened,
+            )
             return True
 
         # Calculate path if we don't have one
@@ -170,6 +178,7 @@ async def go_to(
             ok, opened_new_pos = await _traverse_door(ctx, door_serial, sx, sy, next_x, next_y, step_delay)
             if opened_new_pos:
                 _opened_door_positions.add(opened_new_pos)
+                doors_opened += 1
                 permanent_denied.add(opened_new_pos)  # opened door graphic is impassable
             if ok:
                 path = []
