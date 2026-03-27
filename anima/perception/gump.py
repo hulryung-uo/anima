@@ -218,6 +218,22 @@ def parse_layout(layout: str, text_lines: list[str]) -> GumpData:
                 )
             )
 
+        elif cmd == "xmfhtmlgump" and len(tokens) >= 8:
+            # xmfhtmlgump x y width height cliloc_num background scrollbar
+            cliloc_num = _safe_int(tokens[5])
+            resolved = cliloc_text(cliloc_num)
+            if resolved:
+                idx = len(text_lines)
+                text_lines.append(resolved)
+                gump.texts.append(
+                    GumpText(
+                        x=_safe_int(tokens[1]),
+                        y=_safe_int(tokens[2]),
+                        hue=0,
+                        text_id=idx,
+                    )
+                )
+
         elif cmd == "xmfhtmlgumpcolor" and len(tokens) >= 9:
             # xmfhtmlgumpcolor x y width height cliloc_num background scrollbar hue
             cliloc_num = _safe_int(tokens[5])
