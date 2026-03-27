@@ -36,7 +36,7 @@ class TestBuyFromVendor:
     async def test_no_gold(self):
         proc = BuyFromVendor()
         ctx = _make_ctx()
-        ctx.perception.self_state.gold = 10
+        ctx.perception.self_state.gold = 5
         with patch("anima.procedures.buy_from_vendor._find_vendor", return_value=MagicMock()):
             result = await proc.can_start(ctx)
         assert not result

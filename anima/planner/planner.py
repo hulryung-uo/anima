@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureResult
+from anima.web.command_bus import CommandBus
 
 if TYPE_CHECKING:
     from anima.core.context import AgentContext
@@ -33,8 +34,9 @@ MIN_LOOP_DELAY = 0.2
 class Planner:
     """Selects and runs procedures based on priority rules."""
 
-    def __init__(self, registry: ProcedureRegistry) -> None:
+    def __init__(self, registry: ProcedureRegistry, command_bus: CommandBus | None = None) -> None:
         self.registry = registry
+        self.command_bus = command_bus
         self.continuation_hint: str | None = None
         self._running = False
         self._last_trade_time: float = 0.0
@@ -51,11 +53,21 @@ class Planner:
         logger.info("planner_started")
 
         while self._running and ctx.conn.connected:
+            # --- External steering ---
+            if self.command_bus and self.command_bus.paused:
+                await asyncio.sleep(0.5)
+                continue
+
             try:
-                result = await self.tick(ctx)
+                # Check for override commands from dashboard
+                override_result = await self._handle_overrides(ctx)
+                if override_result is not None:
+                    result = override_result
+                else:
+                    result = await self.tick(ctx)
+
                 if result:
                     self.continuation_hint = result.next_suggestion
-                    # If move_to failed, cooldown before retry
                     if not result.success and hasattr(result, 'message') and 'Could not reach' in (result.message or ''):
                         import time
                         self._move_fail_until = time.time() + 30.0
@@ -68,6 +80,41 @@ class Planner:
             await asyncio.sleep(MIN_LOOP_DELAY)
 
         logger.info("planner_stopped")
+
+    async def _handle_overrides(self, ctx: AgentContext) -> ProcedureResult | None:
+        """Check CommandBus for steering overrides. Returns result if handled."""
+        if not self.command_bus:
+            return None
+
+        # Force go_to
+        go_to = self.command_bus.override_go_to
+        if go_to:
+            x, y = go_to
+            logger.info("planner_override_go_to", x=x, y=y)
+            if ctx.bus:
+                ctx.bus.publish("action.start", {
+                    "message": f"→ Override: go to ({x}, {y})",
+                    "importance": 2,
+                })
+            proc = _MoveToProcedure(f"override({x},{y})", x, y)
+            return await proc.run(ctx)
+
+        # Force procedure
+        proc_name = self.command_bus.override_procedure
+        if proc_name:
+            proc = self.registry.get(proc_name)
+            if proc:
+                logger.info("planner_override_procedure", name=proc_name)
+                if ctx.bus:
+                    ctx.bus.publish("action.start", {
+                        "message": f"▶ Override: {proc_name}",
+                        "importance": 2,
+                    })
+                return await proc.run(ctx)
+            else:
+                logger.warning("planner_override_unknown", name=proc_name)
+
+        return None
 
     async def tick(self, ctx: AgentContext) -> ProcedureResult | None:
         """One planner cycle: select procedure → run it → return result."""
@@ -233,12 +280,14 @@ class Planner:
                 if proc and await proc.can_start(ctx):
                     return proc
 
-            # 4c: Has gold → buy tools directly
-            if ss.gold >= 20:
+            # 4c: Has gold → buy tools directly (pickaxe costs ~11 gold)
+            if ss.gold >= 10:
                 proc = self.registry.get("buy_from_vendor")
                 if proc and await proc.can_start(ctx):
                     return proc
-                return await self._move_to_location(ctx, "tinker", "provisioner")
+                move = await self._move_to_location(ctx, "tinker", "provisioner")
+                if move:
+                    return move
 
             # 4d: Has ingots + tongs → craft weapons to sell for gold to buy tools
             if ingot_count >= 8:
@@ -246,14 +295,18 @@ class Planner:
                 if proc and await proc.can_start(ctx):
                     logger.info("planner_craft_for_gold", reason="need tools, crafting to sell")
                     return proc
-                return await self._move_to_location(ctx, "forge", "blacksmith")
+                move = await self._move_to_location(ctx, "forge", "blacksmith")
+                if move:
+                    return move
 
             # 4e: Has ingots but can't craft → sell raw ingots
             if ingot_count > 0:
                 proc = self.registry.get("sell_to_vendor")
                 if proc and await proc.can_start(ctx):
                     return proc
-                return await self._move_to_location(ctx, "blacksmith", "weaponsmith")
+                move = await self._move_to_location(ctx, "blacksmith", "weaponsmith")
+                if move:
+                    return move
 
             # 4f: No gold, no ore, no ingots — truly stuck
             logger.warning("planner_stuck_no_resources")
@@ -309,6 +362,9 @@ class Planner:
             return await self._move_to_location(ctx, "bank")
 
         # --- Priority 7: Has mining tool → mine ---
+        if has_mining_tool:
+            # We have a tool again — reset gave-up flags so they can retry next time
+            ctx.blackboard.pop("_make_tools_gave_up", None)
         proc = self.registry.get("mine_ore")
         if proc and await proc.can_start(ctx):
             return proc
