@@ -198,10 +198,32 @@ class Planner:
             logger.warning("planner_stuck_no_resources")
             return None
 
-        # --- Priority 5: Has ingots → sell ---
-        # Only sell if we have a meaningful amount (≥10).
-        # With fewer ingots and mining tools, it's better to mine more
-        # than walk far to a blacksmith for a tiny sale.
+        # --- Priority 5: Has ingots → craft into weapons/armor ---
+        if ingot_count >= 8:
+            proc = self.registry.get("craft_blacksmith")
+            if proc and await proc.can_start(ctx):
+                return proc
+            # Need forge/anvil — go to blacksmith
+            move = await self._move_to_location(ctx, "forge", "blacksmith")
+            if move:
+                return move
+
+        # --- Priority 5b: Has crafted items → sell ---
+        from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
+        backpack = ss.equipment.get(0x15)
+        crafted_count = sum(
+            1 for it in ctx.perception.world.items.values()
+            if it.container == backpack and it.graphic in CRAFTED_ITEM_GRAPHICS
+        ) if backpack else 0
+        if crafted_count > 0:
+            proc = self.registry.get("sell_to_vendor")
+            if proc and await proc.can_start(ctx):
+                return proc
+            move = await self._move_to_location(ctx, "weaponsmith", "blacksmith", "arms")
+            if move:
+                return move
+
+        # --- Priority 5c: Has ingots but can't craft → sell raw ingots ---
         if ingot_count >= 10:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
@@ -209,7 +231,6 @@ class Planner:
             move = await self._move_to_location(ctx, "blacksmith", "weaponsmith")
             if move:
                 return move
-            # No reachable vendor — fall through to mining
 
         # --- Priority 6: Gold > 200 → bank ---
         if ss.gold > 200:
