@@ -169,22 +169,7 @@ class CraftBlacksmith(Procedure):
         gump = result.data["gump"]
 
         # Log gump contents for debugging
-        # Log full gump details for debugging
-        all_labels = []
-        for t in gump.texts:
-            if 0 <= t.text_id < len(gump.text_lines):
-                all_labels.append(f"({t.x},{t.y})={gump.text_lines[t.text_id][:30]}")
-        logger.info(
-            "craft_bs_gump",
-            gump_id=f"0x{gump.gump_id:08X}",
-            buttons=len(gump.buttons),
-            text_count=len(gump.text_lines),
-            label_count=len(gump.texts),
-            labels=all_labels[:15],
-            button_ids=[b.button_id for b in gump.buttons],
-        )
-
-        # 2. Click category (Weapons or Armor)
+        # 2. Click category
         cat_btn = gump.find_button_near_text(category_text)
         if not cat_btn:
             ss.gumps.clear()

@@ -21,3 +21,4 @@ data/state.json
 data/claude_code.log
 data/improvements.jsonl
 data/backpack_cache.json
+data/forum_last_post.txt

@@ -880,6 +880,22 @@ def register_handlers(
     # Gump packets
     # ------------------------------------------------------------------
 
+    def _log_gump(gump, event_name: str) -> None:
+        """Log full gump contents — labels, buttons, positions."""
+        labels = []
+        for t in gump.texts:
+            if 0 <= t.text_id < len(gump.text_lines):
+                text = gump.text_lines[t.text_id][:40]
+                labels.append(f"({t.x},{t.y})={text}")
+        logger.info(
+            event_name,
+            serial=f"0x{gump.serial:08X}",
+            gump_id=f"0x{gump.gump_id:08X}",
+            buttons=len(gump.buttons),
+            labels=labels,
+            button_ids=[b.button_id for b in gump.buttons],
+        )
+
     def handle_open_gump(packet_id: int, data: bytes) -> None:
         """0xB0 OpenGump — server sends a generic gump (uncompressed)."""
         if len(data) < 21:
@@ -922,14 +938,7 @@ def register_handlers(
             GameEventType.GUMP_OPENED,
             {"serial": serial, "gump_id": gump_id, "buttons": len(gump.buttons)},
         )
-        logger.info(
-            "gump_opened",
-            serial=f"0x{serial:08X}",
-            gump_id=f"0x{gump_id:08X}",
-            buttons=len(gump.buttons),
-            texts=len(gump.texts),
-            text_lines=len(text_lines),
-        )
+        _log_gump(gump, "gump_opened")
 
     handler.register(0xB0, handle_open_gump)
 
@@ -1016,13 +1025,7 @@ def register_handlers(
             GameEventType.GUMP_OPENED,
             {"serial": serial, "gump_id": gump_id, "buttons": len(gump.buttons)},
         )
-        logger.info(
-            "gump_compressed_opened",
-            serial=f"0x{serial:08X}",
-            gump_id=f"0x{gump_id:08X}",
-            buttons=len(gump.buttons),
-            text_lines=len(text_lines),
-        )
+        _log_gump(gump, "gump_compressed_opened")
 
     handler.register(0xDD, handle_compressed_gump)
 

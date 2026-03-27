@@ -515,12 +515,13 @@ async def planner_loop(ctx: AgentContext) -> None:
         forum_task.cancel()
 
 
-FORUM_INTERVAL = 3600  # post every 1 hour
+FORUM_INTERVAL = 1800  # minimum 30 minutes between posts
+FORUM_LAST_POST_FILE = Path("data/forum_last_post.txt")
 
 
 async def _forum_loop(ctx: AgentContext) -> None:
-    """Post to uotavern.com forum every hour with activity summary."""
-    await asyncio.sleep(60)  # initial delay — let agent start doing things
+    """Post to uotavern.com forum periodically with activity summary."""
+    import time as _time
 
     forum_client = ctx.forum_client
     if not forum_client:
@@ -529,7 +530,27 @@ async def _forum_loop(ctx: AgentContext) -> None:
 
     persona_name = ctx.persona.name if ctx.persona else "Anima"
 
+    # Check when last post was made (survives restarts)
+    last_post_time = 0.0
+    if FORUM_LAST_POST_FILE.exists():
+        try:
+            last_post_time = float(FORUM_LAST_POST_FILE.read_text().strip())
+        except Exception:
+            pass
+
     while ctx.conn.connected:
+        now = _time.time()
+        since_last = now - last_post_time
+        if since_last < FORUM_INTERVAL:
+            wait = FORUM_INTERVAL - since_last
+            logger.debug("forum_cooldown", wait=f"{wait:.0f}s")
+            await asyncio.sleep(min(wait + 10, 300))  # check every 5 min max
+            continue
+
+        # Wait a bit after startup to accumulate activity
+        if last_post_time == 0:
+            await asyncio.sleep(120)  # 2 min initial delay on first ever post
+
         try:
             summary = await _build_activity_summary(ctx, persona_name)
             title = summary["title"]
@@ -537,6 +558,8 @@ async def _forum_loop(ctx: AgentContext) -> None:
 
             post_id = await forum_client.create_post(title, body, "tavern")
             if post_id:
+                last_post_time = _time.time()
+                FORUM_LAST_POST_FILE.write_text(str(last_post_time))
                 logger.info("forum_posted", post_id=post_id, title=title)
                 if ctx.bus:
                     ctx.bus.publish("social.forum_post", {
@@ -548,7 +571,7 @@ async def _forum_loop(ctx: AgentContext) -> None:
         except Exception as e:
             logger.warning("forum_error", error=str(e))
 
-        await asyncio.sleep(FORUM_INTERVAL)
+        await asyncio.sleep(60)  # check again in 1 min
 
 
 async def _build_activity_summary(ctx: AgentContext, persona_name: str) -> dict:
