@@ -418,7 +418,134 @@ async def planner_loop(ctx: AgentContext) -> None:
 
     registry = ctx.blackboard["procedure_registry"]
     planner = Planner(registry)
-    await planner.run(ctx)
+
+    # Run planner + forum posting in parallel
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(planner.run(ctx))
+        tg.create_task(_forum_loop(ctx))
+
+
+FORUM_INTERVAL = 3600  # post every 1 hour
+
+
+async def _forum_loop(ctx: AgentContext) -> None:
+    """Post to uotavern.com forum every hour with activity summary."""
+    await asyncio.sleep(60)  # initial delay — let agent start doing things
+
+    forum_client = ctx.forum_client
+    if not forum_client:
+        logger.info("forum_disabled", reason="no forum client configured")
+        return
+
+    persona_name = ctx.persona.name if ctx.persona else "Anima"
+
+    while ctx.conn.connected:
+        try:
+            summary = _build_activity_summary(ctx, persona_name)
+            title = summary["title"]
+            body = summary["body"]
+
+            post_id = await forum_client.create_post(title, body, "tavern")
+            if post_id:
+                logger.info("forum_posted", post_id=post_id, title=title)
+                if ctx.bus:
+                    ctx.bus.publish("social.forum_post", {
+                        "message": f"📝 Posted: {title}",
+                        "importance": 2,
+                    })
+            else:
+                logger.warning("forum_post_failed", title=title)
+        except Exception as e:
+            logger.warning("forum_error", error=str(e))
+
+        await asyncio.sleep(FORUM_INTERVAL)
+
+
+def _build_activity_summary(ctx: AgentContext, persona_name: str) -> dict:
+    """Build a forum post summarizing recent agent activity."""
+    import json
+    import time
+    from datetime import datetime
+
+    ss = ctx.perception.self_state
+
+    # Read action_logs from DB for stats
+    stats_text = ""
+    try:
+        import sqlite3
+        db_path = Path("data/anima.db")
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            cutoff = time.time() - FORUM_INTERVAL
+            rows = conn.execute("""
+                SELECT procedure, result, COUNT(*) as cnt
+                FROM action_logs WHERE timestamp > ?
+                GROUP BY procedure, result ORDER BY cnt DESC
+            """, (cutoff,)).fetchall()
+            conn.close()
+            if rows:
+                stats_lines = []
+                for proc, result, cnt in rows[:8]:
+                    icon = "✓" if result == "success" else "✗"
+                    stats_lines.append(f"- {icon} {proc}: {result} ({cnt}x)")
+                stats_text = "\n".join(stats_lines)
+    except Exception:
+        pass
+
+    # Current state
+    now = datetime.now()
+    skills_text = ""
+    top_skills = sorted(ss.skills.values(), key=lambda s: -s.value)[:3]
+    if top_skills:
+        skill_names = {45: "Mining", 7: "Blacksmithy", 37: "Tinkering",
+                       44: "Lumberjacking", 11: "Carpentry"}
+        skills_text = ", ".join(
+            f"{skill_names.get(s.id, f'#{s.id}')} {s.value:.1f}"
+            for s in top_skills
+        )
+
+    # Build post
+    title = f"{persona_name}'s Log — {now.strftime('%b %d, %H:%M')}"
+    body_parts = [
+        f"## Status",
+        f"Position: ({ss.x}, {ss.y}) | Gold: {ss.gold} | Weight: {ss.weight}/{ss.weight_max}",
+        f"Skills: {skills_text}" if skills_text else "",
+        "",
+    ]
+
+    if stats_text:
+        body_parts.extend([
+            "## Recent Activity",
+            stats_text,
+            "",
+        ])
+
+    # Recent activity messages
+    try:
+        state_file = Path("data/state.json")
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+            activity = state.get("activity", [])
+            if activity:
+                body_parts.append("## What happened")
+                seen = set()
+                for a in activity[-10:]:
+                    msg = a.get("message", "")
+                    # Deduplicate similar messages
+                    key = msg[:30]
+                    if key not in seen:
+                        seen.add(key)
+                        body_parts.append(f"- {msg}")
+                body_parts.append("")
+    except Exception:
+        pass
+
+    body_parts.append(f"*— {persona_name}, automated report*")
+
+    return {
+        "title": title,
+        "body": "\n".join(body_parts),
+    }
 
 
 async def brain_loop(brain: Brain) -> None:
