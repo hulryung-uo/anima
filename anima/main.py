@@ -327,15 +327,9 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
         await conn.send_packet(build_double_click(serial))
         await asyncio.sleep(2.0)
 
-    # Final fallback: if backpack still not found, try container_content
-    # by requesting paperdoll items
+    # Final fallback: if backpack still not found
     if not perception.self_state.equipment.get(Layer.BACKPACK):
-        # Some servers need a specific packet to reveal equipment
-        await conn.send_packet(build_status_request(4, serial))
-        await conn.send_packet(build_double_click(serial))
-        await asyncio.sleep(3.0)
-
-        # Last resort: scan all items for possible backpack (graphic 0x0E75/0x0E76)
+        # Try scanning world items by graphic
         BACKPACK_GRAPHICS = {0x0E75, 0x0E76, 0x09B2}
         for it in perception.world.items.values():
             if it.graphic in BACKPACK_GRAPHICS and (it.container == serial or it.layer == 0x15):
@@ -343,6 +337,26 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
                 logger.info("backpack_found_by_graphic", serial=f"0x{it.serial:08X}")
                 await conn.send_packet(build_double_click(it.serial))
                 await asyncio.sleep(1.0)
+                break
+
+    # Last resort: brute-force open container with serial+1
+    # In many UO servers, backpack serial = player_serial | 0x40000000 + offset
+    if not perception.self_state.equipment.get(Layer.BACKPACK):
+        # Try common backpack serial patterns
+        candidates = [
+            serial + 1,               # sometimes serial+1
+            serial | 0x40000000,      # item serial range
+            (serial | 0x40000000) + 1,
+        ]
+        for bp_candidate in candidates:
+            logger.debug("backpack_brute_try", serial=f"0x{bp_candidate:08X}")
+            await conn.send_packet(build_double_click(bp_candidate))
+            await asyncio.sleep(1.0)
+            # Check if container_content arrived (items with this container)
+            items_in = [it for it in perception.world.items.values() if it.container == bp_candidate]
+            if items_in:
+                perception.self_state.equipment[Layer.BACKPACK] = bp_candidate
+                logger.info("backpack_found_brute", serial=f"0x{bp_candidate:08X}", items=len(items_in))
                 break
 
     # Log equipment
