@@ -301,7 +301,20 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
             await conn.send_packet(build_double_click(backpack_serial))
             await asyncio.sleep(1.0)
             break
-        # Re-request equipment by double-clicking self again
+
+        # Fallback: scan world items for equipment on our character
+        for it in perception.world.items.values():
+            if it.container == serial and it.layer > 0:
+                perception.self_state.equipment[it.layer] = it.serial
+
+        backpack_serial = perception.self_state.equipment.get(Layer.BACKPACK)
+        if backpack_serial:
+            logger.info("backpack_found_from_world_items", serial=f"0x{backpack_serial:08X}")
+            await conn.send_packet(build_double_click(backpack_serial))
+            await asyncio.sleep(1.0)
+            break
+
+        # Re-request equipment
         logger.debug("inspect_self_retry", attempt=attempt + 1)
         await conn.send_packet(build_double_click(serial))
         await asyncio.sleep(2.0)

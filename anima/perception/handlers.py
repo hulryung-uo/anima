@@ -87,6 +87,10 @@ def register_handlers(
             item.layer = layer
             item.container = serial
 
+            # If this is our character, register equipment
+            if serial == p.self_state.serial and layer > 0:
+                p.self_state.equipment[layer] = item_serial
+
         p.emit(GameEventType.MOBILE_APPEARED, {"serial": serial, "x": x, "y": y})
         logger.debug(
             "mobile_incoming",
