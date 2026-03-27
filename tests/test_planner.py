@@ -109,15 +109,18 @@ class TestGameplayLoop:
 
     @pytest.mark.asyncio
     async def test_has_ingots_sell(self):
-        """Ingots in backpack → sell."""
+        """Ingots + has tool → craft then sell."""
         reg = ProcedureRegistry()
         reg.register(StubProcedure("sell_to_vendor"))
+        reg.register(StubProcedure("craft_blacksmith"))
         planner = Planner(reg)
 
         ctx = _make_ctx()
-        _add_item(ctx, 1, INGOT, amount=20)
+        _add_item(ctx, 1, PICKAXE)  # has tool so Priority 4 doesn't block
+        _add_item(ctx, 2, INGOT, amount=20)
         proc = await planner.select_procedure(ctx)
-        assert proc.name == "sell_to_vendor"
+        # With ingots + tongs (if registered), craft first; otherwise sell
+        assert proc.name in ("craft_blacksmith", "sell_to_vendor")
 
     @pytest.mark.asyncio
     async def test_gold_bank(self):

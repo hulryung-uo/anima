@@ -218,36 +218,44 @@ class Planner:
 
         # --- Priority 4: No mining tools → get them ---
         if not has_mining_tool:
-            # 4a: Has ore → smelt first (need ingots to craft or sell for gold)
+            # 4a: Has ore → smelt first
             if ore_count > 0:
                 proc = self.registry.get("smelt_ore")
                 if proc and await proc.can_start(ctx):
                     return proc
                 return await self._move_to_location(ctx, "forge", "blacksmith")
 
-            # 4b: Has tinker tools + ingots → craft shovel/pickaxe
-            #     Skip if crafting already gave up (buy instead)
+            # 4b: Has tinker tools + ingots → try craft tools
+            #     Skip if Tinkering gave up (skill too low)
             if (has_tinker_tools and ingot_count >= 4
                     and not ctx.blackboard.get("_make_tools_gave_up")):
                 proc = self.registry.get("make_tools")
                 if proc and await proc.can_start(ctx):
                     return proc
 
-            # 4c: Has ingots but no tinker tools → sell ingots for gold
-            if ingot_count > 0:
-                proc = self.registry.get("sell_to_vendor")
-                if proc and await proc.can_start(ctx):
-                    return proc
-                return await self._move_to_location(ctx, "blacksmith", "weaponsmith", "provisioner")
-
-            # 4d: Has gold → buy tools
+            # 4c: Has gold → buy tools directly
             if ss.gold >= 20:
                 proc = self.registry.get("buy_from_vendor")
                 if proc and await proc.can_start(ctx):
                     return proc
                 return await self._move_to_location(ctx, "tinker", "provisioner")
 
-            # 4e: No gold, no ore, no ingots — truly stuck
+            # 4d: Has ingots + tongs → craft weapons to sell for gold to buy tools
+            if ingot_count >= 8:
+                proc = self.registry.get("craft_blacksmith")
+                if proc and await proc.can_start(ctx):
+                    logger.info("planner_craft_for_gold", reason="need tools, crafting to sell")
+                    return proc
+                return await self._move_to_location(ctx, "forge", "blacksmith")
+
+            # 4e: Has ingots but can't craft → sell raw ingots
+            if ingot_count > 0:
+                proc = self.registry.get("sell_to_vendor")
+                if proc and await proc.can_start(ctx):
+                    return proc
+                return await self._move_to_location(ctx, "blacksmith", "weaponsmith")
+
+            # 4f: No gold, no ore, no ingots — truly stuck
             logger.warning("planner_stuck_no_resources")
             return None
 

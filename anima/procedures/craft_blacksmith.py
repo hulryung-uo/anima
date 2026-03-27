@@ -96,6 +96,12 @@ class CraftBlacksmith(Procedure):
             )
 
         category_text, item_text, ingot_cost = recipe
+        logger.info(
+            "craft_bs_start",
+            item=item_text, category=category_text,
+            ingot_cost=ingot_cost, ingots=count_items(ctx, {INGOT_GRAPHIC}),
+            skill=next((sk.value for sk in ss.skills.values() if sk.id == 7), 0),
+        )
 
         # Count items before crafting
         items_before = len([

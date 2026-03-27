@@ -57,7 +57,22 @@ class MakeTools(Procedure):
         return not (has_pickaxe and has_hatchet and has_tinker)
 
     def _decide_craft_target(self, ctx: AgentContext) -> str | None:
-        """Decide what to craft based on what's missing. Returns item name."""
+        """Decide what to craft based on what's missing and skill level.
+
+        If Tinkering is too low for tools, craft simple items to train first.
+        """
+        # Check Tinkering skill level
+        tinker_skill = 0.0
+        for sk in ctx.perception.self_state.skills.values():
+            if sk.id == 37:  # Tinkering
+                tinker_skill = sk.value
+                break
+
+        # Need tools but skill too low? Train with simple items first
+        if tinker_skill < 25.0:
+            # At low skill, craft Tinker's Tools to train (requires ~0 skill)
+            return "Tinker's Tools"
+
         if not find_in_backpack(ctx, PICKAXE_GRAPHICS):
             return "Pickaxe"
         if not find_in_backpack(ctx, HATCHET_GRAPHICS):
@@ -110,11 +125,19 @@ class MakeTools(Procedure):
         tool_serial = tools[0].serial
         ss = ctx.perception.self_state
 
+        logger.info(
+            "make_tools_start",
+            target=craft_target,
+            category=category_text,
+            tool_serial=f"0x{tool_serial:08X}",
+            ingots=count_items(ctx, {INGOT_GRAPHIC}),
+        )
+
         # 1. Open tinkering gump by double-clicking tinker tools
         from anima.client.packets import build_double_click
-        ss.gumps.clear()  # clear stale gumps before opening new one
+        ss.gumps.clear()
         await ctx.conn.send_packet(build_double_click(tool_serial))
-        await asyncio.sleep(0.5)  # wait for server to send gump
+        await asyncio.sleep(0.5)
 
         result = await wait_for_gump(ctx, timeout=3.0)
         if not result.success:
@@ -125,9 +148,12 @@ class MakeTools(Procedure):
             )
 
         gump = result.data["gump"]
+        logger.debug("make_tools_gump_opened", buttons=len(gump.buttons), texts=len(gump.text_lines))
 
         # 2. Click category (e.g. "Tools") using text-based button lookup
         cat_btn = gump.find_button_near_text(category_text)
+        if cat_btn:
+            logger.info("make_tools_category_found", category=category_text, button_id=cat_btn.button_id)
         if not cat_btn:
             await self._close_all_gumps(ctx)
             return ProcedureResult(
