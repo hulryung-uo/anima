@@ -339,25 +339,50 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
                 await asyncio.sleep(1.0)
                 break
 
-    # Last resort: brute-force open known/guessed backpack serials
+    # Last resort: try cached backpack serial from previous session
     if not perception.self_state.equipment.get(Layer.BACKPACK):
-        # Try known backpack serial first, then common patterns
-        candidates = [
-            0x4002C953,               # Grimm's known backpack
+        cache_file = Path("data/backpack_cache.json")
+        cached_serial = None
+        if cache_file.exists():
+            try:
+                import json as _json
+                cache = _json.loads(cache_file.read_text())
+                if cache.get("player_serial") == serial:
+                    cached_serial = cache.get("backpack_serial")
+            except Exception:
+                pass
+
+        candidates = []
+        if cached_serial:
+            candidates.append(cached_serial)
+        candidates.extend([
             serial + 1,
             serial | 0x40000000,
             (serial | 0x40000000) + 1,
-        ]
+        ])
+
         for bp_candidate in candidates:
             logger.debug("backpack_brute_try", serial=f"0x{bp_candidate:08X}")
             await conn.send_packet(build_double_click(bp_candidate))
             await asyncio.sleep(1.0)
-            # Check if container_content arrived (items with this container)
             items_in = [it for it in perception.world.items.values() if it.container == bp_candidate]
             if items_in:
                 perception.self_state.equipment[Layer.BACKPACK] = bp_candidate
                 logger.info("backpack_found_brute", serial=f"0x{bp_candidate:08X}", items=len(items_in))
                 break
+
+    # Save backpack serial to cache for next session
+    bp_final = perception.self_state.equipment.get(Layer.BACKPACK)
+    if bp_final:
+        try:
+            import json as _json
+            cache_file = Path("data/backpack_cache.json")
+            cache_file.write_text(_json.dumps({
+                "player_serial": serial,
+                "backpack_serial": bp_final,
+            }))
+        except Exception:
+            pass
 
     # Log equipment
     ss = perception.self_state
