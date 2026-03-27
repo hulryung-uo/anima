@@ -339,13 +339,13 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
                 await asyncio.sleep(1.0)
                 break
 
-    # Last resort: brute-force open container with serial+1
-    # In many UO servers, backpack serial = player_serial | 0x40000000 + offset
+    # Last resort: brute-force open known/guessed backpack serials
     if not perception.self_state.equipment.get(Layer.BACKPACK):
-        # Try common backpack serial patterns
+        # Try known backpack serial first, then common patterns
         candidates = [
-            serial + 1,               # sometimes serial+1
-            serial | 0x40000000,      # item serial range
+            0x4002C953,               # Grimm's known backpack
+            serial + 1,
+            serial | 0x40000000,
             (serial | 0x40000000) + 1,
         ]
         for bp_candidate in candidates:
