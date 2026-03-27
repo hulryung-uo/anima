@@ -294,12 +294,17 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
 
     await asyncio.sleep(2.0)  # wait for responses
 
-    # Try again if backpack wasn't known yet
-    if not backpack_serial:
+    # Retry — equipment may arrive late
+    for attempt in range(5):
         backpack_serial = perception.self_state.equipment.get(Layer.BACKPACK)
         if backpack_serial:
             await conn.send_packet(build_double_click(backpack_serial))
             await asyncio.sleep(1.0)
+            break
+        # Re-request equipment by double-clicking self again
+        logger.debug("inspect_self_retry", attempt=attempt + 1)
+        await conn.send_packet(build_double_click(serial))
+        await asyncio.sleep(2.0)
 
     # Log equipment
     ss = perception.self_state
