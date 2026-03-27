@@ -441,7 +441,7 @@ async def _forum_loop(ctx: AgentContext) -> None:
 
     while ctx.conn.connected:
         try:
-            summary = _build_activity_summary(ctx, persona_name)
+            summary = await _build_activity_summary(ctx, persona_name)
             title = summary["title"]
             body = summary["body"]
 
@@ -461,16 +461,17 @@ async def _forum_loop(ctx: AgentContext) -> None:
         await asyncio.sleep(FORUM_INTERVAL)
 
 
-def _build_activity_summary(ctx: AgentContext, persona_name: str) -> dict:
-    """Build a forum post summarizing recent agent activity."""
+async def _build_activity_summary(ctx: AgentContext, persona_name: str) -> dict:
+    """Build a forum post with a narrative story about what the agent did."""
     import json
     import time
     from datetime import datetime
 
     ss = ctx.perception.self_state
+    now = datetime.now()
 
-    # Read action_logs from DB for stats
-    stats_text = ""
+    # Gather raw data for LLM
+    stats_lines = []
     try:
         import sqlite3
         db_path = Path("data/anima.db")
@@ -483,69 +484,71 @@ def _build_activity_summary(ctx: AgentContext, persona_name: str) -> dict:
                 GROUP BY procedure, result ORDER BY cnt DESC
             """, (cutoff,)).fetchall()
             conn.close()
-            if rows:
-                stats_lines = []
-                for proc, result, cnt in rows[:8]:
-                    icon = "✓" if result == "success" else "✗"
-                    stats_lines.append(f"- {icon} {proc}: {result} ({cnt}x)")
-                stats_text = "\n".join(stats_lines)
+            for proc, result, cnt in rows[:10]:
+                stats_lines.append(f"{proc} {result}: {cnt}x")
     except Exception:
         pass
 
-    # Current state
-    now = datetime.now()
-    skills_text = ""
-    top_skills = sorted(ss.skills.values(), key=lambda s: -s.value)[:3]
-    if top_skills:
-        skill_names = {45: "Mining", 7: "Blacksmithy", 37: "Tinkering",
-                       44: "Lumberjacking", 11: "Carpentry"}
-        skills_text = ", ".join(
-            f"{skill_names.get(s.id, f'#{s.id}')} {s.value:.1f}"
-            for s in top_skills
-        )
-
-    # Build post
-    title = f"{persona_name}'s Log — {now.strftime('%b %d, %H:%M')}"
-    body_parts = [
-        f"## Status",
-        f"Position: ({ss.x}, {ss.y}) | Gold: {ss.gold} | Weight: {ss.weight}/{ss.weight_max}",
-        f"Skills: {skills_text}" if skills_text else "",
-        "",
-    ]
-
-    if stats_text:
-        body_parts.extend([
-            "## Recent Activity",
-            stats_text,
-            "",
-        ])
-
-    # Recent activity messages
+    activity_lines = []
     try:
         state_file = Path("data/state.json")
         if state_file.exists():
             state = json.loads(state_file.read_text())
-            activity = state.get("activity", [])
-            if activity:
-                body_parts.append("## What happened")
-                seen = set()
-                for a in activity[-10:]:
-                    msg = a.get("message", "")
-                    # Deduplicate similar messages
-                    key = msg[:30]
-                    if key not in seen:
-                        seen.add(key)
-                        body_parts.append(f"- {msg}")
-                body_parts.append("")
+            seen = set()
+            for a in state.get("activity", [])[-15:]:
+                msg = a.get("message", "")
+                key = msg[:25]
+                if key not in seen:
+                    seen.add(key)
+                    activity_lines.append(msg)
     except Exception:
         pass
 
-    body_parts.append(f"*— {persona_name}, automated report*")
+    skill_names = {45: "Mining", 7: "Blacksmithy", 37: "Tinkering",
+                   44: "Lumberjacking", 11: "Carpentry"}
+    top_skills = sorted(ss.skills.values(), key=lambda s: -s.value)[:3]
+    skills_text = ", ".join(
+        f"{skill_names.get(s.id, f'Skill#{s.id}')} {s.value:.1f}"
+        for s in top_skills
+    )
 
-    return {
-        "title": title,
-        "body": "\n".join(body_parts),
-    }
+    raw_data = f"""Character: {persona_name}
+Position: ({ss.x}, {ss.y})
+Gold: {ss.gold}, Weight: {ss.weight}/{ss.weight_max}
+Skills: {skills_text}
+Procedure stats (last hour): {'; '.join(stats_lines) if stats_lines else 'none'}
+Recent events: {'; '.join(activity_lines[-8:]) if activity_lines else 'nothing notable'}"""
+
+    # Use LLM to write a narrative post
+    if ctx.llm:
+        try:
+            prompt = f"""You are {persona_name}, a miner and blacksmith in Ultima Online.
+Write a short tavern journal entry (3-5 sentences) about what you've been doing.
+Write in first person, as if telling your story to fellow adventurers at the tavern.
+Be casual and authentic — mention specific places, challenges, small victories.
+Don't use bullet points or headers. Just tell your story naturally.
+
+Here's what happened:
+{raw_data}
+
+Write ONLY the journal entry, nothing else."""
+
+            response = await ctx.llm.chat([
+                {"role": "user", "content": prompt},
+            ])
+            if response and response.text and len(response.text) > 20:
+                title = f"{persona_name}'s Journal — {now.strftime('%b %d')}"
+                return {"title": title, "body": response.text.strip()}
+        except Exception as e:
+            logger.warning("forum_llm_failed", error=str(e))
+
+    # Fallback: simple summary if LLM fails
+    title = f"{persona_name}'s Log — {now.strftime('%b %d, %H:%M')}"
+    body = f"Been working the mines near Minoc. "
+    if stats_lines:
+        body += f"Today's work: {', '.join(stats_lines[:4])}. "
+    body += f"Currently at ({ss.x}, {ss.y}) with {ss.gold} gold."
+    return {"title": title, "body": body}
 
 
 async def brain_loop(brain: Brain) -> None:
