@@ -40,6 +40,7 @@ class Planner:
         self._last_trade_time: float = 0.0
         self._move_fail_until: float = 0.0  # cooldown after move-to failure
         self._failed_destinations: dict[tuple[int, int], float] = {}  # (x,y) → time
+        self._last_backpack_request: float = 0.0  # cooldown for re-requesting equipment
 
     def stop(self) -> None:
         self._running = False
@@ -122,7 +123,27 @@ class Planner:
 
         ss = ctx.perception.self_state
         backpack = ss.equipment.get(0x15)
+
         if not backpack:
+            # Re-request equipment periodically (every 15s) to recover
+            now = time.time()
+            if now - self._last_backpack_request > 15.0:
+                self._last_backpack_request = now
+                logger.info("planner_requesting_backpack")
+                from anima.client.packets import build_double_click
+                await ctx.conn.send_packet(build_double_click(ss.serial))
+
+            # Still allow survival and movement without backpack
+            if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:
+                proc = self.registry.get("heal_self")
+                if proc and await proc.can_start(ctx):
+                    return proc
+
+            if time.time() > self._move_fail_until:
+                move_proc = await self._try_move_to_activity(ctx)
+                if move_proc:
+                    return move_proc
+
             logger.debug("planner_no_backpack")
             return None
 
