@@ -173,7 +173,8 @@ class CraftBlacksmith(Procedure):
             "craft_bs_gump",
             gump_id=f"0x{gump.gump_id:08X}",
             buttons=len(gump.buttons),
-            texts=[t[:30] for t in gump.text_lines[:10]],
+            texts=[t[:40] for t in gump.text_lines],
+            button_ids=[b.button_id for b in gump.buttons],
         )
 
         # 2. Click category (Weapons or Armor)
