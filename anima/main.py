@@ -394,7 +394,7 @@ async def planner_loop(ctx: AgentContext) -> None:
     from anima.planner.planner import Planner
 
     # Wait until equipment is loaded (backpack available)
-    for _ in range(30):  # up to 15 seconds
+    for _ in range(60):  # up to 30 seconds
         await asyncio.sleep(0.5)
         if ctx.perception.self_state.equipment.get(0x15):
             break
@@ -420,9 +420,12 @@ async def planner_loop(ctx: AgentContext) -> None:
     planner = Planner(registry)
 
     # Run planner + forum posting in parallel
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(planner.run(ctx))
-        tg.create_task(_forum_loop(ctx))
+    # Forum runs as a background task — errors don't kill the planner
+    forum_task = asyncio.create_task(_forum_loop(ctx))
+    try:
+        await planner.run(ctx)
+    finally:
+        forum_task.cancel()
 
 
 FORUM_INTERVAL = 3600  # post every 1 hour
