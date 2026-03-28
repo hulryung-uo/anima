@@ -308,9 +308,9 @@ class Planner:
                 if move:
                     return move
 
-            # 4f: No gold, no ore, no ingots — truly stuck
-            logger.warning("planner_stuck_no_resources")
-            return None
+            # 4f: No gold, no ore, no ingots — fall through to lower priorities
+            # (e.g., Priority 9 will move the agent toward an activity area)
+            logger.info("planner_no_tools_falling_through")
 
         # --- Priority 5: Has ingots → craft into weapons/armor ---
         if ingot_count >= 8:
