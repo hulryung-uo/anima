@@ -5,7 +5,7 @@ from __future__ import annotations
 from anima.client.codec import PacketWriter
 
 # ---------------------------------------------------------------------------
-# Packet length table (from servuo-rs PACKET_LENGTHS)
+# Packet length table (based on UO protocol / ClassicUO PacketsTable.cs)
 #   > 0 = fixed length (including the 1-byte packet ID)
 #   0   = variable length (bytes 1-2 = u16 BE total length)
 #   -1  = unknown / unhandled

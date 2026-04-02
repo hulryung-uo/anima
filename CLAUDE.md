@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Anima is a Python-based AI player system for Ultima Online. It connects to `servuo-rs` as an external client using the standard UO packet protocol.
+Anima is a Python-based AI player system for Ultima Online. It connects to a UO server as an external client using the standard UO packet protocol.
 
 ## Key References
 
@@ -12,7 +12,6 @@ Anima is a Python-based AI player system for Ultima Online. It connects to `serv
 - `docs/skill-system.md` — Skill system design (skill catalog, packet requirements, file structure)
 - `docs/reinforcement-learning.md` — **RL 학습 방법론** (Q-learning, UCB1, state encoding, reward signals, LLM 연동)
 - ClassicUO source: `~/dev/uo/classicuo/` (C# reference client)
-- servuo-rs source: `~/dev/uo/servuo-rs/` (Rust server, the target server)
 
 ## Code Conventions
 
@@ -34,13 +33,11 @@ Anima is a Python-based AI player system for Ultima Online. It connects to `serv
 
 ## Packet Protocol Notes
 
-- servuo-rs has **no encryption** — send plaintext TCP
+- **No encryption** — send plaintext TCP
 - **Huffman compression** is required for game-phase server→client packets only
 - Two-connection login flow: Connection 1 (account) → Connection 2 (game)
 - All network values are **Big-Endian**
 - Packet format: fixed = `[ID][payload]`, variable = `[ID][length BE u16][payload]`
-- Reference packet table: `servuo-rs/crates/servuo-protocol/src/lib.rs` (PACKET_LENGTHS)
-- Reference test client: `servuo-rs/tests/integration/test_client.rs`
 
 ## Movement Protocol
 

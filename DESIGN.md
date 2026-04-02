@@ -5,7 +5,7 @@
 ## 1. Project Vision
 
 ### What We're Building
-An AI player system that **connects to the UO server (`servuo-rs`) as a real client** and acts autonomously.
+An AI player system that **connects to a UO server as a real client** and acts autonomously.
 From the server's perspective, humans and AI are indistinguishable. The AI is not an internal server module — it is an **independent external client**.
 
 ### Why We're Building It
@@ -15,7 +15,7 @@ From the server's perspective, humans and AI are indistinguishable. The AI is no
 - **Technical Experiment**: Exploring the intersection of LLM + game simulation.
 
 ### Core Principles
-1. **Zero Server Modification** — Do not modify servuo-rs. Communicate only via the standard UO packet protocol.
+1. **Zero Server Modification** — Do not modify the server. Communicate only via the standard UO packet protocol.
 2. **External Client** — Connect the same way ClassicUO does. The server does not treat AI specially.
 3. **Tiered Intelligence** — Don't delegate all decisions to the LLM. 90% rule-based, 8% small model, 2% large model.
 4. **Observability** — AI thought processes, decisions, and memories can be monitored in real time.
@@ -46,7 +46,7 @@ From the server's perspective, humans and AI are indistinguishable. The AI is no
            │ │ │ ... │  (independent TCP connections)
            ▼ ▼ ▼     ▼
 ┌─────────────────────────────────────────────────────────┐
-│                   servuo-rs Server                        │
+│                     UO Server                             │
 │              (Standard UO Packet Protocol)                │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -185,8 +185,7 @@ anima/
 
 ### 3.1 Connection Layer — UO Protocol Client
 
-Implemented in Python, referencing the `servuo-rs` E2E test client (`tests/integration/test_client.rs`).
-Implements the same protocol flow as a real ClassicUO client.
+Implemented in Python. Implements the same protocol flow as a real ClassicUO client.
 
 ```
 Login Flow:
@@ -206,7 +205,7 @@ Game Loop:
 **Packet Implementation Strategy**:
 - Binary packet encoding/decoding via Python `struct` module
 - `asyncio`-based TCP connection management
-- Independent Python implementation, referencing servuo-rs packet definitions
+- Independent Python implementation based on UO packet protocol
 
 ### 3.2 Perception Layer — World Perception
 
@@ -482,7 +481,7 @@ economy:
 Pathfinding is essential for AI to navigate the world.
 
 #### Map Data
-- Load tile data from servuo-rs `data/` or UO client files
+- Load tile data from UO client files
 - Extract passable/impassable tile information
 - Consider Z level (height)
 
@@ -661,8 +660,7 @@ llm:
 **Goal**: Project setup, server connection, basic movement
 
 - [ ] Create Python project (pyproject.toml, uv)
-- [ ] `anima/client/`: connect to servuo-rs, login, character select
-  - Reference `servuo-rs`'s `test_client.rs`, implement in Python
+- [ ] `anima/client/`: connect to UO server, login, character select
   - Packet codec via `asyncio` + `struct` module
 - [ ] Packet receive → console log output (verify world is visible)
 - [ ] Basic movement: walk in random directions
@@ -787,7 +785,7 @@ llm:
 | Logging | structlog | Structured logging |
 | Dashboard | FastAPI + htmx | Lightweight web UI, WebSocket real-time |
 | Testing | pytest + pytest-asyncio | Async test support |
-| Packet Protocol | struct module (custom) | Reference servuo-rs, independent Python impl |
+| Packet Protocol | struct module (custom) | Independent Python impl based on UO protocol |
 
 ---
 
@@ -801,7 +799,7 @@ llm:
 | LLM breaks character | Immersion broken | Strengthen personality constraint prompts, output filtering |
 | Economic imbalance | Inflation/deflation | Orchestrator monitoring + auto-intervention parameters |
 | Unbounded memory growth | Storage/retrieval perf degradation | Memory decay policy, compression, importance-based cleanup |
-| Server protocol changes | Client compatibility broken | Reference servuo-rs source, packet version management |
+| Server protocol changes | Client compatibility broken | Packet version management |
 | AI-to-AI chat inference explosion | GPU overload | AI-to-AI dialogue prefers Tier 1, cooldown limits |
 | Python GIL bottleneck (50+ agents) | Performance degradation | Mostly asyncio I/O-bound, limited impact. Multiprocess if severe |
 

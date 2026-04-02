@@ -1,6 +1,6 @@
 # Anima Implementation Plan
 
-> Concrete implementation plan based on ClassicUO and servuo-rs analysis.
+> Concrete implementation plan based on ClassicUO analysis.
 
 ---
 
@@ -38,7 +38,7 @@ Game/Managers/MessageManager.cs   →  anima/perception/social_state.py
 
 ### Phase 0-A: Connection & Login (1-2 days)
 
-**Goal**: Connect to servuo-rs, complete full login, enter world.
+**Goal**: Connect to UO server, complete full login, enter world.
 
 **Files to create:**
 
@@ -95,7 +95,7 @@ def huffman_decompress(data: bytes) -> bytes:
 
 **`packets.py` — Packet definitions:**
 ```python
-# Packet length table (from servuo-rs PACKET_LENGTHS)
+# Packet length table
 PACKET_LENGTHS: dict[int, int] = {
     0x02: 7,    # WalkRequest
     0x05: 5,    # Attack
@@ -121,7 +121,7 @@ PACKET_LENGTHS: dict[int, int] = {
     0xAE: 0,    # UnicodeTalk (variable)
     0xB9: 5,    # SupportedFeatures
     0xEF: 21,   # Seed
-    # ... (port full table from servuo-rs)
+    # ... (full table based on UO protocol)
 }
 
 # Outgoing packet builders
@@ -316,7 +316,7 @@ Port ClassicUO's `WalkerManager` pattern:
 
 ### 3.5 Huffman Decompression
 
-Port the static table from servuo-rs `compression.rs`. The table is 257 entries — straightforward to port to Python.
+The static Huffman table has 257 entries — straightforward to implement in Python.
 
 ---
 
@@ -353,10 +353,10 @@ No external dependencies needed for networking (asyncio + struct are stdlib).
 - `test_world_state.py` — entity create/update/delete
 
 ### Integration Tests
-- `test_login.py` — connect to running servuo-rs, complete login flow
+- `test_login.py` — connect to running UO server, complete login flow
 - `test_movement.py` — login, walk, verify confirm/deny responses
 - `test_speech.py` — login, send speech, verify echo
 
 ### Test Data
 - Capture packet dumps from ClassicUO sessions for replay testing
-- Use servuo-rs test client binary dumps as reference
+- Use captured packet dumps as reference

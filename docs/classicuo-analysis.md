@@ -12,7 +12,7 @@
 - **TCP socket** (also supports WebSocket for web-based servers)
 - **Two-phase login**: Connection 1 (account login) → Connection 2 (game server)
 - **Buffers**: `CircularBuffer` for incoming/outgoing data queues
-- **No encryption needed for servuo-rs** (ClassicUO supports Blowfish/Twofish but servuo-rs has no encryption)
+- **No encryption needed** (ClassicUO supports Blowfish/Twofish but our target server has no encryption)
 
 ### 1.2 Packet Format
 
