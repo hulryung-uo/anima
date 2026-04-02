@@ -217,6 +217,18 @@ class CraftBlacksmith(Procedure):
         # 5. Wait for crafting result
         await asyncio.sleep(4.0)
 
+        # Read the gump notices area for server feedback
+        gump_notice = ""
+        for g in ss.gumps.values():
+            for label in getattr(g, "labels", []):
+                text = label if isinstance(label, str) else str(label)
+                # Notices area is around y=295 in the blacksmith gump
+                if "295)=" in text:
+                    gump_notice = text.split("=", 1)[1] if "=" in text else text
+                    break
+            if gump_notice:
+                break
+
         # Check success: new crafted item in backpack OR ingots decreased
         items_after = len([
             it for it in ctx.perception.world.items.values()
@@ -226,6 +238,7 @@ class CraftBlacksmith(Procedure):
 
         if items_after > items_before:
             logger.info("craft_blacksmith_success", item=item_text, ingots_used=ingots_before - ingots_after)
+            ctx.blackboard["_craft_bs_fails"] = 0
             ss.gumps.clear()
             return ProcedureResult(
                 success=True,
@@ -235,31 +248,76 @@ class CraftBlacksmith(Procedure):
             )
 
         if ingots_after < ingots_before:
-            # Ingots consumed but no item — craft failed (materials lost)
+            # Ingots consumed but no item — craft failed (skill check)
             logger.info("craft_blacksmith_failed", item=item_text, ingots_lost=ingots_before - ingots_after)
             ss.gumps.clear()
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
-                message=f"Craft {item_text} failed (lost {ingots_before - ingots_after} ingots)",
+                message=f"Craft {item_text} failed — lost {ingots_before - ingots_after} ingots (skill check)",
                 next_suggestion="craft_blacksmith",
             )
 
-        # Nothing changed — unclear
+        # --- Detect specific failure from gump notice ---
+        notice_lower = gump_notice.lower()
+
+        if "sufficient metal" in notice_lower or "sufficient material" in notice_lower:
+            logger.warning(
+                "craft_blacksmith_no_material",
+                item=item_text, notice=gump_notice,
+                ingots_counted=ingots_before, ingot_cost=ingot_cost,
+            )
+            ss.gumps.clear()
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message=f"Server says insufficient metal for {item_text} "
+                        f"(counted {ingots_before}, need {ingot_cost}) — {gump_notice}",
+            )
+
+        if "anvil" in notice_lower or "forge" in notice_lower:
+            logger.warning("craft_blacksmith_no_station", notice=gump_notice)
+            ss.gumps.clear()
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.WRONG_LOCATION,
+                message=f"No anvil/forge — {gump_notice}",
+            )
+
+        if "skill" in notice_lower:
+            logger.warning("craft_blacksmith_low_skill", item=item_text, notice=gump_notice)
+            ss.gumps.clear()
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.PERMANENT,
+                message=f"Skill too low for {item_text} — {gump_notice}",
+            )
+
+        # Nothing changed and no recognizable notice — unclear
         fail_count = ctx.blackboard.get("_craft_bs_fails", 0) + 1
         ctx.blackboard["_craft_bs_fails"] = fail_count
         ss.gumps.clear()
+
+        logger.warning(
+            "craft_blacksmith_unclear",
+            item=item_text, fail_count=fail_count,
+            notice=gump_notice or "(none)",
+            ingots_before=ingots_before, ingots_after=ingots_after,
+            items_before=items_before, items_after=items_after,
+        )
 
         if fail_count >= 5:
             ctx.blackboard["_craft_bs_fails"] = 0
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.PERMANENT,
-                message=f"Gave up crafting after {fail_count} unclear results",
+                message=f"Gave up crafting after {fail_count} unclear results"
+                        f" — last notice: {gump_notice or 'none'}",
             )
 
         return ProcedureResult(
             success=False,
             reason=FailureReason.BLOCKED,
-            message=f"Craft result unclear ({fail_count}/5)",
+            message=f"Craft result unclear ({fail_count}/5)"
+                    f" — notice: {gump_notice or 'none'}",
         )

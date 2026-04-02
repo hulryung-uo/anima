@@ -243,10 +243,38 @@ class MakeTools(Procedure):
                     message=f"Craft failed: {entry.text}",
                 )
 
+        # Read gump notices for server feedback
+        gump_notice = ""
+        for g in ctx.perception.self_state.gumps.values():
+            for label in getattr(g, "labels", []):
+                text = label if isinstance(label, str) else str(label)
+                if "295)=" in text:
+                    gump_notice = text.split("=", 1)[1] if "=" in text else text
+                    break
+            if gump_notice:
+                break
+
+        notice_lower = gump_notice.lower()
+        if "sufficient" in notice_lower or "enough" in notice_lower:
+            logger.warning("make_tools_no_material", item=craft_target, notice=gump_notice)
+            await self._close_all_gumps(ctx)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message=f"Insufficient material for {craft_target} — {gump_notice}",
+            )
+
         # Track consecutive failures — give up after 5 to prevent loop
         fail_count = ctx.blackboard.get("_make_tools_fails", 0) + 1
         ctx.blackboard["_make_tools_fails"] = fail_count
         await self._close_all_gumps(ctx)
+
+        logger.warning(
+            "make_tools_unclear",
+            item=craft_target, fail_count=fail_count,
+            notice=gump_notice or "(none)",
+        )
+
         if fail_count >= 5:
             ctx.blackboard["_make_tools_fails"] = 0
             ctx.blackboard["_make_tools_gave_up"] = True  # planner should buy instead
@@ -254,11 +282,13 @@ class MakeTools(Procedure):
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.PERMANENT,
-                message=f"Gave up crafting {craft_target} after {fail_count} attempts",
+                message=f"Gave up crafting {craft_target} after {fail_count} attempts"
+                        f" — last notice: {gump_notice or 'none'}",
             )
 
         return ProcedureResult(
             success=False,
             reason=FailureReason.BLOCKED,
-            message=f"Craft result unclear for {craft_target} ({fail_count}/5)",
+            message=f"Craft result unclear for {craft_target} ({fail_count}/5)"
+                    f" — notice: {gump_notice or 'none'}",
         )
