@@ -53,6 +53,15 @@ class Planner:
         logger.info("planner_started")
 
         while self._running and ctx.conn.connected:
+            # --- Request names for nearby unnamed NPCs ---
+            # Without names, _find_vendor cannot identify NPC types
+            ss = ctx.perception.self_state
+            for mob in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
+                if not mob.name and mob.serial != ss.serial:
+                    from anima.client.packets import build_opl_request, build_single_click
+                    await ctx.conn.send_packet(build_opl_request(mob.serial))
+                    await ctx.conn.send_packet(build_single_click(mob.serial))
+
             # --- External steering ---
             if self.command_bus and self.command_bus.paused:
                 await asyncio.sleep(0.5)
@@ -366,11 +375,13 @@ class Planner:
                 return proc
             # Find vendor that buys these specific items
             vendor_kw = get_vendor_keywords_for_items(sell_graphics)
-            logger.info("planner_sell_crafted", items=crafted_count, vendor_keywords=vendor_kw)
-            _intent(f"제작품 {crafted_count}개 보유 → {', '.join(vendor_kw)} 상점으로 이동")
             move = await self._move_to_location(ctx, *vendor_kw)
             if move:
+                logger.info("planner_sell_crafted", items=crafted_count, vendor_keywords=vendor_kw)
+                _intent(f"제작품 {crafted_count}개 보유 → {', '.join(vendor_kw)} 상점으로 이동")
                 return move
+            # No vendor reachable — fall through to lower priorities
+            logger.info("planner_sell_no_vendor", items=crafted_count, vendor_keywords=vendor_kw)
 
         # --- Priority 5c: Has ingots but can't craft → sell raw ingots ---
         if ingot_count >= 10:
@@ -379,10 +390,12 @@ class Planner:
                 _intent(f"주괴 {ingot_count}개 (제작 불가) → 주괴 판매")
                 return proc
             vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
-            _intent(f"주괴 {ingot_count}개 → {', '.join(vendor_kw)} 상점으로 이동")
             move = await self._move_to_location(ctx, *vendor_kw)
             if move:
+                _intent(f"주괴 {ingot_count}개 → {', '.join(vendor_kw)} 상점으로 이동")
                 return move
+            # No vendor reachable — fall through
+            logger.info("planner_sell_ingots_no_vendor", ingots=ingot_count)
 
         # --- Priority 6: Gold > 200 → bank ---
         if ss.gold > 200:

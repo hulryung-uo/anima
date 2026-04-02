@@ -33,7 +33,16 @@ class MineOre(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         if not find_in_backpack(ctx, MINING_TOOL_GRAPHICS):
             return False
-        return _find_mineable_tile(ctx) is not None
+        # Only consider tiles within actual mining range (SEARCH_RADIUS=2),
+        # not the wider MOVE_RADIUS scan — otherwise we try to mine tiles
+        # that are too far away and get stuck in a loop.
+        from anima.skills.gathering.mine import SEARCH_RADIUS
+        tile = _find_mineable_tile(ctx)
+        if tile is None:
+            return False
+        tx, ty = tile[0], tile[1]
+        ss = ctx.perception.self_state
+        return max(abs(tx - ss.x), abs(ty - ss.y)) <= SEARCH_RADIUS
 
     async def diagnose(self, ctx: AgentContext) -> str | None:
         if not find_in_backpack(ctx, MINING_TOOL_GRAPHICS):
@@ -97,15 +106,17 @@ class MineOre(Procedure):
         # Wait for mining animation + check for "no metal here" via bus
         import time as _time
         mine_start = _time.time()
-        _mine_flags = {"depleted": False, "los_fail": False}
+        _mine_flags = {"depleted": False, "los_fail": False, "too_far": False}
 
         def _check_speech(_topic: str, data: dict) -> None:
             text = data.get("text", "")
             tl = text.lower()
             if "no metal here" in tl or "no ore here" in tl:
                 _mine_flags["depleted"] = True
-            elif "target cannot be seen" in tl or "too far away" in tl:
+            elif "target cannot be seen" in tl:
                 _mine_flags["los_fail"] = True
+            elif "too far away" in tl:
+                _mine_flags["too_far"] = True
 
         sub = None
         if ctx.bus:
@@ -132,15 +143,28 @@ class MineOre(Procedure):
                 details={"tile": (tx, ty), "depleted": True},
             )
 
+        if _mine_flags["too_far"]:
+            # Tile is beyond mining range — temporarily blacklist so planner
+            # doesn't pick the same tile again immediately.
+            depleted = ctx.blackboard.setdefault("depleted_mines", {})
+            depleted[(tx, ty)] = _time.time()
+            logger.info("mine_too_far", pos=f"({tx},{ty})", player=f"({ss.x},{ss.y})")
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.WRONG_LOCATION,
+                message=f"Mining target ({tx},{ty}) too far from player ({ss.x},{ss.y})",
+            )
+
         if _mine_flags["los_fail"]:
             # LOS failure — tile exists but can't be seen from here.
-            # Don't mark as depleted; the agent needs to reposition.
+            # Temporarily blacklist to avoid retry loop.
+            depleted = ctx.blackboard.setdefault("depleted_mines", {})
+            depleted[(tx, ty)] = _time.time()
             logger.info("mine_los_fail", pos=f"({tx},{ty})")
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
                 message=f"Cannot see mining target at ({tx},{ty})",
-                next_suggestion="mine_ore",
             )
 
         # Count ore after
