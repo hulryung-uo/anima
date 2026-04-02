@@ -34,11 +34,13 @@ class StatePublisher:
         blackboard: dict[str, Any],
         bus: EventBus,
         map_reader: MapReader | None = None,
+        web_broadcast: Any | None = None,
     ) -> None:
         self._p = perception
         self._bb = blackboard
         self._bus = bus
         self._map_reader = map_reader
+        self._web_broadcast = web_broadcast  # callable(dict) → broadcast to WebSocket clients
         self._activity: list[dict] = []
         # Collect activity events from bus
         bus.subscribe("*", self._collect_activity)
@@ -81,6 +83,8 @@ class StatePublisher:
         persona = self._bb.get("persona")
         goal = self._bb.get("current_goal")
         move_target = self._bb.get("move_target")
+        procedure = self._bb.get("current_procedure")
+        intent = self._bb.get("planner_intent")
         self._bus.publish("monitor.status", {
             "name": persona.name if persona else "Anima",
             "title": getattr(persona, "title", "") if persona else "",
@@ -91,8 +95,10 @@ class StatePublisher:
             "x": ss.x, "y": ss.y, "z": ss.z,
             "gold": ss.gold,
             "weight": ss.weight, "weight_max": ss.weight_max,
-            "goal": goal.get("description", "")[:50] if goal else "none",
+            "goal": goal.get("description", "")[:50] if goal else "",
             "move_target": list(move_target) if move_target else None,
+            "procedure": procedure or "",
+            "intent": intent or "",
         })
 
     def _publish_nearby(self) -> None:
@@ -260,6 +266,8 @@ class StatePublisher:
         persona = self._bb.get("persona")
         goal = self._bb.get("current_goal")
         move_target = self._bb.get("move_target")
+        procedure = self._bb.get("current_procedure")
+        intent = self._bb.get("planner_intent")
 
         # Collect all panels into one dict
         mobs = self._p.world.nearby_mobiles(ss.x, ss.y, distance=18)
@@ -319,6 +327,8 @@ class StatePublisher:
                 "weight": ss.weight, "weight_max": ss.weight_max,
                 "goal": goal.get("description", "")[:50] if goal else "",
                 "move_target": list(move_target) if move_target else None,
+                "procedure": procedure or "",
+                "intent": intent or "",
             },
             "nearby": [
                 {
@@ -358,3 +368,10 @@ class StatePublisher:
             tmp.replace(STATE_FILE)  # atomic on POSIX
         except Exception:
             pass
+
+        # Broadcast to web dashboard clients
+        if self._web_broadcast:
+            try:
+                self._web_broadcast(snapshot)
+            except Exception:
+                pass

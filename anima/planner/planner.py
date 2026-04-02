@@ -123,6 +123,7 @@ class Planner:
             return None
 
         logger.info("planner_selected", procedure=proc.name)
+        ctx.blackboard["current_procedure"] = proc.name
 
         # Publish activity to bus for TUI display
         if ctx.bus:
@@ -132,11 +133,16 @@ class Planner:
             })
 
         result = await proc.run(ctx)
+        ctx.blackboard["current_procedure"] = None
 
         # Track failed move destinations to prevent retry loops
         if result and not result.success and isinstance(proc, _MoveToProcedure):
             import time
             self._failed_destinations[(proc._x, proc._y)] = time.time()
+            ctx.blackboard["planner_intent"] = (
+                f"이동 실패: {proc.description} ({proc._x},{proc._y}) — "
+                f"{result.message or '경로 없음'}"
+            )
 
         # Log and publish result
         if result:
@@ -236,31 +242,40 @@ class Planner:
                 gave_up_craft=bool(ctx.blackboard.get("_make_tools_gave_up")),
             )
 
+        def _intent(text: str) -> None:
+            ctx.blackboard["planner_intent"] = text
+
         # --- Priority 1: Survival ---
         if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:
             proc = self.registry.get("heal_self")
             if proc and await proc.can_start(ctx):
+                _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
                 return proc
 
         # --- Priority 2: Overweight → smelt ---
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.85:
             proc = self.registry.get("smelt_ore")
             if proc and await proc.can_start(ctx):
+                _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 광석 제련")
                 return proc
             # No forge nearby — go to forge
+            _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 용광로로 이동")
             return await self._move_to_location(ctx, "forge", "blacksmith")
 
         # --- Priority 3: Has ore → smelt ---
         if ore_count > 0:
             proc = self.registry.get("smelt_ore")
             if proc and await proc.can_start(ctx):
+                _intent(f"광석 {ore_count}개 보유 → 제련")
                 return proc
             # Ore in backpack but no forge nearby — go to forge
+            _intent(f"광석 {ore_count}개 보유, 근처에 용광로 없음 → 용광로로 이동")
             return await self._move_to_location(ctx, "forge", "blacksmith")
 
         # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
         ground_ore = self._find_ground_ore(ctx, ss)
         if ground_ore:
+            _intent(f"바닥에 광석 {len(ground_ore)}개 발견 → 줍기")
             return _PickUpAndSmelt(ground_ore, ss)
 
         # --- Priority 4: No mining tools → get them ---
@@ -269,7 +284,9 @@ class Planner:
             if ore_count > 0:
                 proc = self.registry.get("smelt_ore")
                 if proc and await proc.can_start(ctx):
+                    _intent("곡괭이 없음, 광석 보유 → 제련부터")
                     return proc
+                _intent("곡괭이 없음, 광석 보유, 용광로 없음 → 용광로로 이동")
                 return await self._move_to_location(ctx, "forge", "blacksmith")
 
             # 4b: Has tinker tools + ingots → try craft tools
@@ -278,13 +295,16 @@ class Planner:
                     and not ctx.blackboard.get("_make_tools_gave_up")):
                 proc = self.registry.get("make_tools")
                 if proc and await proc.can_start(ctx):
+                    _intent(f"곡괭이 없음, 주석도구+주괴 {ingot_count}개 → 도구 제작")
                     return proc
 
             # 4c: Has gold → buy tools directly (pickaxe costs ~11 gold)
             if ss.gold >= 10:
                 proc = self.registry.get("buy_from_vendor")
                 if proc and await proc.can_start(ctx):
+                    _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점에서 구매")
                     return proc
+                _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점으로 이동")
                 move = await self._move_to_location(ctx, "tinker", "provisioner")
                 if move:
                     return move
@@ -293,8 +313,10 @@ class Planner:
             if ingot_count >= 8:
                 proc = self.registry.get("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
+                    _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 무기 제작 후 판매하여 자금 마련")
                     logger.info("planner_craft_for_gold", reason="need tools, crafting to sell")
                     return proc
+                _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 대장간으로 이동")
                 move = await self._move_to_location(ctx, "forge", "blacksmith")
                 if move:
                     return move
@@ -303,7 +325,9 @@ class Planner:
             if ingot_count > 0:
                 proc = self.registry.get("sell_to_vendor")
                 if proc and await proc.can_start(ctx):
+                    _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 주괴 판매")
                     return proc
+                _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 상점으로 이동")
                 move = await self._move_to_location(ctx, "blacksmith", "weaponsmith")
                 if move:
                     return move
@@ -316,8 +340,10 @@ class Planner:
         if ingot_count >= 8:
             proc = self.registry.get("craft_blacksmith")
             if proc and await proc.can_start(ctx):
+                _intent(f"주괴 {ingot_count}개 보유 → 무기/방어구 제작")
                 return proc
             # Need forge/anvil — go to blacksmith
+            _intent(f"주괴 {ingot_count}개 보유, 대장간 필요 → 대장간으로 이동")
             move = await self._move_to_location(ctx, "forge", "blacksmith")
             if move:
                 return move
@@ -336,10 +362,12 @@ class Planner:
         if crafted_count > 0:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
+                _intent(f"제작품 {crafted_count}개 보유 → 상점에 판매")
                 return proc
             # Find vendor that buys these specific items
             vendor_kw = get_vendor_keywords_for_items(sell_graphics)
             logger.info("planner_sell_crafted", items=crafted_count, vendor_keywords=vendor_kw)
+            _intent(f"제작품 {crafted_count}개 보유 → {', '.join(vendor_kw)} 상점으로 이동")
             move = await self._move_to_location(ctx, *vendor_kw)
             if move:
                 return move
@@ -348,8 +376,10 @@ class Planner:
         if ingot_count >= 10:
             proc = self.registry.get("sell_to_vendor")
             if proc and await proc.can_start(ctx):
+                _intent(f"주괴 {ingot_count}개 (제작 불가) → 주괴 판매")
                 return proc
             vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
+            _intent(f"주괴 {ingot_count}개 → {', '.join(vendor_kw)} 상점으로 이동")
             move = await self._move_to_location(ctx, *vendor_kw)
             if move:
                 return move
@@ -358,7 +388,9 @@ class Planner:
         if ss.gold > 200:
             proc = self.registry.get("bank_deposit")
             if proc and await proc.can_start(ctx):
+                _intent(f"금화 {ss.gold}g 보유 → 은행에 예금")
                 return proc
+            _intent(f"금화 {ss.gold}g 보유 → 은행으로 이동")
             return await self._move_to_location(ctx, "bank")
 
         # --- Priority 7: Has mining tool → mine ---
@@ -367,21 +399,25 @@ class Planner:
             ctx.blackboard.pop("_make_tools_gave_up", None)
         proc = self.registry.get("mine_ore")
         if proc and await proc.can_start(ctx):
+            _intent("광산 근처, 곡괭이 보유 → 채광 시작")
             return proc
 
         # --- Priority 8: Continuation hint ---
         if self.continuation_hint:
             proc = self.registry.get(self.continuation_hint)
             if proc and await proc.can_start(ctx):
+                _intent(f"이전 작업 계속 → {self.continuation_hint}")
                 return proc
             self.continuation_hint = None
 
         # --- Priority 9: Move to mine ---
         if time.time() > self._move_fail_until:
+            _intent("할 일 없음 → 광산으로 이동")
             move_proc = await self._try_move_to_activity(ctx)
             if move_proc:
                 return move_proc
 
+        _intent("대기 중")
         logger.debug("planner_no_procedure_available")
         return None
 

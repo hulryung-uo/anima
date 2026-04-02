@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anima Dashboard</title>
+<style>
+:root {
+  --bg: #0d1117; --bg2: #161b22; --border: #30363d;
+  --text: #c9d1d9; --text2: #8b949e; --accent: #58a6ff;
+  --green: #3fb950; --yellow: #d29922; --red: #f85149;
+  --cyan: #39d2e0; --orange: #db6d28;
+  --bar-bg: #21262d;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace; font-size: 13px; }
+
+.dashboard { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: auto auto 1fr auto auto; gap: 8px; padding: 8px; height: 100vh; }
+
+.panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+.panel-header { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--accent); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; align-items: center; }
+.panel-body { padding: 8px 10px; overflow-y: auto; flex: 1; font-size: 12px; line-height: 1.6; }
+
+/* Status panel */
+.status-panel { grid-column: 1 / -1; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 16px; }
+.stat-row { display: flex; align-items: center; gap: 8px; }
+.stat-label { color: var(--text2); min-width: 50px; }
+.stat-value { color: var(--text); font-weight: 600; }
+.bar { flex: 1; height: 14px; background: var(--bar-bg); border-radius: 3px; overflow: hidden; position: relative; }
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+.bar-text { position: absolute; top: 0; left: 0; right: 0; text-align: center; font-size: 10px; line-height: 14px; color: var(--text); }
+.bar-hp .bar-fill { background: var(--green); }
+.bar-mana .bar-fill { background: var(--accent); }
+.bar-stam .bar-fill { background: var(--yellow); }
+.bar-weight .bar-fill { background: var(--orange); }
+.pos-value { color: var(--cyan); }
+.gold-value { color: var(--yellow); font-weight: 700; }
+
+/* Agent intent panel */
+.intent-panel { grid-column: 1 / -1; }
+.intent-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline; }
+.intent-label { color: var(--text2); font-size: 12px; white-space: nowrap; }
+.intent-value { color: var(--text); font-size: 12px; }
+.intent-value.highlight { color: var(--cyan); font-weight: 600; }
+.intent-value.move { color: var(--yellow); }
+.intent-value.warn { color: var(--red); }
+
+/* Steering panel */
+.steering-panel { grid-column: 1 / -1; }
+.steering-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.steer-btn { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-family: inherit; font-size: 11px; transition: all 0.15s; }
+.steer-btn:hover { background: var(--accent); color: var(--bg); }
+.steer-btn.active { background: var(--red); color: #fff; border-color: var(--red); }
+.steer-btn.run { background: var(--green); color: var(--bg); border-color: var(--green); }
+.steer-btn.run:hover { opacity: 0.85; }
+.steer-input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-family: inherit; font-size: 11px; width: 80px; }
+.steer-input:focus { border-color: var(--accent); outline: none; }
+.steer-input.wide { width: 160px; }
+.steer-select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-family: inherit; font-size: 11px; }
+.steer-select:focus { border-color: var(--accent); outline: none; }
+.steer-sep { width: 1px; height: 20px; background: var(--border); }
+.steer-label { color: var(--text2); font-size: 11px; }
+.cmd-toast { position: fixed; top: 12px; right: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; font-size: 12px; z-index: 100; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+.cmd-toast.show { opacity: 1; }
+.cmd-toast.ok { border-color: var(--green); color: var(--green); }
+.cmd-toast.err { border-color: var(--red); color: var(--red); }
+.paused-badge { background: var(--red); color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 1px; display: none; }
+
+/* Activity panel */
+.activity-panel { grid-column: 1 / 3; grid-row: 3; min-height: 0; }
+.activity-line { padding: 1px 0; border-bottom: 1px solid var(--border); }
+.activity-line:last-child { border-bottom: none; }
+.activity-ts { color: var(--text2); margin-right: 6px; font-size: 11px; }
+.activity-msg { color: var(--text); }
+.activity-msg.success { color: var(--green); }
+.activity-msg.failure { color: var(--red); }
+
+/* Right column */
+.right-col { grid-column: 3; grid-row: 3; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.inv-item { display: flex; justify-content: space-between; padding: 1px 0; }
+.inv-name { color: var(--text); }
+.inv-amount { color: var(--text2); }
+.mob-row { display: flex; justify-content: space-between; padding: 1px 0; }
+.mob-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mob-pos { color: var(--text2); font-size: 11px; min-width: 60px; text-align: right; }
+.noto-1 { color: var(--accent); }
+.noto-2 { color: var(--text); }
+.noto-3 { color: var(--text2); }
+.noto-4 { color: var(--red); }
+.noto-5 { color: var(--orange); }
+.noto-6 { color: var(--red); }
+.noto-7 { color: var(--yellow); }
+.skill-row { display: flex; justify-content: space-between; padding: 1px 0; }
+.skill-name { color: var(--text); flex: 1; }
+.skill-val { color: var(--cyan); min-width: 50px; text-align: right; }
+.skill-lock { min-width: 16px; text-align: center; }
+
+/* Journal */
+.journal-entry { padding: 1px 0; border-bottom: 1px solid var(--border); }
+.journal-entry:last-child { border-bottom: none; }
+.journal-name { font-weight: 600; margin-right: 4px; }
+.journal-self .journal-name { color: var(--cyan); }
+.journal-text { color: var(--text2); }
+
+/* Minimap */
+.map-panel { grid-column: 1 / -1; }
+.minimap { font-size: 10px; line-height: 1.0; letter-spacing: 1px; white-space: pre; overflow: auto; max-height: 260px; text-align: center; }
+.map-player { color: #fff; font-weight: bold; }
+.map-wall { color: #555; }
+.map-mine { color: var(--yellow); }
+.map-cave { color: var(--orange); }
+.map-mob { color: var(--red); }
+.map-door { color: var(--cyan); }
+.map-goal { color: var(--green); font-weight: bold; }
+.map-tree { color: #2ea043; }
+.map-ground { color: #21262d; }
+
+/* Footer */
+.footer { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; color: var(--text2); font-size: 11px; }
+.ping-good { color: var(--green); }
+.ping-warn { color: var(--yellow); }
+.ping-bad { color: var(--red); }
+.conn-status { display: flex; align-items: center; gap: 4px; }
+.conn-dot { width: 8px; height: 8px; border-radius: 50%; }
+.conn-dot.ok { background: var(--green); }
+.conn-dot.err { background: var(--red); }
+.stale-warn { color: var(--yellow); }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="dashboard">
+  <!-- Status -->
+  <div class="panel status-panel">
+    <div class="panel-header">
+      <span>Status</span>
+      <span style="display:flex; align-items:center; gap:8px;">
+        <span class="paused-badge" id="paused-badge">PAUSED</span>
+        <span id="char-name">Anima</span>
+      </span>
+    </div>
+    <div class="panel-body">
+      <div class="status-grid">
+        <div class="stat-row">
+          <span class="stat-label">HP</span>
+          <div class="bar bar-hp"><div class="bar-fill" id="hp-bar"></div><div class="bar-text" id="hp-text"></div></div>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Mana</span>
+          <div class="bar bar-mana"><div class="bar-fill" id="mana-bar"></div><div class="bar-text" id="mana-text"></div></div>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Stam</span>
+          <div class="bar bar-stam"><div class="bar-fill" id="stam-bar"></div><div class="bar-text" id="stam-text"></div></div>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Weight</span>
+          <div class="bar bar-weight"><div class="bar-fill" id="weight-bar"></div><div class="bar-text" id="weight-text"></div></div>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Pos</span>
+          <span class="stat-value pos-value" id="pos-value"></span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Gold</span>
+          <span class="stat-value gold-value" id="gold-value"></span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Stats</span>
+          <span class="stat-value" id="stats-value"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Intent -->
+  <div class="panel intent-panel">
+    <div class="panel-header"><span>Agent Intent</span></div>
+    <div class="panel-body">
+      <div class="intent-grid">
+        <span class="intent-label">판단</span>
+        <span class="intent-value highlight" id="intent-value">—</span>
+        <span class="intent-label">실행 중</span>
+        <span class="intent-value" id="procedure-value">—</span>
+        <span class="intent-label">이동 목표</span>
+        <span class="intent-value move" id="move-target-value">—</span>
+        <span class="intent-label">목표</span>
+        <span class="intent-value" id="goal-value">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Steering -->
+  <div class="panel steering-panel">
+    <div class="panel-header"><span>Steering</span></div>
+    <div class="panel-body" style="padding: 6px 10px;">
+      <div class="steering-bar">
+        <!-- Pause/Resume -->
+        <button class="steer-btn" id="btn-pause" onclick="sendCmd({cmd:'pause'})">Pause</button>
+        <button class="steer-btn run" id="btn-resume" onclick="sendCmd({cmd:'resume'})">Resume</button>
+
+        <div class="steer-sep"></div>
+
+        <!-- Go To -->
+        <span class="steer-label">Go to</span>
+        <input class="steer-input" id="goto-x" type="number" placeholder="x">
+        <input class="steer-input" id="goto-y" type="number" placeholder="y">
+        <button class="steer-btn" onclick="sendGoTo()">Go</button>
+
+        <div class="steer-sep"></div>
+
+        <!-- Run Procedure -->
+        <span class="steer-label">Procedure</span>
+        <select class="steer-select" id="proc-select">
+          <option value="">-- select --</option>
+          <option value="mine_ore">mine_ore</option>
+          <option value="smelt_ore">smelt_ore</option>
+          <option value="craft_blacksmith">craft_blacksmith</option>
+          <option value="make_tools">make_tools</option>
+          <option value="sell_to_vendor">sell_to_vendor</option>
+          <option value="buy_from_vendor">buy_from_vendor</option>
+          <option value="bank_deposit">bank_deposit</option>
+        </select>
+        <button class="steer-btn" onclick="sendProc()">Run</button>
+
+        <div class="steer-sep"></div>
+
+        <!-- Say -->
+        <span class="steer-label">Say</span>
+        <input class="steer-input wide" id="say-text" type="text" placeholder="message..." onkeydown="if(event.key==='Enter')sendSay()">
+        <button class="steer-btn" onclick="sendSay()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Activity (left 2/3) -->
+  <div class="activity-panel panel" style="grid-column: 1 / 3; grid-row: 3;">
+    <div class="panel-header"><span>Activity</span><span id="activity-count"></span></div>
+    <div class="panel-body" id="activity-body"></div>
+  </div>
+
+  <!-- Right column -->
+  <div class="right-col">
+    <div class="panel" style="flex:1; min-height:0;">
+      <div class="panel-header"><span>Inventory</span></div>
+      <div class="panel-body" id="inventory-body"></div>
+    </div>
+    <div class="panel" style="flex:1; min-height:0;">
+      <div class="panel-header"><span>Nearby</span></div>
+      <div class="panel-body" id="nearby-body"></div>
+    </div>
+    <div class="panel" style="flex:1; min-height:0;">
+      <div class="panel-header"><span>Skills</span><span id="skills-total"></span></div>
+      <div class="panel-body" id="skills-body"></div>
+    </div>
+  </div>
+
+  <!-- Minimap -->
+  <div class="panel map-panel">
+    <div class="panel-header"><span>Map</span><span id="map-legend" style="color:var(--text2); font-weight:normal">@ you &nbsp; ^ mine &nbsp; o cave &nbsp; M npc &nbsp; + door &nbsp; X goal</span></div>
+    <div class="panel-body"><div class="minimap" id="minimap"></div></div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="conn-status">
+      <div class="conn-dot" id="conn-dot"></div>
+      <span id="conn-text">Connecting...</span>
+    </div>
+    <div>
+      <span id="stale-indicator"></span>
+      Ping: <span id="ping-value">-</span>ms
+    </div>
+  </div>
+</div>
+
+<!-- Command toast notification -->
+<div class="cmd-toast" id="cmd-toast"></div>
+
+<script>
+const SKILL_NAMES = {
+  0:'Alchemy', 1:'Anatomy', 2:'AnimalLore', 3:'ItemID', 4:'ArmsLore',
+  5:'Parrying', 6:'Begging', 7:'Blacksmith', 8:'Fletching', 9:'Peacemaking',
+  10:'Camping', 11:'Carpentry', 12:'Cartography', 13:'Cooking', 14:'DetectHidden',
+  15:'Discordance', 16:'EvalInt', 17:'Healing', 18:'Fishing', 19:'Forensics',
+  20:'Herding', 21:'Hiding', 22:'Provocation', 23:'Inscribe', 24:'Lockpicking',
+  25:'Magery', 26:'MagicResist', 27:'Tactics', 28:'Snooping', 29:'Musicianship',
+  30:'Poisoning', 31:'Archery', 32:'SpiritSpeak', 33:'Stealing', 34:'Tailoring',
+  35:'AnimalTaming', 36:'TasteID', 37:'Tinkering', 38:'Tracking', 39:'Veterinary',
+  40:'Swords', 41:'Macing', 42:'Fencing', 43:'Wrestling', 44:'Lumberjacking',
+  45:'Mining', 46:'Meditation', 47:'Stealth', 48:'RemoveTrap', 49:'Necromancy',
+};
+const LOCK_ICONS = {0:'&#x25B2;', 1:'&#x25BC;', 2:'&#x25CF;'};
+const LOCK_COLORS = {0:'var(--green)', 1:'var(--red)', 2:'var(--text2)'};
+
+let ws = null;
+let reconnectTimer = null;
+let lastTs = 0;
+let isPaused = false;
+
+// --- WebSocket ---
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  ws.onopen = () => {
+    setConn(true);
+    if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+  };
+  ws.onclose = () => {
+    setConn(false);
+    if (!reconnectTimer) reconnectTimer = setInterval(connect, 3000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'cmd_result') {
+        showToast(data.message, data.ok);
+      } else {
+        update(data);
+      }
+    } catch {}
+  };
+}
+
+// --- Commands ---
+function sendCmd(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+function sendGoTo() {
+  const x = parseInt(document.getElementById('goto-x').value);
+  const y = parseInt(document.getElementById('goto-y').value);
+  if (!x && !y) return;
+  sendCmd({cmd: 'go_to', x: x || 0, y: y || 0});
+}
+
+function sendProc() {
+  const name = document.getElementById('proc-select').value;
+  if (!name) return;
+  sendCmd({cmd: 'run_procedure', name});
+  document.getElementById('proc-select').value = '';
+}
+
+function sendSay() {
+  const el = document.getElementById('say-text');
+  const text = el.value.trim();
+  if (!text) return;
+  sendCmd({cmd: 'say', text});
+  el.value = '';
+}
+
+function showToast(message, ok) {
+  const el = document.getElementById('cmd-toast');
+  el.textContent = message;
+  el.className = 'cmd-toast show ' + (ok ? 'ok' : 'err');
+  setTimeout(() => { el.className = 'cmd-toast'; }, 2500);
+}
+
+// --- Display ---
+function setConn(ok) {
+  document.getElementById('conn-dot').className = 'conn-dot ' + (ok ? 'ok' : 'err');
+  document.getElementById('conn-text').textContent = ok ? 'Connected' : 'Disconnected';
+}
+
+function setBar(id, cur, max) {
+  const pct = max > 0 ? Math.min(100, (cur / max) * 100) : 0;
+  document.getElementById(id + '-bar').style.width = pct + '%';
+  document.getElementById(id + '-text').textContent = `${cur}/${max}`;
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toTimeString().slice(0, 8);
+}
+
+function update(s) {
+  lastTs = s.ts || 0;
+
+  // Status
+  const st = s.status || {};
+  document.getElementById('char-name').textContent = st.name || 'Anima';
+  setBar('hp', st.hp || 0, st.hp_max || 0);
+  setBar('mana', st.mana || 0, st.mana_max || 0);
+  setBar('stam', st.stam || 0, st.stam_max || 0);
+  setBar('weight', st.weight || 0, st.weight_max || 0);
+  document.getElementById('pos-value').textContent = `(${st.x}, ${st.y}, z=${st.z})`;
+  document.getElementById('gold-value').textContent = (st.gold || 0).toLocaleString();
+  document.getElementById('stats-value').textContent = `STR ${st.str} / DEX ${st.dex} / INT ${st.int}`;
+
+  // Agent Intent panel
+  document.getElementById('intent-value').textContent = st.intent || '—';
+  const procEl = document.getElementById('procedure-value');
+  procEl.textContent = st.procedure || '—';
+  procEl.className = 'intent-value' + (st.procedure ? ' highlight' : '');
+  const mt = st.move_target;
+  document.getElementById('move-target-value').textContent = mt ? `(${mt[0]}, ${mt[1]})` : '—';
+  const goalEl = document.getElementById('goal-value');
+  goalEl.textContent = st.goal || '—';
+
+  // Color intent red if it mentions failure
+  const intentEl = document.getElementById('intent-value');
+  if ((st.intent || '').includes('실패')) {
+    intentEl.className = 'intent-value warn';
+  } else {
+    intentEl.className = 'intent-value highlight';
+  }
+
+  // Paused state
+  isPaused = !!st.paused;
+  const badge = document.getElementById('paused-badge');
+  badge.style.display = isPaused ? 'inline-block' : 'none';
+  document.getElementById('btn-pause').className = 'steer-btn' + (isPaused ? ' active' : '');
+
+  // Activity
+  const acts = (s.activity || []).slice();
+  const actBody = document.getElementById('activity-body');
+  let actHtml = '';
+  const journal = (s.journal || []).map(j => ({...j, _type: 'journal'}));
+  const combined = [...acts.map(a => ({...a, _type: 'activity'})), ...journal];
+  combined.sort((a, b) => (a.ts || a.timestamp || 0) - (b.ts || b.timestamp || 0));
+
+  for (const item of combined.slice(-50)) {
+    const ts = fmtTime(item.ts || item.timestamp || 0);
+    if (item._type === 'journal') {
+      const selfCls = item.is_self ? 'journal-self' : '';
+      actHtml += `<div class="activity-line journal-entry ${selfCls}"><span class="activity-ts">${ts}</span><span class="journal-name">${esc(item.name)}:</span><span class="journal-text">${esc(item.text)}</span></div>`;
+    } else {
+      const msg = item.message || '';
+      const cls = msg.startsWith('\u2713') ? 'success' : msg.startsWith('\u2717') ? 'failure' : '';
+      actHtml += `<div class="activity-line"><span class="activity-ts">${ts}</span><span class="activity-msg ${cls}">${esc(msg)}</span></div>`;
+    }
+  }
+  actBody.innerHTML = actHtml;
+  actBody.scrollTop = actBody.scrollHeight;
+  document.getElementById('activity-count').textContent = combined.length;
+
+  // Inventory
+  const inv = s.inventory || [];
+  let invHtml = '';
+  for (const it of inv) {
+    const amt = it.amount > 1 ? ` x${it.amount}` : '';
+    invHtml += `<div class="inv-item"><span class="inv-name">${esc(it.name)}</span><span class="inv-amount">${amt}</span></div>`;
+  }
+  document.getElementById('inventory-body').innerHTML = invHtml || '<span style="color:var(--text2)">Empty</span>';
+
+  // Nearby
+  const nearby = s.nearby || [];
+  let nearHtml = '';
+  for (const m of nearby) {
+    const nCls = 'noto-' + (m.notoriety || 1);
+    nearHtml += `<div class="mob-row"><span class="mob-name ${nCls}">${esc(m.name)}</span><span class="mob-pos">(${m.dx>=0?'+':''}${m.dx}, ${m.dy>=0?'+':''}${m.dy})</span></div>`;
+  }
+  document.getElementById('nearby-body').innerHTML = nearHtml || '<span style="color:var(--text2)">Nobody nearby</span>';
+
+  // Skills
+  const sk = s.skills || {};
+  const skills = sk.list || [];
+  let skHtml = '';
+  for (const si of skills) {
+    const name = SKILL_NAMES[si.id] || `Skill#${si.id}`;
+    const lockIcon = LOCK_ICONS[si.lock] || '';
+    const lockColor = LOCK_COLORS[si.lock] || 'var(--text2)';
+    skHtml += `<div class="skill-row"><span class="skill-name">${name}</span><span class="skill-val">${si.value.toFixed(1)}</span><span class="skill-lock" style="color:${lockColor}">${lockIcon}</span></div>`;
+  }
+  document.getElementById('skills-body').innerHTML = skHtml || '<span style="color:var(--text2)">No skills</span>';
+  document.getElementById('skills-total').textContent = `Total: ${(sk.total || 0).toFixed(1)}`;
+
+  // Minimap
+  const mm = s.minimap || {};
+  const rows = mm.rows || [];
+  if (rows.length > 0) {
+    const center = Math.floor(rows.length / 2);
+    const half = 20;
+    const startR = Math.max(0, center - half);
+    const endR = Math.min(rows.length, center + half);
+    let mapHtml = '';
+    for (let r = startR; r < endR; r++) {
+      const row = rows[r];
+      const startC = Math.max(0, Math.floor(row.length / 2) - half);
+      const endC = Math.min(row.length, Math.floor(row.length / 2) + half);
+      for (let c = startC; c < endC; c++) {
+        mapHtml += colorMapChar(row[c]);
+      }
+      mapHtml += '\n';
+    }
+    document.getElementById('minimap').innerHTML = mapHtml;
+  }
+
+  // Ping
+  const ping = s.ping_ms || 0;
+  const pingEl = document.getElementById('ping-value');
+  pingEl.textContent = ping.toFixed(0);
+  pingEl.className = ping < 100 ? 'ping-good' : ping < 200 ? 'ping-warn' : 'ping-bad';
+
+  // Stale
+  const age = Date.now() / 1000 - lastTs;
+  const staleEl = document.getElementById('stale-indicator');
+  if (age > 5) {
+    staleEl.textContent = `STALE (${age.toFixed(0)}s) `;
+    staleEl.className = 'stale-warn';
+  } else {
+    staleEl.textContent = '';
+  }
+}
+
+function colorMapChar(ch) {
+  switch (ch) {
+    case '@': return '<span class="map-player">@</span>';
+    case '#': return '<span class="map-wall">#</span>';
+    case '^': return '<span class="map-mine">^</span>';
+    case 'o': return '<span class="map-cave">o</span>';
+    case 'M': return '<span class="map-mob">M</span>';
+    case '+': return '<span class="map-door">+</span>';
+    case 'X': return '<span class="map-goal">X</span>';
+    case 'T': return '<span class="map-tree">T</span>';
+    case '.': return '<span class="map-ground">.</span>';
+    default: return `<span class="map-ground">${esc(ch)}</span>`;
+  }
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+connect();
+</script>
+</body>
+</html>
