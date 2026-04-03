@@ -208,9 +208,13 @@ class CraftBlacksmith(Procedure):
             )
 
         ss.gumps.clear()
+        switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+        text_entries = [(te.entry_id, te.initial_text) for te in gump.text_entries]
         await ctx.conn.send_packet(build_gump_response(
             serial=gump.serial, gump_id=gump.gump_id,
             button_id=cat_btn_id,
+            switches=switches,
+            text_entries=text_entries,
         ))
         await asyncio.sleep(0.5)
 
@@ -237,9 +241,13 @@ class CraftBlacksmith(Procedure):
             )
 
         ss.gumps.clear()
+        switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+        text_entries = [(te.entry_id, te.initial_text) for te in gump.text_entries]
         await ctx.conn.send_packet(build_gump_response(
             serial=gump.serial, gump_id=gump.gump_id,
             button_id=create_btn_id,
+            switches=switches,
+            text_entries=text_entries,
         ))
 
         # 5. Wait for crafting result via journal (like the skill version)

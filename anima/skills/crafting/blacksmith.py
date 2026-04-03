@@ -195,9 +195,12 @@ class CraftBlacksmith(Skill):
         # Step 2: Click category
         cat_btn_id = _get_button_id(0, grp_idx)
         prev_serial = gump.serial
+        switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+        text_entries = [(te.entry_id, te.initial_text) for te in gump.text_entries]
         ss.gumps.pop(gump.gump_id, None)
         await ctx.conn.send_packet(
-            build_gump_response(gump.serial, gump.gump_id, cat_btn_id)
+            build_gump_response(gump.serial, gump.gump_id, cat_btn_id,
+                                switches=switches, text_entries=text_entries)
         )
 
         gump = await self._wait_gump_new(ctx, prev_serial)
@@ -213,9 +216,12 @@ class CraftBlacksmith(Skill):
         )
 
         prev_serial = gump.serial
+        switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+        text_entries = [(te.entry_id, te.initial_text) for te in gump.text_entries]
         ss.gumps.pop(gump.gump_id, None)
         await ctx.conn.send_packet(
-            build_gump_response(gump.serial, gump.gump_id, create_btn_id)
+            build_gump_response(gump.serial, gump.gump_id, create_btn_id,
+                                switches=switches, text_entries=text_entries)
         )
 
         # Step 4: Wait for result
