@@ -148,6 +148,12 @@ class Planner:
         if proc is None:
             return None
 
+        # Check if this procedure was marked for skipping (repeat failure)
+        skip = ctx.blackboard.get("_skip_procedures", set())
+        if proc.name in skip:
+            logger.info("planner_skipping", procedure=proc.name, reason="repeat failure")
+            return None
+
         logger.info("planner_selected", procedure=proc.name)
         ctx.blackboard["current_procedure"] = proc.name
         self._last_procedure = proc.name
@@ -244,7 +250,9 @@ class Planner:
         has_mining_tool = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS | SHOVEL_GRAPHICS))
         has_tinker_tools = bool(find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS))
         ore_count = count_items(ctx, ORE_GRAPHICS)
-        ingot_count = count_items(ctx, INGOT_GRAPHICS)
+        # Count IRON ingots only (hue 0) — colored ingots are not usable for basic recipes
+        from anima.procedures.craft_blacksmith import _count_iron_ingots
+        ingot_count = _count_iron_ingots(ctx)
 
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
         crafted_count = sum(
@@ -520,7 +528,8 @@ class Planner:
         ss = ctx.perception.self_state
         has_pickaxe = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}))
         ore = count_items(ctx, ORE_GRAPHICS)
-        ingots = count_items(ctx, INGOT_GRAPHICS)
+        from anima.procedures.craft_blacksmith import _count_iron_ingots
+        ingots = _count_iron_ingots(ctx)
 
         logger.warning(
             "planner_deadlock_analysis",

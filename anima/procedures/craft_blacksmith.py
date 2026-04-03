@@ -26,7 +26,23 @@ logger = structlog.get_logger()
 
 TONGS_GRAPHICS = {0x0FBB, 0x0FBC}  # smith's hammer / tongs
 INGOT_GRAPHIC = 0x1BF2
+IRON_HUE = 0  # Iron ingots have default (no) hue; colored metals have non-zero hue
 MIN_INGOTS = 8  # most weapons need 8-12 ingots
+
+
+def _count_iron_ingots(ctx: AgentContext) -> int:
+    """Count only iron ingots (hue 0) in backpack, excluding colored metals."""
+    ss = ctx.perception.self_state
+    backpack = ss.equipment.get(0x15)
+    if not backpack:
+        return 0
+    return sum(
+        item.amount
+        for item in ctx.perception.world.items.values()
+        if item.container == backpack
+        and item.graphic == INGOT_GRAPHIC
+        and item.hue == IRON_HUE
+    )
 
 
 def _get_button_id(btn_type: int, index: int) -> int:
