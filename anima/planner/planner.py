@@ -43,6 +43,11 @@ class Planner:
         self._move_fail_until: float = 0.0  # cooldown after move-to failure
         self._failed_destinations: dict[tuple[int, int], float] = {}  # (x,y) → time
         self._last_backpack_request: float = 0.0  # cooldown for re-requesting equipment
+        # Idle / stuck loop detection
+        self._idle_ticks: int = 0           # consecutive ticks with no procedure
+        self._repeat_counter: dict[str, int] = {}  # procedure → consecutive fail count
+        self._last_procedure: str = ""
+        self._last_escalation: float = 0.0  # last time we escalated a deadlock
 
     def stop(self) -> None:
         self._running = False
@@ -81,8 +86,20 @@ class Planner:
                         import time
                         self._move_fail_until = time.time() + 30.0
                         logger.info("planner_move_cooldown", seconds=30)
+                    # --- Track repeat failures ---
+                    self._idle_ticks = 0
+                    proc_name = getattr(result, '_proc_name', '') or self._last_procedure
+                    if not result.success:
+                        self._repeat_counter[proc_name] = self._repeat_counter.get(proc_name, 0) + 1
+                    else:
+                        self._repeat_counter[proc_name] = 0
                 else:
                     self.continuation_hint = None
+                    self._idle_ticks += 1
+
+                # --- Stuck / deadlock detection ---
+                await self._check_stuck(ctx)
+
             except Exception as e:
                 logger.error("planner_tick_error", error=str(e))
 
@@ -133,6 +150,7 @@ class Planner:
 
         logger.info("planner_selected", procedure=proc.name)
         ctx.blackboard["current_procedure"] = proc.name
+        self._last_procedure = proc.name
 
         # Publish activity to bus for TUI display
         if ctx.bus:
@@ -433,6 +451,251 @@ class Planner:
         _intent("대기 중")
         logger.debug("planner_no_procedure_available")
         return None
+
+    # ------------------------------------------------------------------
+    # Stuck / deadlock detection and resolution
+    # ------------------------------------------------------------------
+
+    # Thresholds (in ticks — 1 tick ≈ 200ms + procedure time)
+    _IDLE_WARN = 50       # ~10s of no procedure → log warning
+    _IDLE_ESCALATE = 150  # ~30s → try deadlock resolution
+    _IDLE_FORUM = 600     # ~2min → post to forum for help + pause
+    _REPEAT_FAIL_LIMIT = 10  # same procedure failing 10x → stop trying
+
+    async def _check_stuck(self, ctx: AgentContext) -> None:
+        """Detect stuck loops and deadlocks, escalate progressively."""
+        import time as _time
+
+        # --- Idle detection: planner returning None repeatedly ---
+        if self._idle_ticks == self._IDLE_WARN:
+            ss = ctx.perception.self_state
+            logger.warning(
+                "planner_idle_warning",
+                idle_ticks=self._idle_ticks,
+                pos=f"({ss.x},{ss.y})",
+                gold=ss.gold,
+                intent=ctx.blackboard.get("planner_intent", ""),
+            )
+            ctx.blackboard["planner_intent"] = "경고: 실행 가능한 작업 없음"
+            if ctx.bus:
+                ctx.bus.publish("system.stuck", {
+                    "message": f"Planner idle {self._idle_ticks} ticks — no procedure available",
+                    "importance": 2,
+                })
+
+        elif self._idle_ticks == self._IDLE_ESCALATE:
+            await self._resolve_deadlock(ctx)
+
+        elif self._idle_ticks == self._IDLE_FORUM:
+            await self._escalate_to_forum(ctx)
+
+        # --- Repeat failure: same procedure failing many times ---
+        for proc_name, count in list(self._repeat_counter.items()):
+            if count >= self._REPEAT_FAIL_LIMIT:
+                logger.warning(
+                    "planner_repeat_failure",
+                    procedure=proc_name,
+                    consecutive_fails=count,
+                )
+                # Temporarily skip this procedure
+                skip = ctx.blackboard.setdefault("_skip_procedures", set())
+                skip.add(proc_name)
+                self._repeat_counter[proc_name] = 0
+                ctx.blackboard["planner_intent"] = (
+                    f"{proc_name} {count}회 연속 실패 → 일시 스킵"
+                )
+                if ctx.bus:
+                    ctx.bus.publish("system.stuck", {
+                        "message": f"{proc_name} failed {count}x consecutively — skipping",
+                        "importance": 2,
+                    })
+
+    async def _resolve_deadlock(self, ctx: AgentContext) -> None:
+        """Try to break out of a deadlock state."""
+        import time as _time
+        from anima.actions.inventory import find_in_backpack, count_items
+        from anima.skills.gathering.mine import PICKAXE_GRAPHICS, ORE_GRAPHICS
+        from anima.skills.crafting.smelt import INGOT_GRAPHICS
+
+        ss = ctx.perception.self_state
+        has_pickaxe = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}))
+        ore = count_items(ctx, ORE_GRAPHICS)
+        ingots = count_items(ctx, INGOT_GRAPHICS)
+
+        logger.warning(
+            "planner_deadlock_analysis",
+            pos=f"({ss.x},{ss.y})",
+            gold=ss.gold,
+            weight=f"{ss.weight}/{ss.weight_max}",
+            has_pickaxe=has_pickaxe,
+            ore=ore,
+            ingots=ingots,
+            failed_dests=len(self._failed_destinations),
+            idle_ticks=self._idle_ticks,
+        )
+
+        ctx.blackboard["planner_intent"] = "교착 상태 분석 중..."
+
+        # Strategy 1: Clear stale failed destinations (maybe they're available now)
+        now = _time.time()
+        cleared = 0
+        for key in list(self._failed_destinations.keys()):
+            if now - self._failed_destinations[key] > 120:  # 2min old → clear
+                del self._failed_destinations[key]
+                cleared += 1
+        if cleared:
+            logger.info("planner_cleared_failed_destinations", count=cleared)
+            ctx.blackboard["planner_intent"] = f"실패 목적지 {cleared}개 초기화 → 재시도"
+            self._idle_ticks = 0  # give the planner another chance
+            return
+
+        # Strategy 2: Clear depleted mines (maybe they've regenerated)
+        depleted = ctx.blackboard.get("depleted_mines", {})
+        old_depleted = [k for k, v in depleted.items() if now - v > 60]
+        for k in old_depleted:
+            del depleted[k]
+        if old_depleted:
+            logger.info("planner_cleared_depleted_mines", count=len(old_depleted))
+            ctx.blackboard["planner_intent"] = f"고갈 광산 {len(old_depleted)}개 초기화 → 재시도"
+            self._idle_ticks = 0
+            return
+
+        # Strategy 3: Clear refused vendors
+        refused = ctx.blackboard.get("refused_vendors", {})
+        if refused:
+            refused.clear()
+            logger.info("planner_cleared_refused_vendors")
+            ctx.blackboard["planner_intent"] = "거부된 벤더 초기화 → 재시도"
+            self._idle_ticks = 0
+            return
+
+        # Strategy 4: Clear skipped procedures
+        skip = ctx.blackboard.get("_skip_procedures", set())
+        if skip:
+            skip.clear()
+            ctx.blackboard.pop("_make_tools_gave_up", None)
+            ctx.blackboard.pop("_craft_bs_fails", None)
+            logger.info("planner_cleared_skip_procedures")
+            ctx.blackboard["planner_intent"] = "스킵된 프로시저 초기화 → 재시도"
+            self._idle_ticks = 0
+            return
+
+        # Strategy 5: True deadlock — no tools, no gold, no materials
+        if not has_pickaxe and ss.gold < 10 and ore == 0 and ingots == 0:
+            ctx.blackboard["planner_intent"] = (
+                "교착 상태: 도구 없음, 금화 없음, 재료 없음 — 도움 요청 필요"
+            )
+            logger.error(
+                "planner_true_deadlock",
+                reason="no tools, no gold, no materials",
+                pos=f"({ss.x},{ss.y})",
+            )
+            if ctx.bus:
+                ctx.bus.publish("system.deadlock", {
+                    "message": "DEADLOCK: 도구/금화/재료 모두 없음 — 포럼에 도움 요청",
+                    "importance": 3,
+                })
+            # Don't reset idle_ticks — let it escalate to forum
+
+    async def _escalate_to_forum(self, ctx: AgentContext) -> None:
+        """Post a help request to forum and pause the planner."""
+        import time as _time
+
+        # Cooldown: don't spam forum (max once per 30 min)
+        if _time.time() - self._last_escalation < 1800:
+            return
+
+        self._last_escalation = _time.time()
+        ss = ctx.perception.self_state
+        persona_name = ctx.persona.name if ctx.persona else "Anima"
+
+        # Build help message
+        has_pickaxe = False
+        try:
+            from anima.actions.inventory import find_in_backpack
+            from anima.skills.gathering.mine import PICKAXE_GRAPHICS
+            has_pickaxe = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}))
+        except Exception:
+            pass
+
+        situation = (
+            f"위치: ({ss.x},{ss.y}), 금화: {ss.gold}, "
+            f"무게: {ss.weight}/{ss.weight_max}, "
+            f"곡괭이: {'있음' if has_pickaxe else '없음'}"
+        )
+
+        logger.warning("planner_forum_help_request", situation=situation)
+        ctx.blackboard["planner_intent"] = "포럼에 도움 요청 게시 중..."
+
+        # Try posting to forum
+        if ctx.forum_client:
+            try:
+                title = f"{persona_name} — 도움이 필요합니다"
+                body = (
+                    f"안녕하세요, {persona_name}입니다.\n\n"
+                    f"현재 어려운 상황에 처했습니다. {situation}\n\n"
+                    f"도구와 금화가 모두 없어 작업을 계속할 수 없습니다. "
+                    f"누군가 곡괭이나 약간의 금화를 도와주시면 감사하겠습니다.\n\n"
+                    f"위치: ({ss.x}, {ss.y})에서 기다리고 있겠습니다."
+                )
+                post_id = await ctx.forum_client.create_post(title, body, "tavern")
+                if post_id:
+                    logger.info("planner_forum_help_posted", post_id=post_id)
+                    if ctx.bus:
+                        ctx.bus.publish("social.forum_post", {
+                            "message": f"포럼에 도움 요청 게시: {title}",
+                            "importance": 3,
+                        })
+            except Exception as e:
+                logger.warning("planner_forum_help_failed", error=str(e))
+
+        # Say something in-game too
+        try:
+            from anima.client.packets import build_unicode_speech
+            await ctx.conn.send_packet(
+                build_unicode_speech(f"I'm stuck and need help. No tools or gold. At ({ss.x},{ss.y})")
+            )
+        except Exception:
+            pass
+
+        # Pause and wait — maybe someone will help, or supervisor will intervene
+        ctx.blackboard["planner_intent"] = "도움 대기 중 (5분간 일시 정지)"
+        if ctx.bus:
+            ctx.bus.publish("system.deadlock", {
+                "message": "포럼에 도움 요청 완료. 5분간 대기 후 재시도.",
+                "importance": 3,
+            })
+
+        # Wait 5 minutes, checking periodically if something changed
+        for _ in range(30):  # 30 × 10s = 5min
+            await asyncio.sleep(10.0)
+            # Check if someone gave us tools or gold
+            ss = ctx.perception.self_state
+            if ss.gold >= 10:
+                logger.info("planner_help_received", gold=ss.gold)
+                ctx.blackboard["planner_intent"] = f"금화 {ss.gold}g 확보 → 재개"
+                self._idle_ticks = 0
+                return
+            try:
+                from anima.actions.inventory import find_in_backpack
+                from anima.skills.gathering.mine import PICKAXE_GRAPHICS
+                if find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}):
+                    logger.info("planner_help_received_tool")
+                    ctx.blackboard["planner_intent"] = "곡괭이 확보 → 재개"
+                    self._idle_ticks = 0
+                    return
+            except Exception:
+                pass
+
+        # After 5 min wait, reset and try again
+        self._idle_ticks = 0
+        self._failed_destinations.clear()
+        ctx.blackboard.pop("depleted_mines", None)
+        ctx.blackboard.pop("refused_vendors", None)
+        ctx.blackboard.pop("_skip_procedures", None)
+        ctx.blackboard.pop("_make_tools_gave_up", None)
+        logger.info("planner_full_reset_after_wait")
+        ctx.blackboard["planner_intent"] = "전체 초기화 후 재시도"
 
     def _find_ground_ore(self, ctx: AgentContext, ss) -> list:
         """Find ore items on the ground near the player (excluding junk)."""

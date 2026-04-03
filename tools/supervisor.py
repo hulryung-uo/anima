@@ -90,6 +90,52 @@ def read_agent_state() -> dict | None:
         return None
 
 
+def _check_action_log_loops() -> str | None:
+    """Check action_logs for stuck loop patterns (last 5 minutes)."""
+    if not DB_FILE.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_FILE))
+        cutoff = time.time() - 300  # last 5 min
+
+        rows = conn.execute("""
+            SELECT procedure, result, COUNT(*) as cnt
+            FROM action_logs WHERE timestamp > ?
+            GROUP BY procedure, result ORDER BY cnt DESC
+        """, (cutoff,)).fetchall()
+
+        proc_stats: dict[str, dict[str, int]] = {}
+        for proc, result, cnt in rows:
+            if proc not in proc_stats:
+                proc_stats[proc] = {"success": 0, "fail": 0}
+            if result == "success":
+                proc_stats[proc]["success"] += cnt
+            else:
+                proc_stats[proc]["fail"] += cnt
+
+        for proc, stats in proc_stats.items():
+            total = stats["success"] + stats["fail"]
+            if total >= 20 and stats["success"] == 0:
+                conn.close()
+                return f"stuck loop: {proc} failed {stats['fail']}x with 0 success in 5min"
+
+        total_actions = sum(s["success"] + s["fail"] for s in proc_stats.values())
+        if total_actions == 0:
+            if STATE_FILE.exists():
+                try:
+                    st = json.loads(STATE_FILE.read_text())
+                    if time.time() - st.get("ts", 0) < 30:
+                        conn.close()
+                        return "agent alive but zero procedures in 5min (planner idle loop)"
+                except Exception:
+                    pass
+
+        conn.close()
+    except Exception:
+        pass
+    return None
+
+
 def check_agent_health(state: dict | None) -> str | None:
     """Returns a problem description if agent is unhealthy, None if OK."""
     if state is None:
@@ -109,6 +155,17 @@ def check_agent_health(state: dict | None) -> str | None:
         if now - last_act_ts > STUCK_THRESHOLD:
             last_msg = activity[-1].get("message", "")
             return f"no activity for {now - last_act_ts:.0f}s (last: {last_msg})"
+
+    # Check for deadlock state from agent intent
+    status = state.get("status", {})
+    intent = status.get("intent", "")
+    if "교착 상태" in intent or "DEADLOCK" in intent:
+        return f"agent reports deadlock: {intent[:80]}"
+
+    # Check for stuck loop via action_logs — same procedure failing repeatedly
+    stuck_info = _check_action_log_loops()
+    if stuck_info:
+        return stuck_info
 
     return None
 
