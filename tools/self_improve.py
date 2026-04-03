@@ -598,33 +598,87 @@ def call_claude(report_path: Path) -> tuple[bool, str]:
 
     Returns (success, output) — output contains Claude's stdout+stderr.
     """
-    prompt = f"""You are fixing issues in the Anima UO AI agent. Read the analysis report at {report_path}.
+    prompt = f"""You are the self-improvement system for Anima, a UO AI agent.
+Read the analysis report at {report_path}, then debug and fix problems.
 
-Also read these for current state:
-- data/state.json — current agent state (position, inventory, skills, ping)
-- data/events.jsonl (last 50 lines) — recent events
+## Your debugging method
 
-The agent uses v2 architecture:
-- Planner: anima/planner/planner.py — rule-based procedure selection (gameplay loop)
-- Procedures: anima/procedures/ — async game workflows (mine_ore, smelt_ore, etc.)
-- Action primitives: anima/actions/ — packet sequences (target, gump, vendor, etc.)
-- Movement: anima/action/movement.py — go_to() with 4-directional pathfinding, door handling
-- World knowledge: anima/world_knowledge.py — location coordinates (from ServUO Common.map)
+Follow the exact same process a human developer would use:
 
-Gameplay loop: mine → smelt → sell → bank → buy tools → mine
+### Step 1: Read the analysis report and understand the situation
+- Read {report_path} for problem summary, metrics, and server messages.
+- Read data/state.json for current agent state.
+- Read the last 200 lines of data/anima.log for raw log context.
 
-Use the server messages and logs to diagnose the ROOT CAUSE.
-For example, "Target cannot be seen" means LOS issue,
-"no metal here" means vein depleted and should move,
-"too far away" means need to walk closer, etc.
+### Step 2: Identify the problem pattern
+Look for these patterns we've seen before:
+- **Stuck loop**: same procedure failing repeatedly (e.g., mine_ore failing with
+  "too far away" every 3 seconds = tile outside mining range but inside search range)
+- **Wrong target**: selling to wrong vendor type (e.g., tanner for weapons = vendor
+  doesn't buy those items, should go to weaponsmith)
+- **NPC invisible**: vendor exists nearby but _find_vendor returns None (= NPC name
+  not loaded, need OPL request before checking)
+- **Craft failure ignored**: gump shows "You do not have sufficient metal" but code
+  reports "Craft result unclear" (= gump notice text not being parsed)
+- **Fall-through missing**: can_start false + _move_to_location returns None = infinite
+  tick loop at 200ms without doing anything (= need fall-through to lower priority)
+- **Unreachable destination**: go_to fails repeatedly for same coordinates (= wrong
+  location data in world_knowledge.py, or building in the way)
 
-Rules:
-- Read CLAUDE.md first for project conventions
-- Focus on v2 code: anima/planner/, anima/procedures/, anima/actions/
-- Focus on the highest severity problems first
-- Run `uv run pytest` after changes — only commit if tests pass
-- `git commit` with descriptive message, then `git push`
-- Only modify files directly related to the fix
+### Step 3: Find the root cause in code
+- Read the actual procedure/planner code that's failing.
+- Check the can_start conditions — are they too loose or too strict?
+- Check failure handling — does the code handle all server responses?
+- Check for missing fall-through when both can_start and move fail.
+
+### Step 4: Fix with minimal changes
+- Fix the specific bug, don't refactor surrounding code.
+- Add logging for the specific failure case so future debugging is easier.
+- If a stuck loop: add blacklist/cooldown for the failing target.
+- If wrong target: fix the matching logic or location data.
+- If missing handling: add the specific server message to the handler.
+
+## Architecture reference
+
+- Planner: anima/planner/planner.py — rule-based procedure selection, priority 1-9
+- Procedures: anima/procedures/*.py — async game workflows (mine_ore, smelt_ore,
+  craft_blacksmith, sell_to_vendor, buy_from_vendor, make_tools, bank_deposit)
+- Vendor logic: anima/skills/trade/vendor.py — _find_vendor, _is_vendor, context menu
+- Movement: anima/action/movement.py — go_to() pathfinding
+- World knowledge: anima/world_knowledge.py — named location coordinates
+- Gump handling: anima/actions/gump.py — craft menu interaction
+
+Gameplay loop: mine → smelt → craft → sell → bank → buy tools → mine
+
+### Step 5: If root cause is unclear — add instrumentation first
+
+If the logs don't contain enough information to diagnose the problem:
+1. **Don't guess at a fix.** Instead, add targeted diagnostic logging.
+2. Add logger.info() calls at the specific decision points that need visibility.
+   For example: log the return value of _find_vendor, log the tile coordinates
+   from _find_mineable_tile, log the gump notice text after crafting.
+3. Commit the diagnostic logging with message like "Add diagnostic logging for X".
+4. In the next self-improvement cycle, the new logs will reveal the root cause.
+
+This is better than guessing — one cycle to instrument, next cycle to fix.
+
+Examples of useful diagnostic logging:
+- "vendor_search_result" with nearby NPC names, serials, distances, refused status
+- "craft_gump_notice" with the full notice text from the gump
+- "planner_decision" with why a specific priority branch was taken
+- "tile_search_result" with coordinates and distances of candidate tiles
+
+## Rules
+
+- Read CLAUDE.md first for project conventions.
+- Focus on the HIGHEST severity problem first.
+- Read the failing code before writing any fix.
+- **Evidence before fix**: if you can't identify root cause from existing logs,
+  add diagnostic logging first and wait for the next cycle.
+- Run `uv run pytest` after changes — only commit if tests pass.
+- Commit with a descriptive message explaining root cause and fix.
+- Only modify files directly related to the fix.
+- Do NOT remove existing logging — only add or modify.
 """
     print(f"  Calling Claude Code with report: {report_path}")
     try:
