@@ -277,7 +277,33 @@ class CraftBlacksmith(Procedure):
             if it.container == ss.equipment.get(0x15) and it.graphic in CRAFTED_ITEM_GRAPHICS
         ])
 
-        # Close remaining gumps properly
+        # Extract gump notice from result gump BEFORE closing gumps —
+        # ServUO reports craft errors (no anvil, insufficient metal) only
+        # via the re-sent CraftGump notice area, not as journal messages.
+        gump_notice = ""
+        for g in ss.gumps.values():
+            for t in g.texts:
+                # Notice content is at x=170, y=295; skip the "NOTICES"
+                # header label at x=10, y=302 (cliloc 1044012).
+                if 280 <= t.y <= 310 and t.x >= 150:
+                    text = g.get_text(t.text_id)
+                    if text:
+                        gump_notice = re.sub(r"<[^>]+>", "", text).strip()
+                        break
+            if gump_notice:
+                break
+
+        # Check gump notice for craft result (fallback if journal missed it)
+        if not result_msg and gump_notice:
+            nl = gump_notice.lower()
+            if "you create" in nl:
+                result_msg = "success"
+            elif "failed to create" in nl or "you fail" in nl:
+                result_msg = "fail"
+            elif "worn out" in nl:
+                result_msg = "tool_broke"
+
+        # Close remaining gumps
         await self._close_all_gumps(ctx)
 
         if result_msg == "success" or items_after > items_before:
@@ -310,18 +336,6 @@ class CraftBlacksmith(Procedure):
                 reason=FailureReason.MISSING_RESOURCE,
                 message="Tongs broke — need replacement tool",
             )
-
-        # Read gump notice from result gump text (notice area around y=295)
-        gump_notice = ""
-        for g in ss.gumps.values():
-            for t in g.texts:
-                if 280 <= t.y <= 310:
-                    text = g.get_text(t.text_id)
-                    if text:
-                        gump_notice = re.sub(r"<[^>]+>", "", text)
-                        break
-            if gump_notice:
-                break
 
         notice_lower = gump_notice.lower()
 
