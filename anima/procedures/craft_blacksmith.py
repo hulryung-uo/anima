@@ -1,12 +1,14 @@
 """CraftBlacksmith procedure — craft weapons/armor at anvil to sell for profit.
 
 Uses tongs + ingots at a forge/anvil. Crafts items based on current skill level.
-Success detected by inventory change (new item appears in backpack).
+Uses computed ServUO button IDs (not text matching) for reliable gump navigation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -26,16 +28,27 @@ TONGS_GRAPHICS = {0x0FBB, 0x0FBC}  # smith's hammer / tongs
 INGOT_GRAPHIC = 0x1BF2
 MIN_INGOTS = 8  # most weapons need 8-12 ingots
 
-# Recipes: (category_text, item_text, ingots_needed, min_skill)
-# Category names from ServUO CraftGump clilocs
+
+def _get_button_id(btn_type: int, index: int) -> int:
+    """ServUO CraftGump button ID formula: 1 + type + (index * 7).
+
+    type 0 = show group (category), type 1 = create item.
+    """
+    return 1 + btn_type + (index * 7)
+
+
+# Recipes: (item_name, group_index, item_index, ingots_needed, min_skill)
+# Group indices from ServUO DefBlacksmithy.cs:
+# 0=Metal Armor, 1=Helmets, 2=Shields, 3=Bladed, 4=Axes, 5=Polearms,
+# 6=Bashing, 7=Ringmail, 8=Chainmail, 9=Platemail
 _RECIPES = [
-    ("Bladed", "Cutlass", 8, 24.3),
-    ("Bladed", "Katana", 8, 44.1),
-    ("Bladed", "Scimitar", 10, 31.7),
-    ("Metal Armor", "Ringmail Gloves", 10, 12.0),
-    ("Metal Armor", "Ringmail Sleeves", 14, 16.9),
-    ("Metal Armor", "Ringmail Leggings", 16, 19.4),
-    ("Metal Armor", "Ringmail Tunic", 18, 21.9),
+    ("Cutlass", 3, 0, 8, 24.3),
+    ("Katana", 3, 1, 8, 44.1),
+    ("Scimitar", 3, 5, 10, 31.7),
+    ("Ringmail Gloves", 7, 0, 10, 12.0),
+    ("Ringmail Sleeves", 7, 2, 14, 16.9),
+    ("Ringmail Leggings", 7, 1, 16, 19.4),
+    ("Ringmail Tunic", 7, 3, 18, 21.9),
 ]
 
 # Graphics of items we crafted (to detect in inventory and to sell)
@@ -98,8 +111,11 @@ class CraftBlacksmith(Procedure):
             return False
         return _has_anvil_and_forge(ctx)
 
-    def _pick_recipe(self, ctx: AgentContext) -> tuple[str, str, int] | None:
-        """Pick best recipe based on skill level and available ingots."""
+    def _pick_recipe(self, ctx: AgentContext) -> tuple[str, int, int, int] | None:
+        """Pick best recipe based on skill level and available ingots.
+
+        Returns (item_name, group_index, item_index, ingot_cost) or None.
+        """
         ingots = count_items(ctx, {INGOT_GRAPHIC})
         skill = 0.0
         for sk in ctx.perception.self_state.skills.values():
@@ -107,13 +123,25 @@ class CraftBlacksmith(Procedure):
                 skill = sk.value
                 break
 
-        for cat, item, cost, min_skill in _RECIPES:
+        for item_name, grp_idx, item_idx, cost, min_skill in _RECIPES:
             if skill >= min_skill and ingots >= cost:
-                return cat, item, cost
+                return item_name, grp_idx, item_idx, cost
         return None
+
+    async def _close_all_gumps(self, ctx: AgentContext) -> None:
+        """Close all open gumps to prevent stale state on the server."""
+        ss = ctx.perception.self_state
+        for g in list(ss.gumps.values()):
+            ss.gumps.pop(g.gump_id, None)
+            await ctx.conn.send_packet(
+                build_gump_response(g.serial, g.gump_id, 0)
+            )
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
+
+        # Close stale gumps from previous failed runs
+        await self._close_all_gumps(ctx)
 
         tools = find_in_backpack(ctx, TONGS_GRAPHICS)
         if not tools:
@@ -138,10 +166,10 @@ class CraftBlacksmith(Procedure):
                 message="no suitable recipe (skill too low or not enough ingots)",
             )
 
-        category_text, item_text, ingot_cost = recipe
+        item_name, grp_idx, item_idx, ingot_cost = recipe
         logger.info(
             "craft_bs_start",
-            item=item_text, category=category_text,
+            item=item_name, group=grp_idx, item_index=item_idx,
             ingot_cost=ingot_cost, ingots=count_items(ctx, {INGOT_GRAPHIC}),
             skill=next((sk.value for sk in ss.skills.values() if sk.id == 7), 0),
         )
@@ -152,6 +180,7 @@ class CraftBlacksmith(Procedure):
             if it.container == ss.equipment.get(0x15) and it.graphic in CRAFTED_ITEM_GRAPHICS
         ])
         ingots_before = count_items(ctx, {INGOT_GRAPHIC})
+        journal_mark = time.time()
 
         # 1. Open blacksmithy gump
         ss.gumps.clear()
@@ -168,28 +197,27 @@ class CraftBlacksmith(Procedure):
 
         gump = result.data["gump"]
 
-        # Log gump contents for debugging
-        # 2. Click category
-        cat_btn = gump.find_button_near_text(category_text)
-        if not cat_btn:
-            ss.gumps.clear()
+        # 2. Click category using computed ServUO button ID
+        cat_btn_id = _get_button_id(0, grp_idx)
+        if not gump.find_button_by_id(cat_btn_id):
+            await self._close_all_gumps(ctx)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
-                message=f"'{category_text}' category not found in gump",
+                message=f"category button {cat_btn_id} (group {grp_idx}) not in gump",
             )
 
         ss.gumps.clear()
         await ctx.conn.send_packet(build_gump_response(
             serial=gump.serial, gump_id=gump.gump_id,
-            button_id=cat_btn.button_id,
+            button_id=cat_btn_id,
         ))
         await asyncio.sleep(0.5)
 
         # 3. Wait for item list gump
         result = await wait_for_gump(ctx, timeout=3.0)
         if not result.success:
-            ss.gumps.clear()
+            await self._close_all_gumps(ctx)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
@@ -198,109 +226,125 @@ class CraftBlacksmith(Procedure):
 
         gump = result.data["gump"]
 
-        # 4. Click specific item to craft
-        item_btn = gump.find_button_near_text(item_text)
-        if not item_btn:
-            ss.gumps.clear()
+        # 4. Click specific item using computed ServUO button ID
+        create_btn_id = _get_button_id(1, item_idx)
+        if not gump.find_button_by_id(create_btn_id):
+            await self._close_all_gumps(ctx)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
-                message=f"'{item_text}' not found in gump",
+                message=f"item button {create_btn_id} (index {item_idx}) not in gump",
             )
 
         ss.gumps.clear()
         await ctx.conn.send_packet(build_gump_response(
             serial=gump.serial, gump_id=gump.gump_id,
-            button_id=item_btn.button_id,
+            button_id=create_btn_id,
         ))
 
-        # 5. Wait for crafting result
-        await asyncio.sleep(4.0)
-
-        # Read the gump notices area for server feedback
-        gump_notice = ""
-        for g in ss.gumps.values():
-            for label in getattr(g, "labels", []):
-                text = label if isinstance(label, str) else str(label)
-                # Notices area is around y=295 in the blacksmith gump
-                if "295)=" in text:
-                    gump_notice = text.split("=", 1)[1] if "=" in text else text
+        # 5. Wait for crafting result via journal (like the skill version)
+        result_msg = ""
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            for entry in ctx.perception.social.recent(count=5):
+                if entry.timestamp < journal_mark:
+                    continue
+                text_lower = entry.text.lower()
+                if "you create" in text_lower:
+                    result_msg = "success"
                     break
-            if gump_notice:
+                if "failed to create" in text_lower or "you fail" in text_lower:
+                    result_msg = "fail"
+                    break
+                if "worn out your tool" in text_lower:
+                    result_msg = "tool_broke"
+                    break
+            if result_msg:
                 break
 
-        # Check success: new crafted item in backpack OR ingots decreased
+        ingots_after = count_items(ctx, {INGOT_GRAPHIC})
         items_after = len([
             it for it in ctx.perception.world.items.values()
             if it.container == ss.equipment.get(0x15) and it.graphic in CRAFTED_ITEM_GRAPHICS
         ])
-        ingots_after = count_items(ctx, {INGOT_GRAPHIC})
 
-        if items_after > items_before:
-            logger.info("craft_blacksmith_success", item=item_text, ingots_used=ingots_before - ingots_after)
+        # Close remaining gumps properly
+        await self._close_all_gumps(ctx)
+
+        if result_msg == "success" or items_after > items_before:
+            consumed = ingots_before - ingots_after
+            logger.info("craft_blacksmith_success", item=item_name, ingots_used=consumed)
             ctx.blackboard["_craft_bs_fails"] = 0
-            ss.gumps.clear()
             return ProcedureResult(
                 success=True,
-                message=f"Crafted {item_text}",
+                message=f"Crafted {item_name}",
                 next_suggestion="craft_blacksmith",
-                details={"item": item_text},
+                details={"item": item_name},
             )
 
-        if ingots_after < ingots_before:
-            # Ingots consumed but no item — craft failed (skill check)
-            logger.info("craft_blacksmith_failed", item=item_text, ingots_lost=ingots_before - ingots_after)
-            ss.gumps.clear()
+        if result_msg == "fail" or ingots_after < ingots_before:
+            lost = ingots_before - ingots_after
+            logger.info("craft_blacksmith_failed", item=item_name, ingots_lost=lost)
+            ctx.blackboard["_craft_bs_fails"] = 0
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
-                message=f"Craft {item_text} failed — lost {ingots_before - ingots_after} ingots (skill check)",
+                message=f"Craft {item_name} failed — lost {lost} ingots (skill check)",
                 next_suggestion="craft_blacksmith",
             )
 
-        # --- Detect specific failure from gump notice ---
+        if result_msg == "tool_broke":
+            logger.warning("craft_blacksmith_tool_broke")
+            ctx.blackboard["_craft_bs_fails"] = 0
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="Tongs broke — need replacement tool",
+            )
+
+        # Read gump notice from result gump text (notice area around y=295)
+        gump_notice = ""
+        for g in ss.gumps.values():
+            for t in g.texts:
+                if 280 <= t.y <= 310:
+                    text = g.get_text(t.text_id)
+                    if text:
+                        gump_notice = re.sub(r"<[^>]+>", "", text)
+                        break
+            if gump_notice:
+                break
+
         notice_lower = gump_notice.lower()
 
         if "sufficient metal" in notice_lower or "sufficient material" in notice_lower:
             logger.warning(
                 "craft_blacksmith_no_material",
-                item=item_text, notice=gump_notice,
+                item=item_name, notice=gump_notice,
                 ingots_counted=ingots_before, ingot_cost=ingot_cost,
             )
-            ss.gumps.clear()
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
-                message=f"Server says insufficient metal for {item_text} "
+                message=f"Server says insufficient metal for {item_name} "
                         f"(counted {ingots_before}, need {ingot_cost}) — {gump_notice}",
             )
 
         if "anvil" in notice_lower or "forge" in notice_lower:
             logger.warning("craft_blacksmith_no_station", notice=gump_notice)
-            ss.gumps.clear()
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
                 message=f"No anvil/forge — {gump_notice}",
             )
 
-        if "skill" in notice_lower:
-            logger.warning("craft_blacksmith_low_skill", item=item_text, notice=gump_notice)
-            ss.gumps.clear()
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.PERMANENT,
-                message=f"Skill too low for {item_text} — {gump_notice}",
-            )
-
-        # Nothing changed and no recognizable notice — unclear
+        # Nothing changed and no recognizable result — unclear
         fail_count = ctx.blackboard.get("_craft_bs_fails", 0) + 1
         ctx.blackboard["_craft_bs_fails"] = fail_count
-        ss.gumps.clear()
 
         logger.warning(
             "craft_blacksmith_unclear",
-            item=item_text, fail_count=fail_count,
+            item=item_name, fail_count=fail_count,
             notice=gump_notice or "(none)",
             ingots_before=ingots_before, ingots_after=ingots_after,
             items_before=items_before, items_after=items_after,
