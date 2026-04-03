@@ -192,6 +192,41 @@ class CraftBlacksmith(Skill):
         if not gump:
             return SkillResult(success=False, reward=-1.0, message="Gump didn't open")
 
+        # Step 1b: Force Iron material to avoid stale CraftContext
+        material_btn = _get_button_id(6, 0)  # 7 — open resource selection
+        iron_btn = _get_button_id(5, 0)      # 6 — select Iron (index 0)
+        if gump.find_button_by_id(material_btn):
+            prev_serial = gump.serial
+            switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+            text_entries = [(te.entry_id, te.initial_text) for te in gump.text_entries]
+            ss.gumps.pop(gump.gump_id, None)
+            await ctx.conn.send_packet(
+                build_gump_response(gump.serial, gump.gump_id, material_btn,
+                                    switches=switches, text_entries=text_entries)
+            )
+            gump = await self._wait_gump_new(ctx, prev_serial)
+            if not gump:
+                return SkillResult(
+                    success=False, reward=-1.0,
+                    message="Resource selection gump didn't appear",
+                )
+
+            if gump.find_button_by_id(iron_btn):
+                prev_serial = gump.serial
+                switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+                text_entries = [(te.entry_id, te.initial_text) for te in gump.text_entries]
+                ss.gumps.pop(gump.gump_id, None)
+                await ctx.conn.send_packet(
+                    build_gump_response(gump.serial, gump.gump_id, iron_btn,
+                                        switches=switches, text_entries=text_entries)
+                )
+                gump = await self._wait_gump_new(ctx, prev_serial)
+                if not gump:
+                    return SkillResult(
+                        success=False, reward=-1.0,
+                        message="Gump didn't refresh after Iron selection",
+                    )
+
         # Step 2: Click category
         cat_btn_id = _get_button_id(0, grp_idx)
         prev_serial = gump.serial

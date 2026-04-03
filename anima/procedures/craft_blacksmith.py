@@ -197,6 +197,59 @@ class CraftBlacksmith(Procedure):
 
         gump = result.data["gump"]
 
+        # 1b. Force Iron material to avoid stale CraftContext selecting Gold etc.
+        #     GetButtonID(6, 0) = 7 opens resource selection page
+        #     GetButtonID(5, 0) = 6 selects Iron (resource index 0)
+        material_btn = _get_button_id(6, 0)  # 7
+        iron_btn = _get_button_id(5, 0)      # 6
+        if gump.find_button_by_id(material_btn):
+            ss.gumps.clear()
+            switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+            text_entries = [
+                (te.entry_id, te.initial_text) for te in gump.text_entries
+            ]
+            await ctx.conn.send_packet(build_gump_response(
+                serial=gump.serial, gump_id=gump.gump_id,
+                button_id=material_btn,
+                switches=switches, text_entries=text_entries,
+            ))
+            await asyncio.sleep(0.5)
+
+            result = await wait_for_gump(ctx, timeout=3.0)
+            if not result.success:
+                await self._close_all_gumps(ctx)
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.BLOCKED,
+                    message="resource selection gump did not appear",
+                )
+            gump = result.data["gump"]
+
+            if gump.find_button_by_id(iron_btn):
+                ss.gumps.clear()
+                switches = [
+                    sw.switch_id for sw in gump.switches if sw.initial_state
+                ]
+                text_entries = [
+                    (te.entry_id, te.initial_text) for te in gump.text_entries
+                ]
+                await ctx.conn.send_packet(build_gump_response(
+                    serial=gump.serial, gump_id=gump.gump_id,
+                    button_id=iron_btn,
+                    switches=switches, text_entries=text_entries,
+                ))
+                await asyncio.sleep(0.5)
+
+                result = await wait_for_gump(ctx, timeout=3.0)
+                if not result.success:
+                    await self._close_all_gumps(ctx)
+                    return ProcedureResult(
+                        success=False,
+                        reason=FailureReason.BLOCKED,
+                        message="gump did not refresh after selecting Iron",
+                    )
+                gump = result.data["gump"]
+
         # 2. Click category using computed ServUO button ID
         cat_btn_id = _get_button_id(0, grp_idx)
         if not gump.find_button_by_id(cat_btn_id):
