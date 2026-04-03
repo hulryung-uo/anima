@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS journal (
     location_y INTEGER NOT NULL DEFAULT 0,
     category TEXT NOT NULL DEFAULT '',
     action TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
     narrative TEXT NOT NULL,
     mood TEXT NOT NULL DEFAULT 'neutral',
     importance INTEGER NOT NULL DEFAULT 1
@@ -40,6 +41,10 @@ CREATE INDEX IF NOT EXISTS idx_journal_agent_time
     ON journal(agent_name, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_journal_category
     ON journal(agent_name, category);
+"""
+
+_MIGRATE_ADD_TITLE = """\
+ALTER TABLE journal ADD COLUMN title TEXT NOT NULL DEFAULT '';
 """
 
 
@@ -59,6 +64,7 @@ class JournalEntry:
     location_y: int = 0
     category: str = ""  # "crafting", "gathering", "combat", "trade", "social", "exploration"
     action: str = ""  # skill name or event type
+    title: str = ""  # short title for the entry
     narrative: str = ""  # human-readable narrative text
     mood: str = "neutral"  # "satisfied", "frustrated", "excited", "neutral"
     importance: int = 1  # 1=routine, 2=notable, 3=significant
@@ -69,42 +75,67 @@ class JournalEntry:
 # ---------------------------------------------------------------------------
 
 # Mapping of skill names to narrative templates
+# Each entry has: title (short label), success/failure narratives
 _SKILL_NARRATIVES: dict[str, dict[str, str]] = {
     "chop_wood": {
-        "success": "{name}은(는) 나무를 벌목하여 통나무를 얻었다.",
-        "failure": "{name}은(는) 나무를 벌목하려 했지만 실패했다.",
+        "title_success": "벌목 성공",
+        "title_failure": "벌목 실패",
+        "success": "{name}은(는) 나무를 벌목하여 통나무를 얻었다. {detail}",
+        "failure": "{name}은(는) 나무를 벌목하려 했지만 실패했다. {detail}",
     },
     "mine_ore": {
-        "success": "{name}은(는) 광석을 캐내는 데 성공했다.",
-        "failure": "{name}은(는) 곡괭이를 휘둘렀지만 아무것도 캐지 못했다.",
+        "title_success": "채광 성공",
+        "title_failure": "채광 실패",
+        "success": "{name}은(는) 광석을 캐내는 데 성공했다. {detail}",
+        "failure": "{name}은(는) 곡괭이를 휘둘렀지만 아무것도 캐지 못했다. {detail}",
     },
     "smelt_ore": {
-        "success": "{name}은(는) 광석을 제련하여 주괴를 만들었다.",
-        "failure": "{name}은(는) 광석을 제련하려 했지만 실패했다.",
+        "title_success": "제련 완료",
+        "title_failure": "제련 실패",
+        "success": "{name}은(는) 광석을 제련하여 주괴를 만들었다. {detail}",
+        "failure": "{name}은(는) 광석을 제련하려 했지만 실패했다. {detail}",
     },
     "craft_tinker": {
+        "title_success": "팅커링 제작",
+        "title_failure": "팅커링 실패",
         "success": "{name}은(는) 팅커링으로 도구를 만들었다. {detail}",
-        "failure": "{name}은(는) 도구를 만들려 했으나 실패했다.",
+        "failure": "{name}은(는) 도구를 만들려 했으나 실패했다. {detail}",
     },
     "craft_carpentry": {
+        "title_success": "목공 제작",
+        "title_failure": "목공 실패",
         "success": "{name}은(는) 목공으로 {detail}을(를) 제작했다.",
-        "failure": "{name}은(는) 목공 작업에 실패했다. 재료가 낭비되었다.",
+        "failure": "{name}은(는) 목공 작업에 실패했다. 재료가 낭비되었다. {detail}",
+    },
+    "craft_blacksmith": {
+        "title_success": "대장장이 제작",
+        "title_failure": "대장장이 실패",
+        "success": "{name}은(는) 대장장이 기술로 {detail}을(를) 제작했다.",
+        "failure": "{name}은(는) 대장장이 작업에 실패했다. {detail}",
     },
     "sell_to_npc": {
+        "title_success": "물건 판매",
+        "title_failure": "판매 실패",
         "success": "{name}은(는) 상인에게 물건을 팔았다. {detail}",
-        "failure": "{name}은(는) 물건을 팔려 했지만 실패했다.",
+        "failure": "{name}은(는) 물건을 팔려 했지만 실패했다. {detail}",
     },
     "buy_from_npc": {
+        "title_success": "물건 구매",
+        "title_failure": "구매 실패",
         "success": "{name}은(는) 상인에게서 물건을 구입했다. {detail}",
-        "failure": "{name}은(는) 물건을 사려 했지만 실패했다.",
+        "failure": "{name}은(는) 물건을 사려 했지만 실패했다. {detail}",
     },
     "melee_attack": {
-        "success": "{name}은(는) 전투에서 적을 쓰러뜨렸다.",
-        "failure": "{name}은(는) 전투에서 고전했다.",
+        "title_success": "전투 승리",
+        "title_failure": "전투 고전",
+        "success": "{name}은(는) 전투에서 적을 쓰러뜨렸다. {detail}",
+        "failure": "{name}은(는) 전투에서 고전했다. {detail}",
     },
     "heal_self": {
-        "success": "{name}은(는) 붕대로 상처를 치료했다.",
-        "failure": "{name}은(는) 치료를 시도했지만 효과가 없었다.",
+        "title_success": "치료 성공",
+        "title_failure": "치료 실패",
+        "success": "{name}은(는) 붕대로 상처를 치료했다. {detail}",
+        "failure": "{name}은(는) 치료를 시도했지만 효과가 없었다. {detail}",
     },
 }
 
@@ -113,21 +144,38 @@ def build_narrative(
     agent_name: str,
     skill_name: str,
     result: SkillResult,
-) -> str:
-    """Generate a narrative string from a skill execution result."""
+) -> tuple[str, str]:
+    """Generate a (title, narrative) tuple from a skill execution result.
+
+    Returns (title, narrative) where title is a short label and narrative
+    is the full descriptive text including detail from the result.
+    """
+    detail = result.message or ""
     templates = _SKILL_NARRATIVES.get(skill_name)
     if templates:
         key = "success" if result.success else "failure"
+        title_key = f"title_{key}"
+        title = templates.get(title_key, skill_name)
         template = templates.get(key, "{name}은(는) {action}을(를) 수행했다.")
-        return template.format(
+        narrative = template.format(
             name=agent_name,
             action=skill_name,
-            detail=result.message,
-        )
+            detail=detail,
+        ).strip()
+        # For notable events, append extra context if detail is present
+        if detail and result.reward >= 3.0:
+            title = f"{title} — {detail[:40]}"
+        return title, narrative
     # Fallback for unknown skills
     if result.success:
-        return f"{agent_name}은(는) {skill_name}을(를) 성공적으로 수행했다. {result.message}"
-    return f"{agent_name}은(는) {skill_name}에 실패했다. {result.message}"
+        title = f"{skill_name} 성공"
+        narrative = f"{agent_name}은(는) {skill_name}을(를) 성공적으로 수행했다. {detail}"
+    else:
+        title = f"{skill_name} 실패"
+        narrative = f"{agent_name}은(는) {skill_name}에 실패했다. {detail}"
+    if detail and result.reward >= 3.0:
+        title = f"{title} — {detail[:40]}"
+    return title, narrative.strip()
 
 
 def result_to_mood(result: SkillResult) -> str:
@@ -167,6 +215,11 @@ class ActivityJournal:
         if self._initialized:
             return
         await self._db.db.executescript(_JOURNAL_SCHEMA)
+        # Migrate: add title column if missing (existing DBs)
+        try:
+            await self._db.db.execute(_MIGRATE_ADD_TITLE)
+        except Exception:
+            pass  # column already exists
         await self._db.db.commit()
         self._initialized = True
 
@@ -180,7 +233,7 @@ class ActivityJournal:
         """Record a skill execution as a narrative journal entry."""
         await self._ensure_table()
 
-        narrative = build_narrative(self._agent_name, skill_name, result)
+        title, narrative = build_narrative(self._agent_name, skill_name, result)
         mood = result_to_mood(result)
         importance = result_to_importance(result)
         category = _skill_to_category(skill_name)
@@ -191,6 +244,7 @@ class ActivityJournal:
             location_y=y,
             category=category,
             action=skill_name,
+            title=title,
             narrative=narrative,
             mood=mood,
             importance=importance,
@@ -199,8 +253,8 @@ class ActivityJournal:
         cursor = await self._db.db.execute(
             """INSERT INTO journal
                (agent_name, timestamp, location_x, location_y,
-                category, action, narrative, mood, importance)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                category, action, title, narrative, mood, importance)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 entry.agent_name,
                 entry.timestamp,
@@ -208,6 +262,7 @@ class ActivityJournal:
                 entry.location_y,
                 entry.category,
                 entry.action,
+                entry.title,
                 entry.narrative,
                 entry.mood,
                 entry.importance,
@@ -216,7 +271,7 @@ class ActivityJournal:
         await self._db.db.commit()
         entry.id = cursor.lastrowid  # type: ignore[assignment]
 
-        logger.debug("journal_entry", narrative=narrative, mood=mood, importance=importance)
+        logger.debug("journal_entry", title=title, narrative=narrative, mood=mood, importance=importance)
         return entry
 
     async def record_event(
@@ -224,6 +279,7 @@ class ActivityJournal:
         narrative: str,
         category: str = "event",
         action: str = "",
+        title: str = "",
         x: int = 0,
         y: int = 0,
         mood: str = "neutral",
@@ -238,6 +294,7 @@ class ActivityJournal:
             location_y=y,
             category=category,
             action=action,
+            title=title or action or category,
             narrative=narrative,
             mood=mood,
             importance=importance,
@@ -246,8 +303,8 @@ class ActivityJournal:
         cursor = await self._db.db.execute(
             """INSERT INTO journal
                (agent_name, timestamp, location_x, location_y,
-                category, action, narrative, mood, importance)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                category, action, title, narrative, mood, importance)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 entry.agent_name,
                 entry.timestamp,
@@ -255,6 +312,7 @@ class ActivityJournal:
                 entry.location_y,
                 entry.category,
                 entry.action,
+                entry.title,
                 entry.narrative,
                 entry.mood,
                 entry.importance,
@@ -299,6 +357,8 @@ class ActivityJournal:
         """Compile recent journal entries into a cohesive narrative.
 
         Returns a multi-paragraph text suitable for forum posts or essays.
+        Each category section gets a heading, and notable entries are
+        highlighted with their titles and full detail.
         """
         await self._ensure_table()
 
@@ -315,22 +375,43 @@ class ActivityJournal:
 
         entries = [_row_to_journal(r) for r in rows]
 
-        # Group by category for coherent paragraphs
-        paragraphs: list[str] = []
+        _CATEGORY_TITLES = {
+            "gathering": "자원 채집",
+            "crafting": "제작 활동",
+            "trade": "거래",
+            "combat": "전투",
+            "social": "사회 활동",
+            "exploration": "탐험",
+            "thinking": "생각",
+            "event": "사건",
+            "activity": "활동",
+        }
+
+        # Group by category for coherent sections
+        sections: list[str] = []
         current_category = ""
         current_lines: list[str] = []
 
         for entry in entries:
             if entry.category != current_category and current_lines:
-                paragraphs.append(" ".join(current_lines))
+                cat_title = _CATEGORY_TITLES.get(current_category, current_category)
+                section = f"### {cat_title}\n\n" + "\n".join(current_lines)
+                sections.append(section)
                 current_lines = []
             current_category = entry.category
-            current_lines.append(entry.narrative)
+
+            # Notable entries (importance >= 2) get their title as emphasis
+            if entry.importance >= 2 and entry.title:
+                current_lines.append(f"**{entry.title}** — {entry.narrative}")
+            else:
+                current_lines.append(entry.narrative)
 
         if current_lines:
-            paragraphs.append(" ".join(current_lines))
+            cat_title = _CATEGORY_TITLES.get(current_category, current_category)
+            section = f"### {cat_title}\n\n" + "\n".join(current_lines)
+            sections.append(section)
 
-        return "\n\n".join(paragraphs)
+        return "\n\n".join(sections)
 
     async def summarize_day(self) -> dict[str, int]:
         """Get a summary of today's activities by category."""
@@ -384,6 +465,7 @@ def _skill_to_category(skill_name: str) -> str:
         "smelt_ore": "crafting",
         "craft_tinker": "crafting",
         "craft_carpentry": "crafting",
+        "craft_blacksmith": "crafting",
         "sell_to_npc": "trade",
         "buy_from_npc": "trade",
         "melee_attack": "combat",
@@ -401,6 +483,7 @@ def _row_to_journal(row) -> JournalEntry:
         location_y=row["location_y"],
         category=row["category"],
         action=row["action"],
+        title=row["title"] if "title" in row.keys() else "",
         narrative=row["narrative"],
         mood=row["mood"],
         importance=row["importance"],

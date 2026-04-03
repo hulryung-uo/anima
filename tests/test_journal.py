@@ -24,31 +24,38 @@ async def journal():
 class TestBuildNarrative:
     def test_known_skill_success(self):
         result = SkillResult(success=True, reward=5.0, message="Got logs")
-        text = build_narrative("Tormund", "chop_wood", result)
+        title, text = build_narrative("Tormund", "chop_wood", result)
         assert "Tormund" in text
         assert "벌목" in text
+        assert "벌목" in title
+        assert "Got logs" in text  # detail included
 
     def test_known_skill_failure(self):
         result = SkillResult(success=False, reward=-1.0, message="No trees")
-        text = build_narrative("Tormund", "chop_wood", result)
+        title, text = build_narrative("Tormund", "chop_wood", result)
         assert "실패" in text
+        assert "실패" in title
 
     def test_craft_tinker_with_detail(self):
         result = SkillResult(success=True, reward=8.0, message="Crafted Hatchet")
-        text = build_narrative("Tormund", "craft_tinker", result)
+        title, text = build_narrative("Tormund", "craft_tinker", result)
         assert "팅커링" in text
         assert "Crafted Hatchet" in text
+        # Notable event (reward >= 3.0) includes detail in title
+        assert "Crafted Hatchet" in title
 
     def test_unknown_skill_fallback(self):
         result = SkillResult(success=True, reward=3.0, message="Did something")
-        text = build_narrative("Tormund", "unknown_skill", result)
+        title, text = build_narrative("Tormund", "unknown_skill", result)
         assert "Tormund" in text
         assert "unknown_skill" in text
+        assert "성공" in title
 
     def test_sell_success(self):
         result = SkillResult(success=True, reward=5.0, message="Sold 3 items for 150gp")
-        text = build_narrative("Tormund", "sell_to_npc", result)
+        title, text = build_narrative("Tormund", "sell_to_npc", result)
         assert "팔았다" in text
+        assert "판매" in title
 
 
 class TestMoodAndImportance:
@@ -89,6 +96,7 @@ class TestActivityJournal:
         assert entry.id > 0
         assert entry.category == "gathering"
         assert "벌목" in entry.narrative
+        assert entry.title  # title should not be empty
         assert entry.mood == "excited"
         assert entry.location_x == 100
 
@@ -151,8 +159,9 @@ class TestActivityJournal:
 
         narrative = await journal.compile_narrative(hours=1.0)
         assert len(narrative) > 0
-        # Should have multiple paragraphs (gathering, crafting, trade)
+        # Should have multiple sections with category headers
         assert "\n\n" in narrative
+        assert "###" in narrative  # section headers present
 
     @pytest.mark.asyncio
     async def test_summarize_day(self, journal):
