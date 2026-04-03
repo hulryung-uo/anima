@@ -435,26 +435,95 @@ Secure Trade 또는 vendor 거래
 
 ---
 
+## 실현 가능성 분석
+
+### Phase 1: 높음 (기존 UO 봇 생태계에서 검증된 패턴)
+- Razor Enhanced, EasyUO, ClassicAssist 등이 동일한 동작을 이미 구현
+- Anima의 procedure 구조가 이미 대부분 동작 중
+- **주요 리스크**: 상태 비동기화 (패킷 타이밍), gump 처리 취약성
+- **해결**: 서버 틱 맞춤 패킷 지연 (350-650ms), 이벤트 기반 gump 대기
+
+### Phase 2: 중간 (선례 있지만 자동 수정은 실험적)
+- RimWorld의 ThinkTree/WorkGiver XML 시스템이 동일 패턴으로 성공
+- CEL (Common Expression Language)로 조건 표현식 평가 — K8s에서 검증됨
+- **주요 리스크**: Claude Code 자동 YAML 수정의 진동/과적합
+- **해결**: Constitutional AI 가드레일, canary 배포, 변경 간격 제한
+
+### Phase 3: 도전적 (연구 수준이지만 부분 구현 가능)
+- Tabular Q-learning은 2,000 상태에서 충분 (function approx 불필요)
+- LLM 계획은 Voyager/DEPS로 검증됨, 로컬 8B 모델로 가능
+- **주요 리스크**: 50 에이전트 LLM 처리량, 메모리 폭발, 개성 수렴
+- **해결**: dual-process (규칙 + LLM), 메모리 pruning, 대화 쿨다운
+
+---
+
+## 성공 지표 (Phase별)
+
+| Phase | 지표 | 목표 |
+|-------|------|------|
+| **P1** | 무중단 운영 | 4시간+ |
+| **P1** | Procedure 성공률 | >70% |
+| **P1** | 시간당 골드 | >50g/hr |
+| **P1** | 실패 복구 시간 | <60초 |
+| **P2** | 새 직업 추가 시 코드 변경 | 0 lines |
+| **P2** | 자동 규칙 수정 성공률 | >50% |
+| **P2** | 연속 운영 | 24시간+ |
+| **P2** | 사람 개입 빈도 | <1회/8시간 |
+| **P3** | LLM 콜 비율 | 전체 결정의 <5% |
+| **P3** | Plan 완수율 | >60% |
+| **P3** | 대화 자연스러움 | 블라인드 테스트 >50% 통과 |
+| **P3** | 연속 운영 | 1주일+ |
+
+---
+
 ## 타임라인 (대략적 추정)
 
 | Phase | 기간 | 핵심 마일스톤 |
 |-------|------|--------------|
-| **P1 완성** | 1-2주 | 1시간 무중단 게임플레이 루프 |
-| **P2 시작** | 2-3주 | YAML 규칙 엔진 + 첫 번째 규칙 기반 직업 |
-| **P2 완성** | 4-6주 | 새 직업을 YAML만으로 추가, 24시간 운영 |
-| **P3 시작** | 6-8주 | Q-learning 활성화 + LLM Plan |
-| **P3 중간** | 10-12주 | 다중 에이전트 접속 + 기본 대화 |
-| **P3 완성** | 16-20주 | 자율 에이전트 간 경제 + 소통, 1주일 운영 |
+| **P1 완성** | 1-2주 | 4시간 무중단 게임플레이 루프 |
+| **P2 시작** | 2-3주 | YAML 규칙 엔진 + CEL 조건 평가 |
+| **P2 완성** | 4-6주 | 새 직업 YAML만으로 추가, 24시간 운영 |
+| **P3-A** | 6-10주 | Q-learning 활성화 + LLM Plan + Reflection |
+| **P3-D** | 10-14주 | 다중 에이전트 접속 + LLM 대화 + 거래 |
+| **P3-E** | 14-20주 | 포럼 소통 + 자율 경제 + 1주일 운영 |
 
 ---
 
-## 참고 자료
+## 상세 문서
 
+각 Phase의 구체적인 구현 계획, 리스크, 참고 자료:
+- **[Phase 1 상세](phase1-foundation.md)** — 안정성, 패킷 타이밍, 테스트 전략
+- **[Phase 2 상세](phase2-behavior-rules.md)** — YAML 규칙 엔진, CEL, Claude Code 자동 수정
+- **[Phase 3 상세](phase3-autonomous-agent.md)** — RL, LLM 계획, Reflection, 다중 에이전트
+
+---
+
+## 핵심 참고 자료
+
+### 게임 AI 아키텍처
+- [RimWorld AI: How Pawns Think](https://github.com/roxxploxx/RimWorldModGuide/wiki/SHORTTUTORIAL:-How-Pawns-Think) — ThinkTree/WorkGiver 패턴
+- [DwarfCorp AI](https://www.gamedeveloper.com/programming/how-we-developed-robust-ai-for-dwarfcorp) — GOAP+BT 하이브리드
+- [GOBT](https://www.jmis.org/archive/view_article?pid=jmis-10-4-321) — BT + Utility AI
+
+### LLM 에이전트
 - [Voyager](https://voyager.minedojo.org/) — LLM 기반 오픈엔드 게임 에이전트
 - [DEPS](https://arxiv.org/abs/2302.01560) — 실패 설명 기반 계획 수정
-- [Generative Agents (Park et al.)](https://arxiv.org/abs/2304.03442) — 메모리 + reflection + 계획
+- [Generative Agents (Park et al.)](https://arxiv.org/abs/2304.03442) — 메모리 + Reflection + 계획
 - [Reflexion](https://arxiv.org/abs/2303.11366) — 자기 성찰 기반 개선
-- [A-MEM](https://arxiv.org/abs/2502.12110) — 에이전트 메모리 구조
+- [A-MEM (NeurIPS 2025)](https://arxiv.org/abs/2502.12110) — Zettelkasten 에이전트 메모리
+- [LLM Game Agent Survey](https://arxiv.org/abs/2404.02039) — 종합 서베이
+
+### 강화학습
 - [Neural MMO 2.0](https://arxiv.org/abs/2311.03736) — 대규모 게임 환경 RL
 - [Syllabus](https://arxiv.org/html/2411.11318v1) — 자동 커리큘럼 설계
-- GOAP/Utility AI — 게임 AI 의사결정 시스템
+- [Hierarchical RL Macro Actions](https://link.springer.com/article/10.1007/s40747-025-01895-9)
+- [Sparse Rewards Shaping (2025)](https://arxiv.org/html/2501.19128v4)
+
+### 스케일링 / 안전
+- [MegaAgent (ACL 2025)](https://aclanthology.org/2025.findings-acl.259.pdf) — 다중 에이전트 스케일링
+- [Constitutional AI Guardrails](https://dev.to/zer0h1ro/7-layer-constitutional-ai-guardrails-preventing-agent-mistakes-15i5)
+- [CEL (Common Expression Language)](https://cel.dev/) — 조건 표현식 엔진
+
+### UO 봇 참고
+- [Razor Enhanced](https://www.razorenhanced.net/) — 패킷 타이밍, 스크립팅
+- [UO Outlands Scripts](https://outlands.uorazorscripts.com/scripts) — 커뮤니티 봇 패턴
