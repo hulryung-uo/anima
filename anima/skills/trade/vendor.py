@@ -260,18 +260,33 @@ class BuyFromNpc(Skill):
             )
 
         buy_list = ss.vendor_buy_list
-        logger.info("vendor_buy_list_received", count=len(buy_list))
+
+        # Log all items in vendor's buy list
+        buy_list_detail = [
+            f"{bi.name or f'0x{bi.graphic:04X}'} x{bi.amount} @{bi.price}gp"
+            for bi in buy_list
+        ]
+        logger.info(
+            "vendor_buy_list_received",
+            vendor=vendor_name,
+            count=len(buy_list),
+            items=buy_list_detail,
+        )
 
         # Buy missing tools
         items_to_buy: list[tuple[int, int]] = []  # (serial, amount)
         total_cost = 0
         missing_want = {g: amt for g, amt in missing}
+        buying_detail: list[str] = []
 
         for bi in buy_list:
             if bi.graphic in missing_want:
                 want = missing_want[bi.graphic]
                 items_to_buy.append((bi.serial, want))
                 total_cost += want * bi.price
+                buying_detail.append(
+                    f"{bi.name or f'0x{bi.graphic:04X}'} x{want} @{bi.price}gp"
+                )
 
         gold_before = ss.gold
 
@@ -281,16 +296,32 @@ class BuyFromNpc(Skill):
             ss.vendor_serial = 0
             _mark_refused(ctx, vendor.serial)
             elapsed = (time.monotonic() - start) * 1000
+            missing_names = [f"0x{g:04X}" for g in missing_want]
+            logger.warning(
+                "vendor_buy_no_match",
+                vendor=vendor_name,
+                needed=missing_names,
+                available=[f"0x{bi.graphic:04X}" for bi in buy_list],
+                reason="vendor doesn't sell the tools we need",
+            )
             return SkillResult(
                 success=False, reward=-1.0,
-                message=f"{vendor_name} doesn't sell needed tools — skipping",
+                message=f"{vendor_name} doesn't sell needed tools "
+                        f"(need: {', '.join(missing_names)})",
                 duration_ms=elapsed,
             )
 
         missing_before = set(missing_want.keys())
 
+        logger.info(
+            "vendor_buy_sending",
+            vendor=vendor_name,
+            buying=buying_detail,
+            total_cost=total_cost,
+            gold_before=gold_before,
+        )
+
         await ctx.conn.send_packet(build_buy_items(ss.vendor_serial, items_to_buy))
-        logger.info("vendor_buy_sent", items=len(items_to_buy), cost=total_cost)
         await asyncio.sleep(0.5)
 
         # Clear vendor state
@@ -307,6 +338,18 @@ class BuyFromNpc(Skill):
 
         elapsed = (time.monotonic() - start) * 1000
 
+        logger.info(
+            "vendor_buy_result",
+            vendor=vendor_name,
+            items_requested=len(items_to_buy),
+            items_received=items_received,
+            gold_before=gold_before,
+            gold_after=gold_after,
+            gold_spent=gold_spent,
+            total_cost=total_cost,
+            still_missing=[f"0x{g:04X}" for g in missing_after] if missing_after else None,
+        )
+
         if items_received == 0 and gold_spent == 0:
             # Nothing changed — purchase failed (likely no gold)
             # Set global buy cooldown so we stop trying ALL vendors
@@ -322,17 +365,23 @@ class BuyFromNpc(Skill):
             logger.warning(
                 "vendor_buy_failed",
                 vendor=vendor_name,
+                buying=buying_detail,
                 reason="no items received, no gold spent",
+                gold=gold_after,
                 cooldown_s=_BUY_NO_GOLD_COOLDOWN,
             )
             return SkillResult(
                 success=False, reward=-2.0,
-                message=f"Buy from {vendor_name} failed — no gold? (have {gold_after}gp)",
+                message=f"Buy from {vendor_name} failed — no gold? "
+                        f"(have {gold_after}gp, wanted {', '.join(buying_detail)})",
                 duration_ms=elapsed,
             )
 
         reward = 1.0 + gold_spent * 0.01
-        message = f"Bought {items_received} item(s) from {vendor_name} for {gold_spent}gp"
+        message = (
+            f"Bought {items_received} item(s) from {vendor_name} for {gold_spent}gp "
+            f"({', '.join(buying_detail)})"
+        )
 
         return SkillResult(
             success=True, reward=reward, message=message, duration_ms=elapsed,
@@ -420,15 +469,32 @@ class SellToNpc(Skill):
             )
 
         sell_list = ss.vendor_sell_list
-        logger.info("vendor_sell_list_received", count=len(sell_list))
+
+        # Log everything the vendor is willing to buy
+        sell_list_detail = [
+            f"{si.name or f'0x{si.graphic:04X}'} x{si.amount} @{si.price}gp"
+            + (" [KEEP]" if si.graphic in KEEP_GRAPHICS else "")
+            for si in sell_list
+        ]
+        logger.info(
+            "vendor_sell_list_received",
+            vendor=vendor_name,
+            count=len(sell_list),
+            items=sell_list_detail,
+        )
 
         if not sell_list:
             ss.vendor_serial = 0
             _mark_refused(ctx, vendor.serial)
             elapsed = (time.monotonic() - start) * 1000
+            logger.warning(
+                "vendor_sell_empty_list",
+                vendor=vendor_name,
+                reason="vendor returned empty sell list",
+            )
             return SkillResult(
                 success=False, reward=-2.0,
-                message=f"{vendor_name} won't buy anything — skipping",
+                message=f"{vendor_name} won't buy anything — empty sell list",
                 duration_ms=elapsed,
             )
 
@@ -438,14 +504,31 @@ class SellToNpc(Skill):
             for si in sell_list
             if si.graphic not in KEEP_GRAPHICS
         ]
+        selling_detail = [
+            f"{si.name or f'0x{si.graphic:04X}'} x{si.amount} @{si.price}gp"
+            for si in sell_list
+            if si.graphic not in KEEP_GRAPHICS
+        ]
+        kept_items = [
+            f"{si.name or f'0x{si.graphic:04X}'}"
+            for si in sell_list
+            if si.graphic in KEEP_GRAPHICS
+        ]
 
         if not items_to_sell:
             ss.vendor_sell_list = []
             ss.vendor_serial = 0
             elapsed = (time.monotonic() - start) * 1000
+            logger.info(
+                "vendor_sell_all_protected",
+                vendor=vendor_name,
+                kept=kept_items,
+                reason="all items in sell list are KEEP_GRAPHICS protected",
+            )
             return SkillResult(
                 success=False, reward=0.0,
-                message="Nothing worth selling",
+                message=f"Nothing to sell to {vendor_name} "
+                        f"— all protected ({', '.join(kept_items[:3])})",
                 duration_ms=elapsed,
             )
 
@@ -454,12 +537,16 @@ class SellToNpc(Skill):
             if si.graphic not in KEEP_GRAPHICS
         )
 
-        await ctx.conn.send_packet(build_sell_items(ss.vendor_serial, items_to_sell))
         logger.info(
-            "vendor_sell_sent",
-            items=len(items_to_sell),
+            "vendor_sell_sending",
+            vendor=vendor_name,
+            selling=selling_detail,
+            keeping=kept_items if kept_items else None,
             expected_gold=expected_gold,
+            gold_before=gold_before,
         )
+
+        await ctx.conn.send_packet(build_sell_items(ss.vendor_serial, items_to_sell))
 
         await asyncio.sleep(0.5)
 
@@ -471,12 +558,40 @@ class SellToNpc(Skill):
         gold_earned = max(0, gold_after - gold_before)
         elapsed = (time.monotonic() - start) * 1000
 
+        logger.info(
+            "vendor_sell_result",
+            vendor=vendor_name,
+            items_sold=len(items_to_sell),
+            gold_before=gold_before,
+            gold_after=gold_after,
+            gold_earned=gold_earned,
+            expected_gold=expected_gold,
+            sold=selling_detail,
+        )
+
+        if gold_earned == 0 and expected_gold > 0:
+            logger.warning(
+                "vendor_sell_no_gold",
+                vendor=vendor_name,
+                reason="sell packet sent but gold did not change — may have failed",
+                expected=expected_gold,
+                sold=selling_detail,
+            )
+
         reward = 1.0 + gold_earned * 0.1 if gold_earned > 0 else 0.5
+        msg = f"Sold {len(items_to_sell)} item(s) to {vendor_name}"
+        if gold_earned > 0:
+            msg += f", earned {gold_earned}gp ({', '.join(selling_detail)})"
+        elif expected_gold > 0:
+            msg += (f" (expected ~{expected_gold}gp but got 0 — "
+                    f"may have failed: {', '.join(selling_detail)})")
+        else:
+            msg += f" ({', '.join(selling_detail)})"
+
         return SkillResult(
             success=True,
             reward=reward,
-            message=f"Sold {len(items_to_sell)} item(s) to {vendor_name}"
-            + (f", earned {gold_earned}gp" if gold_earned else f" (expected ~{expected_gold}gp)"),
+            message=msg,
             duration_ms=elapsed,
         )
 
