@@ -532,6 +532,8 @@ What should we focus on next?
 
 ## File Structure
 
+> Note: 아래 파일 구조는 설계안. 실제 구현된 스킬은 gathering/(mine, lumber, make_boards), crafting/(smelt, blacksmith, carpentry, tinker), combat/(melee, healing), trade/(vendor, banking), forum/ 카테고리.
+
 ```
 anima/skills/
 ├── __init__.py
@@ -555,8 +557,8 @@ anima/skills/
 │   └── healing.py       # heal_self, heal_other
 ├── trade/
 │   ├── __init__.py
-│   ├── buy.py           # buy_from_npc
-│   └── sell.py          # sell_to_npc
+│   ├── buy.py           # buy_from_npc (실제로는 vendor.py에 통합)
+│   └── sell.py          # sell_to_npc (실제로는 vendor.py에 통합)
 └── taming/
     ├── __init__.py
     └── tame.py          # tame_animal, command_pet

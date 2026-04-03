@@ -14,7 +14,7 @@ ClassicUO (C#)                    →  Anima (Python)
 Network/NetClient.cs              →  anima/client/connection.py
 Network/PacketsTable.cs           →  anima/client/packets.py
 Network/OutgoingPackets.cs        →  anima/client/packets.py
-Network/PacketHandlers.cs         →  anima/client/parser.py
+Network/PacketHandlers.cs         →  anima/client/handler.py
 Network/Huffman.cs                →  anima/client/codec.py
 IO/StackDataWriter.cs             →  anima/client/codec.py (struct.pack)
 IO/StackDataReader.cs             →  anima/client/codec.py (struct.unpack)

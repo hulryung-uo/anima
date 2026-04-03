@@ -1,4 +1,4 @@
-"""Anima entry point — connect to servuo and run the behavior tree brain."""
+"""Anima entry point — connect to a UO server and run the behavior tree brain."""
 
 from __future__ import annotations
 

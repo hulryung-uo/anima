@@ -1,5 +1,9 @@
 # Reinforcement Learning in Anima
 
+> **현재 상태**: Q-learning은 설계는 완료되었으나 코드에서 비활성 상태. 
+> `SkillSelector.select()`는 현재 `random.choice()`를 사용.
+> Phase 3에서 활성화 예정. 아래 문서는 설계 참고용.
+
 ## 핵심 컨셉
 
 Anima의 RL은 **LLM-as-policy + Q-table contextual bandits** 구조다.

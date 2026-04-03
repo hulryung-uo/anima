@@ -28,7 +28,7 @@ Anima is a Python-based AI player system for Ultima Online. It connects to a UO 
 - **Zero server modification** — never assume server-side changes. Only standard UO packets.
 - **Packet codec in `anima/client/`** — all packet encoding/decoding lives here. Other layers never deal with raw bytes.
 - **Perception layer is the single source of truth** — packet handlers update `WorldState`, brain reads `WorldState`. Brain never parses packets directly.
-- **3-tier decision** — Tier 1 (behavior tree, instant, free) → Tier 2 (small LLM, ~100ms) → Tier 3 (large LLM, ~1-3s). Escalate only when needed.
+- **Planner 기반 의사결정** — v2 Planner가 우선순위 규칙으로 procedure 선택. v1 행동트리는 `--legacy` 옵션으로 사용 가능.
 - **LLM interface is abstract** — `LLMClient` supports both Ollama (local) and OpenAI-compatible APIs. Default is Ollama.
 
 ## Packet Protocol Notes
@@ -79,7 +79,7 @@ When adding new skills (RL-driven actions):
 ## AI & RL Architecture
 
 - **Behavior Tree** runs every 200ms: Survival → Social → Forum → SkillExec → Think
-- **SkillExec** uses Q-learning + UCB1 to select from available skills
+- **SkillExec** currently uses random selection (Q-learning disabled, planned for Phase 3)
 - **Think** uses LLM for strategic decisions (where to go, what to focus on)
 - RL stats (Q-values, location values) are injected into LLM prompts via `memory/retrieval.py`
 - Skills return `SkillResult` with reward signals — Q-table updates automatically

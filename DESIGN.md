@@ -103,80 +103,109 @@ anima/
 ├── CLAUDE.md                   # Agent work rules
 │
 ├── anima/                      # Main package
-│   ├── __init__.py
 │   ├── main.py                 # Entry point
+│   ├── config.py               # Configuration loader
+│   ├── persona.py              # Persona dataclass
+│   ├── data.py                 # Item/mobile name lookups
+│   ├── map.py                  # Map tile reader
+│   ├── pathfinding.py          # A* pathfinder
+│   ├── world_knowledge.py      # Named location coordinates
 │   │
-│   ├── client/                 # UO protocol client
-│   │   ├── __init__.py
-│   │   ├── codec.py            # Packet codec (encryption, compression)
+│   ├── client/                 # UO protocol (connection, codec, packets, handler)
+│   │   ├── codec.py            # Packet codec (Huffman compression)
 │   │   ├── connection.py       # TCP connection management, login flow
 │   │   ├── packets.py          # Client→Server packet encoding
-│   │   └── parser.py           # Server→Client packet decoding
+│   │   └── parser.py           # Server→Client packet decoding + handlers
 │   │
-│   ├── perception/             # World perception & state tracking
-│   │   ├── __init__.py
+│   ├── perception/             # World/self/social state + packet handlers
 │   │   ├── world_state.py      # Nearby entity tracking (mobiles, items, terrain)
 │   │   ├── self_state.py       # Self state (HP, stats, skills, inventory)
-│   │   ├── social_state.py     # Chat log, relationship tracking
-│   │   └── event_stream.py     # Packet → meaningful game event conversion
+│   │   └── social_state.py     # Chat log, relationship tracking
 │   │
-│   ├── brain/                  # Decision engine
-│   │   ├── __init__.py
+│   ├── core/                   # AgentContext, EventBus, GoalManager
+│   │   ├── context.py          # AgentContext (shared state for all layers)
+│   │   ├── bus.py              # EventBus (pub/sub for internal events)
+│   │   ├── goals.py            # GoalManager
+│   │   └── avatar.py           # Avatar representation
+│   │
+│   ├── brain/                  # v1 Legacy: behavior tree + LLM think (optional --legacy)
 │   │   ├── behavior_tree.py    # Rule-based behavior tree
-│   │   ├── goal_system.py      # Goal management (long/short term)
-│   │   ├── personality.py      # Personality parameters & tendencies
-│   │   ├── llm.py              # LLM interface (Ollama + OpenAI compatible)
-│   │   ├── prompt.py           # Situation summary → LLM prompt generation
-│   │   └── decision.py         # 3-tier decision router
+│   │   ├── llm.py              # LLM interface (litellm multi-provider)
+│   │   └── prompt.py           # Situation summary → LLM prompt generation
 │   │
-│   ├── memory/                 # Memory system
-│   │   ├── __init__.py
-│   │   ├── short_term.py       # Short-term memory (recent event buffer)
-│   │   ├── long_term.py        # Long-term memory (SQLite)
-│   │   ├── episodic.py         # Episodic memory (events/experiences)
-│   │   ├── semantic.py         # Semantic memory (knowledge/facts)
-│   │   └── retrieval.py        # Relevant memory retrieval (embedding-based)
+│   ├── planner/                # v2 Default: rule-based procedure planner
+│   │   └── planner.py          # Priority-based procedure selection
 │   │
-│   ├── action/                 # Action execution
-│   │   ├── __init__.py
-│   │   ├── movement.py         # Movement & pathfinding
-│   │   ├── combat.py           # Combat actions (attack, defend, flee)
+│   ├── procedures/             # Game workflows (mine, smelt, craft, sell, buy, bank)
+│   │   ├── base.py             # Procedure ABC, ProcedureResult, ProcedureRegistry
+│   │   ├── mine_ore.py         # Mining workflow
+│   │   ├── smelt_ore.py        # Smelting workflow
+│   │   ├── craft_blacksmith.py # Blacksmithing workflow
+│   │   ├── make_tools.py       # Tinkering (craft pickaxes/tools)
+│   │   ├── sell_to_vendor.py   # Sell items to NPC vendor
+│   │   ├── buy_from_vendor.py  # Buy items from NPC vendor
+│   │   ├── bank_deposit.py     # Bank gold deposit
+│   │   ├── chop_wood.py        # Lumberjacking workflow
+│   │   └── vendor_knowledge.py # Route to correct vendor by item type
+│   │
+│   ├── actions/                # Action primitives (gump, inventory, target, vendor)
+│   │   ├── gump.py             # Gump (UI dialog) interaction
+│   │   ├── inventory.py        # Backpack/container helpers
+│   │   ├── target.py           # Target cursor handling
+│   │   └── vendor.py           # Vendor buy/sell menu interaction
+│   │
+│   ├── action/                 # Movement, speech, interaction
+│   │   ├── movement.py         # Movement & pathfinding (go_to)
 │   │   ├── speech.py           # Speech (dialogue, shouts)
-│   │   ├── trade.py            # Trading (NPC vendor, player trade)
-│   │   ├── skills.py           # Skill usage (gathering, crafting)
 │   │   └── interaction.py      # Object interaction (doors, containers)
 │   │
-│   ├── persona/                # Persona definition & management
-│   │   ├── __init__.py
-│   │   ├── template.py         # YAML-based persona definition
-│   │   ├── schedule.py         # Daily schedule (sleep, activity periods)
-│   │   └── relationships.py    # Inter-NPC relationship graph
+│   ├── skills/                 # Skill implementations
+│   │   ├── gathering/          # Mining, lumberjacking
+│   │   ├── crafting/           # Blacksmithy, tinkering, smelting
+│   │   ├── combat/             # Combat skills
+│   │   ├── trade/              # Vendor trading
+│   │   └── forum/              # Forum posting (community interaction)
 │   │
-│   └── orchestrator/           # Multi-agent management
-│       ├── __init__.py
-│       ├── manager.py          # Agent creation/termination/monitoring
-│       ├── economy.py          # Economic balance monitoring
-│       ├── dashboard.py        # Web dashboard (observation/debugging)
-│       └── config.py           # System-wide configuration
+│   ├── memory/                 # SQLite memory (journal, database, retrieval, rewards)
+│   │   ├── database.py         # SQLite async DB layer
+│   │   ├── journal.py          # Event journal (episodic memory)
+│   │   ├── retrieval.py        # Relevant memory retrieval for LLM prompts
+│   │   └── rewards.py          # RL reward tracking
+│   │
+│   ├── monitor/                # Metrics, analyzer, activity feed, state publisher
+│   │   ├── metrics.py          # Performance metrics collection
+│   │   ├── analyzer.py         # Gameplay analysis
+│   │   └── state_publisher.py  # Publish state for dashboard
+│   │
+│   └── web/                    # aiohttp WebSocket API server + dashboard
+│       ├── server.py           # aiohttp server + WebSocket endpoints
+│       ├── command_bus.py       # External steering (pause, go_to, procedure override)
+│       └── static/             # Dashboard HTML/JS/CSS
 │
-├── personas/                   # Persona definition files
-│   ├── blacksmith.yaml         # Blacksmith
-│   ├── merchant.yaml           # Merchant
-│   ├── adventurer.yaml         # Adventurer
-│   ├── guard.yaml              # Guard
-│   └── thief.yaml              # Thief
-│
-├── data/
-│   ├── maps/                   # Map data for pathfinding
-│   └── knowledge/              # World base knowledge (cities, NPCs, items)
-│
-├── tests/                      # Tests
-│   ├── test_client.py
-│   ├── test_perception.py
+├── personas/                   # Persona definition files (YAML)
+│   ├── blacksmith.yaml
+│   ├── merchant.yaml
+│   ├── adventurer.yaml
+│   ├── miner.yaml
+│   ├── woodcutter.yaml
 │   └── ...
 │
-└── tools/
-    └── dashboard/              # Monitoring web UI
+├── data/                       # Runtime data (DB, logs, tile data)
+│   ├── anima.db                # SQLite memory database
+│   ├── tiledata_*.json         # Extracted UO tile data
+│   └── world_knowledge.yaml    # Location definitions
+│
+├── tests/                      # Tests (pytest + pytest-asyncio)
+│   ├── test_codec.py
+│   ├── test_planner.py
+│   ├── test_procedures_base.py
+│   └── ...
+│
+└── tools/                      # Utilities
+    ├── tui.py                  # Terminal UI (curses dashboard)
+    ├── supervisor.py           # Process supervisor
+    ├── self_improve.py         # LLM-based self-improvement tool
+    └── extract_uo_data.py      # UO data file extractor
 ```
 
 ---
@@ -248,6 +277,8 @@ State is updated as server packets arrive:
 | 0x3A SkillUpdate | Update skill values |
 
 ### 3.3 Brain Layer — 3-Tier Decision Making
+
+> **Note**: 아래는 원래 설계안. 현재 구현은 v2 Planner 기반 (`anima/planner/`). `--legacy` 플래그로 v1 행동트리 사용 가능.
 
 Delegating all decisions to LLM causes latency explosion. We split into 3 tiers.
 
@@ -341,6 +372,48 @@ Can be handled at Tier 1 → execute Tier 1 (instant)
          Long-term goal change needed → Tier 3
          Significant economic decision (large trade) → Tier 3
 ```
+
+### 3.3b Planner Layer (v2 — Current Default)
+
+The v2 planner (`anima/planner/planner.py`) replaced the behavior tree as the default decision engine. It uses a simple priority-based rule system that selects and runs **procedures** (self-contained game workflows).
+
+#### Priority System
+
+The planner evaluates priorities top-down each tick. The first priority whose procedure can start is executed. If a procedure fails or no procedure matches, it falls through to lower priorities.
+
+| Priority | Condition | Action |
+|---|---|---|
+| 1 | HP < 30% | Heal / flee |
+| 2 | Overweight (> 85%) | Smelt ore or move to forge |
+| 3 | Has ore | Smelt ore |
+| 3b | Ore on ground nearby | Pick up ore |
+| 4 | No mining tools | Craft tools / buy tools / craft-to-sell for gold |
+| 5 | Has ingots (>= 8) | Craft weapons/armor at forge |
+| 5b | Has crafted items | Sell to appropriate vendor |
+| 5c | Has ingots (>= 10, can't craft) | Sell raw ingots |
+| 6 | Gold > 200 | Bank deposit |
+| 7 | Has mining tool | Mine ore |
+| 8 | Continuation hint | Resume previous activity |
+| 9 | Nothing to do | Move toward mine/activity area |
+
+#### Procedures
+
+Each procedure is a self-contained workflow in `anima/procedures/`. Procedures implement `can_start(ctx)` and `run(ctx) -> ProcedureResult`. The `ProcedureResult` includes success/failure, a message, and an optional `next_suggestion` hint for continuation.
+
+Registered procedures: `mine_ore`, `smelt_ore`, `craft_blacksmith`, `make_tools`, `sell_to_vendor`, `buy_from_vendor`, `bank_deposit`, `chop_wood`.
+
+#### CommandBus (External Steering)
+
+The `CommandBus` (`anima/web/command_bus.py`) allows the web dashboard to steer the planner:
+- **Pause/resume** the planner loop
+- **Force go_to(x, y)** — override to walk to a coordinate
+- **Force procedure** — override to run a specific procedure by name
+
+Override commands take precedence over the priority system for one tick.
+
+#### Fall-through on Failure
+
+When a procedure fails (e.g., pathfinding blocked, vendor not found), the planner records the failure and falls through to the next priority. Failed destinations are cooldown-tracked (5 min) to prevent retry loops. Waypoint routing is used for long-distance movement.
 
 ### 3.4 Memory System
 
@@ -531,6 +604,8 @@ AI players actually gather resources, craft items, and trade.
 
 ## 4. Orchestrator — Multi-Agent Management
 
+> **Note**: 미구현. Phase 3 목표.
+
 ### 4.1 Agent Lifecycle
 
 ```
@@ -591,22 +666,21 @@ Real-time monitoring in a web browser.
 
 ---
 
-## 5. Local LLM Configuration
+## 5. LLM Configuration
 
-### 5.1 Ollama-based Inference Server
+### 5.1 litellm-based Multi-Provider Interface
 
-Run LLM locally for zero API cost operation.
+LLM inference uses **litellm** (`anima/brain/llm.py`), which provides a unified interface to 100+ LLM providers through a single `chat()` call. Provider is selected via config.
 
 ```
-┌──────────────┐     HTTP (localhost:11434)     ┌──────────────┐
-│    Anima     │ ──────────────────────────────→ │    Ollama    │
-│  (Python)    │ ←────────────────────────────── │   Server     │
-│              │   OpenAI-compatible API          │              │
-│              │   /v1/chat/completions           │  ┌────────┐ │
-│              │   /api/embeddings                │  │ Model  │ │
-│              │                                  │  │ Files  │ │
-└──────────────┘                                  │  └────────┘ │
-                                                  └──────────────┘
+┌──────────────┐         litellm          ┌──────────────────┐
+│    Anima     │ ────────────────────────→ │  Ollama (local)  │
+│  (Python)    │                           │  OpenAI          │
+│              │  Unified chat() API       │  Anthropic       │
+│              │  Auto-routes by provider  │  Replicate       │
+│              │                           │  Any OpenAI-     │
+│              │                           │  compatible API  │
+└──────────────┘                           └──────────────────┘
 ```
 
 ### 5.2 Model Configuration
@@ -619,18 +693,22 @@ Run LLM locally for zero API cost operation.
 
 ### 5.3 LLM Interface Design
 
-Uses Ollama's OpenAI-compatible API, abstracted for future cloud API migration.
+Uses litellm for multi-provider support. Provider string maps to litellm model ID:
+
+| Provider | Config `provider` | litellm model ID example |
+|---|---|---|
+| Ollama (local) | `ollama` | `ollama/gemma3:4b` |
+| OpenAI | `openai` | `gpt-4o` |
+| Anthropic | `anthropic` | `claude-sonnet-4-20250514` |
+| Replicate | `replicate` | `replicate/deepseek-ai/deepseek-v3.1` |
+| Custom | `custom` | `<model>` + `base_url` |
 
 ```python
 class LLMClient:
-    """LLM inference client (Ollama / OpenAI compatible)"""
+    """LLM inference client (litellm multi-provider)"""
 
-    async def chat(self, messages: list[dict], model: str = None) -> str:
-        """Chat completion"""
-        ...
-
-    async def embed(self, text: str) -> list[float]:
-        """Text → embedding vector"""
+    async def chat(self, messages: list[dict], model: str = None) -> LLMResponse:
+        """Chat completion via litellm.acompletion()"""
         ...
 ```
 
@@ -639,17 +717,14 @@ Backend is swappable via config file:
 ```yaml
 # config.yaml
 llm:
-  backend: ollama                    # ollama | openai
-  base_url: http://localhost:11434
-  tier2_model: gemma3:4b
-  tier3_model: llama3.1:8b
-  embedding_model: nomic-embed-text
+  provider: ollama                   # ollama | openai | anthropic | replicate | custom
+  model: gemma3:4b                   # model name
+  base_url: http://localhost:11434   # only needed for ollama / custom
   timeout: 10                        # seconds
   # To switch to cloud:
-  # backend: openai
-  # base_url: https://api.anthropic.com
-  # tier2_model: claude-haiku-4-5-20251001
-  # tier3_model: claude-sonnet-4-6
+  # provider: anthropic
+  # model: claude-haiku-4-5-20251001
+  # api_key: sk-...                  # or set ANTHROPIC_API_KEY env var
 ```
 
 ---
@@ -659,75 +734,74 @@ llm:
 ### Phase 0: Foundation (3-5 days)
 **Goal**: Project setup, server connection, basic movement
 
-- [ ] Create Python project (pyproject.toml, uv)
-- [ ] `anima/client/`: connect to UO server, login, character select
+- [x] Create Python project (pyproject.toml, uv)
+- [x] `anima/client/`: connect to UO server, login, character select
   - Packet codec via `asyncio` + `struct` module
-- [ ] Packet receive → console log output (verify world is visible)
-- [ ] Basic movement: walk in random directions
-- [ ] Single agent execution verified
+- [x] Packet receive → console log output (verify world is visible)
+- [x] Basic movement: walk in random directions
+- [x] Single agent execution verified
 
 **Done when**: AI connects to the server and walks around the streets of Britain.
 
 ### Phase 1: Perception (1 week)
 **Goal**: The AI "sees" the world
 
-- [ ] `anima/perception/`: WorldView implementation
-- [ ] Parse major server packets (Mobile, Item, Speech, Stat, etc.)
-- [ ] Self state tracking (HP, position, inventory)
-- [ ] Nearby entity tracking (mobiles/items in view range)
-- [ ] Event stream: packet → meaningful game event conversion
+- [x] `anima/perception/`: WorldView implementation
+- [x] Parse major server packets (Mobile, Item, Speech, Stat, etc.)
+- [x] Self state tracking (HP, position, inventory)
+- [x] Nearby entity tracking (mobiles/items in view range)
+- [x] Event stream: packet → meaningful game event conversion
 
 **Done when**: AI perceives its surroundings as structured data.
 
 ### Phase 2: Basic Brain (1 week)
 **Goal**: Rule-based behavior
 
-- [ ] `anima/brain/`: Behavior tree framework
-- [ ] `anima/action/`: Basic actions (move, pick up items, attack)
-- [ ] Pathfinding (local A*)
-- [ ] Survival behavior: detect danger → flee, use potions
-- [ ] Simple combat: find monster → attack → loot
+- [x] `anima/brain/`: Behavior tree framework
+- [x] `anima/action/`: Basic actions (move, pick up items, attack)
+- [x] Pathfinding (local A*)
+- [x] Survival behavior: detect danger → flee, use potions
+- [x] Simple combat: find monster → attack → loot
 
 **Done when**: AI hunts monsters and loots items outside Britain.
 
 ### Phase 3: LLM Integration (1 week)
 **Goal**: The AI "thinks"
 
-- [ ] Ollama integration (`anima/brain/llm.py`)
-- [ ] `anima/brain/prompt.py`: situation summary prompt generation
-- [ ] `anima/brain/decision.py`: 3-tier escalation router
-- [ ] Dialogue: respond via LLM when a human speaks
-- [ ] Tier 1/2/3 routing validation
+- [x] Ollama integration (`anima/brain/llm.py`) — now litellm multi-provider
+- [x] `anima/brain/prompt.py`: situation summary prompt generation
+- [ ] `anima/brain/decision.py`: 3-tier escalation router (not implemented)
+- [x] Dialogue: respond via LLM when a human speaks
+- [ ] Tier 1/2/3 routing validation (not implemented — v2 uses planner instead)
 
 **Done when**: AI responds with contextually appropriate natural dialogue when spoken to.
 
 ### Phase 4: Memory (1 week)
 **Goal**: The AI "remembers"
 
-- [ ] `anima/memory/`: SQLite-based memory store
-- [ ] Short-term/episodic/semantic/relational memory implementation
-- [ ] Memory retrieval (Ollama embedding + cosine similarity)
-- [ ] Memory decay/compression (over time)
-- [ ] Auto-inject relevant memories into LLM prompts
+- [x] `anima/memory/`: SQLite-based memory store
+- [x] Journal (episodic memory) + retrieval for LLM prompts
+- [ ] Memory decay/compression (not implemented)
+- [x] Reward tracking (RL reward signals)
 
 **Done when**: AI remembers a player it met yesterday and mentions them.
 
 ### Phase 5: Persona & Schedule (3-5 days)
 **Goal**: Give AI personality and daily routines
 
-- [ ] `anima/persona/`: YAML-based persona loader
+- [x] YAML-based persona loader (`anima/persona.py`)
 - [ ] Schedule system: activity transitions by time of day
 - [ ] Personality reflected in: speech style, decision tendencies, dialogue style
-- [ ] 3 base personas: blacksmith, merchant, adventurer
+- [x] 7 base personas: blacksmith, merchant, adventurer, miner, woodcutter, bard, mage, ranger
 
 **Done when**: Blacksmith AI wakes up in the morning, goes to the workshop, and heads to the tavern in the evening.
 
 ### Phase 6: Economy (1-2 weeks)
 **Goal**: AI participates in the economy
 
-- [ ] Resource gathering actions (Mining, Lumberjacking)
-- [ ] Crafting actions (Blacksmithy, Tailoring)
-- [ ] Trading actions (NPC vendor buy/sell, player trade)
+- [x] Resource gathering actions (Mining, Lumberjacking)
+- [x] Crafting actions (Blacksmithy, Tinkering, Smelting)
+- [x] Trading actions (NPC vendor buy/sell)
 - [ ] Pricing logic (supply/demand reflected)
 - [ ] Orchestrator economic monitoring
 
@@ -747,7 +821,7 @@ llm:
 ### Phase 8: Dashboard & Observability (3-5 days)
 **Goal**: Observe and debug
 
-- [ ] Web dashboard (FastAPI + htmx or separate frontend)
+- [ ] Web dashboard (aiohttp + WebSocket — partially implemented in `anima/web/`)
 - [ ] Real-time agent status display
 - [ ] Thought log (Tier 1/2/3 decision history)
 - [ ] LLM call log (prompts, responses, speed)
@@ -775,15 +849,15 @@ llm:
 | Language | Python 3.12+ | Fast iteration, strongest LLM ecosystem |
 | Package Manager | uv | Fast, modern Python package manager |
 | Async Runtime | asyncio | Network I/O + timers, standard library |
-| LLM Inference | Ollama (local) | Zero cost, OpenAI-compatible API, easy setup |
-| LLM Client | httpx / openai SDK | Uses Ollama's OpenAI-compatible endpoint |
+| LLM Inference | litellm (multi-provider: Ollama, OpenAI, Anthropic, etc.) | Unified interface to 100+ providers, local-first |
+| LLM Client | litellm | Single `acompletion()` call routes to any provider |
 | Memory Storage | SQLite (aiosqlite) | Lightweight, embedded, async support |
 | Vector Search | numpy + cosine similarity | Lightweight implementation, sufficient at small scale |
 | Embedding | Ollama (nomic-embed-text) | Local embedding, zero cost |
 | Serialization | PyYAML / Pydantic | Persona definitions, config, type validation |
 | Pathfinding | Custom A* (heapq) | UO map specific (Z levels, movement rules) |
 | Logging | structlog | Structured logging |
-| Dashboard | FastAPI + htmx | Lightweight web UI, WebSocket real-time |
+| Dashboard | aiohttp + WebSocket | Lightweight web UI, real-time state via WebSocket |
 | Testing | pytest + pytest-asyncio | Async test support |
 | Packet Protocol | struct module (custom) | Independent Python impl based on UO protocol |
 
