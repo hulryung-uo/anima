@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Standalone TUI monitor — reads data/state.json, renders Rich dashboard.
+"""Standalone TUI monitor — connects to agent API via WebSocket.
 
-Runs as a separate process from the agent. No shared memory needed.
+Runs as a separate process. Receives state via WebSocket (same protocol as web GUI).
+Falls back to data/state.json if WebSocket connection fails.
 
 Usage:
-    uv run python tools/tui.py
-    uv run python tools/tui.py --refresh 1.0
+    uv run python tools/tui.py                       # WebSocket to localhost:8150
+    uv run python tools/tui.py --url ws://host:8150   # custom endpoint
+    uv run python tools/tui.py --file                 # legacy file polling mode
 """
 
 from __future__ import annotations
@@ -298,13 +300,81 @@ def _panel_qvalues(qv: dict) -> Panel:
 # Main
 # ---------------------------------------------------------------------------
 
-def read_state() -> dict | None:
-    """Read the state snapshot from file."""
+class _WsReceiver:
+    """Background thread that receives state from WebSocket."""
+
+    def __init__(self, url: str) -> None:
+        self._url = url
+        self._state: dict | None = None
+        self._connected = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def get_state(self) -> dict | None:
+        s = self._state
+        if s:
+            ts = s.get("ts", 0)
+            if time.time() - ts > 5.0:
+                s["_stale"] = True
+        return s
+
+    def send_command(self, cmd: dict) -> None:
+        """Send a command to the agent (fire-and-forget)."""
+        if hasattr(self, '_ws') and self._ws:
+            try:
+                import asyncio
+                asyncio.run_coroutine_threadsafe(
+                    self._ws.send(json.dumps(cmd)), self._loop
+                )
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        import asyncio
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._connect_loop())
+
+    async def _connect_loop(self) -> None:
+        import asyncio as _aio
+
+        import aiohttp
+
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(
+                        self._url, heartbeat=30,
+                    ) as ws:
+                        self._ws = ws
+                        self._connected = True
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    data = json.loads(msg.data)
+                                    if data.get("type") != "cmd_result":
+                                        self._state = data
+                                except json.JSONDecodeError:
+                                    pass
+            except Exception:
+                self._connected = False
+                self._ws = None
+                await _aio.sleep(2)
+
+
+def _read_state_file() -> dict | None:
+    """Read the state snapshot from file (fallback mode)."""
     if not STATE_FILE.exists():
         return None
     try:
         data = json.loads(STATE_FILE.read_text())
-        # Check freshness — stale if older than 5 seconds
         ts = data.get("ts", 0)
         if time.time() - ts > 5.0:
             data["_stale"] = True
@@ -381,10 +451,19 @@ def build_layout(
     # Footer
     footer = Text()
     stale = data.get("_stale", False)
-    if stale:
+    ws_connected = data.get("_ws_connected")
+    if ws_connected is not None:
+        # WebSocket mode
+        if ws_connected and not stale:
+            footer.append(" ● WS ", style="bold green")
+        elif ws_connected and stale:
+            footer.append(" ⚠ STALE ", style="bold yellow")
+        else:
+            footer.append(" ○ WS:CONNECTING ", style="bold red")
+    elif stale:
         footer.append(" ⚠ STALE ", style="bold red")
     else:
-        footer.append(" ● LIVE ", style="bold green")
+        footer.append(" ● FILE ", style="bold green")
     footer.append("  ")
     footer.append("m", style="bold bright_yellow")
     footer.append(" Map  ", style="grey70")
@@ -415,8 +494,16 @@ def build_layout(
 def main() -> None:
     import termios
 
-    parser = argparse.ArgumentParser(description="Anima TUI Monitor (standalone)")
+    parser = argparse.ArgumentParser(description="Anima TUI Monitor")
     parser.add_argument("--refresh", type=float, default=0.5, help="Refresh rate")
+    parser.add_argument(
+        "--url", default="ws://localhost:8150/ws",
+        help="Agent WebSocket URL (default: ws://localhost:8150/ws)",
+    )
+    parser.add_argument(
+        "--file", action="store_true",
+        help="Legacy mode: poll data/state.json instead of WebSocket",
+    )
     args = parser.parse_args()
 
     # Save terminal settings before anything touches them
@@ -427,12 +514,22 @@ def main() -> None:
     key_reader = _KeyReader()
     key_reader.start()
 
+    # State source: WebSocket (default) or file polling (legacy)
+    ws_receiver: _WsReceiver | None = None
+    if not args.file:
+        ws_receiver = _WsReceiver(args.url)
+        ws_receiver.start()
+
+    def get_state() -> dict | None:
+        if ws_receiver:
+            return ws_receiver.get_state()
+        return _read_state_file()
+
     show_inventory = False
     show_skills = False
     show_map = False
-    activity_scroll = 0  # 0 = latest, positive = scroll up
+    activity_scroll = 0
 
-    # Initial empty layout
     empty = {"status": {}, "activity": [], "nearby": [], "journal": []}
 
     try:
@@ -444,9 +541,12 @@ def main() -> None:
         ) as live:
             try:
                 while True:
-                    data = read_state() or empty
+                    data = get_state() or empty
 
-                    # Handle keys
+                    # Inject connection mode into data for footer
+                    if ws_receiver:
+                        data["_ws_connected"] = ws_receiver.connected
+
                     for key in key_reader.drain():
                         if key == "q":
                             return
