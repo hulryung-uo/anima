@@ -504,7 +504,8 @@ async def planner_loop(ctx: AgentContext) -> None:
         return
 
     registry = ctx.blackboard["procedure_registry"]
-    planner = Planner(registry)
+    command_bus = ctx.blackboard.get("command_bus")
+    planner = Planner(registry, command_bus=command_bus)
 
     # Run planner + forum posting in parallel
     # Forum runs as a background task — errors don't kill the planner
@@ -767,6 +768,7 @@ async def run(
     cfg: Config,
     delete_existing: bool = False,
     use_planner: bool = True,
+    web_port: int = 8150,
 ) -> None:
     from anima.core.avatar import Avatar
 
@@ -819,9 +821,19 @@ async def run(
             # State publisher — feeds monitor subscribers via EventBus
             from anima.monitor.state_publisher import StatePublisher
 
+            # API server — always runs, clients (TUI/Web/agents) connect via WebSocket
+            from anima.web.command_bus import CommandBus
+            from anima.web.server import WebServer
+            cmd_bus = CommandBus()
+            api_server = WebServer(
+                port=web_port, command_bus=cmd_bus, conn=avatar.conn,
+            )
+            brain_ctx.blackboard["command_bus"] = cmd_bus
+
             state_pub = StatePublisher(
                 avatar.perception, brain_ctx.blackboard, avatar.bus,
                 map_reader=avatar.map_reader,
+                web_broadcast=api_server.broadcast,
             )
 
             # Select brain engine: v2 planner or legacy behavior tree
@@ -838,6 +850,7 @@ async def run(
                 engine_coro,
                 state_pub.run(interval=0.5),
                 ping_loop(avatar.conn),
+                api_server.start(),
             ]
 
             try:
@@ -884,6 +897,9 @@ def main() -> None:
     parser.add_argument(
         "--legacy", action="store_true", help="Use legacy v1 behavior tree instead of v2 planner"
     )
+    parser.add_argument(
+        "--web-port", type=int, default=8150, help="API server port for dashboard/TUI"
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -902,6 +918,7 @@ def main() -> None:
         cfg,
         delete_existing=args.recreate,
         use_planner=not args.legacy,
+        web_port=args.web_port,
     ))
 
 
