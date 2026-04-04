@@ -415,6 +415,9 @@ def main() -> None:
     last_git_head = get_git_head()
     restarts_this_hour: list[float] = []
     cycle = 0
+    # Track targeted fix attempts to avoid infinite retry on same problem
+    fix_attempts: dict[str, int] = {}  # "procedure:reason" → attempt count
+    MAX_FIX_ATTEMPTS = 3  # give up after 3 failed attempts for same problem
 
     try:
         while True:
@@ -470,12 +473,26 @@ def main() -> None:
                 failures = get_top_failures(minutes=args.minutes)
                 if failures:
                     worst = failures[0]
+                    fix_key = f"{worst['procedure']}:{worst['top_failure']}"
+                    attempts = fix_attempts.get(fix_key, 0)
+
                     if worst["fail_rate"] > 0.8 and worst["total"] > 10:
-                        stop_agent(agent_proc)
-                        code_changed = run_targeted_fix(worst)
-                        agent_proc = start_agent(args.agent_args)
-                        last_analysis = time.time()
-                        continue
+                        if attempts >= MAX_FIX_ATTEMPTS:
+                            print(f"[supervisor] Skipping {fix_key} — already failed {attempts} fix attempts")
+                            _log_improvement(
+                                f"skip:{worst['procedure']}",
+                                f"gave up after {attempts} failed fix attempts for {worst['top_failure']}",
+                                success=False, code_changed=False,
+                            )
+                        else:
+                            stop_agent(agent_proc)
+                            code_changed = run_targeted_fix(worst)
+                            fix_attempts[fix_key] = attempts + 1
+                            if code_changed:
+                                fix_attempts[fix_key] = 0  # reset on success
+                            agent_proc = start_agent(args.agent_args)
+                            last_analysis = time.time()
+                            continue
 
                 # Level 3: Full analysis for structural issues
                 problems, report_path = run_full_analysis(args.minutes)
