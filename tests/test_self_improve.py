@@ -4,20 +4,20 @@ from tools.self_improve import detect_problems
 
 class TestDetectProblemsFromDB:
     def test_high_fail_rate_detected(self):
-        """Procedure with >80% fail rate and >10 attempts → HIGH problem."""
+        """Procedure with >80% fail rate and some successes → HIGH problem."""
         data = {
             "counts": {},
             "recent_lines": 100,
             "db_stats": {
-                "craft_blacksmith:missing_resource": {"count": 54, "avg_ms": 8000},
-                "craft_blacksmith:success": {"count": 0, "avg_ms": 0},
+                "craft_blacksmith:missing_resource": {"count": 12, "avg_ms": 8000},
+                "craft_blacksmith:success": {"count": 2, "avg_ms": 5000},
             },
         }
         problems = detect_problems(data)
         names = [p["name"] for p in problems]
         assert "db_procedure_failing" in names
         match = [p for p in problems if p["name"] == "db_procedure_failing"][0]
-        assert match["severity"] in ("HIGH", "CRITICAL")
+        assert match["severity"] == "HIGH"
 
     def test_moderate_fail_rate_ignored(self):
         """Procedure with 50% fail rate → no problem."""
