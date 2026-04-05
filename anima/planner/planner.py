@@ -15,6 +15,9 @@ Continuation hints prevent thrashing between procedures.
 from __future__ import annotations
 
 import asyncio
+import json
+import time as _time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -29,6 +32,23 @@ logger = structlog.get_logger()
 
 # Minimum delay between planner loops to prevent spin on rapid failures
 MIN_LOOP_DELAY = 0.2
+
+SUPERVISOR_HINTS_FILE = Path(__file__).parent.parent.parent / "data" / "supervisor_hints.json"
+
+
+def _is_supervisor_skipped(procedure: str) -> bool:
+    """Check if supervisor has flagged this procedure for skipping."""
+    if not SUPERVISOR_HINTS_FILE.exists():
+        return False
+    try:
+        hints = json.loads(SUPERVISOR_HINTS_FILE.read_text())
+        skip = hints.get("skip_procedures", {})
+        entry = skip.get(procedure)
+        if entry and entry.get("until", 0) > _time.time():
+            return True
+    except Exception:
+        pass
+    return False
 
 
 class Planner:
@@ -152,6 +172,11 @@ class Planner:
         skip = ctx.blackboard.get("_skip_procedures", set())
         if proc.name in skip:
             logger.info("planner_skipping", procedure=proc.name, reason="repeat failure")
+            return None
+
+        # Check supervisor hints (supervisor gave up fixing this procedure)
+        if _is_supervisor_skipped(proc.name):
+            logger.info("planner_skipping", procedure=proc.name, reason="supervisor hint")
             return None
 
         logger.info("planner_selected", procedure=proc.name)

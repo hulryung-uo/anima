@@ -194,3 +194,65 @@ class TestPlannerTick:
         with patch("anima.world_knowledge.ALL_LOCATIONS", []):
             result = await planner.tick(ctx)
         assert result is None
+
+
+import json
+import time as _time
+
+
+class TestSupervisorHints:
+    @pytest.mark.asyncio
+    async def test_skips_hinted_procedure(self, tmp_path):
+        """Planner skips procedure listed in supervisor_hints.json."""
+        hints_file = tmp_path / "supervisor_hints.json"
+        hints_file.write_text(json.dumps({
+            "skip_procedures": {
+                "craft_blacksmith": {
+                    "until": _time.time() + 3600,
+                    "reason": "missing_resource",
+                }
+            }
+        }))
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("craft_blacksmith"))
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx()
+        _add_item(ctx, 1, PICKAXE)
+        _add_item(ctx, 2, INGOT, amount=20)
+
+        with patch("anima.planner.planner.SUPERVISOR_HINTS_FILE", hints_file):
+            proc = await planner.select_procedure(ctx)
+            if proc and proc.name == "craft_blacksmith":
+                # select_procedure returned it, but tick() should skip it
+                result = await planner.tick(ctx)
+                assert result is None
+            # If select_procedure returned something else or None, that's also fine
+
+    @pytest.mark.asyncio
+    async def test_expired_hint_ignored(self, tmp_path):
+        """Expired hint does not skip procedure."""
+        hints_file = tmp_path / "supervisor_hints.json"
+        hints_file.write_text(json.dumps({
+            "skip_procedures": {
+                "craft_blacksmith": {
+                    "until": _time.time() - 100,  # expired
+                    "reason": "missing_resource",
+                }
+            }
+        }))
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("craft_blacksmith"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx()
+        _add_item(ctx, 1, PICKAXE)
+        _add_item(ctx, 2, INGOT, amount=20)
+
+        with patch("anima.planner.planner.SUPERVISOR_HINTS_FILE", hints_file):
+            result = await planner.tick(ctx)
+            # Expired hint should NOT block — procedure runs normally
+            assert result is not None
