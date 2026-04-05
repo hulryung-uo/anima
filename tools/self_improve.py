@@ -425,6 +425,38 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "brain",
         })
 
+    # --- DB-based failure detection ---
+    # db_stats format: {"procedure:result": {"count": N, "avg_ms": M}}
+    db_stats = data.get("db_stats", {})
+    if db_stats:
+        # Aggregate by procedure
+        proc_agg: dict[str, dict[str, int]] = {}
+        for key, info in db_stats.items():
+            proc, result = key.split(":", 1)
+            if proc not in proc_agg:
+                proc_agg[proc] = {"success": 0, "fail": 0}
+            if result == "success":
+                proc_agg[proc]["success"] += info["count"]
+            else:
+                proc_agg[proc]["fail"] += info["count"]
+
+        for proc, agg in proc_agg.items():
+            total = agg["success"] + agg["fail"]
+            if total < 5:
+                continue
+            fail_rate = agg["fail"] / total
+            if fail_rate > 0.8:
+                severity = "CRITICAL" if agg["success"] == 0 and total > 20 else "HIGH"
+                problems.append({
+                    "severity": severity,
+                    "name": "db_procedure_failing",
+                    "description": (
+                        f"{proc} failing {fail_rate:.0%} "
+                        f"({agg['fail']}/{total} attempts)"
+                    ),
+                    "fix_type": "procedure",
+                })
+
     return problems
 
 
