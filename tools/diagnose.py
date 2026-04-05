@@ -35,7 +35,7 @@ def collect(minutes: int = 10) -> dict:
         "timestamp": datetime.now().isoformat(),
         "agent_state": _read_agent_state(),
         "procedure_stats": _query_procedure_stats(minutes),
-        "recent_failures": _query_recent_failures(minutes, limit=30),
+        "recent_failures": _query_recent_failures(minutes, limit=15),
         "failure_streaks": _detect_failure_streaks(minutes),
         "recent_log_lines": _extract_log_lines(minutes),
         "server_messages": _extract_server_messages(minutes),
@@ -93,7 +93,7 @@ def render_prompt(diag: dict) -> str:
     failures = diag.get("recent_failures", [])
     if failures:
         lines = ["## Recent Failure Log (newest first)"]
-        for f in failures[:20]:
+        for f in failures[:10]:
             ts = datetime.fromtimestamp(f["timestamp"]).strftime("%H:%M:%S")
             lines.append(
                 f"- [{ts}] {f['procedure']} → {f['result']}: {f['message'][:120]}")
@@ -114,8 +114,8 @@ def render_prompt(diag: dict) -> str:
     # --- Planner Decisions ---
     planner = diag.get("planner_decisions", [])
     if planner:
-        lines = ["## Planner Decision Log (last 20)"]
-        for p in planner[-20:]:
+        lines = ["## Planner Decision Log (last 10)"]
+        for p in planner[-10:]:
             lines.append(f"- {p}")
         sections.append("\n".join(lines))
 
@@ -229,14 +229,15 @@ def _detect_failure_streaks(minutes: int) -> list[dict]:
     try:
         conn = sqlite3.connect(str(DB_FILE))
         cutoff = time.time() - minutes * 60
+        # No LIMIT — time filter is sufficient. DESC to count from newest.
         rows = conn.execute("""
             SELECT procedure, result, message
             FROM action_logs WHERE timestamp > ?
-            ORDER BY timestamp DESC LIMIT 100
+            ORDER BY timestamp DESC
         """, (cutoff,)).fetchall()
         conn.close()
 
-        # Count consecutive failures from most recent
+        # Count consecutive failures from most recent per procedure
         streaks: dict[str, dict] = {}
         for proc, result, msg in rows:
             if proc not in streaks:
@@ -247,11 +248,11 @@ def _detect_failure_streaks(minutes: int) -> list[dict]:
                 continue
             if result != "success":
                 s["count"] += 1
-                if msg and msg not in s["messages"]:
+                if msg and msg not in s["messages"] and len(s["messages"]) < 5:
                     s["messages"].append(msg[:150])
                 s["top_reason"] = result
             else:
-                s["active"] = False  # streak broken
+                s["active"] = False  # streak broken by success
 
         return [s for s in streaks.values() if s["count"] >= 3]
     except Exception:
@@ -281,7 +282,7 @@ def _extract_log_lines(minutes: int) -> list[str]:
                 )):
                     important.append(line[:200])
 
-        return important[-30:]  # last 30 important lines
+        return important[-15:]  # last 15 important lines
     except Exception:
         return []
 
@@ -306,7 +307,7 @@ def _extract_server_messages(minutes: int) -> list[str]:
                     if text:
                         messages.append(text)
 
-        return messages[-50:]
+        return messages[-15:]
     except Exception:
         return []
 
@@ -334,7 +335,7 @@ def _extract_planner_logs(minutes: int) -> list[str]:
                     # Compact format: just event + key info
                     entries.append(line[24:200])  # skip timestamp prefix
 
-        return entries[-30:]
+        return entries[-15:]
     except Exception:
         return []
 
