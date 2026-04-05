@@ -468,6 +468,34 @@ def _get_timeout(attempt: int) -> int:
     return timeouts[min(attempt, len(timeouts) - 1)]
 
 
+def _auto_commit_if_needed() -> bool:
+    """Commit uncommitted changes left by Claude Code. Returns True if committed."""
+    try:
+        status = subprocess.run(
+            ["git", "diff", "--stat"],
+            cwd=str(ROOT), capture_output=True, text=True,
+        )
+        if not status.stdout.strip():
+            return False  # nothing to commit
+
+        # Stage and commit
+        subprocess.run(["git", "add", "-A"], cwd=str(ROOT))
+        result = subprocess.run(
+            ["git", "commit", "-m",
+             "Auto-commit: Claude Code changes (tests passed)"],
+            cwd=str(ROOT), capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print("[supervisor] Auto-committed uncommitted Claude Code changes")
+            return True
+        else:
+            print(f"[supervisor] Auto-commit failed: {result.stderr[:200]}")
+            return False
+    except Exception as e:
+        print(f"[supervisor] Auto-commit error: {e}")
+        return False
+
+
 def _write_skip_hint(procedure: str, reason: str, ttl_hours: float = 1.0) -> None:
     """Write a skip hint for the planner to read."""
     hints: dict = {}
@@ -510,6 +538,7 @@ def main() -> None:
     last_health_check = time.time()
     last_git_head = get_git_head()
     restarts_this_hour: list[float] = []
+    consecutive_recoveries = 0  # backoff counter for rapid auto_recover
     cycle = 0
     # Load fix attempts from disk (persists across restarts)
     fix_attempts: dict[str, int] = _load_fix_attempts()
@@ -536,6 +565,7 @@ def main() -> None:
                 if current_head and current_head != last_git_head:
                     print(f"[supervisor] Code changed ({last_git_head[:8]} → {current_head[:8]}) — restarting agent")
                     last_git_head = current_head
+                    consecutive_recoveries = 0
                     stop_agent(agent_proc)
                     agent_proc = start_agent(args.agent_args)
                     last_analysis = now
@@ -548,12 +578,24 @@ def main() -> None:
                     # Rate-limit restarts
                     restarts_this_hour = [t for t in restarts_this_hour if now - t < 3600]
                     if len(restarts_this_hour) < MAX_RESTARTS_PER_HOUR:
-                        restarts_this_hour.append(now)
-                        agent_proc = auto_recover(agent_proc, problem, args.agent_args)
-                        last_analysis = now
-                        continue
+                        # Backoff: wait longer between consecutive recoveries
+                        # 1st: immediate, 2nd: 60s, 3rd: 120s, 4th+: skip to analysis
+                        if consecutive_recoveries >= 3:
+                            print(f"[supervisor] {consecutive_recoveries} consecutive recoveries — waiting for analysis cycle")
+                        else:
+                            if consecutive_recoveries > 0:
+                                wait = consecutive_recoveries * 60
+                                print(f"[supervisor] Backoff: waiting {wait}s before recovery #{consecutive_recoveries + 1}")
+                                time.sleep(wait)
+                            restarts_this_hour.append(now)
+                            consecutive_recoveries += 1
+                            agent_proc = auto_recover(agent_proc, problem, args.agent_args)
+                            last_analysis = now
+                            continue
                     else:
                         print(f"[supervisor] ⚠ Too many restarts ({len(restarts_this_hour)}/hr), skipping")
+                else:
+                    consecutive_recoveries = 0  # reset on healthy check
 
             # --- Level 2 & 3: Periodic analysis ---
             wait_time = WARMUP_SECONDS if cycle == 0 else args.interval
@@ -591,6 +633,9 @@ def main() -> None:
                             prompt = build_diagnostic_prompt(failure=worst)
                             head_before = get_git_head()
                             success, output = call_claude_with_prompt(prompt, timeout=timeout)
+                            # Auto-commit if Claude left uncommitted changes
+                            if _auto_commit_if_needed():
+                                pass  # committed
                             head_after = get_git_head()
                             code_changed = head_before != head_after and head_after != ""
                             _log_improvement(
@@ -622,6 +667,9 @@ def main() -> None:
                         prompt = build_diagnostic_prompt(minutes=args.minutes)
                         head_before = get_git_head()
                         _, output = call_claude_with_prompt(prompt, timeout=900)
+                        # Auto-commit if Claude left uncommitted changes
+                        if _auto_commit_if_needed():
+                            pass  # committed
                         head_after = get_git_head()
                         code_changed = head_before != head_after and head_after != ""
                         _log_improvement("full_analysis", severe[0]["name"],
