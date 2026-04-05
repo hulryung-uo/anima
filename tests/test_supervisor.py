@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
+_REASON = "missing_resource (fail rate 100%)"
+
 
 @pytest.fixture
 def tmp_improvements(tmp_path):
@@ -11,14 +13,25 @@ def tmp_improvements(tmp_path):
     return tmp_path / "improvements.jsonl"
 
 
+def _targeted(proc: str, reason: str = _REASON,
+              success: bool = False, changed: bool = False) -> dict:
+    return {
+        "action": f"targeted_fix:{proc}",
+        "reason": reason,
+        "success": success,
+        "code_changed": changed,
+    }
+
+
 class TestLoadFixAttempts:
     def test_counts_failed_targeted_fixes(self, tmp_improvements):
         from tools.supervisor import _load_fix_attempts
         entries = [
-            {"action": "targeted_fix:craft_blacksmith", "reason": "missing_resource (fail rate 100%)", "success": False, "code_changed": False},
-            {"action": "targeted_fix:craft_blacksmith", "reason": "missing_resource (fail rate 100%)", "success": False, "code_changed": False},
-            {"action": "targeted_fix:mine_ore", "reason": "too_far (fail rate 90%)", "success": False, "code_changed": False},
-            {"action": "auto_recover", "reason": "stuck", "success": True, "code_changed": False},
+            _targeted("craft_blacksmith"),
+            _targeted("craft_blacksmith"),
+            _targeted("mine_ore", reason="too_far (fail rate 90%)"),
+            {"action": "auto_recover", "reason": "stuck",
+             "success": True, "code_changed": False},
         ]
         with open(tmp_improvements, "w") as f:
             for e in entries:
@@ -34,9 +47,9 @@ class TestLoadFixAttempts:
     def test_resets_on_success(self, tmp_improvements):
         from tools.supervisor import _load_fix_attempts
         entries = [
-            {"action": "targeted_fix:craft_blacksmith", "reason": "missing_resource (fail rate 100%)", "success": False, "code_changed": False},
-            {"action": "targeted_fix:craft_blacksmith", "reason": "missing_resource (fail rate 100%)", "success": True, "code_changed": True},
-            {"action": "targeted_fix:craft_blacksmith", "reason": "missing_resource (fail rate 100%)", "success": False, "code_changed": False},
+            _targeted("craft_blacksmith"),
+            _targeted("craft_blacksmith", success=True, changed=True),
+            _targeted("craft_blacksmith"),
         ]
         with open(tmp_improvements, "w") as f:
             for e in entries:
@@ -80,7 +93,9 @@ class TestWriteSupervisorHints:
         from tools.supervisor import _write_skip_hint
         hints_file = tmp_path / "supervisor_hints.json"
         with patch("tools.supervisor.HINTS_FILE", hints_file):
-            _write_skip_hint("craft_blacksmith", "missing_resource", ttl_hours=1)
+            _write_skip_hint(
+                "craft_blacksmith", "missing_resource", ttl_hours=1,
+            )
 
         data = json.loads(hints_file.read_text())
         assert "craft_blacksmith" in data["skip_procedures"]
@@ -97,7 +112,9 @@ class TestWriteSupervisorHints:
             }
         }))
         with patch("tools.supervisor.HINTS_FILE", hints_file):
-            _write_skip_hint("craft_blacksmith", "missing_resource", ttl_hours=1)
+            _write_skip_hint(
+                "craft_blacksmith", "missing_resource", ttl_hours=1,
+            )
 
         data = json.loads(hints_file.read_text())
         assert "mine_ore" in data["skip_procedures"]
