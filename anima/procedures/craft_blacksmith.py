@@ -123,7 +123,7 @@ class CraftBlacksmith(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         if not find_in_backpack(ctx, TONGS_GRAPHICS):
             return False
-        if count_items(ctx, {INGOT_GRAPHIC}) < MIN_INGOTS:
+        if _count_iron_ingots(ctx) < MIN_INGOTS:
             return False
         return _has_anvil_and_forge(ctx)
 
@@ -132,7 +132,7 @@ class CraftBlacksmith(Procedure):
 
         Returns (item_name, group_index, item_index, ingot_cost) or None.
         """
-        ingots = count_items(ctx, {INGOT_GRAPHIC})
+        ingots = _count_iron_ingots(ctx)
         skill = 0.0
         for sk in ctx.perception.self_state.skills.values():
             if sk.id == 7:  # Blacksmithy
@@ -186,7 +186,7 @@ class CraftBlacksmith(Procedure):
         logger.info(
             "craft_bs_start",
             item=item_name, group=grp_idx, item_index=item_idx,
-            ingot_cost=ingot_cost, ingots=count_items(ctx, {INGOT_GRAPHIC}),
+            ingot_cost=ingot_cost, ingots=_count_iron_ingots(ctx),
             skill=next((sk.value for sk in ss.skills.values() if sk.id == 7), 0),
         )
 
@@ -195,7 +195,7 @@ class CraftBlacksmith(Procedure):
             it for it in ctx.perception.world.items.values()
             if it.container == ss.equipment.get(0x15) and it.graphic in CRAFTED_ITEM_GRAPHICS
         ])
-        ingots_before = count_items(ctx, {INGOT_GRAPHIC})
+        ingots_before = _count_iron_ingots(ctx)
         journal_mark = time.time()
 
         # 1. Open blacksmithy gump
@@ -340,7 +340,7 @@ class CraftBlacksmith(Procedure):
             if result_msg:
                 break
 
-        ingots_after = count_items(ctx, {INGOT_GRAPHIC})
+        ingots_after = _count_iron_ingots(ctx)
         items_after = len([
             it for it in ctx.perception.world.items.values()
             if it.container == ss.equipment.get(0x15) and it.graphic in CRAFTED_ITEM_GRAPHICS
