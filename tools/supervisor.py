@@ -327,7 +327,7 @@ planner decisions, and constraint analysis.
 - Read CLAUDE.md first for project conventions
 - Focus on the highest severity problem
 - Read the failing code before writing any fix
-- Run `uv run pytest` — only commit if tests pass
+- Run `uv run pytest tests/` (skip tools/) — only commit if tests pass
 - `git commit` with descriptive message
 - If problem is already fixed in code but agent hasn't restarted, just note it
 """
@@ -338,8 +338,7 @@ def call_claude_with_prompt(prompt: str, timeout: int = 300) -> tuple[bool, str]
     """Call Claude Code CLI with a prompt. Returns (success, output)."""
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt,
-             "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep"],
+            ["claude", "-p", prompt],
             cwd=str(ROOT),
             capture_output=True,
             text=True,

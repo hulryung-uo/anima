@@ -707,7 +707,7 @@ Examples of useful diagnostic logging:
 - Read the failing code before writing any fix.
 - **Evidence before fix**: if you can't identify root cause from existing logs,
   add diagnostic logging first and wait for the next cycle.
-- Run `uv run pytest` after changes — only commit if tests pass.
+- Run `uv run pytest tests/` (skip tools/) — only commit if tests pass.
 - Commit with a descriptive message explaining root cause and fix.
 - Only modify files directly related to the fix.
 - Do NOT remove existing logging — only add or modify.
@@ -715,8 +715,7 @@ Examples of useful diagnostic logging:
     print(f"  Calling Claude Code with report: {report_path}")
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt,
-             "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep"],
+            ["claude", "-p", prompt],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
