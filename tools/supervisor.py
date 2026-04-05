@@ -39,6 +39,7 @@ STATE_FILE = ROOT / "data" / "state.json"
 DB_FILE = ROOT / "data" / "anima.db"
 CLAUDE_LOG = ROOT / "data" / "claude_code.log"
 IMPROVEMENTS_LOG = ROOT / "data" / "improvements.jsonl"
+HINTS_FILE = ROOT / "data" / "supervisor_hints.json"
 
 WARMUP_SECONDS = 90
 STUCK_THRESHOLD = 300      # 5 minutes no activity → stuck
@@ -332,37 +333,8 @@ planner decisions, and constraint analysis.
 """
 
 
-def run_targeted_fix(failure: dict) -> bool:
-    """Level 2: Focused Claude Code fix for one procedure."""
-    prompt = build_diagnostic_prompt(failure=failure)
-    proc_name = failure["procedure"]
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[supervisor] [{ts}] TARGETED FIX: {proc_name} ({failure['top_failure']})")
 
-    head_before = get_git_head()
-    success, output = call_claude_with_prompt(prompt)
-    head_after = get_git_head()
-
-    code_changed = head_before != head_after and head_after != ""
-    _log_improvement(
-        f"targeted_fix:{proc_name}",
-        f"{failure['top_failure']} (fail rate {failure['fail_rate']:.0%})",
-        success=success,
-        code_changed=code_changed,
-        output_preview=output[:500],
-    )
-
-    if code_changed:
-        print(f"[supervisor] Targeted fix committed for {proc_name}")
-    elif success:
-        print(f"[supervisor] Claude ran but no changes for {proc_name}")
-    else:
-        print(f"[supervisor] Claude failed for {proc_name}")
-
-    return code_changed
-
-
-def call_claude_with_prompt(prompt: str) -> tuple[bool, str]:
+def call_claude_with_prompt(prompt: str, timeout: int = 300) -> tuple[bool, str]:
     """Call Claude Code CLI with a prompt. Returns (success, output)."""
     try:
         result = subprocess.run(
@@ -371,7 +343,7 @@ def call_claude_with_prompt(prompt: str) -> tuple[bool, str]:
             cwd=str(ROOT),
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
         output = result.stdout or ""
@@ -387,7 +359,7 @@ def call_claude_with_prompt(prompt: str) -> tuple[bool, str]:
 
         return result.returncode == 0, output
     except subprocess.TimeoutExpired:
-        return False, "Claude Code timed out after 600s"
+        return False, f"Claude Code timed out after {timeout}s"
     except FileNotFoundError:
         return False, "Claude Code CLI not found"
 
@@ -442,6 +414,64 @@ def _log_improvement(action: str, reason: str, success: bool,
         f.write(json.dumps(entry) + "\n")
 
 
+def _load_fix_attempts() -> dict[str, int]:
+    """Load fix attempt counts from improvements.jsonl.
+
+    Counts consecutive failed targeted_fix entries per fix_key.
+    Resets count when a successful targeted_fix is found for the same key.
+    """
+    if not IMPROVEMENTS_LOG.exists():
+        return {}
+    attempts: dict[str, int] = {}
+    try:
+        with open(IMPROVEMENTS_LOG) as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                action = entry.get("action", "")
+                if not action.startswith("targeted_fix:"):
+                    continue
+                # Extract fix_key: "procedure:reason"
+                proc = action.split(":", 1)[1]  # e.g. "craft_blacksmith"
+                reason_raw = entry.get("reason", "")
+                # reason format: "missing_resource (fail rate 100%)"
+                reason = reason_raw.split(" (")[0] if " (" in reason_raw else reason_raw
+                fix_key = f"{proc}:{reason}"
+
+                if entry.get("success") or entry.get("code_changed"):
+                    attempts[fix_key] = 0
+                else:
+                    attempts[fix_key] = attempts.get(fix_key, 0) + 1
+    except Exception:
+        pass
+    return {k: v for k, v in attempts.items() if v > 0}
+
+
+def _get_timeout(attempt: int) -> int:
+    """Progressive timeout: 300s -> 450s -> 600s."""
+    timeouts = [300, 450, 600]
+    return timeouts[min(attempt, len(timeouts) - 1)]
+
+
+def _write_skip_hint(procedure: str, reason: str, ttl_hours: float = 1.0) -> None:
+    """Write a skip hint for the planner to read."""
+    hints: dict = {}
+    if HINTS_FILE.exists():
+        try:
+            hints = json.loads(HINTS_FILE.read_text())
+        except Exception:
+            pass
+    skip = hints.setdefault("skip_procedures", {})
+    skip[procedure] = {
+        "until": time.time() + ttl_hours * 3600,
+        "reason": reason,
+    }
+    HINTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    HINTS_FILE.write_text(json.dumps(hints, indent=2))
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -468,9 +498,9 @@ def main() -> None:
     last_git_head = get_git_head()
     restarts_this_hour: list[float] = []
     cycle = 0
-    # Track targeted fix attempts to avoid infinite retry on same problem
-    fix_attempts: dict[str, int] = {}  # "procedure:reason" → attempt count
-    MAX_FIX_ATTEMPTS = 3  # give up after 3 failed attempts for same problem
+    # Load fix attempts from disk (persists across restarts)
+    fix_attempts: dict[str, int] = _load_fix_attempts()
+    MAX_FIX_ATTEMPTS = 3
 
     try:
         while True:
@@ -531,18 +561,41 @@ def main() -> None:
 
                     if worst["fail_rate"] > 0.8 and worst["total"] > 10:
                         if attempts >= MAX_FIX_ATTEMPTS:
-                            print(f"[supervisor] Skipping {fix_key} — already failed {attempts} fix attempts")
+                            ts = datetime.now().strftime("%H:%M:%S")
+                            print(f"[supervisor] [{ts}] Skipping {fix_key} — already failed {attempts} fix attempts")
                             _log_improvement(
                                 f"skip:{worst['procedure']}",
                                 f"gave up after {attempts} failed fix attempts for {worst['top_failure']}",
                                 success=False, code_changed=False,
                             )
+                            _write_skip_hint(worst["procedure"], worst["top_failure"])
                         else:
+                            proc_name = worst["procedure"]
+                            timeout = _get_timeout(attempts)
+                            ts = datetime.now().strftime("%H:%M:%S")
+                            print(f"[supervisor] [{ts}] TARGETED FIX: {proc_name} ({worst['top_failure']}) attempt={attempts + 1} timeout={timeout}s")
                             stop_agent(agent_proc)
-                            code_changed = run_targeted_fix(worst)
-                            fix_attempts[fix_key] = attempts + 1
+                            prompt = build_diagnostic_prompt(failure=worst)
+                            head_before = get_git_head()
+                            success, output = call_claude_with_prompt(prompt, timeout=timeout)
+                            head_after = get_git_head()
+                            code_changed = head_before != head_after and head_after != ""
+                            _log_improvement(
+                                f"targeted_fix:{proc_name}",
+                                f"{worst['top_failure']} (fail rate {worst['fail_rate']:.0%})",
+                                success=success,
+                                code_changed=code_changed,
+                                output_preview=output[:500],
+                            )
                             if code_changed:
-                                fix_attempts[fix_key] = 0  # reset on success
+                                print(f"[supervisor] Targeted fix committed for {proc_name}")
+                                fix_attempts[fix_key] = 0
+                            elif success:
+                                print(f"[supervisor] Claude ran but no changes for {proc_name}")
+                                fix_attempts[fix_key] = attempts + 1
+                            else:
+                                print(f"[supervisor] Claude failed for {proc_name}")
+                                fix_attempts[fix_key] = attempts + 1
                             agent_proc = start_agent(args.agent_args)
                             last_analysis = time.time()
                             continue
@@ -555,7 +608,7 @@ def main() -> None:
                         stop_agent(agent_proc)
                         prompt = build_diagnostic_prompt(minutes=args.minutes)
                         head_before = get_git_head()
-                        _, output = call_claude_with_prompt(prompt)
+                        _, output = call_claude_with_prompt(prompt, timeout=600)
                         head_after = get_git_head()
                         code_changed = head_before != head_after and head_after != ""
                         _log_improvement("full_analysis", severe[0]["name"],
