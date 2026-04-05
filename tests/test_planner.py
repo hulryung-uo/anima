@@ -66,6 +66,7 @@ def _add_item(ctx, serial, graphic, amount=1, hue=0):
 PICKAXE = 0x0E86
 ORE = 0x19B9
 INGOT = 0x1BF2
+TONGS = 0x0FBB
 
 
 class TestGameplayLoop:
@@ -251,6 +252,7 @@ class TestSupervisorHints:
         ctx = _make_ctx()
         _add_item(ctx, 1, PICKAXE)
         _add_item(ctx, 2, INGOT, amount=20)
+        _add_item(ctx, 3, TONGS)  # tongs needed to reach craft path
 
         with patch("anima.planner.planner.SUPERVISOR_HINTS_FILE", hints_file):
             result = await planner.tick(ctx)

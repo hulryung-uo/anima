@@ -46,13 +46,21 @@ class SellToVendor(Procedure):
 
         vendor_name = vendor.name or "vendor"
 
+        # Dynamic keep set — allow selling ingots when crafting is impossible
+        from anima.actions.inventory import find_in_backpack
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
+
+        keep = set(KEEP_GRAPHICS)
+        if not find_in_backpack(ctx, _TONGS_GFX):
+            keep.discard(0x1BF2)  # ingots sellable without tongs
+
         # Log what we have to sell
         backpack = ss.equipment.get(0x15)
         sellable_items: list[str] = []
         if backpack:
             from anima.data import item_name as _item_name
             for it in ctx.perception.world.items.values():
-                if it.container == backpack and it.graphic not in KEEP_GRAPHICS:
+                if it.container == backpack and it.graphic not in keep:
                     name = it.name or _item_name(it.graphic) or f"0x{it.graphic:04X}"
                     sellable_items.append(f"{name} x{it.amount}" if it.amount > 1 else name)
 
@@ -139,7 +147,7 @@ class SellToVendor(Procedure):
         vendor_offers: list[str] = []
         for si in sell_list:
             name = si.name or f"0x{si.graphic:04X}"
-            kept = si.graphic in KEEP_GRAPHICS
+            kept = si.graphic in keep
             tag = " [KEEP]" if kept else ""
             vendor_offers.append(
                 f"{name} x{si.amount} @{si.price}gp{tag}"
@@ -157,15 +165,15 @@ class SellToVendor(Procedure):
 
         items_to_sell = [
             (item.serial, item.amount) for item in sell_list
-            if item.graphic not in KEEP_GRAPHICS
+            if item.graphic not in keep
         ]
         items_kept = [
             si.name or f"0x{si.graphic:04X}" for si in sell_list
-            if si.graphic in KEEP_GRAPHICS
+            if si.graphic in keep
         ]
         expected_gold = sum(
             si.price * si.amount for si in sell_list
-            if si.graphic not in KEEP_GRAPHICS
+            if si.graphic not in keep
         )
 
         if not items_to_sell:
@@ -186,7 +194,7 @@ class SellToVendor(Procedure):
         sold_names = [
             f"{si.name or f'0x{si.graphic:04X}'} x{si.amount} @{si.price}gp"
             for si in sell_list
-            if si.graphic not in KEEP_GRAPHICS
+            if si.graphic not in keep
         ]
 
         logger.info(

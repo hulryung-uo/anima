@@ -121,6 +121,9 @@ class CraftBlacksmith(Procedure):
     description = "Craft weapons or armor from ingots to sell for profit."
 
     async def can_start(self, ctx: AgentContext) -> bool:
+        # Cooldown after repeated "insufficient metal" failures (material mismatch)
+        if time.time() < ctx.blackboard.get("_craft_bs_material_cooldown", 0):
+            return False
         if not find_in_backpack(ctx, TONGS_GRAPHICS):
             return False
         if _count_iron_ingots(ctx) < MIN_INGOTS:
@@ -219,6 +222,7 @@ class CraftBlacksmith(Procedure):
         material_btn = _get_button_id(6, 0)  # 7
         iron_btn = _get_button_id(5, 0)      # 6
         if gump.find_button_by_id(material_btn):
+            logger.info("craft_bs_material_page", button_id=material_btn)
             ss.gumps.clear()
             switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
             text_entries = [
@@ -242,6 +246,7 @@ class CraftBlacksmith(Procedure):
             gump = result.data["gump"]
 
             if gump.find_button_by_id(iron_btn):
+                logger.info("craft_bs_select_iron", button_id=iron_btn)
                 ss.gumps.clear()
                 switches = [
                     sw.switch_id for sw in gump.switches if sw.initial_state
@@ -265,6 +270,38 @@ class CraftBlacksmith(Procedure):
                         message="gump did not refresh after selecting Iron",
                     )
                 gump = result.data["gump"]
+            else:
+                # Iron button not found — material cannot be set to Iron.
+                # Proceeding would craft with wrong material (Gold, etc.)
+                available = [b.button_id for b in gump.reply_buttons()]
+                logger.warning(
+                    "craft_bs_iron_btn_missing",
+                    expected=iron_btn,
+                    available_buttons=available[:20],
+                )
+                await self._close_all_gumps(ctx)
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.BLOCKED,
+                    message=f"Iron button {iron_btn} not found on resource page "
+                            f"— cannot force Iron material (available: {available[:10]})",
+                )
+        else:
+            # Material page button not found — cannot verify/force Iron.
+            # Proceeding risks crafting with a stale material (Gold, etc.)
+            # which causes "insufficient metal" loops.
+            logger.warning(
+                "craft_bs_no_material_btn",
+                expected=material_btn,
+                buttons=[b.button_id for b in gump.reply_buttons()][:20],
+            )
+            await self._close_all_gumps(ctx)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Material page button {material_btn} not found in gump "
+                        f"— cannot force Iron material",
+            )
 
         # 2. Click category using computed ServUO button ID
         cat_btn_id = _get_button_id(0, grp_idx)
@@ -379,6 +416,7 @@ class CraftBlacksmith(Procedure):
             consumed = ingots_before - ingots_after
             logger.info("craft_blacksmith_success", item=item_name, ingots_used=consumed)
             ctx.blackboard["_craft_bs_fails"] = 0
+            ctx.blackboard["_craft_bs_material_fails"] = 0
             return ProcedureResult(
                 success=True,
                 message=f"Crafted {item_name}",
@@ -409,10 +447,25 @@ class CraftBlacksmith(Procedure):
         notice_lower = gump_notice.lower()
 
         if "sufficient metal" in notice_lower or "sufficient material" in notice_lower:
+            # If we counted enough iron ingots but server still says insufficient,
+            # the craft context likely has the wrong material selected (Gold, etc.).
+            # Set a cooldown to stop retrying — the agent should sell ingots instead.
+            mat_fails = ctx.blackboard.get("_craft_bs_material_fails", 0) + 1
+            ctx.blackboard["_craft_bs_material_fails"] = mat_fails
+            if mat_fails >= 3 and ingots_before >= ingot_cost:
+                ctx.blackboard["_craft_bs_material_cooldown"] = time.time() + 300
+                logger.warning(
+                    "craft_bs_material_cooldown",
+                    fails=mat_fails,
+                    ingots=ingots_before,
+                    cost=ingot_cost,
+                    cooldown_sec=300,
+                )
             logger.warning(
                 "craft_blacksmith_no_material",
                 item=item_name, notice=gump_notice,
                 ingots_counted=ingots_before, ingot_cost=ingot_cost,
+                material_fails=mat_fails,
             )
             return ProcedureResult(
                 success=False,

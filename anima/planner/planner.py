@@ -398,15 +398,35 @@ class Planner:
 
         # --- Priority 5: Has ingots → craft into weapons/armor ---
         if ingot_count >= 8:
-            proc = _get_proc("craft_blacksmith")
-            if proc and await proc.can_start(ctx):
-                _intent(f"주괴 {ingot_count}개 보유 → 무기/방어구 제작")
-                return proc
-            # Need forge/anvil — go to blacksmith
-            _intent(f"주괴 {ingot_count}개 보유, 대장간 필요 → 대장간으로 이동")
-            move = await self._move_to_location(ctx, "forge", "blacksmith")
-            if move:
-                return move
+            from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
+            has_tongs = bool(find_in_backpack(ctx, TONGS_GRAPHICS))
+            if has_tongs:
+                proc = _get_proc("craft_blacksmith")
+                if proc and await proc.can_start(ctx):
+                    _intent(f"주괴 {ingot_count}개 보유 → 무기/방어구 제작")
+                    return proc
+                # Has tongs but no forge/anvil — go to blacksmith
+                _intent(f"주괴 {ingot_count}개 보유, 대장간 필요 → 대장간으로 이동")
+                move = await self._move_to_location(ctx, "forge", "blacksmith")
+                if move:
+                    return move
+            else:
+                # No tongs — can't craft, sell raw ingots instead
+                proc = _get_proc("sell_to_vendor")
+                if proc and await proc.can_start(ctx):
+                    _intent(f"집게 없음, 주괴 {ingot_count}개 → 주괴 판매")
+                    return proc
+                from anima.procedures.vendor_knowledge import (
+                    get_vendor_keywords_for_items,
+                )
+                vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
+                move = await self._move_to_location(ctx, *vendor_kw)
+                if move:
+                    _intent(
+                        f"집게 없음, 주괴 {ingot_count}개 → "
+                        f"{', '.join(vendor_kw)} 상점으로 이동"
+                    )
+                    return move
 
         # --- Priority 5b: Has crafted items → sell to appropriate vendor ---
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
