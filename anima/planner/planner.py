@@ -168,17 +168,6 @@ class Planner:
         if proc is None:
             return None
 
-        # Check if this procedure was marked for skipping (repeat failure)
-        skip = ctx.blackboard.get("_skip_procedures", set())
-        if proc.name in skip:
-            logger.info("planner_skipping", procedure=proc.name, reason="repeat failure")
-            return None
-
-        # Check supervisor hints (supervisor gave up fixing this procedure)
-        if _is_supervisor_skipped(proc.name):
-            logger.info("planner_skipping", procedure=proc.name, reason="supervisor hint")
-            return None
-
         logger.info("planner_selected", procedure=proc.name)
         ctx.blackboard["current_procedure"] = proc.name
         self._last_procedure = proc.name
@@ -240,6 +229,17 @@ class Planner:
         from anima.actions.inventory import find_in_backpack, count_items
         from anima.skills.gathering.mine import PICKAXE_GRAPHICS, ORE_GRAPHICS
         from anima.skills.crafting.smelt import INGOT_GRAPHICS
+
+        # Skip procedures flagged by supervisor or repeat-failure blackboard
+        skip_bb = ctx.blackboard.get("_skip_procedures", set())
+
+        def _get_proc(name: str):
+            if name in skip_bb or _is_supervisor_skipped(name):
+                logger.info("planner_skipping", procedure=name,
+                            reason="supervisor hint" if name not in skip_bb
+                            else "repeat failure")
+                return None
+            return self.registry.get(name)
 
         ss = ctx.perception.self_state
         backpack = ss.equipment.get(0x15)
@@ -314,7 +314,7 @@ class Planner:
 
         # --- Priority 2: Overweight → smelt ---
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.85:
-            proc = self.registry.get("smelt_ore")
+            proc = _get_proc("smelt_ore")
             if proc and await proc.can_start(ctx):
                 _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 광석 제련")
                 return proc
@@ -324,7 +324,7 @@ class Planner:
 
         # --- Priority 3: Has ore → smelt ---
         if ore_count > 0:
-            proc = self.registry.get("smelt_ore")
+            proc = _get_proc("smelt_ore")
             if proc and await proc.can_start(ctx):
                 _intent(f"광석 {ore_count}개 보유 → 제련")
                 return proc
@@ -342,7 +342,7 @@ class Planner:
         if not has_mining_tool:
             # 4a: Has ore → smelt first
             if ore_count > 0:
-                proc = self.registry.get("smelt_ore")
+                proc = _get_proc("smelt_ore")
                 if proc and await proc.can_start(ctx):
                     _intent("곡괭이 없음, 광석 보유 → 제련부터")
                     return proc
@@ -353,14 +353,14 @@ class Planner:
             #     Skip if Tinkering gave up (skill too low)
             if (has_tinker_tools and ingot_count >= 4
                     and not ctx.blackboard.get("_make_tools_gave_up")):
-                proc = self.registry.get("make_tools")
+                proc = _get_proc("make_tools")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 주석도구+주괴 {ingot_count}개 → 도구 제작")
                     return proc
 
             # 4c: Has gold → buy tools directly (pickaxe costs ~11 gold)
             if ss.gold >= 10:
-                proc = self.registry.get("buy_from_vendor")
+                proc = _get_proc("buy_from_vendor")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점에서 구매")
                     return proc
@@ -371,7 +371,7 @@ class Planner:
 
             # 4d: Has ingots + tongs → craft weapons to sell for gold to buy tools
             if ingot_count >= 8:
-                proc = self.registry.get("craft_blacksmith")
+                proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 무기 제작 후 판매하여 자금 마련")
                     logger.info("planner_craft_for_gold", reason="need tools, crafting to sell")
@@ -383,7 +383,7 @@ class Planner:
 
             # 4e: Has ingots but can't craft → sell raw ingots
             if ingot_count > 0:
-                proc = self.registry.get("sell_to_vendor")
+                proc = _get_proc("sell_to_vendor")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 주괴 판매")
                     return proc
@@ -398,7 +398,7 @@ class Planner:
 
         # --- Priority 5: Has ingots → craft into weapons/armor ---
         if ingot_count >= 8:
-            proc = self.registry.get("craft_blacksmith")
+            proc = _get_proc("craft_blacksmith")
             if proc and await proc.can_start(ctx):
                 _intent(f"주괴 {ingot_count}개 보유 → 무기/방어구 제작")
                 return proc
@@ -420,7 +420,7 @@ class Planner:
                     crafted_count += 1
 
         if crafted_count > 0:
-            proc = self.registry.get("sell_to_vendor")
+            proc = _get_proc("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 _intent(f"제작품 {crafted_count}개 보유 → 상점에 판매")
                 return proc
@@ -436,7 +436,7 @@ class Planner:
 
         # --- Priority 5c: Has ingots but can't craft → sell raw ingots ---
         if ingot_count >= 10:
-            proc = self.registry.get("sell_to_vendor")
+            proc = _get_proc("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 _intent(f"주괴 {ingot_count}개 (제작 불가) → 주괴 판매")
                 return proc
@@ -450,7 +450,7 @@ class Planner:
 
         # --- Priority 6: Gold > 200 → bank ---
         if ss.gold > 200:
-            proc = self.registry.get("bank_deposit")
+            proc = _get_proc("bank_deposit")
             if proc and await proc.can_start(ctx):
                 _intent(f"금화 {ss.gold}g 보유 → 은행에 예금")
                 return proc
@@ -461,14 +461,14 @@ class Planner:
         if has_mining_tool:
             # We have a tool again — reset gave-up flags so they can retry next time
             ctx.blackboard.pop("_make_tools_gave_up", None)
-        proc = self.registry.get("mine_ore")
+        proc = _get_proc("mine_ore")
         if proc and await proc.can_start(ctx):
             _intent("광산 근처, 곡괭이 보유 → 채광 시작")
             return proc
 
         # --- Priority 8: Continuation hint ---
         if self.continuation_hint:
-            proc = self.registry.get(self.continuation_hint)
+            proc = _get_proc(self.continuation_hint)
             if proc and await proc.can_start(ctx):
                 _intent(f"이전 작업 계속 → {self.continuation_hint}")
                 return proc
