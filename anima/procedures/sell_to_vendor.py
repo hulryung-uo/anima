@@ -103,6 +103,7 @@ class SellToVendor(Procedure):
         # Request sell menu via context menu
         ok = await _request_context_menu_entry(ctx, vendor, _CLILOC_VENDOR_SELL)
         if not ok:
+            _mark_refused(ctx, vendor.serial)
             logger.warning(
                 "sell_no_menu",
                 vendor=vendor_name,
@@ -203,6 +204,7 @@ class SellToVendor(Procedure):
         )
 
         if not items_to_sell:
+            _mark_refused(ctx, vendor.serial)
             logger.info(
                 "sell_nothing_to_sell",
                 vendor=vendor_name,
