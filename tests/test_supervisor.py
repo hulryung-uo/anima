@@ -78,14 +78,14 @@ class TestLoadFixAttempts:
 class TestProgressiveTimeout:
     def test_timeout_increases(self):
         from tools.supervisor import _get_timeout
-        assert _get_timeout(0) == 300
-        assert _get_timeout(1) == 450
-        assert _get_timeout(2) == 600
+        assert _get_timeout(0) == 400
+        assert _get_timeout(1) == 600
+        assert _get_timeout(2) == 900
 
     def test_timeout_caps_at_max(self):
         from tools.supervisor import _get_timeout
-        assert _get_timeout(5) == 600
-        assert _get_timeout(100) == 600
+        assert _get_timeout(5) == 900
+        assert _get_timeout(100) == 900
 
 
 class TestWriteSupervisorHints:

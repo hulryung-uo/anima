@@ -358,8 +358,22 @@ def call_claude_with_prompt(prompt: str, timeout: int = 300) -> tuple[bool, str]
             f.write("\n")
 
         return result.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, f"Claude Code timed out after {timeout}s"
+    except subprocess.TimeoutExpired as e:
+        partial: str = ""
+        if e.stdout:
+            partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else str(e.stdout)
+        if e.stderr:
+            stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
+            partial = partial + "\n--- stderr ---\n" + stderr_text
+
+        # Log partial output — Claude may have committed before timeout
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(CLAUDE_LOG, "a") as f:
+            f.write(f"\n{'='*72}\n[{ts}] TIMED OUT after {timeout}s\n{'='*72}\n")
+            f.write((partial or "(no output captured)")[:2000])
+            f.write("\n")
+
+        return False, f"Claude Code timed out after {timeout}s\n{partial[:500]}"
     except FileNotFoundError:
         return False, "Claude Code CLI not found"
 
@@ -451,7 +465,7 @@ def _load_fix_attempts() -> dict[str, int]:
 
 def _get_timeout(attempt: int) -> int:
     """Progressive timeout: 300s -> 450s -> 600s."""
-    timeouts = [300, 450, 600]
+    timeouts = [400, 600, 900]
     return timeouts[min(attempt, len(timeouts) - 1)]
 
 
@@ -608,7 +622,7 @@ def main() -> None:
                         stop_agent(agent_proc)
                         prompt = build_diagnostic_prompt(minutes=args.minutes)
                         head_before = get_git_head()
-                        _, output = call_claude_with_prompt(prompt, timeout=600)
+                        _, output = call_claude_with_prompt(prompt, timeout=900)
                         head_after = get_git_head()
                         code_changed = head_before != head_after and head_after != ""
                         _log_improvement("full_analysis", severe[0]["name"],
