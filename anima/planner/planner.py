@@ -278,6 +278,10 @@ class Planner:
         # Count IRON ingots only (hue 0) — colored ingots are not usable for basic recipes
         from anima.procedures.craft_blacksmith import _count_iron_ingots
         ingot_count = _count_iron_ingots(ctx)
+        # Material cooldown = iron forcing failed repeatedly → craft will fail, sell instead
+        craft_material_blocked = time.time() < ctx.blackboard.get(
+            "_craft_bs_material_cooldown", 0
+        )
 
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
         crafted_count = sum(
@@ -370,7 +374,8 @@ class Planner:
                     return move
 
             # 4d: Has ingots + tongs → craft weapons to sell for gold to buy tools
-            if ingot_count >= 8:
+            #     Skip when material cooldown is active (iron forcing failed)
+            if ingot_count >= 8 and not craft_material_blocked:
                 proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 무기 제작 후 판매하여 자금 마련")
@@ -400,7 +405,7 @@ class Planner:
         if ingot_count >= 8:
             from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
             has_tongs = bool(find_in_backpack(ctx, TONGS_GRAPHICS))
-            if has_tongs:
+            if has_tongs and not craft_material_blocked:
                 proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
                     _intent(f"주괴 {ingot_count}개 보유 → 무기/방어구 제작")
@@ -411,10 +416,11 @@ class Planner:
                 if move:
                     return move
             else:
-                # No tongs — can't craft, sell raw ingots instead
+                # No tongs or material mismatch — can't craft, sell raw ingots
+                reason = "재료 불일치" if craft_material_blocked else "집게 없음"
                 proc = _get_proc("sell_to_vendor")
                 if proc and await proc.can_start(ctx):
-                    _intent(f"집게 없음, 주괴 {ingot_count}개 → 주괴 판매")
+                    _intent(f"{reason}, 주괴 {ingot_count}개 → 주괴 판매")
                     return proc
                 from anima.procedures.vendor_knowledge import (
                     get_vendor_keywords_for_items,
@@ -423,7 +429,7 @@ class Planner:
                 move = await self._move_to_location(ctx, *vendor_kw)
                 if move:
                     _intent(
-                        f"집게 없음, 주괴 {ingot_count}개 → "
+                        f"{reason}, 주괴 {ingot_count}개 → "
                         f"{', '.join(vendor_kw)} 상점으로 이동"
                     )
                     return move

@@ -11,9 +11,9 @@ from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.trade.vendor import (
     _CLILOC_VENDOR_SELL,
     KEEP_GRAPHICS,
+    _find_vendor,
     _mark_refused,
     _request_context_menu_entry,
-    _find_vendor,
 )
 
 if TYPE_CHECKING:
@@ -26,18 +26,52 @@ class SellToVendor(Procedure):
     name = "sell_to_vendor"
     description = "Sell items to a nearby NPC vendor."
 
+    @staticmethod
+    def _dynamic_keep(ctx: AgentContext) -> set[int]:
+        """KEEP_GRAPHICS minus items we can't use (e.g. ingots without tongs)."""
+        from anima.actions.inventory import find_in_backpack
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
+
+        keep = set(KEEP_GRAPHICS)
+        if not find_in_backpack(ctx, _TONGS_GFX):
+            keep.discard(0x1BF2)  # ingots sellable without tongs
+        return keep
+
+    @staticmethod
+    def _desired_vendor_types(ctx: AgentContext, keep: set[int]) -> set[str] | None:
+        """Vendor types that buy our sellable items, or None for any vendor."""
+        from anima.procedures.vendor_knowledge import ITEM_VENDOR_MAP
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return None
+
+        types: set[str] = set()
+        for it in ctx.perception.world.items.values():
+            if it.container == backpack and it.graphic not in keep:
+                vt = ITEM_VENDOR_MAP.get(it.graphic)
+                if vt:
+                    types.update(vt)
+        return types or None
+
     async def can_start(self, ctx: AgentContext) -> bool:
-        # _find_vendor already skips refused vendors via _is_refused()
-        vendor = _find_vendor(ctx)
+        keep = self._dynamic_keep(ctx)
+        vendor_types = self._desired_vendor_types(ctx, keep)
+        vendor = _find_vendor(ctx, vendor_types=vendor_types)
         return vendor is not None
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
         gold_before = ss.gold
 
-        vendor = _find_vendor(ctx)
+        keep = self._dynamic_keep(ctx)
+        vendor_types = self._desired_vendor_types(ctx, keep)
+
+        vendor = _find_vendor(ctx, vendor_types=vendor_types)
         if not vendor:
-            logger.info("sell_vendor_not_found", pos=f"({ss.x},{ss.y})")
+            logger.info("sell_vendor_not_found", pos=f"({ss.x},{ss.y})",
+                        vendor_types=vendor_types)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
@@ -45,14 +79,6 @@ class SellToVendor(Procedure):
             )
 
         vendor_name = vendor.name or "vendor"
-
-        # Dynamic keep set — allow selling ingots when crafting is impossible
-        from anima.actions.inventory import find_in_backpack
-        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
-
-        keep = set(KEEP_GRAPHICS)
-        if not find_in_backpack(ctx, _TONGS_GFX):
-            keep.discard(0x1BF2)  # ingots sellable without tongs
 
         # Log what we have to sell
         backpack = ss.equipment.get(0x15)

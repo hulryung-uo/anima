@@ -498,21 +498,28 @@ class SellToNpc(Skill):
                 duration_ms=elapsed,
             )
 
+        # Dynamic keep set — allow selling ingots when crafting is impossible
+        from anima.actions.inventory import find_in_backpack
+
+        keep = set(KEEP_GRAPHICS)
+        if not find_in_backpack(ctx, TONGS_GRAPHICS):
+            keep.discard(0x1BF2)  # ingots sellable without tongs
+
         # Sell items but protect essential tools and raw materials
         items_to_sell: list[tuple[int, int]] = [
             (si.serial, si.amount)
             for si in sell_list
-            if si.graphic not in KEEP_GRAPHICS
+            if si.graphic not in keep
         ]
         selling_detail = [
             f"{si.name or f'0x{si.graphic:04X}'} x{si.amount} @{si.price}gp"
             for si in sell_list
-            if si.graphic not in KEEP_GRAPHICS
+            if si.graphic not in keep
         ]
         kept_items = [
             f"{si.name or f'0x{si.graphic:04X}'}"
             for si in sell_list
-            if si.graphic in KEEP_GRAPHICS
+            if si.graphic in keep
         ]
 
         if not items_to_sell:
@@ -534,7 +541,7 @@ class SellToNpc(Skill):
 
         expected_gold = sum(
             si.price * si.amount for si in sell_list
-            if si.graphic not in KEEP_GRAPHICS
+            if si.graphic not in keep
         )
 
         logger.info(
@@ -690,21 +697,39 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
     return None
 
 
-def _find_vendor(ctx: "BrainContext") -> MobileInfo | None:
-    """Find non-refused vendor within range (sync, for can_execute)."""
+def _find_vendor(
+    ctx: "BrainContext",
+    vendor_types: set[str] | None = None,
+) -> MobileInfo | None:
+    """Find non-refused vendor within range (sync, for can_execute).
+
+    vendor_types: if given, only match vendors whose name/properties contain
+    one of these keywords (e.g. {"blacksmith", "weaponsmith"}).
+    """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(
         ss.x, ss.y, distance=_VENDOR_RANGE,
     )
+
+    def _matches_type(mob: MobileInfo) -> bool:
+        if not vendor_types:
+            return True
+        name_lower = (mob.name or "").lower()
+        if any(vt in name_lower for vt in vendor_types):
+            return True
+        for prop in (mob.properties or []):
+            if any(vt in prop.lower() for vt in vendor_types):
+                return True
+        return False
 
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
         if m.serial == ss.serial or _is_refused(ctx, m.serial):
             continue
         if m.body not in HUMAN_BODIES or m.serial >= 0x10000:
             continue
-        if m.notoriety == NotorietyFlag.INVULNERABLE and _is_vendor(m):
+        if m.notoriety == NotorietyFlag.INVULNERABLE and _is_vendor(m) and _matches_type(m):
             return m
-        if _is_vendor(m):
+        if _is_vendor(m) and _matches_type(m):
             return m
 
     return None
