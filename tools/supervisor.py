@@ -233,55 +233,108 @@ def get_top_failures(minutes: int = 30) -> list[dict]:
         return []
 
 
-def build_targeted_prompt(failure: dict) -> str:
-    """Build a focused Claude Code prompt for one specific failure."""
-    proc = failure["procedure"]
-    fail_type = failure["top_failure"]
-    fail_rate = failure["fail_rate"]
-    total = failure["total"]
+def build_diagnostic_prompt(failure: dict | None = None, minutes: int = 10) -> str:
+    """Build a rich diagnostic prompt with full context from all sources."""
+    from diagnose import collect, render_prompt
 
-    # Read current state for context
-    state = read_agent_state()
-    state_info = ""
-    if state:
-        s = state.get("status", {})
-        inv = state.get("inventory", [])
-        inv_str = ", ".join(f"{i['amount']}x {i['name']}" for i in inv[:6])
-        act = state.get("activity", [])
-        act_str = "\n".join(f"  - {a.get('message','')}" for a in act[-5:])
-        state_info = f"""
-Current agent state:
-- Position: ({s.get('x',0)}, {s.get('y',0)}, z={s.get('z',0)})
-- Gold: {s.get('gold',0)}, Weight: {s.get('weight',0)}/{s.get('weight_max',0)}
-- Inventory: {inv_str}
-- Recent activity:
-{act_str}
+    diag = collect(minutes=minutes)
+    context = render_prompt(diag)
+
+    # Check for deadlock — code fix won't help
+    constraints = diag.get("constraints", {})
+    if constraints.get("DEADLOCK"):
+        return f"""The Anima UO AI agent is in a TRUE DEADLOCK state.
+
+{context}
+
+This is NOT a code bug. The agent has no tools, no gold, and no materials.
+No procedure can start because all preconditions fail.
+
+Your task: Add a recovery strategy to the planner for this situation.
+Options to consider:
+1. Walk around nearby area looking for items on the ground to pick up
+2. Find a monster to kill for gold loot (if agent has combat capability)
+3. Post to forum asking for help (already implemented in _escalate_to_forum)
+4. Walk to a populated area where other players/agents might help
+5. Try to find a different type of resource (wood instead of ore)
+
+Read CLAUDE.md first. Read anima/planner/planner.py _resolve_deadlock().
+Add a concrete recovery path, not just logging.
+Run `uv run pytest` — only commit if tests pass.
+`git commit` with descriptive message.
 """
 
-    return f"""Fix ONE specific issue in the Anima UO AI agent.
-
-PROBLEM: Procedure `{proc}` fails {fail_rate:.0%} of the time ({total} attempts).
+    # Normal diagnostic prompt
+    problem_summary = ""
+    if failure:
+        proc = failure["procedure"]
+        fail_type = failure["top_failure"]
+        fail_rate = failure["fail_rate"]
+        total = failure["total"]
+        problem_summary = f"""
+## Primary Problem
+Procedure `{proc}` fails {fail_rate:.0%} ({total} attempts).
 Most common failure: `{fail_type}`
-{state_info}
-Files to check:
-- anima/procedures/{proc}.py (the procedure itself)
-- anima/planner/planner.py (when/why it's selected)
-- anima/action/movement.py (if movement-related)
+"""
 
-Rules:
-- Read CLAUDE.md first
-- Fix ONLY this one issue
+    return f"""You are debugging the Anima UO AI agent. Below is rich diagnostic data
+from the last {minutes} minutes, including procedure stats, server messages,
+planner decisions, and constraint analysis.
+
+{problem_summary}
+
+{context}
+
+## Your debugging method
+
+1. **Read the diagnostic data above carefully** — the answer is usually in the
+   failure messages, server responses, or constraint list.
+
+2. **Identify the pattern:**
+   - Same procedure failing repeatedly with same message → stuck loop
+   - "insufficient metal" but ingots counted > needed → hue mismatch (iron vs colored)
+   - "too far away" → tile search returning tiles outside action range
+   - Vendor "not interested" → wrong vendor type for the items being sold
+   - "gump did not open" → tool double-click failed or NPC not nearby
+   - 0 procedures selected → all can_start() return false → check constraints
+   - Planner returning None every tick → check fall-through in select_procedure
+
+3. **Check past fix attempts** (listed above) — don't retry what already failed.
+
+4. **If root cause is unclear from this data**, add diagnostic logging first:
+   - Log the specific values being checked (e.g., item.hue, vendor.name)
+   - Log can_start() result with reason
+   - Don't guess at fixes without evidence
+
+## Architecture
+- Planner: anima/planner/planner.py — priority 1-9 procedure selection
+- Procedures: anima/procedures/ — mine_ore, smelt_ore, craft_blacksmith, sell/buy_from_vendor, bank_deposit, make_tools
+- Vendor: anima/skills/trade/vendor.py — _find_vendor, context menu
+- Movement: anima/action/movement.py — go_to() pathfinding
+- Gump: anima/actions/gump.py — craft menu interaction
+
+## UO Domain Knowledge
+- Ingots have hue: 0=iron (default), non-zero=colored (gold, valorite, etc.)
+  → count_items without hue filter includes ALL ingots, server only accepts matching type
+- Vendors only buy items in their SBInfo list (weaponsmith ≠ tanner)
+- NPC names arrive via OPL packets, not in MobileIncoming — must request explicitly
+- Mining range is 2 tiles; _find_mineable_tile searches up to 8 → can_start must re-check distance
+- Gump responses need switches[] and text_entries[] or server silently rejects
+- After crafting, read gump notice BEFORE calling _close_all_gumps() or data is lost
+
+## Rules
+- Read CLAUDE.md first for project conventions
+- Focus on the highest severity problem
+- Read the failing code before writing any fix
 - Run `uv run pytest` — only commit if tests pass
-- `git commit` with descriptive message, then `git push`
-- Keep changes minimal
+- `git commit` with descriptive message
+- If problem is already fixed in code but agent hasn't restarted, just note it
 """
 
 
 def run_targeted_fix(failure: dict) -> bool:
     """Level 2: Focused Claude Code fix for one procedure."""
-    from self_improve import call_claude
-
-    prompt = build_targeted_prompt(failure)
+    prompt = build_diagnostic_prompt(failure=failure)
     proc_name = failure["procedure"]
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[supervisor] [{ts}] TARGETED FIX: {proc_name} ({failure['top_failure']})")
@@ -494,20 +547,19 @@ def main() -> None:
                             last_analysis = time.time()
                             continue
 
-                # Level 3: Full analysis for structural issues
+                # Level 3: Full analysis — use rich diagnostic prompt
                 problems, report_path = run_full_analysis(args.minutes)
                 if problems and report_path:
                     severe = [p for p in problems if p["severity"] in ("HIGH", "CRITICAL")]
                     if severe:
                         stop_agent(agent_proc)
-                        _, output = call_claude_with_prompt(
-                            f"Read the analysis report at {report_path}. "
-                            f"Fix the highest severity issue. "
-                            f"Read CLAUDE.md first. "
-                            f"Run uv run pytest, commit and push if tests pass."
-                        )
+                        prompt = build_diagnostic_prompt(minutes=args.minutes)
+                        head_before = get_git_head()
+                        _, output = call_claude_with_prompt(prompt)
+                        head_after = get_git_head()
+                        code_changed = head_before != head_after and head_after != ""
                         _log_improvement("full_analysis", severe[0]["name"],
-                                         success=True, code_changed=get_git_head()[:8] != "",
+                                         success=True, code_changed=code_changed,
                                          output_preview=output[:500])
                         agent_proc = start_agent(args.agent_args)
                         last_analysis = time.time()
