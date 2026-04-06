@@ -46,6 +46,36 @@ class TestDetectProblemsFromDB:
         names = [p["name"] for p in problems]
         assert "db_procedure_failing" not in names
 
+    def test_moving_not_working_detected(self):
+        """Many procedures selected but no results → HIGH."""
+        data = {
+            "counts": {
+                "planner_selected": 71,
+                "procedure_result": 0,
+                "walk_confirmed": 2840,
+            },
+            "recent_lines": 500,
+            "db_stats": {},
+        }
+        problems = detect_problems(data)
+        names = [p["name"] for p in problems]
+        assert "moving_not_working" in names
+
+    def test_moving_not_working_normal_ignored(self):
+        """Normal operation with results → no problem."""
+        data = {
+            "counts": {
+                "planner_selected": 50,
+                "procedure_result": 45,
+                "walk_confirmed": 1000,
+            },
+            "recent_lines": 500,
+            "db_stats": {},
+        }
+        problems = detect_problems(data)
+        names = [p["name"] for p in problems]
+        assert "moving_not_working" not in names
+
     def test_critical_at_zero_success_high_count(self):
         """0% success with >20 attempts → CRITICAL."""
         data = {

@@ -425,6 +425,23 @@ def detect_problems(data: dict) -> list[dict]:
             "fix_type": "brain",
         })
 
+    # Moving but not working — procedures selected but no results
+    # (e.g., backpack missing → only move_to procedures run)
+    proc_selected = counts.get("planner_selected", 0)
+    proc_result = counts.get("procedure_result", 0)
+    walk_ok = counts.get("walk_confirmed", 0)
+    if proc_selected > 30 and proc_result == 0 and walk_ok > 100:
+        problems.append({
+            "severity": "HIGH",
+            "name": "moving_not_working",
+            "description": (
+                f"{proc_selected} procedures selected, 0 results, "
+                f"{walk_ok} walks — agent moving but doing no work "
+                f"(likely backpack missing or all procedures blocked)"
+            ),
+            "fix_type": "planner",
+        })
+
     # --- DB-based failure detection ---
     # db_stats format: {"procedure:result": {"count": N, "avg_ms": M}}
     db_stats = data.get("db_stats", {})
