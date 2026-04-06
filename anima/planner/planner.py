@@ -316,15 +316,18 @@ class Planner:
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
                 return proc
 
-        # --- Priority 2: Overweight → smelt ---
+        # --- Priority 2: Overweight → smelt (only if carrying ore) ---
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.85:
-            proc = _get_proc("smelt_ore")
-            if proc and await proc.can_start(ctx):
-                _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 광석 제련")
-                return proc
-            # No forge nearby — go to forge
-            _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 용광로로 이동")
-            return await self._move_to_location(ctx, "forge", "blacksmith")
+            if ore_count > 0:
+                proc = _get_proc("smelt_ore")
+                if proc and await proc.can_start(ctx):
+                    _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 광석 제련")
+                    return proc
+                # Has ore but no forge nearby — go to forge
+                _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 용광로로 이동")
+                return await self._move_to_location(ctx, "forge", "blacksmith")
+            # Overweight from non-ore items (crafted items, etc.) — fall
+            # through to sell/bank priorities below
 
         # --- Priority 3: Has ore → smelt ---
         if ore_count > 0:

@@ -91,6 +91,7 @@ class TestGameplayLoop:
         planner = Planner(reg)
 
         ctx = _make_ctx(weight=360, weight_max=400)
+        _add_item(ctx, 99, ORE, amount=10)  # need ore to trigger smelt path
         proc = await planner.select_procedure(ctx)
         assert proc.name == "smelt_ore"
 
