@@ -430,7 +430,7 @@ def detect_problems(data: dict) -> list[dict]:
     proc_selected = counts.get("planner_selected", 0)
     proc_result = counts.get("procedure_result", 0)
     walk_ok = counts.get("walk_confirmed", 0)
-    if proc_selected > 30 and proc_result == 0 and walk_ok > 100:
+    if proc_selected > 3 and proc_result == 0 and walk_ok > 50:
         problems.append({
             "severity": "HIGH",
             "name": "moving_not_working",

@@ -47,12 +47,12 @@ class TestDetectProblemsFromDB:
         assert "db_procedure_failing" not in names
 
     def test_moving_not_working_detected(self):
-        """Many procedures selected but no results → HIGH."""
+        """Procedures selected but no results → HIGH."""
         data = {
             "counts": {
-                "planner_selected": 71,
+                "planner_selected": 4,
                 "procedure_result": 0,
-                "walk_confirmed": 2840,
+                "walk_confirmed": 900,
             },
             "recent_lines": 500,
             "db_stats": {},
@@ -65,9 +65,9 @@ class TestDetectProblemsFromDB:
         """Normal operation with results → no problem."""
         data = {
             "counts": {
-                "planner_selected": 50,
-                "procedure_result": 45,
-                "walk_confirmed": 1000,
+                "planner_selected": 10,
+                "procedure_result": 8,
+                "walk_confirmed": 500,
             },
             "recent_lines": 500,
             "db_stats": {},
