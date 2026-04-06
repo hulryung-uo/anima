@@ -406,9 +406,29 @@ class Planner:
                 if move:
                     return move
 
-            # 4f: No gold, no ore, no ingots — fall through to lower priorities
-            # (e.g., Priority 9 will move the agent toward an activity area)
-            logger.info("planner_no_tools_falling_through")
+            # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
+            # Recovery: scavenge ground items or walk to populated area
+            logger.info("planner_deadlock_recovery_attempt")
+
+            # Try to find valuable items on the ground nearby
+            ground_items = self._find_ground_valuables(ctx, ss)
+            if ground_items:
+                _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
+                return _ScavengeGroundItems(ground_items, ss)
+
+            # Nothing on ground → walk to populated area (NOT mine)
+            if time.time() > self._move_fail_until:
+                _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
+                move = await self._move_to_location(
+                    ctx, "bank", "tavern", "inn", "blacksmith",
+                )
+                if move:
+                    return move
+
+            # All recovery paths exhausted — return None, let _check_stuck
+            # escalate to forum
+            _intent("교착 상태: 복구 불가 → 도움 대기")
+            return None
 
         # --- Priority 5: Has ingots → craft into weapons/armor ---
         if ingot_count >= 8:
@@ -592,7 +612,6 @@ class Planner:
         import time as _time
         from anima.actions.inventory import find_in_backpack, count_items
         from anima.skills.gathering.mine import PICKAXE_GRAPHICS, ORE_GRAPHICS
-        from anima.skills.crafting.smelt import INGOT_GRAPHICS
 
         ss = ctx.perception.self_state
         has_pickaxe = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}))
@@ -659,21 +678,29 @@ class Planner:
             return
 
         # Strategy 5: True deadlock — no tools, no gold, no materials
+        # Reset failed destinations so the agent can walk to new areas to scavenge
         if not has_pickaxe and ss.gold < 10 and ore == 0 and ingots == 0:
-            ctx.blackboard["planner_intent"] = (
-                "교착 상태: 도구 없음, 금화 없음, 재료 없음 — 도움 요청 필요"
-            )
-            logger.error(
-                "planner_true_deadlock",
-                reason="no tools, no gold, no materials",
+            logger.warning(
+                "planner_true_deadlock_recovery",
+                reason="no tools, no gold, no materials — clearing state for scavenge",
                 pos=f"({ss.x},{ss.y})",
+            )
+            # Clear failed destinations so _move_to_location can find new targets
+            self._failed_destinations.clear()
+            self._move_fail_until = 0.0
+            ctx.blackboard.pop("_skip_procedures", None)
+            ctx.blackboard["planner_intent"] = (
+                "교착 상태: 이동 제한 해제 → 마을에서 아이템 탐색"
             )
             if ctx.bus:
                 ctx.bus.publish("system.deadlock", {
-                    "message": "DEADLOCK: 도구/금화/재료 모두 없음 — 포럼에 도움 요청",
+                    "message": "DEADLOCK: scavenging recovery — walking to town",
                     "importance": 3,
                 })
-            # Don't reset idle_ticks — let it escalate to forum
+            # Reset idle_ticks to give select_procedure another chance
+            # with fresh state — Priority 4f will try scavenge/walk-to-town
+            self._idle_ticks = 0
+            return
 
     async def _escalate_to_forum(self, ctx: AgentContext) -> None:
         """Post a help request to forum and pause the planner."""
@@ -786,6 +813,43 @@ class Planner:
                     and it.serial not in junk
                     and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
                 result.append(it)
+        return result
+
+    def _find_ground_valuables(self, ctx: AgentContext, ss) -> list:
+        """Find ANY valuable items on the ground near the player.
+
+        Used for deadlock recovery — scavenges gold, ore, ingots, tools,
+        and crafted items within pickup range.
+        """
+        from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
+        from anima.skills.crafting.smelt import INGOT_GRAPHICS
+        from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
+
+        GOLD_GRAPHIC = 0x0EED
+        SHOVEL_GRAPHICS = {0x0F39}
+
+        valuable = (
+            ORE_GRAPHICS
+            | INGOT_GRAPHICS
+            | PICKAXE_GRAPHICS
+            | SHOVEL_GRAPHICS
+            | TINKER_TOOLS_GRAPHICS
+            | TONGS_GRAPHICS
+            | {GOLD_GRAPHIC}
+        )
+
+        junk = ctx.blackboard.get("_junk_ore_serials", set())
+        result = []
+        for it in ctx.perception.world.items.values():
+            if (it.container == 0
+                    and it.graphic in valuable
+                    and it.serial not in junk
+                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 18):
+                result.append(it)
+
+        # Sort by distance (closest first) for efficient pickup
+        result.sort(key=lambda it: max(abs(it.x - ss.x), abs(it.y - ss.y)))
         return result
 
     def _is_destination_failed(self, x: int, y: int) -> bool:
@@ -1002,6 +1066,92 @@ class _PickUpAndSmelt:
             success=True,
             message=f"Picked up {picked} ore stacks, heading to forge",
             next_suggestion="smelt_ore",
+        )
+
+
+class _ScavengeGroundItems:
+    """Deadlock recovery: walk to and pick up valuable items from the ground."""
+
+    def __init__(self, items: list, ss) -> None:
+        self.name = "scavenge_ground_items"
+        self.description = "Pick up valuable items from ground"
+        self._items = items
+        self._player_pos = (ss.x, ss.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+        from anima.action.movement import go_to
+        from anima.client.packets import build_drop_item, build_pick_up
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
+
+        picked = 0
+        for item_ref in self._items:
+            # Re-check item still exists on ground
+            item = ctx.perception.world.items.get(item_ref.serial)
+            if not item or item.container != 0:
+                continue
+
+            # Check weight limit
+            if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
+                break
+
+            # Walk to item if not adjacent
+            dist = max(abs(item.x - ss.x), abs(item.y - ss.y))
+            if dist > 2:
+                arrived = await go_to(ctx, item.x, item.y)
+                if not arrived:
+                    continue  # skip unreachable items
+
+            # Pick up into backpack
+            await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+            await asyncio.sleep(0.3)
+            await ctx.conn.send_packet(
+                build_drop_item(item.serial, container=backpack)
+            )
+            await asyncio.sleep(0.3)
+            picked += 1
+            logger.info(
+                "scavenged_item",
+                serial=f"0x{item.serial:08X}",
+                graphic=f"0x{item.graphic:04X}",
+                amount=item.amount,
+            )
+
+            if picked >= 5:
+                break  # don't spend too long scavenging
+
+        if picked == 0:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no items could be picked up",
+            )
+
+        # Figure out appropriate next step based on what we picked up
+        from anima.skills.gathering.mine import ORE_GRAPHICS
+
+        has_ore = any(
+            it.graphic in ORE_GRAPHICS
+            for it in ctx.perception.world.items.values()
+            if it.container == backpack
+        )
+        hint = "smelt_ore" if has_ore else None
+
+        return ProcedureResult(
+            success=True,
+            message=f"Scavenged {picked} items from ground",
+            next_suggestion=hint,
         )
 
 

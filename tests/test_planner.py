@@ -259,3 +259,92 @@ class TestSupervisorHints:
             result = await planner.tick(ctx)
             # Expired hint should NOT block — procedure runs normally
             assert result is not None
+
+
+def _add_ground_item(ctx, serial, graphic, x, y, amount=1, hue=0):
+    """Add an item on the ground (container=0)."""
+    item = MagicMock(
+        container=0, graphic=graphic, amount=amount, hue=hue,
+        serial=serial, x=x, y=y,
+    )
+    ctx.perception.world.items[serial] = item
+
+
+GOLD = 0x0EED
+
+
+class TestDeadlockRecovery:
+    """Test deadlock recovery: no tools, no gold, no materials → scavenge."""
+
+    @pytest.mark.asyncio
+    async def test_deadlock_scavenges_ground_gold(self):
+        """True deadlock + gold on ground → scavenge_ground_items."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # No tools, no gold (gold=0), empty backpack
+        ctx = _make_ctx(gold=0)
+        # Gold coins on the ground nearby
+        _add_ground_item(ctx, 0xAA, GOLD, x=105, y=205)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "scavenge_ground_items"
+
+    @pytest.mark.asyncio
+    async def test_deadlock_scavenges_ground_pickaxe(self):
+        """True deadlock + pickaxe on ground → scavenge_ground_items."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0)
+        _add_ground_item(ctx, 0xBB, PICKAXE, x=100, y=200)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "scavenge_ground_items"
+
+    @pytest.mark.asyncio
+    async def test_deadlock_no_ground_items_walks_to_town(self):
+        """True deadlock + nothing on ground → move to populated area."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Position near Minoc so town locations are in range
+        ctx = _make_ctx(gold=0, x=2500, y=500)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert "move_to" in proc.name
+
+    @pytest.mark.asyncio
+    async def test_deadlock_no_ground_no_town_returns_none(self):
+        """True deadlock + nothing nearby at all → returns None."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0)
+
+        with patch("anima.world_knowledge.ALL_LOCATIONS", []):
+            proc = await planner.select_procedure(ctx)
+        assert proc is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_deadlock_clears_state(self):
+        """_resolve_deadlock Strategy 5 resets failed destinations and idle ticks."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0)
+        ctx.bus = None
+        planner._idle_ticks = 150
+        # Use fresh timestamps so strategies 1-4 don't trigger early return
+        now = _time.time()
+        planner._failed_destinations = {(100, 200): now, (300, 400): now}
+        planner._move_fail_until = 999999.0
+
+        await planner._resolve_deadlock(ctx)
+
+        assert planner._idle_ticks == 0
+        assert len(planner._failed_destinations) == 0
+        assert planner._move_fail_until == 0.0
