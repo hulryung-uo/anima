@@ -18,6 +18,8 @@ def _make_ctx():
     ctx.perception.self_state.z = 0
     ctx.perception.self_state.serial = 0x100
     ctx.perception.self_state.gold = 500
+    ctx.perception.self_state.weight = 100
+    ctx.perception.self_state.weight_max = 400
     ctx.perception.self_state.vendor_buy_list = None
     ctx.perception.self_state.vendor_sell_list = None
     ctx.perception.self_state.context_menu = []
@@ -46,6 +48,17 @@ class TestBuyFromVendor:
         proc = BuyFromVendor()
         ctx = _make_ctx()
         with patch("anima.procedures.buy_from_vendor._find_vendor", return_value=None):
+            result = await proc.can_start(ctx)
+        assert not result
+
+    @pytest.mark.asyncio
+    async def test_overweight_rejects(self):
+        """Overweight agent should not attempt to buy — server rejects silently."""
+        proc = BuyFromVendor()
+        ctx = _make_ctx()
+        ctx.perception.self_state.weight = 400  # 91% of 439
+        ctx.perception.self_state.weight_max = 439
+        with patch("anima.procedures.buy_from_vendor._find_vendor", return_value=MagicMock()):
             result = await proc.can_start(ctx)
         assert not result
 

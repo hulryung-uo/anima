@@ -28,6 +28,9 @@ class BuyFromVendor(Procedure):
         ss = ctx.perception.self_state
         if ss.gold < 10:
             return False
+        # Don't buy when overweight — server silently rejects purchases
+        if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.9:
+            return False
         return _find_vendor(ctx) is not None
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
@@ -114,34 +117,20 @@ class BuyFromVendor(Procedure):
                     target_item = item
                     break
 
-        # Fallback: buy first affordable item (must cost > 0)
-        if not target_item and buy_list:
-            for item in buy_list:
-                if item.price > 0 and item.price <= ss.gold:
-                    target_item = item
-                    break
-
         if not target_item:
-            # Log why nothing was affordable
-            zero_price = [it.name or f"0x{it.graphic:04X}" for it in buy_list if it.price == 0]
-            too_expensive = [
-                f"{it.name or f'0x{it.graphic:04X}'} @{it.price}gp"
-                for it in buy_list if it.price > ss.gold
-            ]
             logger.warning(
-                "buy_nothing_affordable",
+                "buy_no_tools_available",
                 vendor=vendor_name,
                 gold=ss.gold,
-                zero_price_items=zero_price if zero_price else None,
-                too_expensive=too_expensive[:5] if too_expensive else None,
+                wanted=[f"0x{g:04X}" for g in TOOL_GRAPHICS],
+                available=[f"0x{it.graphic:04X}" for it in buy_list[:10]],
             )
             ss.vendor_buy_list = []
             ss.vendor_serial = 0
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
-                message=f"nothing affordable from {vendor_name} (gold={ss.gold}gp, "
-                        f"{len(zero_price)} items @0gp, {len(too_expensive)} too expensive)",
+                message=f"{vendor_name} doesn't sell mining tools (pickaxe/shovel)",
             )
 
         target_name = target_item.name or f"0x{target_item.graphic:04X}"
