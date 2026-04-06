@@ -29,12 +29,17 @@ class SellToVendor(Procedure):
     @staticmethod
     def _dynamic_keep(ctx: AgentContext) -> set[int]:
         """KEEP_GRAPHICS minus items we can't use (e.g. ingots without tongs)."""
+        import time
+
         from anima.actions.inventory import find_in_backpack
         from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
 
         keep = set(KEEP_GRAPHICS)
-        if not find_in_backpack(ctx, _TONGS_GFX):
-            keep.discard(0x1BF2)  # ingots sellable without tongs
+        has_tongs = bool(find_in_backpack(ctx, _TONGS_GFX))
+        cooldown = ctx.blackboard.get("_craft_bs_material_cooldown", 0)
+        craft_blocked = isinstance(cooldown, (int, float)) and time.time() < cooldown
+        if not has_tongs or craft_blocked:
+            keep.discard(0x1BF2)  # ingots sellable without tongs or when craft blocked
         return keep
 
     @staticmethod
