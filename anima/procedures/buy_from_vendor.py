@@ -105,10 +105,11 @@ class BuyFromVendor(Procedure):
             available=available_items,
         )
 
-        # Prioritize buying mining tools (pickaxe/shovel) if we need one
+        # Buy needed tools: mining tools (pickaxe/shovel) or smithing tools (tongs)
         from anima.skills.gathering.mine import PICKAXE_GRAPHICS
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
         SHOVEL_GRAPHICS = {0x0F39}
-        TOOL_GRAPHICS = PICKAXE_GRAPHICS | SHOVEL_GRAPHICS
+        TOOL_GRAPHICS = PICKAXE_GRAPHICS | SHOVEL_GRAPHICS | TONGS_GRAPHICS
 
         target_item = None
         for item in buy_list:
@@ -130,7 +131,7 @@ class BuyFromVendor(Procedure):
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
-                message=f"{vendor_name} doesn't sell mining tools (pickaxe/shovel)",
+                message=f"{vendor_name} doesn't sell tools (pickaxe/shovel/tongs)",
             )
 
         target_name = target_item.name or f"0x{target_item.graphic:04X}"
