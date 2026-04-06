@@ -340,10 +340,13 @@ class Planner:
             return await self._move_to_location(ctx, "forge", "blacksmith")
 
         # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
-        ground_ore = self._find_ground_ore(ctx, ss)
-        if ground_ore:
-            _intent(f"바닥에 광석 {len(ground_ore)}개 발견 → 줍기")
-            return _PickUpAndSmelt(ground_ore, ss)
+        # Skip if too heavy to pick up anything (same 50-stone buffer as _PickUpAndSmelt)
+        can_carry_more = ss.weight_max == 0 or ss.weight <= ss.weight_max - 50
+        if can_carry_more:
+            ground_ore = self._find_ground_ore(ctx, ss)
+            if ground_ore:
+                _intent(f"바닥에 광석 {len(ground_ore)}개 발견 → 줍기")
+                return _PickUpAndSmelt(ground_ore, ss)
 
         # --- Priority 4: No mining tools → get them ---
         if not has_mining_tool:

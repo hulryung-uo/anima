@@ -1,0 +1,8 @@
+{
+  "skip_procedures": {
+    "craft_blacksmith": {
+      "until": 1775383049.8401148,
+      "reason": "missing_resource"
+    }
+  }
+}
