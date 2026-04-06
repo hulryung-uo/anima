@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sqlite3
 import subprocess
@@ -561,8 +562,27 @@ def main() -> None:
                 last_health_check = now
 
                 # Check if code changed (git commit) → restart agent with new code
+                # If tools/ changed, re-exec supervisor itself
                 current_head = get_git_head()
                 if current_head and current_head != last_git_head:
+                    # Check if supervisor/tools code changed
+                    try:
+                        changed = subprocess.run(
+                            ["git", "diff", "--name-only",
+                             last_git_head, current_head],
+                            cwd=str(ROOT), capture_output=True, text=True,
+                        ).stdout
+                        tools_changed = any(
+                            f.startswith("tools/") for f in changed.splitlines()
+                        )
+                    except Exception:
+                        tools_changed = False
+
+                    if tools_changed:
+                        print(f"[supervisor] tools/ changed ({last_git_head[:8]} → {current_head[:8]}) — restarting supervisor")
+                        stop_agent(agent_proc)
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+
                     print(f"[supervisor] Code changed ({last_git_head[:8]} → {current_head[:8]}) — restarting agent")
                     last_git_head = current_head
                     consecutive_recoveries = 0
