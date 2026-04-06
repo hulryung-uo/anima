@@ -73,6 +73,7 @@ CRAFTED_WEAPON_GRAPHICS = {
     0x13FF,  # katana
     0x13B6,  # scimitar
     0x0F5E,  # broadsword
+    0x1405,  # war fork
 }
 CRAFTED_ARMOR_GRAPHICS = {
     0x13EB,  # ringmail gloves
