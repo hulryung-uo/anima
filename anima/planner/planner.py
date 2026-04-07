@@ -556,7 +556,9 @@ class Planner:
                     SEARCH_RADIUS as _MINE_SEARCH_R,
                     _find_mineable_tile,
                 )
-                tile = _find_mineable_tile(ctx)
+                _blocked = {k for k, v in self._failed_destinations.items()
+                            if time.time() - v < 300.0}
+                tile = _find_mineable_tile(ctx, blocked=_blocked)
                 if tile is not None:
                     tx, ty = tile[0], tile[1]
                     dist = max(abs(tx - ss.x), abs(ty - ss.y))

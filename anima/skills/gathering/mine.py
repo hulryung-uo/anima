@@ -92,8 +92,10 @@ MINEABLE_TILES: set[int] = MINEABLE_LAND_TILES | MINEABLE_STATIC_TILES
 
 def _find_mineable_tile(
     ctx: BrainContext,
+    *,
+    blocked: set[tuple[int, int]] | None = None,
 ) -> tuple[int, int, int, int, bool] | None:
-    """Find a mineable tile, skipping depleted spots.
+    """Find a mineable tile, skipping depleted and blocked spots.
 
     Checks within SEARCH_RADIUS first. If nothing found, searches
     up to MOVE_RADIUS for tiles the player can walk to.
@@ -109,6 +111,7 @@ def _find_mineable_tile(
         "depleted_mines", {}
     )
     now = time.time()
+    _blocked = blocked or set()
 
     def _is_depleted(x: int, y: int) -> bool:
         ts = depleted.get((x, y))
@@ -119,7 +122,7 @@ def _find_mineable_tile(
         return False
 
     def _check_tile(x: int, y: int) -> tuple[int, int, int, int, bool] | None:
-        if _is_depleted(x, y):
+        if _is_depleted(x, y) or (x, y) in _blocked:
             return None
         tile = ctx.map_reader.get_tile(x, y)
         for s in tile.statics:
