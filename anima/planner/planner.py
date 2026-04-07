@@ -533,30 +533,38 @@ class Planner:
             _intent(f"금화 {ss.gold}g 보유 → 은행으로 이동")
             return await self._move_to_location(ctx, "bank")
 
+        # --- Mining exhaustion guard ---
+        # When all veins were depleted (10 consecutive failures), skip mining
+        # for 5 min while the server regenerates resources.
+        _mine_exhausted = time.time() < ctx.blackboard.get(
+            "_mine_exhausted_until", 0
+        )
+
         # --- Priority 7: Has mining tool → mine ---
         if has_mining_tool:
             # We have a tool again — reset gave-up flags so they can retry next time
             ctx.blackboard.pop("_make_tools_gave_up", None)
-        proc = _get_proc("mine_ore")
-        if proc and await proc.can_start(ctx):
-            _intent("광산 근처, 곡괭이 보유 → 채광 시작")
-            return proc
+        if not _mine_exhausted:
+            proc = _get_proc("mine_ore")
+            if proc and await proc.can_start(ctx):
+                _intent("광산 근처, 곡괭이 보유 → 채광 시작")
+                return proc
 
-        # --- Priority 7b: Near mine but not close enough → walk to ore ---
-        if has_mining_tool:
-            from anima.skills.gathering.mine import (
-                SEARCH_RADIUS as _MINE_SEARCH_R,
-                _find_mineable_tile,
-            )
-            tile = _find_mineable_tile(ctx)
-            if tile is not None:
-                tx, ty = tile[0], tile[1]
-                dist = max(abs(tx - ss.x), abs(ty - ss.y))
-                if dist > _MINE_SEARCH_R:
-                    _intent(f"채광 타일 발견 ({tx},{ty}), 거리 {dist} → 접근 이동")
-                    return _MoveToProcedure(
-                        f"mineable tile ({tx},{ty})", tx, ty,
-                    )
+            # --- Priority 7b: Near mine but not close enough → walk to ore ---
+            if has_mining_tool:
+                from anima.skills.gathering.mine import (
+                    SEARCH_RADIUS as _MINE_SEARCH_R,
+                    _find_mineable_tile,
+                )
+                tile = _find_mineable_tile(ctx)
+                if tile is not None:
+                    tx, ty = tile[0], tile[1]
+                    dist = max(abs(tx - ss.x), abs(ty - ss.y))
+                    if dist > _MINE_SEARCH_R:
+                        _intent(f"채광 타일 발견 ({tx},{ty}), 거리 {dist} → 접근 이동")
+                        return _MoveToProcedure(
+                            f"mineable tile ({tx},{ty})", tx, ty,
+                        )
 
         # --- Priority 8: Continuation hint ---
         if self.continuation_hint:
@@ -567,7 +575,7 @@ class Planner:
             self.continuation_hint = None
 
         # --- Priority 9: Move to mine ---
-        if time.time() > self._move_fail_until:
+        if not _mine_exhausted and time.time() > self._move_fail_until:
             _intent("할 일 없음 → 광산으로 이동")
             move_proc = await self._try_move_to_activity(ctx)
             if move_proc:
@@ -626,6 +634,12 @@ class Planner:
                 skip = ctx.blackboard.setdefault("_skip_procedures", set())
                 skip.add(proc_name)
                 self._repeat_counter[proc_name] = 0
+                # mine_ore exhaustion: all veins depleted, server regen is
+                # 10-20 min — set a 5-minute cooldown so the agent does other
+                # activities instead of bouncing between depleted mines.
+                if proc_name == "mine_ore":
+                    ctx.blackboard["_mine_exhausted_until"] = _time.time() + 300
+                    logger.info("planner_mine_exhausted", cooldown_sec=300)
                 ctx.blackboard["planner_intent"] = (
                     f"{proc_name} {count}회 연속 실패 → 일시 스킵"
                 )
