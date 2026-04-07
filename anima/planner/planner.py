@@ -396,7 +396,7 @@ class Planner:
 
             # 4d: Has ingots + tongs → craft weapons to sell for gold to buy tools
             #     Skip when material cooldown is active (iron forcing failed)
-            if ingot_count >= 8 and not craft_material_blocked:
+            if ingot_count >= 8 and has_tongs and not craft_material_blocked:
                 proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 무기 제작 후 판매하여 자금 마련")

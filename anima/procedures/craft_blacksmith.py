@@ -464,13 +464,14 @@ class CraftBlacksmith(Procedure):
             mat_fails = ctx.blackboard.get("_craft_bs_material_fails", 0) + 1
             ctx.blackboard["_craft_bs_material_fails"] = mat_fails
             if mat_fails >= 3 and ingots_before >= ingot_cost:
-                ctx.blackboard["_craft_bs_material_cooldown"] = time.time() + 300
+                cooldown = min(300 * (mat_fails - 2), 1800)  # escalate: 300→600→…→1800s
+                ctx.blackboard["_craft_bs_material_cooldown"] = time.time() + cooldown
                 logger.warning(
                     "craft_bs_material_cooldown",
                     fails=mat_fails,
                     ingots=ingots_before,
                     cost=ingot_cost,
-                    cooldown_sec=300,
+                    cooldown_sec=cooldown,
                 )
             logger.warning(
                 "craft_blacksmith_no_material",
