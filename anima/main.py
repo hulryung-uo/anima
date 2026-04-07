@@ -516,7 +516,7 @@ async def planner_loop(ctx: AgentContext) -> None:
         forum_task.cancel()
 
 
-FORUM_INTERVAL = 1800  # minimum 30 minutes between posts
+FORUM_INTERVAL = 3600  # minimum 1 hour between posts
 FORUM_LAST_POST_FILE = Path("data/forum_last_post.txt")
 
 
@@ -637,15 +637,28 @@ Recent events: {'; '.join(activity_lines[-8:]) if activity_lines else 'nothing n
     if ctx.llm:
         try:
             prompt = f"""You are {persona_name}, a miner and blacksmith in Ultima Online.
-Write a short tavern journal entry (3-5 sentences) about what you've been doing.
-Write in first person, as if telling your story to fellow adventurers at the tavern.
-Be casual and authentic — mention specific places, challenges, small victories.
-Don't use bullet points or headers. Just tell your story naturally.
+Write a tavern journal entry with a real story — not a status update.
 
-Here's what happened:
+Requirements:
+- 3-4 paragraphs (roughly 200-350 words total)
+- First person, conversational, like telling the tale to drinkers at the tavern
+- Build a narrative arc: set the scene, introduce a specific moment or struggle,
+  reflect on what it meant, and hint at what you'll do next
+- Pick ONE specific moment from the events below and dwell on it — the feel of
+  the pickaxe hitting stone, the warmth of the forge, the frustration of a
+  broken tongs, the relief of selling to a familiar vendor, the weight of
+  ingots in your pack
+- Use sensory details, small observations, inner monologue
+- Mention specific places by name (Minoc, the mine forge, the blacksmith)
+- Avoid listing stats or bullet points — weave numbers into the narrative
+  naturally ("nearly fifty ingots in my pack" not "49 iron ingots")
+- Don't start every paragraph the same way
+- No headers, no lists, no markdown formatting — just flowing prose
+
+Here's what actually happened in this hour:
 {raw_data}
 
-Write ONLY the journal entry, nothing else."""
+Write ONLY the journal entry, nothing else. Make it feel lived-in."""
 
             response = await ctx.llm.chat([
                 {"role": "user", "content": prompt},
