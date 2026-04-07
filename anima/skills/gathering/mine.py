@@ -32,7 +32,7 @@ ORE_GRAPHICS = {0x19B7, 0x19B8, 0x19B9, 0x19BA}
 MINING_SKILL_ID = 45
 
 SEARCH_RADIUS = 2  # mining range is 2 tiles
-DEPLETED_COOLDOWN = 120.0  # seconds before retrying a depleted spot
+DEPLETED_COOLDOWN = 600.0  # seconds before retrying a depleted spot (server regen ~10-20 min)
 MOVE_RADIUS = 8  # how far to look for new mining spots
 
 # From ServUO Mining.cs m_MountainAndCaveTiles
