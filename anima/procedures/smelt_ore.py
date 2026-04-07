@@ -129,6 +129,19 @@ class SmeltOre(Procedure):
             if it.container == backpack and it.graphic in INGOT_GRAPHICS
         )
 
+        # Listen for server feedback during smelting
+        _smelt_flags = {"not_enough": False}
+
+        def _on_speech(_topic: str, data: dict) -> None:
+            text = data.get("text", "")
+            if "not enough metal" in text.lower():
+                _smelt_flags["not_enough"] = True
+
+        sub1 = sub2 = None
+        if ctx.bus:
+            sub1 = ctx.bus.subscribe("avatar.speech_heard", _on_speech)
+            sub2 = ctx.bus.subscribe("avatar.speech_cliloc", _on_speech)
+
         # Smelt: double-click ore → target forge
         if forge_dyn:
             result = await use_on_object(ctx, ore.serial, forge_dyn[3])
@@ -137,6 +150,9 @@ class SmeltOre(Procedure):
             result = await use_on_target(ctx, ore.serial, fx, fy, fz, graphic=fg)
 
         if not result.success:
+            if ctx.bus:
+                if sub1: ctx.bus.unsubscribe(sub1)
+                if sub2: ctx.bus.unsubscribe(sub2)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
@@ -144,6 +160,10 @@ class SmeltOre(Procedure):
             )
 
         await asyncio.sleep(2.0)
+
+        if ctx.bus:
+            if sub1: ctx.bus.unsubscribe(sub1)
+            if sub2: ctx.bus.unsubscribe(sub2)
 
         ingots_after = sum(
             it.amount for it in world.items.values()
@@ -163,54 +183,58 @@ class SmeltOre(Procedure):
                 next_suggestion="smelt_ore",
                 details={"ingots": ingots_gained},
             )
-        else:
-            # Track consecutive smelt failures per ore hue
-            fail_counts = ctx.blackboard.setdefault("_smelt_fail_counts", {})
-            fail_count = fail_counts.get(ore_hue, 0) + 1
-            fail_counts[ore_hue] = fail_count
 
-            if fail_count >= 3:
-                # This hue is unsmelable at our skill level — blacklist it
-                fail_counts.pop(ore_hue, None)
-                unsmelable_set = ctx.blackboard.setdefault(
-                    "_unsmelable_ore_hues", set()
-                )
-                unsmelable_set.add(ore_hue)
+        # --- Smelting failed ---
+        # "not enough metal" = definitive signal → blacklist immediately.
+        # Otherwise use 3-strike counter (could be a skill check failure).
+        immediate_blacklist = _smelt_flags["not_enough"]
 
-                # Drop only ore of this hue (not all ore)
-                from anima.client.packets import build_drop_item, build_pick_up
-                dropped = 0
-                for item in list(world.items.values()):
-                    if (item.container == backpack
-                            and item.graphic in ORE_GRAPHICS
-                            and item.hue == ore_hue):
-                        await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
-                        await asyncio.sleep(0.3)
-                        await ctx.conn.send_packet(
-                            build_drop_item(item.serial, ss.x, ss.y, ss.z)
-                        )
-                        await asyncio.sleep(0.3)
-                        dropped += 1
-                # Mark dropped ore as junk so planner won't pick them up
-                junk = ctx.blackboard.setdefault("_junk_ore_serials", set())
-                for item in world.items.values():
-                    if (item.container == 0 and item.graphic in ORE_GRAPHICS
-                            and item.hue == ore_hue
-                            and max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2):
-                        junk.add(item.serial)
+        fail_counts = ctx.blackboard.setdefault("_smelt_fail_counts", {})
+        fail_count = fail_counts.get(ore_hue, 0) + 1
+        fail_counts[ore_hue] = fail_count
 
-                logger.info(
-                    "smelt_gave_up_ore",
-                    dropped=dropped, fails=fail_count, hue=ore_hue,
-                )
-                return ProcedureResult(
-                    success=False,
-                    reason=FailureReason.PERMANENT,
-                    message=f"Ore hue {ore_hue} unsmelable, dropped {dropped} stacks",
-                )
+        if immediate_blacklist or fail_count >= 3:
+            fail_counts.pop(ore_hue, None)
+            unsmelable_set = ctx.blackboard.setdefault(
+                "_unsmelable_ore_hues", set()
+            )
+            unsmelable_set.add(ore_hue)
 
+            # Drop only ore of this hue (not all ore)
+            from anima.client.packets import build_drop_item, build_pick_up
+            dropped = 0
+            for item in list(world.items.values()):
+                if (item.container == backpack
+                        and item.graphic in ORE_GRAPHICS
+                        and item.hue == ore_hue):
+                    await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+                    await asyncio.sleep(0.3)
+                    await ctx.conn.send_packet(
+                        build_drop_item(item.serial, ss.x, ss.y, ss.z)
+                    )
+                    await asyncio.sleep(0.3)
+                    dropped += 1
+            # Mark dropped ore as junk so planner won't pick them up
+            junk = ctx.blackboard.setdefault("_junk_ore_serials", set())
+            for item in world.items.values():
+                if (item.container == 0 and item.graphic in ORE_GRAPHICS
+                        and item.hue == ore_hue
+                        and max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2):
+                    junk.add(item.serial)
+
+            reason_str = "not enough metal" if immediate_blacklist else f"{fail_count} failures"
+            logger.info(
+                "smelt_gave_up_ore",
+                dropped=dropped, hue=ore_hue, reason=reason_str,
+            )
             return ProcedureResult(
                 success=False,
-                reason=FailureReason.BLOCKED,
-                message=f"Smelting failed ({fail_count}/3)",
+                reason=FailureReason.PERMANENT,
+                message=f"Ore hue {ore_hue} unsmelable ({reason_str}), dropped {dropped} stacks",
             )
+
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.BLOCKED,
+            message=f"Smelting failed ({fail_count}/3)",
+        )

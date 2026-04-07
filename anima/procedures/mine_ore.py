@@ -204,6 +204,15 @@ class MineOre(Procedure):
                             build_drop_item(item.serial, ss.x, ss.y, ss.z)
                         )
                     await asyncio.sleep(0.3)
+
+                    # If this ore hue was previously blacklisted, mark as junk
+                    # so smelt_ore won't waste a cycle trying it
+                    unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
+                    if item.hue in unsmelable:
+                        junk = ctx.blackboard.setdefault("_junk_ore_serials", set())
+                        junk.add(item.serial)
+                        if stack_target:
+                            junk.add(stack_target.serial)
                     break
 
             return ProcedureResult(
