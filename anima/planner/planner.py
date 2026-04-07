@@ -540,6 +540,22 @@ class Planner:
             _intent("광산 근처, 곡괭이 보유 → 채광 시작")
             return proc
 
+        # --- Priority 7b: Near mine but not close enough → walk to ore ---
+        if has_mining_tool:
+            from anima.skills.gathering.mine import (
+                SEARCH_RADIUS as _MINE_SEARCH_R,
+                _find_mineable_tile,
+            )
+            tile = _find_mineable_tile(ctx)
+            if tile is not None:
+                tx, ty = tile[0], tile[1]
+                dist = max(abs(tx - ss.x), abs(ty - ss.y))
+                if dist > _MINE_SEARCH_R:
+                    _intent(f"채광 타일 발견 ({tx},{ty}), 거리 {dist} → 접근 이동")
+                    return _MoveToProcedure(
+                        f"mineable tile ({tx},{ty})", tx, ty,
+                    )
+
         # --- Priority 8: Continuation hint ---
         if self.continuation_hint:
             proc = _get_proc(self.continuation_hint)
