@@ -829,14 +829,16 @@ class Planner:
         ctx.blackboard["planner_intent"] = "전체 초기화 후 재시도"
 
     def _find_ground_ore(self, ctx: AgentContext, ss) -> list:
-        """Find ore items on the ground near the player (excluding junk)."""
+        """Find ore items on the ground near the player (excluding junk and unsmelable hues)."""
         from anima.skills.gathering.mine import ORE_GRAPHICS
         junk = ctx.blackboard.get("_junk_ore_serials", set())
+        unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
         result = []
         for it in ctx.perception.world.items.values():
             if (it.container == 0
                     and it.graphic in ORE_GRAPHICS
                     and it.serial not in junk
+                    and it.hue not in unsmelable
                     and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
                 result.append(it)
         return result
