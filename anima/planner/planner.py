@@ -353,9 +353,11 @@ class Planner:
             return await self._move_to_location(ctx, "forge", "blacksmith")
 
         # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
+        # Skip if we just picked up ore (hint says "smelt_ore") — let smelt run
+        # before picking up more; avoids spam when world state update is delayed.
         # Skip if too heavy to pick up anything (same 50-stone buffer as _PickUpAndSmelt)
         can_carry_more = ss.weight_max == 0 or ss.weight <= ss.weight_max - 50
-        if can_carry_more:
+        if can_carry_more and self.continuation_hint != "smelt_ore":
             ground_ore = self._find_ground_ore(ctx, ss)
             if ground_ore:
                 _intent(f"바닥에 광석 {len(ground_ore)}개 발견 → 줍기")
