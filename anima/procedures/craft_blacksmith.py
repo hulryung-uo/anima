@@ -358,23 +358,33 @@ class CraftBlacksmith(Procedure):
         ))
 
         # 5. Wait for crafting result via journal (like the skill version)
+        # Scan ALL recent entries for both fail and tool_broke — if both
+        # appear (craft fails AND tongs break in same attempt), tool_broke
+        # takes priority so the agent knows to replace tongs.
         result_msg = ""
         deadline = time.monotonic() + 6.0
         while time.monotonic() < deadline:
             await asyncio.sleep(0.5)
+            saw_fail = False
+            saw_tool_broke = False
+            saw_success = False
             for entry in ctx.perception.social.recent(count=5):
                 if entry.timestamp < journal_mark:
                     continue
                 text_lower = entry.text.lower()
                 if "you create" in text_lower:
-                    result_msg = "success"
-                    break
+                    saw_success = True
                 if "failed to create" in text_lower or "you fail" in text_lower:
-                    result_msg = "fail"
-                    break
+                    saw_fail = True
                 if "worn out your tool" in text_lower:
-                    result_msg = "tool_broke"
-                    break
+                    saw_tool_broke = True
+            # Prioritize: tool_broke > fail > success
+            if saw_tool_broke:
+                result_msg = "tool_broke"
+            elif saw_fail:
+                result_msg = "fail"
+            elif saw_success:
+                result_msg = "success"
             if result_msg:
                 break
 
