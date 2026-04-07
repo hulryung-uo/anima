@@ -33,15 +33,20 @@ class SmeltOre(Procedure):
         if not backpack:
             return False
 
+        unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
+
         has_ore = any(
-            it.graphic in ORE_GRAPHICS
+            it.graphic in ORE_GRAPHICS and it.hue not in unsmelable
             for it in world.items.values()
             if it.container == backpack
         )
         if not has_ore:
-            # Also check ground nearby
+            # Also check ground nearby (excluding junk serials)
+            junk = ctx.blackboard.get("_junk_ore_serials", set())
             has_ore = any(
                 it.graphic in ORE_GRAPHICS and it.container == 0
+                and it.hue not in unsmelable
+                and it.serial not in junk
                 and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 2
                 for it in world.items.values()
             )
@@ -55,18 +60,23 @@ class SmeltOre(Procedure):
         world = ctx.perception.world
         backpack = ss.equipment.get(0x15)
 
-        # Find ore
+        # Find ore (skip hues we've proven unsmelable)
+        unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
         ore = None
         for item in world.items.values():
-            if item.container == backpack and item.graphic in ORE_GRAPHICS:
+            if (item.container == backpack and item.graphic in ORE_GRAPHICS
+                    and item.hue not in unsmelable):
                 ore = item
                 break
 
         if not ore:
-            # Pick up from ground
+            # Pick up from ground (skip unsmelable hues and junk serials)
+            junk = ctx.blackboard.get("_junk_ore_serials", set())
             from anima.client.packets import build_drop_item, build_pick_up
             for item in world.items.values():
                 if (item.graphic in ORE_GRAPHICS and item.container == 0
+                        and item.hue not in unsmelable
+                        and item.serial not in junk
                         and max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2):
                     await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
                     await asyncio.sleep(0.3)
@@ -141,9 +151,12 @@ class SmeltOre(Procedure):
         )
         ingots_gained = ingots_after - ingots_before
 
+        ore_hue = ore.hue  # track which hue we attempted
+
         if ingots_gained > 0:
-            # Reset fail counter for this ore type on success
-            ctx.blackboard.pop("_smelt_fail_count", None)
+            # Reset fail counter for this ore hue on success
+            fail_counts = ctx.blackboard.get("_smelt_fail_counts", {})
+            fail_counts.pop(ore_hue, None)
             return ProcedureResult(
                 success=True,
                 message=f"Smelted {ingots_gained} ingots",
@@ -151,17 +164,26 @@ class SmeltOre(Procedure):
                 details={"ingots": ingots_gained},
             )
         else:
-            # Track consecutive smelt failures — some ore can't be smelted
-            fail_count = ctx.blackboard.get("_smelt_fail_count", 0) + 1
-            ctx.blackboard["_smelt_fail_count"] = fail_count
+            # Track consecutive smelt failures per ore hue
+            fail_counts = ctx.blackboard.setdefault("_smelt_fail_counts", {})
+            fail_count = fail_counts.get(ore_hue, 0) + 1
+            fail_counts[ore_hue] = fail_count
 
             if fail_count >= 3:
-                # Give up on this ore — drop it on the ground
-                ctx.blackboard["_smelt_fail_count"] = 0
+                # This hue is unsmelable at our skill level — blacklist it
+                fail_counts.pop(ore_hue, None)
+                unsmelable_set = ctx.blackboard.setdefault(
+                    "_unsmelable_ore_hues", set()
+                )
+                unsmelable_set.add(ore_hue)
+
+                # Drop only ore of this hue (not all ore)
                 from anima.client.packets import build_drop_item, build_pick_up
                 dropped = 0
                 for item in list(world.items.values()):
-                    if item.container == backpack and item.graphic in ORE_GRAPHICS:
+                    if (item.container == backpack
+                            and item.graphic in ORE_GRAPHICS
+                            and item.hue == ore_hue):
                         await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
                         await asyncio.sleep(0.3)
                         await ctx.conn.send_packet(
@@ -169,18 +191,22 @@ class SmeltOre(Procedure):
                         )
                         await asyncio.sleep(0.3)
                         dropped += 1
-                # Mark these ore as junk so planner won't pick them up again
+                # Mark dropped ore as junk so planner won't pick them up
                 junk = ctx.blackboard.setdefault("_junk_ore_serials", set())
                 for item in world.items.values():
-                    if item.container == 0 and item.graphic in ORE_GRAPHICS:
-                        if max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2:
-                            junk.add(item.serial)
+                    if (item.container == 0 and item.graphic in ORE_GRAPHICS
+                            and item.hue == ore_hue
+                            and max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2):
+                        junk.add(item.serial)
 
-                logger.info("smelt_gave_up_ore", dropped=dropped, fails=fail_count)
+                logger.info(
+                    "smelt_gave_up_ore",
+                    dropped=dropped, fails=fail_count, hue=ore_hue,
+                )
                 return ProcedureResult(
                     success=False,
                     reason=FailureReason.PERMANENT,
-                    message=f"Ore unsmelable, dropped {dropped} stacks",
+                    message=f"Ore hue {ore_hue} unsmelable, dropped {dropped} stacks",
                 )
 
             return ProcedureResult(

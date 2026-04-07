@@ -277,6 +277,16 @@ class Planner:
         from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
         has_tongs = bool(find_in_backpack(ctx, TONGS_GRAPHICS))
         ore_count = count_items(ctx, ORE_GRAPHICS)
+        # Exclude ore hues proven unsmelable at current skill level
+        unsmelable_ore_hues = ctx.blackboard.get("_unsmelable_ore_hues", set())
+        if unsmelable_ore_hues:
+            smeltable_ore = sum(
+                it.amount for it in ctx.perception.world.items.values()
+                if it.container == backpack and it.graphic in ORE_GRAPHICS
+                and it.hue not in unsmelable_ore_hues
+            )
+        else:
+            smeltable_ore = ore_count
         # Count IRON ingots only (hue 0) — colored ingots are not usable for basic recipes
         from anima.procedures.craft_blacksmith import _count_iron_ingots
         ingot_count = _count_iron_ingots(ctx)
@@ -319,27 +329,27 @@ class Planner:
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
                 return proc
 
-        # --- Priority 2: Overweight → smelt (only if carrying ore) ---
+        # --- Priority 2: Overweight → smelt (only if carrying smeltable ore) ---
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.85:
-            if ore_count > 0:
+            if smeltable_ore > 0:
                 proc = _get_proc("smelt_ore")
                 if proc and await proc.can_start(ctx):
                     _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 광석 제련")
                     return proc
-                # Has ore but no forge nearby — go to forge
+                # Has smeltable ore but no forge nearby — go to forge
                 _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 용광로로 이동")
                 return await self._move_to_location(ctx, "forge", "blacksmith")
             # Overweight from non-ore items (crafted items, etc.) — fall
             # through to sell/bank priorities below
 
-        # --- Priority 3: Has ore → smelt ---
-        if ore_count > 0:
+        # --- Priority 3: Has smeltable ore → smelt ---
+        if smeltable_ore > 0:
             proc = _get_proc("smelt_ore")
             if proc and await proc.can_start(ctx):
-                _intent(f"광석 {ore_count}개 보유 → 제련")
+                _intent(f"광석 {smeltable_ore}개 보유 → 제련")
                 return proc
-            # Ore in backpack but no forge nearby — go to forge
-            _intent(f"광석 {ore_count}개 보유, 근처에 용광로 없음 → 용광로로 이동")
+            # Smeltable ore in backpack but no forge nearby — go to forge
+            _intent(f"광석 {smeltable_ore}개 보유, 근처에 용광로 없음 → 용광로로 이동")
             return await self._move_to_location(ctx, "forge", "blacksmith")
 
         # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
