@@ -689,8 +689,12 @@ class Planner:
             return
 
         # Strategy 2: Clear depleted mines (maybe they've regenerated)
+        # Use the actual DEPLETED_COOLDOWN (600s) — server regen is 10-20 min.
+        # Using a shorter threshold (e.g. 60s) causes the agent to retry
+        # tiles that are still depleted on the server.
+        from anima.skills.gathering.mine import DEPLETED_COOLDOWN as _DEPL_CD
         depleted = ctx.blackboard.get("depleted_mines", {})
-        old_depleted = [k for k, v in depleted.items() if now - v > 60]
+        old_depleted = [k for k, v in depleted.items() if now - v > _DEPL_CD]
         for k in old_depleted:
             del depleted[k]
         if old_depleted:
