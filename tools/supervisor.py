@@ -599,19 +599,16 @@ def main() -> None:
                     restarts_this_hour = [t for t in restarts_this_hour if now - t < 3600]
                     if len(restarts_this_hour) < MAX_RESTARTS_PER_HOUR:
                         # Backoff: wait longer between consecutive recoveries
-                        # 1st: immediate, 2nd: 60s, 3rd: 120s, 4th+: skip to analysis
-                        if consecutive_recoveries >= 3:
-                            print(f"[supervisor] {consecutive_recoveries} consecutive recoveries — waiting for analysis cycle")
-                        else:
-                            if consecutive_recoveries > 0:
-                                wait = consecutive_recoveries * 60
-                                print(f"[supervisor] Backoff: waiting {wait}s before recovery #{consecutive_recoveries + 1}")
-                                time.sleep(wait)
-                            restarts_this_hour.append(now)
-                            consecutive_recoveries += 1
-                            agent_proc = auto_recover(agent_proc, problem, args.agent_args)
-                            last_analysis = now
-                            continue
+                        # (caps at 180s so supervisor doesn't hang indefinitely)
+                        if consecutive_recoveries > 0:
+                            wait = min(consecutive_recoveries * 60, 180)
+                            print(f"[supervisor] Backoff: waiting {wait}s before recovery #{consecutive_recoveries + 1}")
+                            time.sleep(wait)
+                        restarts_this_hour.append(now)
+                        consecutive_recoveries += 1
+                        agent_proc = auto_recover(agent_proc, problem, args.agent_args)
+                        last_analysis = now
+                        continue
                     else:
                         print(f"[supervisor] ⚠ Too many restarts ({len(restarts_this_hour)}/hr), skipping")
                 else:
