@@ -54,9 +54,8 @@ STRATEGY_EXCLUSIONS: dict[str, set[str]] = {
         "mine_ore",
         "craft_blacksmith",
     },
-    STRATEGY_FILL_COFFERS: {
-        # Nothing excluded — whatever makes gold fastest
-    },
+    # Nothing excluded — whatever makes gold fastest
+    STRATEGY_FILL_COFFERS: set(),
 }
 
 
