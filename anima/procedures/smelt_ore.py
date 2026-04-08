@@ -60,14 +60,17 @@ class SmeltOre(Procedure):
         world = ctx.perception.world
         backpack = ss.equipment.get(0x15)
 
-        # Find ore (skip hues we've proven unsmelable)
+        # Find ore (skip hues we've proven unsmelable, prefer larger piles)
         unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
-        ore = None
-        for item in world.items.values():
+        small_iron = ctx.blackboard.get("_small_iron_ore_serials", set())
+        ore_candidates = [
+            item for item in world.items.values()
             if (item.container == backpack and item.graphic in ORE_GRAPHICS
-                    and item.hue not in unsmelable):
-                ore = item
-                break
+                and item.hue not in unsmelable
+                and item.serial not in small_iron)
+        ]
+        ore_candidates.sort(key=lambda x: x.amount, reverse=True)
+        ore = ore_candidates[0] if ore_candidates else None
 
         if not ore:
             # Pick up from ground (skip unsmelable hues and junk serials)
@@ -172,12 +175,14 @@ class SmeltOre(Procedure):
         ingots_gained = ingots_after - ingots_before
 
         ore_hue = ore.hue
+        ore_serial = ore.serial
         ore_amount = ore.amount
 
         if ingots_gained > 0:
             # Reset fail counter for this ore hue on success
             fail_counts = ctx.blackboard.get("_smelt_fail_counts", {})
             fail_counts.pop(ore_hue, None)
+            ctx.blackboard.pop("_small_iron_ore_serials", None)
             return ProcedureResult(
                 success=True,
                 message=f"Smelted {ingots_gained} ingots",
@@ -190,6 +195,37 @@ class SmeltOre(Procedure):
         # failures are random skill checks, never permanent.  Don't
         # blacklist it; just retry indefinitely.
         if ore_hue == 0:
+            if _smelt_flags["not_enough"] and ore_amount < 2:
+                # Pile too small to smelt — try combining with another iron ore pile
+                other_iron = next(
+                    (item for item in world.items.values()
+                     if (item.container == backpack and item.graphic in ORE_GRAPHICS
+                         and item.hue == 0 and item.serial != ore_serial)),
+                    None,
+                )
+                if other_iron:
+                    combine_result = await use_on_object(ctx, ore_serial, other_iron.serial)
+                    if combine_result.success:
+                        await asyncio.sleep(0.5)
+                        logger.info("smelt_combined_ore",
+                                    from_serial=hex(ore_serial),
+                                    to_serial=hex(other_iron.serial))
+                        return ProcedureResult(
+                            success=False,
+                            reason=FailureReason.BLOCKED,
+                            message="Combined small ore piles, retrying",
+                            next_suggestion="smelt_ore",
+                        )
+                # No other pile or combine failed — skip this serial
+                small_set = ctx.blackboard.setdefault("_small_iron_ore_serials", set())
+                small_set.add(ore_serial)
+                logger.info("smelt_iron_too_small",
+                            serial=hex(ore_serial), amount=ore_amount)
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.BLOCKED,
+                    message=f"Iron ore pile too small ({ore_amount}), skipped",
+                )
             fail_counts = ctx.blackboard.setdefault("_smelt_fail_counts", {})
             fail_count = fail_counts.get(0, 0) + 1
             fail_counts[0] = fail_count
