@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureResult
+from anima.planner.health import PlannerHealth
 from anima.web.command_bus import CommandBus
 
 if TYPE_CHECKING:
@@ -68,6 +69,10 @@ class Planner:
         self._repeat_counter: dict[str, int] = {}  # procedure → consecutive fail count
         self._last_procedure: str = ""
         self._last_escalation: float = 0.0  # last time we escalated a deadlock
+        # Fast loop detection — planner self-monitors to break infinite
+        # selection loops without waiting for the supervisor analysis cycle.
+        self._health = PlannerHealth(window=30, min_diversity=0.2)
+        self._health_break_until: float = 0.0
 
     def stop(self) -> None:
         self._running = False
@@ -117,6 +122,28 @@ class Planner:
                     self.continuation_hint = None
                     self._idle_ticks += 1
 
+                # --- Planner health / loop detection ---
+                proc_name_for_health = (
+                    getattr(result, '_proc_name', '') if result else ''
+                ) or self._last_procedure
+                if proc_name_for_health:
+                    self._health.record(proc_name_for_health)
+
+                if (self._health.is_looping()
+                        and _time.time() > self._health_break_until):
+                    logger.warning(
+                        "planner_health_loop_detected",
+                        dominant=self._health.dominant_procedure(),
+                        snapshot=self._health.snapshot(),
+                    )
+                    # Pause selection for 60 seconds and clear per-tick
+                    # counters so deadlock resolution / auto-recover can
+                    # intervene.
+                    self._health_break_until = _time.time() + 60.0
+                    self._health.reset()
+                    self.continuation_hint = None
+                    self._repeat_counter.clear()
+
                 # --- Stuck / deadlock detection ---
                 await self._check_stuck(ctx)
 
@@ -164,6 +191,11 @@ class Planner:
 
     async def tick(self, ctx: AgentContext) -> ProcedureResult | None:
         """One planner cycle: select procedure → run it → return result."""
+        # Planner health break — after a loop was detected we pause
+        # selection briefly so the environment has a chance to change.
+        if _time.time() < self._health_break_until:
+            return None
+
         proc = await self.select_procedure(ctx)
         if proc is None:
             return None
