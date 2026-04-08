@@ -33,6 +33,7 @@ from anima.planner.circuit_breaker import CircuitBreaker
 from anima.planner.deadlock import DeadlockResolver
 from anima.planner.health import PlannerHealth
 from anima.planner.roaming import RoamingHelper
+from anima.planner.strategy import StrategySelector
 from anima.planner.helpers import (
     _MoveToProcedure,
     _PickUpAndSmelt,
@@ -104,6 +105,7 @@ class Planner:
         )
         self._deadlock = DeadlockResolver(self)
         self._roaming = RoamingHelper(self)
+        self._strategy = StrategySelector(interval_s=300.0)
 
     def stop(self) -> None:
         self._running = False
@@ -134,6 +136,12 @@ class Planner:
                 continue
 
             try:
+                # Refresh high-level strategy (LLM-driven, ~5 min interval)
+                try:
+                    await self._strategy.maybe_refresh(ctx)
+                except Exception as e:
+                    logger.warning("strategy_refresh_error", error=str(e))
+
                 # Check for override commands from dashboard
                 override_result = await self._handle_overrides(ctx)
                 if override_result is not None:
@@ -308,6 +316,13 @@ class Planner:
                 logger.info("planner_skipping", procedure=name,
                             reason="supervisor hint" if name not in skip_bb
                             else "repeat failure")
+                return None
+            if self._strategy.is_excluded(name):
+                logger.debug(
+                    "planner_strategy_skipping",
+                    procedure=name,
+                    strategy=self._strategy.current.name,
+                )
                 return None
             return self.registry.get(name)
 
