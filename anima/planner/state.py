@@ -29,16 +29,26 @@ class PlannerBlackboard:
     junk_ore_serials: set[int] = field(default_factory=set)
     unsmelable_ore_hues: set[int] = field(default_factory=set)
     ore_pickup_fails: dict[int, int] = field(default_factory=dict)
+    small_iron_ore_serials: set[int] = field(default_factory=set)
+
+    # --- Deadlock resolution state ---
+    deadlock_recovery_level: int = 0
+    deadlock_attempt_count: int = 0
 
     # --- Vendor / trade state ---
     refused_vendors: dict[int, float] = field(default_factory=dict)
-    failed_destinations: dict[tuple[int, int], float] = field(default_factory=dict)
 
     # --- Intent / UI ---
     planner_intent: str = ""
     current_procedure: str | None = None
 
-    # --- Anything else (legacy keys) ---
+    # --- Anything else (legacy keys or runtime object refs) ---
+    # Note: CircuitBreaker instances live on ctx.blackboard under keys like
+    # `_bank_breaker`, `_craft_material_breaker`, `_ore_pickup_breaker`, but
+    # they are object references — not serializable state — and are set up
+    # by Planner.run() each session. They are intentionally NOT in _KEY_MAP.
+    # Likewise, `self._failed_destinations` lives on the Planner instance
+    # itself, not in ctx.blackboard, so it is NOT in _KEY_MAP either.
     extras: dict[str, Any] = field(default_factory=dict)
 
     # --- Field name mapping: attribute name -> blackboard key ---
@@ -56,8 +66,10 @@ class PlannerBlackboard:
         "junk_ore_serials": "_junk_ore_serials",
         "unsmelable_ore_hues": "_unsmelable_ore_hues",
         "ore_pickup_fails": "_ore_pickup_fails",
+        "small_iron_ore_serials": "_small_iron_ore_serials",
+        "deadlock_recovery_level": "_deadlock_recovery_level",
+        "deadlock_attempt_count": "_deadlock_attempt_count",
         "refused_vendors": "refused_vendors",
-        "failed_destinations": "_failed_destinations",
         "planner_intent": "planner_intent",
         "current_procedure": "current_procedure",
     }

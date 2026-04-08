@@ -12,15 +12,10 @@ each helper independently testable.
 from __future__ import annotations
 
 import asyncio
-import time
-from typing import TYPE_CHECKING
 
 import structlog
 
 from anima.procedures.base import FailureReason, ProcedureResult
-
-if TYPE_CHECKING:
-    from anima.core.context import AgentContext
 
 logger = structlog.get_logger()
 
@@ -70,7 +65,6 @@ class _PickUpAndSmelt:
         return True
 
     async def run(self, ctx) -> ProcedureResult:
-        import asyncio
         from anima.client.packets import build_drop_item, build_pick_up
 
         ss = ctx.perception.self_state
@@ -203,7 +197,6 @@ class _ScavengeGroundItems:
         return True
 
     async def run(self, ctx) -> ProcedureResult:
-        import asyncio
         from anima.action.movement import go_to
         from anima.client.packets import build_drop_item, build_pick_up
 

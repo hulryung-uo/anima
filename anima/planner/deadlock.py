@@ -69,16 +69,30 @@ class DeadlockResolver:
             return
 
         # Strategy 2: Clear depleted ore banks (maybe they've regenerated).
-        # Use the actual DEPLETED_COOLDOWN (600s) — server regen is 10-20 min.
+        # Both the CircuitBreaker and the legacy dict are cleared so they
+        # stay in sync. The breaker's own auto-expiry handles the 10-20 min
+        # respawn window in steady state; this is the deadlock-escape hammer.
         from anima.skills.gathering.mine import DEPLETED_COOLDOWN as _DEPL_CD
         depleted_banks = ctx.blackboard.get("depleted_banks", {})
         old_banks = [k for k, v in depleted_banks.items() if now - v > _DEPL_CD]
         for k in old_banks:
             del depleted_banks[k]
-        if old_banks:
-            logger.info("planner_cleared_depleted_banks", count=len(old_banks))
+        breaker = ctx.blackboard.get("_bank_breaker")
+        open_before: list = []
+        if breaker is not None:
+            open_before = list(breaker.open_targets())
+            for target in open_before:
+                breaker.reset(target)
+        if old_banks or open_before:
+            cleared_total = len(old_banks) + len(open_before)
+            logger.info(
+                "planner_cleared_depleted_banks",
+                count_dict=len(old_banks),
+                count_breaker=len(open_before),
+                total=cleared_total,
+            )
             ctx.blackboard["planner_intent"] = (
-                f"고갈 광산 {len(old_banks)}개 초기화 → 재시도"
+                f"고갈 광산 {cleared_total}개 초기화 → 재시도"
             )
             self._planner._idle_ticks = 0
             return

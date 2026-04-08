@@ -173,12 +173,14 @@ class Planner:
                         snapshot=self._health.snapshot(),
                     )
                     # Pause selection for 60 seconds and clear per-tick
-                    # counters so deadlock resolution / auto-recover can
-                    # intervene.
+                    # counters. Also reset _idle_ticks so _check_stuck()'s
+                    # escalation timer doesn't race the health break — the
+                    # break IS the recovery mechanism for this condition.
                     self._health_break_until = _time.time() + 60.0
                     self._health.reset()
                     self.continuation_hint = None
                     self._repeat_counter.clear()
+                    self._idle_ticks = 0
 
                 # --- Stuck / deadlock detection ---
                 await self._check_stuck(ctx)
@@ -378,9 +380,12 @@ class Planner:
         # Count IRON ingots only (hue 0) — colored ingots are not usable for basic recipes
         from anima.procedures.craft_blacksmith import _count_iron_ingots
         ingot_count = _count_iron_ingots(ctx)
-        # Material cooldown = iron forcing failed repeatedly → craft will fail, sell instead
-        craft_material_blocked = time.time() < ctx.blackboard.get(
-            "_craft_bs_material_cooldown", 0
+        # Material cooldown = iron forcing failed repeatedly → craft will fail, sell instead.
+        # Prefer the CircuitBreaker (single source of truth with can_start);
+        # fall back to the legacy timestamp flag for contexts/tests that don't
+        # install the breaker.
+        craft_material_blocked = self._craft_material_breaker.is_open("iron") or (
+            time.time() < ctx.blackboard.get("_craft_bs_material_cooldown", 0)
         )
 
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
@@ -781,6 +786,12 @@ class Planner:
     async def _check_stuck(self, ctx: AgentContext) -> None:
         """Detect stuck loops and deadlocks, escalate progressively."""
         import time as _time
+
+        # If a PlannerHealth break is in progress the planner is *supposed*
+        # to be idle — don't let idle-tick escalation fire during the break
+        # (it would race the health break and reset its own counters).
+        if _time.time() < self._health_break_until:
+            return
 
         # --- Idle detection: planner returning None repeatedly ---
         if self._idle_ticks == self._IDLE_WARN:
