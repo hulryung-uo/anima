@@ -436,14 +436,52 @@ class Planner:
                     return move
 
             # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
-            # Recovery: scavenge ground items or walk to populated area
+            # Recovery: scavenge → drop junk → walk to town → forum
             logger.info("planner_deadlock_recovery_attempt")
+
+            _scav_count = ctx.blackboard.get("_deadlock_scavenge_count", 0)
+
+            # After 3 scavenge attempts that didn't break the deadlock,
+            # escalate: drop junk to free weight, walk to town, or ask
+            # for help on the forum.
+            if _scav_count >= 3:
+                logger.warning(
+                    "planner_scavenge_loop_detected",
+                    scavenge_attempts=_scav_count,
+                    weight=f"{ss.weight}/{ss.weight_max}",
+                )
+                ctx.blackboard["_deadlock_scavenge_count"] = 0
+
+                # Overweight from scavenged junk → drop non-essential
+                # items to free weight for future tool pickups.
+                if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.5:
+                    _intent("교착 복구: 줍기 반복 실패 → 불필요 아이템 버리기")
+                    return _DropJunkItems(ss)
+
+                # Walk to populated area for new resources
+                if time.time() > self._move_fail_until:
+                    move = await self._move_to_location(
+                        ctx, "bank", "tavern", "inn", "blacksmith",
+                    )
+                    if move:
+                        _intent("교착 복구: 마을로 이동하여 자원 탐색")
+                        return move
+
+                # Force forum escalation — don't wait for idle ticks
+                # (scavenge "succeeding" kept resetting them)
+                _intent("교착 상태: 포럼에 도움 요청")
+                await self._escalate_to_forum(ctx)
+                return None
 
             # Try to find valuable items on the ground nearby
             ground_items = self._find_ground_valuables(ctx, ss)
             if ground_items:
+                ctx.blackboard["_deadlock_scavenge_count"] = _scav_count + 1
                 _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
                 return _ScavengeGroundItems(ground_items, ss)
+
+            # No ground items → reset counter (different situation)
+            ctx.blackboard["_deadlock_scavenge_count"] = 0
 
             # Nothing on ground → walk to populated area (NOT mine)
             if time.time() > self._move_fail_until:
@@ -1323,6 +1361,89 @@ class _ScavengeGroundItems:
             success=True,
             message=f"Scavenged {picked} items from ground",
             next_suggestion=hint,
+        )
+
+
+class _DropJunkItems:
+    """Deadlock recovery: drop non-essential items to free weight.
+
+    When the agent is stuck in a deadlock and overweight from scavenged
+    items that don't break the deadlock (not tools/ore/ingots), drop them
+    to free capacity for picking up actually useful items later.
+    """
+
+    def __init__(self, ss) -> None:
+        self.name = "drop_junk_items"
+        self.description = "Drop non-essential items to free weight"
+        self._player_pos = (ss.x, ss.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+
+        from anima.client.packets import build_drop_item
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
+        from anima.skills.crafting.smelt import INGOT_GRAPHICS
+        from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
+        from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
+
+        GOLD_GRAPHIC = 0x0EED
+        SHOVEL_GRAPHICS = {0x0F39}
+        BANDAGE_GRAPHIC = 0x0E21
+
+        # Keep items useful for the mining/crafting loop
+        keep = (
+            ORE_GRAPHICS
+            | INGOT_GRAPHICS
+            | PICKAXE_GRAPHICS
+            | SHOVEL_GRAPHICS
+            | TINKER_TOOLS_GRAPHICS
+            | TONGS_GRAPHICS
+            | {GOLD_GRAPHIC, BANDAGE_GRAPHIC}
+        )
+
+        droppable = [
+            it for it in ctx.perception.world.items.values()
+            if it.container == backpack and it.graphic not in keep
+        ]
+
+        if not droppable:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no droppable items in backpack",
+            )
+
+        dropped = 0
+        for item in droppable[:10]:
+            # Drop to ground at current position (container=0 → ground)
+            await ctx.conn.send_packet(
+                build_drop_item(item.serial, x=ss.x, y=ss.y, z=ss.z)
+            )
+            await asyncio.sleep(0.4)
+            dropped += 1
+            logger.info(
+                "dropped_junk_item",
+                serial=f"0x{item.serial:08X}",
+                graphic=f"0x{item.graphic:04X}",
+                amount=item.amount,
+            )
+
+        return ProcedureResult(
+            success=dropped > 0,
+            message=f"Dropped {dropped} junk items to free weight",
+            reason=None if dropped > 0 else FailureReason.MISSING_RESOURCE,
         )
 
 
