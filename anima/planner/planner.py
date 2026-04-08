@@ -438,42 +438,62 @@ class Planner:
                     return move
 
             # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
-            # Recovery: scavenge → drop junk → walk to town → forum
+            # Progressive recovery:
+            #   Level 0: scavenge nearby (3 attempts)
+            #   Level 1: drop junk + walk to town
+            #   Level 2: wander-explore (random walk scanning for items)
+            #   Level 3: hunt monsters for gold
+            #   Level 4: forum escalation
             logger.info("planner_deadlock_recovery_attempt")
 
             _scav_count = ctx.blackboard.get("_deadlock_scavenge_count", 0)
+            _deadlock_level = ctx.blackboard.get("_deadlock_recovery_level", 0)
 
             # After 3 scavenge attempts that didn't break the deadlock,
-            # escalate: drop junk to free weight, walk to town, or ask
-            # for help on the forum.
+            # escalate progressively through recovery strategies.
             if _scav_count >= 3:
+                _deadlock_level += 1
+                ctx.blackboard["_deadlock_recovery_level"] = _deadlock_level
+                ctx.blackboard["_deadlock_scavenge_count"] = 0
                 logger.warning(
                     "planner_scavenge_loop_detected",
                     scavenge_attempts=_scav_count,
                     weight=f"{ss.weight}/{ss.weight_max}",
+                    recovery_level=_deadlock_level,
                 )
-                ctx.blackboard["_deadlock_scavenge_count"] = 0
 
-                # Overweight from scavenged junk → drop non-essential
-                # items to free weight for future tool pickups.
-                if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.5:
-                    _intent("교착 복구: 줍기 반복 실패 → 불필요 아이템 버리기")
-                    return _DropJunkItems(ss)
+                # Level 1: Drop junk + walk to town
+                if _deadlock_level == 1:
+                    if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.5:
+                        _intent("교착 복구 Lv1: 불필요 아이템 버리기")
+                        return _DropJunkItems(ss)
+                    if time.time() > self._move_fail_until:
+                        move = await self._move_to_location(
+                            ctx, "bank", "tavern", "inn", "blacksmith",
+                        )
+                        if move:
+                            _intent("교착 복구 Lv1: 마을로 이동하여 자원 탐색")
+                            return move
 
-                # Walk to populated area for new resources
-                if time.time() > self._move_fail_until:
-                    move = await self._move_to_location(
-                        ctx, "bank", "tavern", "inn", "blacksmith",
-                    )
-                    if move:
-                        _intent("교착 복구: 마을로 이동하여 자원 탐색")
-                        return move
+                # Level 2: Wander-explore — random walk around town
+                elif _deadlock_level == 2:
+                    _intent("교착 복구 Lv2: 마을 주변 탐색 (랜덤 이동)")
+                    return _WanderAndScavenge(ss)
 
-                # Force forum escalation — don't wait for idle ticks
-                # (scavenge "succeeding" kept resetting them)
-                _intent("교착 상태: 포럼에 도움 요청")
-                await self._escalate_to_forum(ctx)
-                return None
+                # Level 3: Hunt monsters for gold
+                elif _deadlock_level == 3:
+                    target = self._find_huntable_target(ctx, ss)
+                    if target:
+                        _intent(f"교착 복구 Lv3: {target.name or 'monster'} 사냥")
+                        return _HuntForGold(target, ss)
+                    # No targets — fall through to forum
+
+                # Level 4+: Forum escalation, then reset cycle
+                if _deadlock_level >= 4:
+                    ctx.blackboard["_deadlock_recovery_level"] = 0
+                    _intent("교착 상태 Lv4: 포럼에 도움 요청")
+                    await self._escalate_to_forum(ctx)
+                    return None
 
             # Try to find valuable items on the ground nearby
             ground_items = self._find_ground_valuables(ctx, ss)
@@ -482,10 +502,10 @@ class Planner:
                 _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
                 return _ScavengeGroundItems(ground_items, ss)
 
-            # No ground items → reset counter (different situation)
+            # No ground items visible
             ctx.blackboard["_deadlock_scavenge_count"] = 0
 
-            # Nothing on ground → walk to populated area (NOT mine)
+            # Walk to populated area (NOT mine) to find items
             if time.time() > self._move_fail_until:
                 _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
                 move = await self._move_to_location(
@@ -494,10 +514,14 @@ class Planner:
                 if move:
                     return move
 
-            # All recovery paths exhausted — return None, let _check_stuck
-            # escalate to forum
+            # All immediate paths exhausted — return None, _check_stuck
+            # will escalate to forum eventually
             _intent("교착 상태: 복구 불가 → 도움 대기")
             return None
+
+        # Made it past Priority 4 (have mining tools) → reset deadlock state
+        ctx.blackboard.pop("_deadlock_recovery_level", None)
+        ctx.blackboard.pop("_deadlock_scavenge_count", None)
 
         # --- Priority 5: Has ingots → craft into weapons/armor ---
         if ingot_count >= 8:
@@ -1034,6 +1058,36 @@ Write ONLY the post body, nothing else."""
         result.sort(key=lambda it: max(abs(it.x - ss.x), abs(it.y - ss.y)))
         return result
 
+    def _find_huntable_target(self, ctx: AgentContext, ss):
+        """Find a nearby monster the agent can attack for gold loot."""
+        from anima.perception.enums import NotorietyFlag
+
+        ATTACKABLE = {
+            NotorietyFlag.ATTACKABLE,
+            NotorietyFlag.CRIMINAL,
+            NotorietyFlag.ENEMY,
+            NotorietyFlag.MURDERER,
+        }
+        HUMAN_BODIES = {0x0190, 0x0191}
+
+        candidates = []
+        for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
+            if m.serial == ss.serial:
+                continue
+            if m.notoriety not in ATTACKABLE:
+                continue
+            # Don't attack humans unless clearly hostile
+            if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
+                continue
+            candidates.append(m)
+
+        if not candidates:
+            return None
+
+        # Prefer closest target
+        candidates.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
+        return candidates[0]
+
     def _is_destination_failed(self, x: int, y: int) -> bool:
         """Check if a destination recently failed to be reached (5-min cooldown)."""
         import time
@@ -1459,6 +1513,244 @@ class _DropJunkItems:
             success=dropped > 0,
             message=f"Dropped {dropped} junk items to free weight",
             reason=None if dropped > 0 else FailureReason.MISSING_RESOURCE,
+        )
+
+
+class _WanderAndScavenge:
+    """Deadlock recovery Lv2: wander around town scanning for useful items.
+
+    Takes random steps through the town area.  At each stop, checks for
+    valuable ground items within pickup range and grabs them.  This covers
+    areas the agent hasn't visited yet, unlike the stationary scavenge.
+    """
+
+    WANDER_STEPS = 20
+    STEP_DELAY = 0.6  # seconds between wander steps
+
+    def __init__(self, ss) -> None:
+        self.name = "wander_and_scavenge"
+        self.description = "Wander around town scanning for items"
+        self._start_pos = (ss.x, ss.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+        import random
+
+        from anima.action.movement import go_to
+        from anima.client.packets import build_drop_item, build_pick_up
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
+
+        picked = 0
+        spots_visited = 0
+
+        for _ in range(self.WANDER_STEPS):
+            # Pick a random nearby position (±5..15 tiles) and walk there
+            ss = ctx.perception.self_state
+            dx = random.choice([-1, 1]) * random.randint(5, 15)
+            dy = random.choice([-1, 1]) * random.randint(5, 15)
+            target_x = ss.x + dx
+            target_y = ss.y + dy
+
+            await go_to(ctx, target_x, target_y)
+            spots_visited += 1
+
+            # Scan for valuable items at new position
+            ss = ctx.perception.self_state
+            items = self._scan_valuables(ctx, ss)
+            for item in items[:3]:
+                if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
+                    break
+                dist = max(abs(item.x - ss.x), abs(item.y - ss.y))
+                if dist > 2:
+                    arrived = await go_to(ctx, item.x, item.y)
+                    if not arrived:
+                        continue
+                await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+                await asyncio.sleep(0.3)
+                await ctx.conn.send_packet(
+                    build_drop_item(item.serial, container=backpack)
+                )
+                await asyncio.sleep(0.3)
+                picked += 1
+                logger.info(
+                    "wander_scavenged",
+                    serial=f"0x{item.serial:08X}",
+                    graphic=f"0x{item.graphic:04X}",
+                    spot=spots_visited,
+                )
+
+            # Early exit if we found enough useful items
+            if picked >= 5:
+                break
+
+        if picked > 0:
+            return ProcedureResult(
+                success=True,
+                message=f"Wandered {spots_visited} spots, scavenged {picked} items",
+            )
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.MISSING_RESOURCE,
+            message=f"Wandered {spots_visited} spots, found nothing useful",
+        )
+
+    @staticmethod
+    def _scan_valuables(ctx, ss) -> list:
+        """Find valuable ground items within pickup range of current pos."""
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
+        from anima.skills.crafting.smelt import INGOT_GRAPHICS
+        from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
+        from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
+
+        GOLD_GRAPHIC = 0x0EED
+        SHOVEL_GRAPHICS = {0x0F39}
+
+        valuable = (
+            ORE_GRAPHICS | INGOT_GRAPHICS | PICKAXE_GRAPHICS
+            | SHOVEL_GRAPHICS | TINKER_TOOLS_GRAPHICS | TONGS_GRAPHICS
+            | {GOLD_GRAPHIC}
+        )
+
+        result = []
+        for it in ctx.perception.world.items.values():
+            if (it.container == 0
+                    and it.graphic in valuable
+                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
+                result.append(it)
+        result.sort(key=lambda it: max(abs(it.x - ss.x), abs(it.y - ss.y)))
+        return result
+
+
+class _HuntForGold:
+    """Deadlock recovery Lv3: attack a nearby monster and loot gold.
+
+    Walks to the target, enters war mode, fights until target dies or
+    timeout, then picks up any gold dropped on the ground.
+    """
+
+    COMBAT_TIMEOUT = 30.0
+    COMBAT_TICK = 1.0
+
+    def __init__(self, target, ss) -> None:
+        self.name = "hunt_for_gold"
+        self.description = f"Hunt {target.name or 'monster'} for gold"
+        self._target_serial = target.serial
+        self._target_name = target.name or "monster"
+        self._target_pos = (target.x, target.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+        import time
+
+        from anima.action.movement import go_to
+        from anima.client.packets import (
+            build_attack,
+            build_drop_item,
+            build_pick_up,
+            build_war_mode,
+        )
+
+        ss = ctx.perception.self_state
+
+        # Walk toward target if not adjacent
+        dist = max(abs(self._target_pos[0] - ss.x),
+                    abs(self._target_pos[1] - ss.y))
+        if dist > 1:
+            arrived = await go_to(ctx, self._target_pos[0], self._target_pos[1])
+            if not arrived:
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.BLOCKED,
+                    message=f"Cannot reach {self._target_name}",
+                )
+
+        # Check target still exists
+        mob = ctx.perception.world.mobiles.get(self._target_serial)
+        if mob is None:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message=f"{self._target_name} is gone",
+            )
+
+        # Enter war mode and attack
+        await ctx.conn.send_packet(build_war_mode(True))
+        await asyncio.sleep(0.3)
+        await ctx.conn.send_packet(build_attack(self._target_serial))
+        logger.info("hunt_attack_start", target=self._target_name)
+
+        # Combat loop
+        deadline = time.monotonic() + self.COMBAT_TIMEOUT
+        target_killed = False
+
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self.COMBAT_TICK)
+
+            # Bail if HP too low
+            ss = ctx.perception.self_state
+            if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.2:
+                logger.warning("hunt_retreat", hp=ss.hits)
+                break
+
+            mob = ctx.perception.world.mobiles.get(self._target_serial)
+            if mob is None:
+                target_killed = True
+                break
+
+            # Re-send attack
+            await ctx.conn.send_packet(build_attack(self._target_serial))
+
+        # Exit war mode
+        await ctx.conn.send_packet(build_war_mode(False))
+        await asyncio.sleep(0.3)
+
+        if not target_killed:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Could not kill {self._target_name}",
+            )
+
+        logger.info("hunt_killed", target=self._target_name)
+
+        # Loot gold from the ground near the kill site
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        gold_picked = 0
+        GOLD_GRAPHIC = 0x0EED
+
+        if backpack:
+            await asyncio.sleep(1.0)  # wait for corpse/loot to appear
+            for it in ctx.perception.world.items.values():
+                if (it.container == 0
+                        and it.graphic == GOLD_GRAPHIC
+                        and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
+                    await ctx.conn.send_packet(build_pick_up(it.serial, it.amount))
+                    await asyncio.sleep(0.3)
+                    await ctx.conn.send_packet(
+                        build_drop_item(it.serial, container=backpack)
+                    )
+                    await asyncio.sleep(0.3)
+                    gold_picked += 1
+                    logger.info("hunt_looted_gold", amount=it.amount)
+
+        return ProcedureResult(
+            success=True,
+            message=f"Killed {self._target_name}, looted {gold_picked} gold piles",
         )
 
 
