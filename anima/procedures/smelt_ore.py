@@ -186,6 +186,20 @@ class SmeltOre(Procedure):
             )
 
         # --- Smelting failed ---
+        # Iron ore (hue 0) is always smeltable at any mining skill —
+        # failures are random skill checks, never permanent.  Don't
+        # blacklist it; just retry indefinitely.
+        if ore_hue == 0:
+            fail_counts = ctx.blackboard.setdefault("_smelt_fail_counts", {})
+            fail_count = fail_counts.get(0, 0) + 1
+            fail_counts[0] = fail_count
+            logger.info("smelt_iron_retry", fail_count=fail_count)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Iron smelting failed (retry {fail_count})",
+            )
+
         # "not enough metal" with sufficient quantity = ore type is truly
         # unsmelable at current skill → blacklist immediately.
         # With small amounts (< 2), the failure is a quantity issue (e.g.
