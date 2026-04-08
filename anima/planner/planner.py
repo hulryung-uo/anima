@@ -259,6 +259,23 @@ class Planner:
                 if proc and await proc.can_start(ctx):
                     return proc
 
+            # Try to buy tools if we have gold — purchase works server-side
+            # even without backpack detection; the arriving items should
+            # trigger backpack discovery on the next equipment update.
+            if ss.gold >= 10:
+                proc = self.registry.get("buy_from_vendor")
+                if proc and await proc.can_start(ctx):
+                    ctx.blackboard["planner_intent"] = (
+                        f"배낭 미감지, 금화 {ss.gold}g → 상점에서 도구 구매"
+                    )
+                    return proc
+                move = await self._move_to_location(ctx, "tinker", "provisioner")
+                if move:
+                    ctx.blackboard["planner_intent"] = (
+                        f"배낭 미감지, 금화 {ss.gold}g → 상점으로 이동"
+                    )
+                    return move
+
             if time.time() > self._move_fail_until:
                 move_proc = await self._try_move_to_activity(ctx)
                 if move_proc:
@@ -730,13 +747,14 @@ class Planner:
             self._idle_ticks = 0
             return
 
-        # Strategy 5: True deadlock — no tools, no gold, no materials
-        # Reset failed destinations so the agent can walk to new areas to scavenge
-        if not has_pickaxe and ss.gold < 10 and ore == 0 and ingots == 0:
+        # Strategy 5: True deadlock — no tools, no materials (regardless of gold)
+        # Reset failed destinations so the agent can walk to vendors or scavenge
+        if not has_pickaxe and ore == 0 and ingots == 0:
             logger.warning(
                 "planner_true_deadlock_recovery",
-                reason="no tools, no gold, no materials — clearing state for scavenge",
+                reason="no tools, no materials — clearing state for vendor/scavenge",
                 pos=f"({ss.x},{ss.y})",
+                gold=ss.gold,
             )
             # Clear failed destinations so _move_to_location can find new targets
             self._failed_destinations.clear()
