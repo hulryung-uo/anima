@@ -360,7 +360,15 @@ def _read_past_fixes(limit: int = 10) -> list[dict]:
 
 
 def _detect_constraints() -> dict[str, str]:
-    """Detect what the agent CANNOT do right now."""
+    """Detect what the agent CANNOT do right now.
+
+    Only reports item-based constraints (no_mining_tool, no_tongs, DEADLOCK)
+    when the inventory snapshot is trustworthy — i.e. state.json is recent
+    AND the inventory list is non-empty. Otherwise the agent may just have
+    reconnected and the backpack contents haven't loaded yet, and reporting
+    a false DEADLOCK causes Claude Code to waste a cycle on a non-existent
+    problem.
+    """
     state = _read_agent_state()
     if not state:
         return {}
@@ -370,6 +378,13 @@ def _detect_constraints() -> dict[str, str]:
     inv = state.get("inventory", [])
     inv_names = {i["name"].lower() for i in inv}
 
+    # Trust inventory only when state is fresh (<60s old) and non-empty.
+    # An empty inventory list usually means the backpack hasn't loaded
+    # yet after a reconnect, not that the agent actually owns nothing.
+    state_ts = state.get("ts", 0)
+    state_age = time.time() - state_ts if state_ts else 999999
+    inventory_trustworthy = state_age < 60 and len(inv) > 0
+
     gold = status.get("gold", 0)
     weight = status.get("weight", 0)
     weight_max = status.get("weight_max", 1)
@@ -378,6 +393,15 @@ def _detect_constraints() -> dict[str, str]:
         constraints["no_gold"] = f"Gold={gold} — cannot buy tools or materials"
     if weight > weight_max * 0.9:
         constraints["overweight"] = f"Weight {weight}/{weight_max} — cannot carry more"
+
+    if not inventory_trustworthy:
+        constraints["inventory_stale"] = (
+            f"Inventory snapshot unreliable "
+            f"(age={state_age:.0f}s, items={len(inv)}) — "
+            f"skipping item-based constraints"
+        )
+        return constraints
+
     if not any("pickaxe" in n or "shovel" in n for n in inv_names):
         constraints["no_mining_tool"] = "No pickaxe or shovel — cannot mine"
     if not any("tong" in n for n in inv_names):
