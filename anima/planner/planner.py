@@ -772,31 +772,25 @@ class Planner:
             pass
 
         situation = (
-            f"위치: ({ss.x},{ss.y}), 금화: {ss.gold}, "
-            f"무게: {ss.weight}/{ss.weight_max}, "
-            f"곡괭이: {'있음' if has_pickaxe else '없음'}"
+            f"position ({ss.x},{ss.y}), gold {ss.gold}, "
+            f"weight {ss.weight}/{ss.weight_max}, "
+            f"pickaxe: {'yes' if has_pickaxe else 'no'}"
         )
 
         logger.warning("planner_forum_help_request", situation=situation)
-        ctx.blackboard["planner_intent"] = "포럼에 도움 요청 게시 중..."
+        ctx.blackboard["planner_intent"] = "Posting help request to forum..."
 
-        # Try posting to forum
+        # Try posting to forum — use LLM if available for in-character writing
         if ctx.forum_client:
             try:
-                title = f"{persona_name} — 도움이 필요합니다"
-                body = (
-                    f"안녕하세요, {persona_name}입니다.\n\n"
-                    f"현재 어려운 상황에 처했습니다. {situation}\n\n"
-                    f"도구와 금화가 모두 없어 작업을 계속할 수 없습니다. "
-                    f"누군가 곡괭이나 약간의 금화를 도와주시면 감사하겠습니다.\n\n"
-                    f"위치: ({ss.x}, {ss.y})에서 기다리고 있겠습니다."
-                )
+                title = f"{persona_name} — stranded and asking for help"
+                body = await self._compose_help_post(ctx, persona_name, situation, has_pickaxe)
                 post_id = await ctx.forum_client.create_post(title, body, "tavern")
                 if post_id:
                     logger.info("planner_forum_help_posted", post_id=post_id)
                     if ctx.bus:
                         ctx.bus.publish("social.forum_post", {
-                            "message": f"포럼에 도움 요청 게시: {title}",
+                            "message": f"Help request posted to forum: {title}",
                             "importance": 3,
                         })
             except Exception as e:
@@ -812,10 +806,10 @@ class Planner:
             pass
 
         # Pause and wait — maybe someone will help, or supervisor will intervene
-        ctx.blackboard["planner_intent"] = "도움 대기 중 (5분간 일시 정지)"
+        ctx.blackboard["planner_intent"] = "Waiting for help (paused 5 min)"
         if ctx.bus:
             ctx.bus.publish("system.deadlock", {
-                "message": "포럼에 도움 요청 완료. 5분간 대기 후 재시도.",
+                "message": "Forum help request posted. Waiting 5 min before retry.",
                 "importance": 3,
             })
 
@@ -826,7 +820,7 @@ class Planner:
             ss = ctx.perception.self_state
             if ss.gold >= 10:
                 logger.info("planner_help_received", gold=ss.gold)
-                ctx.blackboard["planner_intent"] = f"금화 {ss.gold}g 확보 → 재개"
+                ctx.blackboard["planner_intent"] = f"Gold received ({ss.gold}gp) — resuming"
                 self._idle_ticks = 0
                 return
             try:
@@ -834,7 +828,7 @@ class Planner:
                 from anima.skills.gathering.mine import PICKAXE_GRAPHICS
                 if find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}):
                     logger.info("planner_help_received_tool")
-                    ctx.blackboard["planner_intent"] = "곡괭이 확보 → 재개"
+                    ctx.blackboard["planner_intent"] = "Pickaxe received — resuming"
                     self._idle_ticks = 0
                     return
             except Exception:
@@ -848,7 +842,58 @@ class Planner:
         ctx.blackboard.pop("_skip_procedures", None)
         ctx.blackboard.pop("_make_tools_gave_up", None)
         logger.info("planner_full_reset_after_wait")
-        ctx.blackboard["planner_intent"] = "전체 초기화 후 재시도"
+        ctx.blackboard["planner_intent"] = "Full reset after wait — retrying"
+
+    async def _compose_help_post(
+        self, ctx: AgentContext, persona_name: str,
+        situation: str, has_pickaxe: bool,
+    ) -> str:
+        """Write a help-request post for the tavern forum.
+
+        Uses the LLM if available so the message stays in character.
+        Falls back to a clean English template otherwise.
+        """
+        ss = ctx.perception.self_state
+        # Try LLM first — keeps the post in character with the rest of the journal
+        llm = getattr(ctx, "llm", None)
+        if llm is not None:
+            try:
+                prompt = f"""You are {persona_name}, a miner and blacksmith in Ultima Online.
+You are stranded and need help from other players. Write a short forum post
+(2-3 short paragraphs, ~120-180 words) asking for help.
+
+Requirements:
+- Write in English. First person, in character.
+- Be honest about your situation but don't whine — show resolve.
+- Mention specific details: what you're missing, where you are, what you'll
+  do in return if someone helps.
+- No headers, no lists, no markdown — just plain prose.
+
+Your situation:
+- Status: {situation}
+- Pickaxe: {'yes' if has_pickaxe else 'no'}
+- Position: ({ss.x}, {ss.y}) near Minoc
+
+Write ONLY the post body, nothing else."""
+                assert llm is not None
+                response = await llm.chat([
+                    {"role": "user", "content": prompt},
+                ])
+                if response and response.text and len(response.text.strip()) > 40:
+                    return response.text.strip()
+            except Exception as e:
+                logger.warning("planner_help_llm_failed", error=str(e))
+
+        # Fallback: plain English template
+        return (
+            f"Hello, I'm {persona_name}.\n\n"
+            f"I've ended up in a hard spot — {situation}. "
+            f"Without tools or coin I can't keep working the mines.\n\n"
+            f"If anyone passing through Minoc could spare a pickaxe or "
+            f"a few gold pieces, I'd be very grateful and happy to repay "
+            f"the favor in ingots once I'm back on my feet.\n\n"
+            f"I'll be waiting near ({ss.x}, {ss.y})."
+        )
 
     def _find_ground_ore(self, ctx: AgentContext, ss) -> list:
         """Find ore items on the ground near the player (excluding junk and unsmelable hues)."""
