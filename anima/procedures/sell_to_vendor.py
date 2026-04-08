@@ -32,15 +32,21 @@ class SellToVendor(Procedure):
         import time
 
         from anima.actions.inventory import find_in_backpack
-        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
+        from anima.procedures.craft_blacksmith import (
+            TONGS_GRAPHICS as _TONGS_GFX,
+            _has_anvil_and_forge,
+        )
 
         keep = set(KEEP_GRAPHICS)
         has_tongs = bool(find_in_backpack(ctx, _TONGS_GFX))
         cooldown = ctx.blackboard.get("_craft_bs_material_cooldown", 0)
         craft_blocked = isinstance(cooldown, (int, float)) and time.time() < cooldown
-        if not has_tongs or craft_blocked:
+        # Ingots are only worth keeping if we can actually craft right now:
+        # need tongs + no material block + forge/anvil within reach.
+        can_craft = has_tongs and not craft_blocked and _has_anvil_and_forge(ctx)
+        if not can_craft:
             for _ig in (0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1):
-                keep.discard(_ig)  # ingots sellable without tongs or when craft blocked
+                keep.discard(_ig)  # ingots sellable when crafting not possible
         return keep
 
     @staticmethod

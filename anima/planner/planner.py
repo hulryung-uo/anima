@@ -642,35 +642,38 @@ class Planner:
                 move = await self._roaming.move_to_location(ctx, "forge", "blacksmith")
                 if move:
                     return move
-            else:
-                # No tongs or material mismatch — can't craft
-                # If no tongs and have gold → buy tongs from blacksmith vendor
-                if not has_tongs and ss.gold >= 10:
-                    proc = _get_proc("buy_from_vendor")
-                    if proc and await proc.can_start(ctx):
-                        _intent(f"집게 없음, 금화 {ss.gold}g → 집게 구매")
-                        return proc
-                    _intent(f"집게 없음, 금화 {ss.gold}g → 대장간 상점으로 이동")
-                    move = await self._roaming.move_to_location(ctx, "blacksmith")
-                    if move:
-                        return move
-                # Sell raw ingots (to get gold for tongs, or because material blocked)
-                reason = "재료 불일치" if craft_material_blocked else "집게 없음"
-                proc = _get_proc("sell_to_vendor")
+                # Can't reach any forge — fall through to sell logic below
+
+            # Can't craft (no tongs, material blocked, or no reachable forge)
+            # If no tongs and have gold → buy tongs from blacksmith vendor
+            if not has_tongs and ss.gold >= 10:
+                proc = _get_proc("buy_from_vendor")
                 if proc and await proc.can_start(ctx):
-                    _intent(f"{reason}, 주괴 {ingot_count}개 → 주괴 판매")
+                    _intent(f"집게 없음, 금화 {ss.gold}g → 집게 구매")
                     return proc
-                from anima.procedures.vendor_knowledge import (
-                    get_vendor_keywords_for_items,
-                )
-                vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
-                move = await self._roaming.move_to_location(ctx, *vendor_kw)
+                _intent(f"집게 없음, 금화 {ss.gold}g → 대장간 상점으로 이동")
+                move = await self._roaming.move_to_location(ctx, "blacksmith")
                 if move:
-                    _intent(
-                        f"{reason}, 주괴 {ingot_count}개 → "
-                        f"{', '.join(vendor_kw)} 상점으로 이동"
-                    )
                     return move
+            # Sell raw ingots (to get gold for tongs, or because material blocked)
+            reason = ("재료 불일치" if craft_material_blocked
+                      else "대장간 접근 불가" if has_tongs
+                      else "집게 없음")
+            proc = _get_proc("sell_to_vendor")
+            if proc and await proc.can_start(ctx):
+                _intent(f"{reason}, 주괴 {ingot_count}개 → 주괴 판매")
+                return proc
+            from anima.procedures.vendor_knowledge import (
+                get_vendor_keywords_for_items,
+            )
+            vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
+            move = await self._roaming.move_to_location(ctx, *vendor_kw)
+            if move:
+                _intent(
+                    f"{reason}, 주괴 {ingot_count}개 → "
+                    f"{', '.join(vendor_kw)} 상점으로 이동"
+                )
+                return move
 
         # --- Priority 5b: Has crafted items → sell to appropriate vendor ---
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
