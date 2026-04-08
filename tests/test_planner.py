@@ -330,6 +330,54 @@ class TestDeadlockRecovery:
         assert proc is None
 
     @pytest.mark.asyncio
+    async def test_deadlock_escalates_to_wander_after_attempts(self):
+        """After 3+3 failed attempts (no items, no move), escalate to wander."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0)
+
+        with patch("anima.world_knowledge.ALL_LOCATIONS", []):
+            # Level 0: 3 attempts return None (nothing to scavenge, nowhere to go)
+            for _ in range(3):
+                proc = await planner.select_procedure(ctx)
+                assert proc is None
+
+            # Attempt 4 triggers escalation to Level 1.
+            # Level 1 walk-to-town also fails (no locations) → None.
+            proc = await planner.select_procedure(ctx)
+            assert proc is None
+            assert ctx.blackboard["_deadlock_recovery_level"] == 1
+
+            # Level 1: 3 more None attempts
+            for _ in range(3):
+                proc = await planner.select_procedure(ctx)
+                assert proc is None
+
+            # Attempt 7 triggers escalation to Level 2 → wander_and_scavenge
+            proc = await planner.select_procedure(ctx)
+            assert proc is not None
+            assert proc.name == "wander_and_scavenge"
+            assert ctx.blackboard["_deadlock_recovery_level"] == 2
+
+    @pytest.mark.asyncio
+    async def test_deadlock_skips_ground_ore_when_flagged(self):
+        """Priority 3b respects _skip_procedures for pick_up_ore_and_smelt."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Position near Minoc
+        ctx = _make_ctx(gold=0, x=2460, y=558)
+        # Ore on ground within range
+        _add_ground_item(ctx, 0xCC, ORE, x=2461, y=558, amount=5)
+        # Flag pick_up_ore_and_smelt as skipped (repeat failure detection)
+        ctx.blackboard["_skip_procedures"] = {"pick_up_ore_and_smelt"}
+
+        proc = await planner.select_procedure(ctx)
+        # Should NOT return pick_up_ore_and_smelt — should reach Priority 4f
+        assert proc is None or proc.name != "pick_up_ore_and_smelt"
+
+    @pytest.mark.asyncio
     async def test_resolve_deadlock_clears_state(self):
         """_resolve_deadlock Strategy 5 resets failed destinations and idle ticks."""
         reg = ProcedureRegistry()

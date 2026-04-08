@@ -379,7 +379,9 @@ class Planner:
         # before picking up more; avoids spam when world state update is delayed.
         # Skip if too heavy to pick up anything (same 50-stone buffer as _PickUpAndSmelt)
         can_carry_more = ss.weight_max == 0 or ss.weight <= ss.weight_max - 50
-        if can_carry_more and self.continuation_hint != "smelt_ore":
+        if (can_carry_more
+                and self.continuation_hint != "smelt_ore"
+                and "pick_up_ore_and_smelt" not in skip_bb):
             ground_ore = self._find_ground_ore(ctx, ss)
             if ground_ore:
                 _intent(f"바닥에 광석 {len(ground_ore)}개 발견 → 줍기")
@@ -442,27 +444,30 @@ class Planner:
 
             # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
             # Progressive recovery:
-            #   Level 0: scavenge nearby (3 attempts)
+            #   Level 0: scavenge nearby + walk to town (3 attempts)
             #   Level 1: drop junk + walk to town
             #   Level 2: wander-explore (random walk scanning for items)
             #   Level 3: hunt monsters for gold
-            #   Level 4: forum escalation
+            #   Level 4: forum escalation, then reset cycle
             logger.info("planner_deadlock_recovery_attempt")
 
-            _scav_count = ctx.blackboard.get("_deadlock_scavenge_count", 0)
+            _deadlock_attempts = ctx.blackboard.get("_deadlock_attempt_count", 0)
             _deadlock_level = ctx.blackboard.get("_deadlock_recovery_level", 0)
 
-            # After 3 scavenge attempts that didn't break the deadlock,
-            # escalate progressively through recovery strategies.
-            if _scav_count >= 3:
+            # Always count visits — this drives escalation even when
+            # nothing is found (unlike the old scavenge-only counter).
+            ctx.blackboard["_deadlock_attempt_count"] = _deadlock_attempts + 1
+
+            # After 3 attempts at current level, escalate to next.
+            if _deadlock_attempts >= 3:
                 _deadlock_level += 1
                 ctx.blackboard["_deadlock_recovery_level"] = _deadlock_level
-                ctx.blackboard["_deadlock_scavenge_count"] = 0
+                ctx.blackboard["_deadlock_attempt_count"] = 0
                 logger.warning(
-                    "planner_scavenge_loop_detected",
-                    scavenge_attempts=_scav_count,
+                    "planner_deadlock_escalating",
+                    attempts=_deadlock_attempts,
+                    new_level=_deadlock_level,
                     weight=f"{ss.weight}/{ss.weight_max}",
-                    recovery_level=_deadlock_level,
                 )
 
                 # Level 1: Drop junk + walk to town
@@ -501,12 +506,8 @@ class Planner:
             # Try to find valuable items on the ground nearby
             ground_items = self._find_ground_valuables(ctx, ss)
             if ground_items:
-                ctx.blackboard["_deadlock_scavenge_count"] = _scav_count + 1
                 _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
                 return _ScavengeGroundItems(ground_items, ss)
-
-            # No ground items visible
-            ctx.blackboard["_deadlock_scavenge_count"] = 0
 
             # Walk to populated area (NOT mine) to find items
             if time.time() > self._move_fail_until:
@@ -517,14 +518,14 @@ class Planner:
                 if move:
                     return move
 
-            # All immediate paths exhausted — return None, _check_stuck
-            # will escalate to forum eventually
-            _intent("교착 상태: 복구 불가 → 도움 대기")
+            # All immediate paths exhausted — return None; attempt counter
+            # was already incremented so we'll escalate after 3 idle entries.
+            _intent("교착 상태: 복구 시도 중 → 다음 레벨로 에스컬레이션 대기")
             return None
 
         # Made it past Priority 4 (have mining tools) → reset deadlock state
         ctx.blackboard.pop("_deadlock_recovery_level", None)
-        ctx.blackboard.pop("_deadlock_scavenge_count", None)
+        ctx.blackboard.pop("_deadlock_attempt_count", None)
 
         # --- Priority 5: Has ingots → craft into weapons/armor ---
         if ingot_count >= 8:
