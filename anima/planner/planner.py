@@ -34,6 +34,7 @@ from anima.planner.deadlock import DeadlockResolver
 from anima.planner.health import PlannerHealth
 from anima.planner.roaming import RoamingHelper
 from anima.planner.strategy import StrategySelector
+from anima.planner.goals import GoalStack
 from anima.planner.helpers import (
     _MoveToProcedure,
     _PickUpAndSmelt,
@@ -106,6 +107,7 @@ class Planner:
         self._deadlock = DeadlockResolver(self)
         self._roaming = RoamingHelper(self)
         self._strategy = StrategySelector(interval_s=300.0)
+        self._goals = GoalStack()
 
     def stop(self) -> None:
         self._running = False
@@ -141,6 +143,12 @@ class Planner:
                     await self._strategy.maybe_refresh(ctx)
                 except Exception as e:
                     logger.warning("strategy_refresh_error", error=str(e))
+
+                # Update goal stack — pop satisfied / expired goals
+                try:
+                    self._goals.update(ctx)
+                except Exception as e:
+                    logger.warning("goal_update_error", error=str(e))
 
                 # Check for override commands from dashboard
                 override_result = await self._handle_overrides(ctx)
@@ -322,6 +330,13 @@ class Planner:
                     "planner_strategy_skipping",
                     procedure=name,
                     strategy=self._strategy.current.name,
+                )
+                return None
+            if self._goals.is_forbidden(name):
+                logger.debug(
+                    "planner_goal_forbidding",
+                    procedure=name,
+                    goal=self._goals.active.name if self._goals.active else None,
                 )
                 return None
             return self.registry.get(name)
