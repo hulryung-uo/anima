@@ -19,7 +19,8 @@ logger = structlog.get_logger()
 
 # --- Item graphic IDs ---
 TINKER_TOOLS_GRAPHICS = {0x1EB8, 0x1EBC}
-INGOT_GRAPHIC = 0x1BF2
+INGOT_GRAPHIC = 0x1BF2  # legacy single constant
+INGOT_GRAPHICS = {0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1}
 HATCHET_GRAPHICS = {0x0F43, 0x0F44, 0x0F47, 0x0F48, 0x0F4B, 0x0F4D}
 PICKAXE_GRAPHICS = {0x0E85, 0x0E86}
 SAW_GRAPHICS = {0x1034, 0x1035}
@@ -149,7 +150,7 @@ class CraftTinker(Skill):
         backpack_graphics = {it.graphic for it in backpack_items}
 
         has_tools = bool(TINKER_TOOLS_GRAPHICS & backpack_graphics)
-        has_ingots = INGOT_GRAPHIC in backpack_graphics
+        has_ingots = bool(INGOT_GRAPHICS & backpack_graphics)
 
         if not has_tools or not has_ingots:
             return False

@@ -15,8 +15,8 @@ from anima.actions.gump import wait_for_gump
 from anima.actions.inventory import find_in_backpack, count_items
 from anima.client.packets import build_gump_response
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
+from anima.skills.crafting.smelt import INGOT_GRAPHICS
 from anima.skills.crafting.tinker import (
-    INGOT_GRAPHIC,
     TINKER_TOOLS_GRAPHICS,
     PICKAXE_GRAPHICS,
     HATCHET_GRAPHICS,
@@ -48,7 +48,7 @@ class MakeTools(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         if not find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS):
             return False
-        if count_items(ctx, {INGOT_GRAPHIC}) < MIN_INGOTS_FOR_TOOL:
+        if count_items(ctx, INGOT_GRAPHICS) < MIN_INGOTS_FOR_TOOL:
             return False
         # Only craft if we're low on tools
         has_pickaxe = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS))
@@ -102,7 +102,7 @@ class MakeTools(Procedure):
                 message="no tinker tools",
             )
 
-        if count_items(ctx, {INGOT_GRAPHIC}) < MIN_INGOTS_FOR_TOOL:
+        if count_items(ctx, INGOT_GRAPHICS) < MIN_INGOTS_FOR_TOOL:
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
@@ -130,7 +130,7 @@ class MakeTools(Procedure):
             target=craft_target,
             category=category_text,
             tool_serial=f"0x{tool_serial:08X}",
-            ingots=count_items(ctx, {INGOT_GRAPHIC}),
+            ingots=count_items(ctx, INGOT_GRAPHICS),
         )
 
         # 1. Open tinkering gump by double-clicking tinker tools

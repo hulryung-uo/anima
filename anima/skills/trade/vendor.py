@@ -165,7 +165,7 @@ KEEP_GRAPHICS: set[int] = (
     | SMITH_HAMMER_GRAPHICS | TONGS_GRAPHICS
     | {0x1BDD, 0x1BD7}  # logs, boards
     | {0x19B7, 0x19B8, 0x19B9, 0x19BA}  # ore
-    | {0x1BF2}  # ingots
+    | {0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1}  # ingots (all stack-size graphics)
     | {0x0EED}  # gold coins
     | {0x0E21}  # bandages
 )
@@ -503,7 +503,8 @@ class SellToNpc(Skill):
 
         keep = set(KEEP_GRAPHICS)
         if not find_in_backpack(ctx, TONGS_GRAPHICS):
-            keep.discard(0x1BF2)  # ingots sellable without tongs
+            for _ig in (0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1):
+                keep.discard(_ig)  # ingots sellable without tongs
 
         # Sell items but protect essential tools and raw materials
         items_to_sell: list[tuple[int, int]] = [

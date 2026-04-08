@@ -29,17 +29,17 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
-# Ingot graphic — all ingot types share this; only the hue differs.
+# Ingot graphics — different graphics for different stack sizes.
 # Iron ingots use hue 0; everything else (DullCopper 0x973, ShadowIron 0x966,
 # Copper 0x96D, Bronze 0x972, Gold 0x8A5, Agapite 0x979, Verite 0x89F,
 # Valorite 0x8AB) is a colored ingot. Source: ServUO Misc/ResourceInfo.cs.
-INGOT_GRAPHIC = 0x1BF2
+from anima.skills.crafting.smelt import INGOT_GRAPHICS
 IRON_HUE = 0
 
 
 def _is_colored_ingot(item) -> bool:
     """True if this item is an ingot with a non-iron hue."""
-    return item.graphic == INGOT_GRAPHIC and item.hue != IRON_HUE
+    return item.graphic in INGOT_GRAPHICS and item.hue != IRON_HUE
 
 
 def _has_colored_ingots(ctx: AgentContext) -> bool:
@@ -150,7 +150,7 @@ class BankDeposit(Procedure):
                 if (item.container == backpack
                         and item.graphic in DEPOSIT_GRAPHICS
                         and item.graphic not in KEEP_GRAPHICS
-                        and not (item.graphic == INGOT_GRAPHIC and item.hue == IRON_HUE)):
+                        and not (item.graphic in INGOT_GRAPHICS and item.hue == IRON_HUE)):
                     await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
                     await asyncio.sleep(0.1)
                     await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))

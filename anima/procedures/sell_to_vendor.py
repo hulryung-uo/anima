@@ -39,7 +39,8 @@ class SellToVendor(Procedure):
         cooldown = ctx.blackboard.get("_craft_bs_material_cooldown", 0)
         craft_blocked = isinstance(cooldown, (int, float)) and time.time() < cooldown
         if not has_tongs or craft_blocked:
-            keep.discard(0x1BF2)  # ingots sellable without tongs or when craft blocked
+            for _ig in (0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1):
+                keep.discard(_ig)  # ingots sellable without tongs or when craft blocked
         return keep
 
     @staticmethod

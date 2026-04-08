@@ -25,7 +25,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 TONGS_GRAPHICS = {0x0FBB, 0x0FBC}  # smith's hammer / tongs
-INGOT_GRAPHIC = 0x1BF2
+from anima.skills.crafting.smelt import INGOT_GRAPHICS
+INGOT_GRAPHIC = 0x1BF2  # kept for backward compat (large-stack graphic)
 IRON_HUE = 0  # Iron ingots have default (no) hue; colored metals have non-zero hue
 MIN_INGOTS = 8  # most weapons need 8-12 ingots
 
@@ -40,7 +41,7 @@ def _count_iron_ingots(ctx: AgentContext) -> int:
         item.amount
         for item in ctx.perception.world.items.values()
         if item.container == backpack
-        and item.graphic == INGOT_GRAPHIC
+        and item.graphic in INGOT_GRAPHICS
         and item.hue == IRON_HUE
     )
 

@@ -33,9 +33,11 @@ _PLATEMAIL = [0x1408, 0x1410, 0x1411, 0x1413, 0x1414, 0x1415]
 for g in _PLATEMAIL:
     ITEM_VENDOR_MAP[g] = ["blacksmith", "arms"]
 
-# Ingots → blacksmith only
+# Ingots → blacksmith only (all stack-size graphics)
 ITEM_VENDOR_MAP[0x1BF2] = ["blacksmith"]
 ITEM_VENDOR_MAP[0x1BEF] = ["blacksmith"]
+ITEM_VENDOR_MAP[0x1BF0] = ["blacksmith"]
+ITEM_VENDOR_MAP[0x1BF1] = ["blacksmith"]
 
 # Shields → blacksmith, armorer
 _SHIELDS = [0x1B72, 0x1B73, 0x1B74, 0x1B76, 0x1B78, 0x1B7A, 0x1B7B]
