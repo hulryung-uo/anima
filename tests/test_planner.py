@@ -379,7 +379,7 @@ class TestDeadlockRecovery:
 
     @pytest.mark.asyncio
     async def test_resolve_deadlock_clears_state(self):
-        """_resolve_deadlock Strategy 5 resets failed destinations and idle ticks."""
+        """DeadlockResolver.resolve Strategy 5 resets failed destinations and idle ticks."""
         reg = ProcedureRegistry()
         planner = Planner(reg)
 
@@ -391,7 +391,7 @@ class TestDeadlockRecovery:
         planner._failed_destinations = {(100, 200): now, (300, 400): now}
         planner._move_fail_until = 999999.0
 
-        await planner._resolve_deadlock(ctx)
+        await planner._deadlock.resolve(ctx)
 
         assert planner._idle_ticks == 0
         assert len(planner._failed_destinations) == 0
