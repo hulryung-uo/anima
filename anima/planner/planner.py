@@ -1306,8 +1306,18 @@ class _PickUpAndSmelt:
         if not backpack:
             return ProcedureResult(success=False, reason=FailureReason.MISSING_RESOURCE, message="no backpack")
 
+        # Per-serial failure counter — after 2 consecutive failures on the
+        # same ore item we mark it as junk so _find_ground_ore skips it.
+        # This prevents an infinite loop when the server silently refuses
+        # a pickup (LOS, z mismatch, anti-cheat, etc.).
+        fail_counts: dict[int, int] = ctx.blackboard.setdefault(
+            "_ore_pickup_fails", {}
+        )
+        junk: set[int] = ctx.blackboard.setdefault("_junk_ore_serials", set())
+
         # Pick up ore from ground into backpack (up to weight limit)
         picked = 0
+        hard_failures: list[int] = []
         for ore in self._ore_items:
             # Check weight — stop if getting heavy (leave 50 stone buffer)
             if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
@@ -1330,17 +1340,42 @@ class _PickUpAndSmelt:
             ore_check = ctx.perception.world.items.get(ore_item.serial)
             if ore_check and ore_check.container == backpack:
                 picked += 1
+                fail_counts.pop(ore_item.serial, None)
                 logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount)
             elif ore_check and ore_check.container == 0:
-                logger.warning("ore_pickup_failed", serial=f"0x{ore_item.serial:08X}",
-                               reason="still on ground after pick_up")
+                # Server refused the pickup — count it and bail once this
+                # ore has failed twice.
+                fails = fail_counts.get(ore_item.serial, 0) + 1
+                fail_counts[ore_item.serial] = fails
+                logger.warning(
+                    "ore_pickup_failed",
+                    serial=f"0x{ore_item.serial:08X}",
+                    reason="still on ground after pick_up",
+                    fails=fails,
+                )
+                if fails >= 2:
+                    junk.add(ore_item.serial)
+                    hard_failures.append(ore_item.serial)
+                    fail_counts.pop(ore_item.serial, None)
+                    logger.info(
+                        "ore_marked_junk",
+                        serial=f"0x{ore_item.serial:08X}",
+                        reason="repeated pickup failure",
+                    )
             else:
                 # Item may have been consumed/merged — count as picked
                 picked += 1
+                fail_counts.pop(ore_item.serial, None)
                 logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount,
                             note="item merged or removed")
 
         if picked == 0:
+            if hard_failures:
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.BLOCKED,
+                    message=f"pickup refused by server, marked {len(hard_failures)} ore as junk",
+                )
             return ProcedureResult(success=False, reason=FailureReason.MISSING_RESOURCE, message="no ore to pick up")
 
         # Now move to forge
