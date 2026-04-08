@@ -34,9 +34,11 @@ class SmeltOre(Procedure):
             return False
 
         unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
+        small_iron = ctx.blackboard.get("_small_iron_ore_serials", set())
 
         has_ore = any(
             it.graphic in ORE_GRAPHICS and it.hue not in unsmelable
+            and not (it.serial in small_iron and it.amount < 2)
             for it in world.items.values()
             if it.container == backpack
         )
@@ -67,7 +69,7 @@ class SmeltOre(Procedure):
             item for item in world.items.values()
             if (item.container == backpack and item.graphic in ORE_GRAPHICS
                 and item.hue not in unsmelable
-                and item.serial not in small_iron)
+                and not (item.serial in small_iron and item.amount < 2))
         ]
         ore_candidates.sort(key=lambda x: x.amount, reverse=True)
         ore = ore_candidates[0] if ore_candidates else None

@@ -294,13 +294,16 @@ class Planner:
         from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
         has_tongs = bool(find_in_backpack(ctx, TONGS_GRAPHICS))
         ore_count = count_items(ctx, ORE_GRAPHICS)
-        # Exclude ore hues proven unsmelable at current skill level
+        # Exclude ore hues proven unsmelable at current skill level,
+        # and iron ore piles too small to smelt (amount < 2)
         unsmelable_ore_hues = ctx.blackboard.get("_unsmelable_ore_hues", set())
-        if unsmelable_ore_hues:
+        small_iron_serials = ctx.blackboard.get("_small_iron_ore_serials", set())
+        if unsmelable_ore_hues or small_iron_serials:
             smeltable_ore = sum(
                 it.amount for it in ctx.perception.world.items.values()
                 if it.container == backpack and it.graphic in ORE_GRAPHICS
                 and it.hue not in unsmelable_ore_hues
+                and not (it.serial in small_iron_serials and it.amount < 2)
             )
         else:
             smeltable_ore = ore_count
