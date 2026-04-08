@@ -541,13 +541,23 @@ class Planner:
             # No vendor reachable — fall through
             logger.info("planner_sell_ingots_no_vendor", ingots=ingot_count)
 
-        # --- Priority 6: Gold > 200 → bank ---
-        if ss.gold > 200:
+        # --- Priority 6: Gold > 200 OR colored ingots → bank ---
+        # Colored (non-iron) ingots can't be used for our basic crafting
+        # recipes, so they get banked rather than left in the backpack.
+        from anima.procedures.bank_deposit import _has_colored_ingots
+        has_colored_ingots = _has_colored_ingots(ctx)
+        if ss.gold > 200 or has_colored_ingots:
             proc = _get_proc("bank_deposit")
             if proc and await proc.can_start(ctx):
-                _intent(f"금화 {ss.gold}g 보유 → 은행에 예금")
+                if has_colored_ingots:
+                    _intent("색상 주괴 보유 → 은행에 보관")
+                else:
+                    _intent(f"금화 {ss.gold}g 보유 → 은행에 예금")
                 return proc
-            _intent(f"금화 {ss.gold}g 보유 → 은행으로 이동")
+            if has_colored_ingots:
+                _intent("색상 주괴 보유 → 은행으로 이동")
+            else:
+                _intent(f"금화 {ss.gold}g 보유 → 은행으로 이동")
             return await self._move_to_location(ctx, "bank")
 
         # --- Mining exhaustion guard ---

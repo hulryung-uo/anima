@@ -29,6 +29,31 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+# Ingot graphic — all ingot types share this; only the hue differs.
+# Iron ingots use hue 0; everything else (DullCopper 0x973, ShadowIron 0x966,
+# Copper 0x96D, Bronze 0x972, Gold 0x8A5, Agapite 0x979, Verite 0x89F,
+# Valorite 0x8AB) is a colored ingot. Source: ServUO Misc/ResourceInfo.cs.
+INGOT_GRAPHIC = 0x1BF2
+IRON_HUE = 0
+
+
+def _is_colored_ingot(item) -> bool:
+    """True if this item is an ingot with a non-iron hue."""
+    return item.graphic == INGOT_GRAPHIC and item.hue != IRON_HUE
+
+
+def _has_colored_ingots(ctx: AgentContext) -> bool:
+    ss = ctx.perception.self_state
+    backpack = ss.equipment.get(0x15)
+    if not backpack:
+        return False
+    return any(
+        _is_colored_ingot(it)
+        for it in ctx.perception.world.items.values()
+        if it.container == backpack
+    )
+
+
 class BankDeposit(Procedure):
     name = "bank_deposit"
     description = "Deposit gold and heavy items at the bank."
@@ -38,6 +63,11 @@ class BankDeposit(Procedure):
         world = ctx.perception.world
 
         has_gold = ss.gold >= GOLD_THRESHOLD
+
+        # Always bank colored ingots — they can't be used for the basic
+        # iron-based crafting recipes and would otherwise pile up forever.
+        has_colored = _has_colored_ingots(ctx)
+
         has_heavy = False
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.6:
             backpack = ss.equipment.get(0x15)
@@ -48,7 +78,7 @@ class BankDeposit(Procedure):
                     if it.container == backpack
                 )
 
-        if not has_gold and not has_heavy:
+        if not has_gold and not has_heavy and not has_colored:
             return False
 
         return _find_banker(ctx) is not None
@@ -91,6 +121,7 @@ class BankDeposit(Procedure):
             )
 
         deposited_count = 0
+        colored_ingots_deposited = 0
 
         # Deposit gold
         for item in list(world.items.values()):
@@ -101,17 +132,36 @@ class BankDeposit(Procedure):
                 await asyncio.sleep(0.2)
                 deposited_count += 1
 
-        # Deposit heavy materials if overweight
+        # Always deposit colored (non-iron) ingots — they're useless for
+        # basic crafting and would otherwise accumulate indefinitely.
+        for item in list(world.items.values()):
+            if item.container == backpack and _is_colored_ingot(item):
+                await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+                await asyncio.sleep(0.1)
+                await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))
+                await asyncio.sleep(0.2)
+                deposited_count += 1
+                colored_ingots_deposited += item.amount
+
+        # Deposit heavy materials if overweight (skip iron ingots — needed
+        # for crafting; colored ingots already handled above)
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.8:
             for item in list(world.items.values()):
                 if (item.container == backpack
                         and item.graphic in DEPOSIT_GRAPHICS
-                        and item.graphic not in KEEP_GRAPHICS):
+                        and item.graphic not in KEEP_GRAPHICS
+                        and not (item.graphic == INGOT_GRAPHIC and item.hue == IRON_HUE)):
                     await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
                     await asyncio.sleep(0.1)
                     await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))
                     await asyncio.sleep(0.2)
                     deposited_count += 1
+
+        if colored_ingots_deposited:
+            logger.info(
+                "bank_deposited_colored_ingots",
+                amount=colored_ingots_deposited,
+            )
 
         await asyncio.sleep(0.5)
 
