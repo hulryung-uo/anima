@@ -82,6 +82,13 @@ class Planner:
         self._craft_material_breaker = CircuitBreaker(
             max_failures=3, cooldown_s=300.0,
         )
+        # 2 server-refused pickups on the same ore serial → mark as junk
+        # so _find_ground_ore skips it. Long cooldown (1h) because the
+        # server-side reason for refusal is usually LOS/z/anti-cheat and
+        # unlikely to change on its own.
+        self._ore_pickup_breaker = CircuitBreaker(
+            max_failures=2, cooldown_s=3600.0,
+        )
 
     def stop(self) -> None:
         self._running = False
@@ -94,6 +101,7 @@ class Planner:
         # Expose breakers on the blackboard so skills/procedures can reach them
         ctx.blackboard["_bank_breaker"] = self._bank_breaker
         ctx.blackboard["_craft_material_breaker"] = self._craft_material_breaker
+        ctx.blackboard["_ore_pickup_breaker"] = self._ore_pickup_breaker
 
         while self._running and ctx.conn.connected:
             # --- Request names for nearby unnamed NPCs ---
@@ -1387,22 +1395,36 @@ class _PickUpAndSmelt:
             if ore_check and ore_check.container == backpack:
                 picked += 1
                 fail_counts.pop(ore_item.serial, None)
+                breaker = ctx.blackboard.get("_ore_pickup_breaker")
+                if breaker is not None:
+                    breaker.record_success(ore_item.serial)
                 logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount)
             elif ore_check and ore_check.container == 0:
                 # Server refused the pickup — count it and bail once this
                 # ore has failed twice.
-                fails = fail_counts.get(ore_item.serial, 0) + 1
-                fail_counts[ore_item.serial] = fails
+                breaker = ctx.blackboard.get("_ore_pickup_breaker")
+                if breaker is not None:
+                    breaker.record_failure(ore_item.serial)
+                    opened = breaker.is_open(ore_item.serial)
+                    fails = breaker.failure_count(ore_item.serial)
+                else:
+                    # Legacy fallback
+                    fails = fail_counts.get(ore_item.serial, 0) + 1
+                    fail_counts[ore_item.serial] = fails
+                    opened = fails >= 2
                 logger.warning(
                     "ore_pickup_failed",
                     serial=f"0x{ore_item.serial:08X}",
                     reason="still on ground after pick_up",
                     fails=fails,
                 )
-                if fails >= 2:
+                if opened:
                     junk.add(ore_item.serial)
                     hard_failures.append(ore_item.serial)
-                    fail_counts.pop(ore_item.serial, None)
+                    if breaker is not None:
+                        breaker.reset(ore_item.serial)
+                    else:
+                        fail_counts.pop(ore_item.serial, None)
                     logger.info(
                         "ore_marked_junk",
                         serial=f"0x{ore_item.serial:08X}",
@@ -1412,6 +1434,9 @@ class _PickUpAndSmelt:
                 # Item may have been consumed/merged — count as picked
                 picked += 1
                 fail_counts.pop(ore_item.serial, None)
+                breaker = ctx.blackboard.get("_ore_pickup_breaker")
+                if breaker is not None:
+                    breaker.record_success(ore_item.serial)
                 logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount,
                             note="item merged or removed")
 
