@@ -10,6 +10,7 @@ import structlog
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.trade.vendor import (
     _CLILOC_VENDOR_BUY,
+    _mark_refused,
     _request_context_menu_entry,
     _find_vendor,
 )
@@ -24,6 +25,9 @@ class BuyFromVendor(Procedure):
     name = "buy_from_vendor"
     description = "Buy items from a nearby NPC vendor."
 
+    # Tinkers sell all tools (pickaxe, shovel, tongs, tinker tools)
+    _TOOL_VENDOR_TYPES: set[str] = {"tinker"}
+
     async def can_start(self, ctx: AgentContext) -> bool:
         ss = ctx.perception.self_state
         if ss.gold < 10:
@@ -31,13 +35,13 @@ class BuyFromVendor(Procedure):
         # Don't buy when overweight — server silently rejects purchases
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.9:
             return False
-        return _find_vendor(ctx, check_refused=False) is not None
+        return _find_vendor(ctx, vendor_types=self._TOOL_VENDOR_TYPES) is not None
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
         gold_before = ss.gold
 
-        vendor = _find_vendor(ctx, check_refused=False)
+        vendor = _find_vendor(ctx, vendor_types=self._TOOL_VENDOR_TYPES)
         if not vendor:
             logger.info("buy_vendor_not_found", pos=f"({ss.x},{ss.y})")
             return ProcedureResult(
@@ -126,6 +130,7 @@ class BuyFromVendor(Procedure):
                 wanted=[f"0x{g:04X}" for g in TOOL_GRAPHICS],
                 available=[f"0x{it.graphic:04X}" for it in buy_list[:10]],
             )
+            _mark_refused(ctx, vendor.serial)
             ss.vendor_buy_list = []
             ss.vendor_serial = 0
             return ProcedureResult(
