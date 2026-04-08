@@ -123,7 +123,11 @@ class CraftBlacksmith(Procedure):
     description = "Craft weapons or armor from ingots to sell for profit."
 
     async def can_start(self, ctx: AgentContext) -> bool:
-        # Cooldown after repeated "insufficient metal" failures (material mismatch)
+        # CircuitBreaker check (preferred)
+        breaker = ctx.blackboard.get("_craft_material_breaker")
+        if breaker is not None and breaker.is_open("iron"):
+            return False
+        # Legacy fallback for tests that don't install the breaker
         if time.time() < ctx.blackboard.get("_craft_bs_material_cooldown", 0):
             return False
         if not find_in_backpack(ctx, TONGS_GRAPHICS):
@@ -429,6 +433,9 @@ class CraftBlacksmith(Procedure):
             logger.info("craft_blacksmith_success", item=item_name, ingots_used=consumed)
             ctx.blackboard["_craft_bs_fails"] = 0
             ctx.blackboard["_craft_bs_material_fails"] = 0
+            breaker = ctx.blackboard.get("_craft_material_breaker")
+            if breaker is not None:
+                breaker.record_success("iron")
             return ProcedureResult(
                 success=True,
                 message=f"Crafted {item_name}",
@@ -464,6 +471,21 @@ class CraftBlacksmith(Procedure):
             # Set a cooldown to stop retrying — the agent should sell ingots instead.
             mat_fails = ctx.blackboard.get("_craft_bs_material_fails", 0) + 1
             ctx.blackboard["_craft_bs_material_fails"] = mat_fails
+
+            # CircuitBreaker: only count when we know we had enough ingots
+            # (that's the material-type mismatch signal)
+            cb = ctx.blackboard.get("_craft_material_breaker")
+            if cb is not None and ingots_before >= ingot_cost:
+                cb.record_failure("iron")
+                if cb.is_open("iron"):
+                    logger.warning(
+                        "craft_bs_material_cooldown",
+                        fails=cb.failure_count("iron"),
+                        ingots=ingots_before,
+                        cost=ingot_cost,
+                    )
+
+            # Legacy flag fallback (kept for tests that don't install breaker)
             if mat_fails >= 3 and ingots_before >= ingot_cost:
                 cooldown = min(300 * (mat_fails - 2), 1800)  # escalate: 300→600→…→1800s
                 ctx.blackboard["_craft_bs_material_cooldown"] = time.time() + cooldown

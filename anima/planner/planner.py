@@ -77,6 +77,11 @@ class Planner:
         # 1 failure in an 8×8 ServUO ore bank = the whole bank is
         # depleted for the 10-20 min server respawn window.
         self._bank_breaker = CircuitBreaker(max_failures=1, cooldown_s=600.0)
+        # After 3 "insufficient metal" failures with enough ingots on hand
+        # (material-type mismatch), cool down the material for 5 minutes.
+        self._craft_material_breaker = CircuitBreaker(
+            max_failures=3, cooldown_s=300.0,
+        )
 
     def stop(self) -> None:
         self._running = False
@@ -88,6 +93,7 @@ class Planner:
 
         # Expose breakers on the blackboard so skills/procedures can reach them
         ctx.blackboard["_bank_breaker"] = self._bank_breaker
+        ctx.blackboard["_craft_material_breaker"] = self._craft_material_breaker
 
         while self._running and ctx.conn.connected:
             # --- Request names for nearby unnamed NPCs ---
