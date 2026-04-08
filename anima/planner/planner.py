@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureResult
+from anima.planner.circuit_breaker import CircuitBreaker
 from anima.planner.health import PlannerHealth
 from anima.web.command_bus import CommandBus
 
@@ -73,6 +74,9 @@ class Planner:
         # selection loops without waiting for the supervisor analysis cycle.
         self._health = PlannerHealth(window=30, min_diversity=0.2)
         self._health_break_until: float = 0.0
+        # 1 failure in an 8×8 ServUO ore bank = the whole bank is
+        # depleted for the 10-20 min server respawn window.
+        self._bank_breaker = CircuitBreaker(max_failures=1, cooldown_s=600.0)
 
     def stop(self) -> None:
         self._running = False
@@ -81,6 +85,9 @@ class Planner:
         """Main planner loop. Runs until connection drops."""
         self._running = True
         logger.info("planner_started")
+
+        # Expose breakers on the blackboard so skills/procedures can reach them
+        ctx.blackboard["_bank_breaker"] = self._bank_breaker
 
         while self._running and ctx.conn.connected:
             # --- Request names for nearby unnamed NPCs ---

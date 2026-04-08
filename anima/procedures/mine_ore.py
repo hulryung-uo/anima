@@ -26,6 +26,24 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+def _trip_bank(ctx: "AgentContext", tx: int, ty: int) -> tuple[int, int]:
+    """Mark the ServUO ore bank at (tx, ty) as depleted.
+
+    Writes to both the legacy `depleted_banks` dict (for tests and
+    contexts that don't install a CircuitBreaker) and the breaker if
+    present on the blackboard. Returns the bank key for logging.
+    """
+    import time as _t
+    from anima.skills.gathering.mine import _bank_key
+    bk = _bank_key(tx, ty)
+    depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
+    depleted_banks[bk] = _t.time()
+    breaker = ctx.blackboard.get("_bank_breaker")
+    if breaker is not None:
+        breaker.trip(bk)
+    return bk
+
+
 class MineOre(Procedure):
     name = "mine_ore"
     description = "Use pickaxe on a mountain/cave tile to mine ore."
@@ -131,12 +149,7 @@ class MineOre(Procedure):
             ctx.bus.unsubscribe(sub2)  # type: ignore[possibly-undefined]
 
         if _mine_flags["depleted"]:
-            # Mark the entire 8x8 ore bank as depleted (ServUO HarvestBank
-            # semantics — every tile in the bank shares one ore pool).
-            from anima.skills.gathering.mine import _bank_key
-            depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
-            bk = _bank_key(tx, ty)
-            depleted_banks[bk] = _time.time()
+            bk = _trip_bank(ctx, tx, ty)
             logger.info("mine_bank_depleted", pos=f"({tx},{ty})", bank=str(bk))
             return ProcedureResult(
                 success=False,
@@ -147,13 +160,8 @@ class MineOre(Procedure):
             )
 
         if _mine_flags["too_far"]:
-            # Tile is beyond mining range — blacklist the bank so the
-            # planner moves on instead of cycling through nearby tiles
-            # in the same exhausted region.
-            from anima.skills.gathering.mine import _bank_key
-            depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
-            depleted_banks[_bank_key(tx, ty)] = _time.time()
-            logger.info("mine_too_far", pos=f"({tx},{ty})", player=f"({ss.x},{ss.y})")
+            bk = _trip_bank(ctx, tx, ty)
+            logger.info("mine_too_far", pos=f"({tx},{ty})", player=f"({ss.x},{ss.y})", bank=str(bk))
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
@@ -161,11 +169,8 @@ class MineOre(Procedure):
             )
 
         if _mine_flags["los_fail"]:
-            # LOS failure — same bank handling.
-            from anima.skills.gathering.mine import _bank_key
-            depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
-            depleted_banks[_bank_key(tx, ty)] = _time.time()
-            logger.info("mine_los_fail", pos=f"({tx},{ty})")
+            bk = _trip_bank(ctx, tx, ty)
+            logger.info("mine_los_fail", pos=f"({tx},{ty})", bank=str(bk))
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,

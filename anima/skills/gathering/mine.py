@@ -124,7 +124,10 @@ def _find_mineable_tile(
     if ctx.map_reader is None:
         return None
 
-    # depleted_banks: bank_key -> last_failure_ts
+    # Prefer the CircuitBreaker (installed by Planner.run on startup).
+    # Legacy dict kept as fallback for tests/contexts that never run
+    # the planner — remove after full migration.
+    breaker = ctx.blackboard.get("_bank_breaker")
     depleted_banks: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
         "depleted_banks", {}
     )
@@ -133,6 +136,8 @@ def _find_mineable_tile(
 
     def _is_bank_depleted(x: int, y: int) -> bool:
         key = _bank_key(x, y)
+        if breaker is not None and breaker.is_open(key):
+            return True
         ts = depleted_banks.get(key)
         if ts and now - ts < DEPLETED_COOLDOWN:
             return True
@@ -370,6 +375,9 @@ class MineOre(Skill):
                 )
                 bk = _bank_key(tx, ty)
                 depleted_banks[bk] = time.time()
+                breaker = ctx.blackboard.get("_bank_breaker")
+                if breaker is not None:
+                    breaker.trip(bk)
                 ctx.blackboard["_mine_consec_fail"] = 0
                 logger.info(
                     "mine_bank_depleted",
