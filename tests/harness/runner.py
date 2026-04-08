@@ -6,9 +6,8 @@ by a WorldBehavior so tests remain fast and fully reproducible.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from anima.planner.planner import Planner
 from tests.harness.world import MockWorld, WorldBehavior
@@ -67,14 +66,13 @@ async def run_planner_ticks(
         Strategy object controlling simulated outcomes.  Defaults to the
         base ``WorldBehavior`` (most things succeed).
     """
-    if behavior is None:
-        behavior = WorldBehavior()
+    active_behavior: WorldBehavior = behavior if behavior is not None else WorldBehavior()
 
     selected: list[str] = []
     succeeded: list[str] = []
     failed: list[str] = []
 
-    for tick in range(max_ticks):
+    for _tick in range(max_ticks):
         # Rebuild ctx each tick so self_state reflects latest world mutations
         ctx = world.as_ctx()
 
@@ -94,9 +92,9 @@ async def run_planner_ticks(
         # Apply simulated outcome (skip for None / no-op tick)
         if proc is not None:
             try:
-                success, reason = behavior.on_procedure_selected(world, proc_name)
+                success, _reason = active_behavior.on_procedure_selected(world, proc_name)
             except Exception:
-                success, reason = False, "behavior_error"
+                success = False
 
             if success:
                 succeeded.append(proc_name)
