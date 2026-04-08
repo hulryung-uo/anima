@@ -10,6 +10,12 @@ Priority order:
   7. LLM strategic decision (fallback)
 
 Continuation hints prevent thrashing between procedures.
+
+NOTE: `ctx.blackboard` is in the process of migrating to the typed
+PlannerBlackboard in anima/planner/state.py. New code should prefer
+`PlannerBlackboard.from_dict(ctx.blackboard)` and write back via
+`bb.to_dict()` at the end of the operation. Existing string-key access
+is still supported during the migration.
 """
 
 from __future__ import annotations
