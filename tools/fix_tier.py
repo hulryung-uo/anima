@@ -7,7 +7,6 @@ in ~30 seconds before escalating to Opus for full analysis.
 from __future__ import annotations
 
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
