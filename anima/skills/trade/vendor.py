@@ -700,11 +700,14 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
 def _find_vendor(
     ctx: "BrainContext",
     vendor_types: set[str] | None = None,
+    check_refused: bool = True,
 ) -> MobileInfo | None:
     """Find non-refused vendor within range (sync, for can_execute).
 
     vendor_types: if given, only match vendors whose name/properties contain
     one of these keywords (e.g. {"blacksmith", "weaponsmith"}).
+    check_refused: if False, skip the refused-vendor check (useful for buy
+    operations — a vendor that refused a sell may still accept buys).
     """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(
@@ -723,7 +726,9 @@ def _find_vendor(
         return False
 
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
-        if m.serial == ss.serial or _is_refused(ctx, m.serial):
+        if m.serial == ss.serial:
+            continue
+        if check_refused and _is_refused(ctx, m.serial):
             continue
         if m.body not in HUMAN_BODIES or m.serial >= 0x10000:
             continue

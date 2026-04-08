@@ -31,13 +31,13 @@ class BuyFromVendor(Procedure):
         # Don't buy when overweight — server silently rejects purchases
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.9:
             return False
-        return _find_vendor(ctx) is not None
+        return _find_vendor(ctx, check_refused=False) is not None
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
         gold_before = ss.gold
 
-        vendor = _find_vendor(ctx)
+        vendor = _find_vendor(ctx, check_refused=False)
         if not vendor:
             logger.info("buy_vendor_not_found", pos=f"({ss.x},{ss.y})")
             return ProcedureResult(
