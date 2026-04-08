@@ -40,6 +40,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 
 from fix_lock import FixLock  # noqa: E402
+from fix_tier import call_quick_fix, is_too_complex  # noqa: E402
 
 ROOT = Path(__file__).parent.parent
 AGENT_CMD = [sys.executable, "-m", "anima"]
@@ -663,7 +664,22 @@ def main() -> None:
                                     agent_proc = start_agent(args.agent_args)
                                     last_analysis = time.time()
                                     continue
-                                success, output = call_claude_with_prompt(prompt, timeout=timeout)
+                                # --- NEW: try Haiku quick fix first ---
+                                quick_diag = prompt[:2000]  # truncate for Haiku
+                                q_success, q_committed, q_output = call_quick_fix(
+                                    quick_diag, fix_key, timeout=60,
+                                )
+                                if q_committed and q_success:
+                                    print(f"[supervisor] Quick fix committed for {fix_key}")
+                                    success, output = True, q_output
+                                elif q_success and not is_too_complex(q_output):
+                                    # Haiku ran cleanly but didn't commit; escalate
+                                    print(f"[supervisor] Quick fix ran without changes — escalating to Opus")
+                                    success, output = call_claude_with_prompt(prompt, timeout=timeout)
+                                else:
+                                    # Too complex or failed → Opus
+                                    print(f"[supervisor] Quick fix says too complex — escalating to Opus")
+                                    success, output = call_claude_with_prompt(prompt, timeout=timeout)
                             # Auto-commit if Claude left uncommitted changes
                             if _auto_commit_if_needed():
                                 pass  # committed
