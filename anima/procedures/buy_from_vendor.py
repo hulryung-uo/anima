@@ -150,7 +150,7 @@ class BuyFromVendor(Procedure):
         )
 
         await ctx.conn.send_packet(build_buy_items(
-            vendor.serial,
+            ss.vendor_serial,
             [(target_item.serial, 1)],
         ))
         await asyncio.sleep(1.0)
