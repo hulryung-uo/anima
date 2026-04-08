@@ -34,6 +34,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# tools/ must be on sys.path before importing helper modules
+_TOOLS_DIR = str(Path(__file__).parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+from fix_lock import FixLock  # noqa: E402
+
 ROOT = Path(__file__).parent.parent
 AGENT_CMD = [sys.executable, "-m", "anima"]
 STATE_FILE = ROOT / "data" / "state.json"
@@ -530,10 +537,6 @@ def main() -> None:
     mode = "Level 1-3" if use_claude else "Level 1 only"
     print(f"[supervisor] Starting ({mode}, interval={args.interval}s)")
 
-    tools_dir = str(Path(__file__).parent)
-    if tools_dir not in sys.path:
-        sys.path.insert(0, tools_dir)
-
     agent_proc = start_agent(args.agent_args)
     last_analysis = time.time()
     last_health_check = time.time()
@@ -649,7 +652,18 @@ def main() -> None:
                             stop_agent(agent_proc)
                             prompt = build_diagnostic_prompt(failure=worst)
                             head_before = get_git_head()
-                            success, output = call_claude_with_prompt(prompt, timeout=timeout)
+                            lock_key = f"targeted_fix:{fix_key}"
+                            with FixLock(lock_key, sha=head_before) as got:
+                                if not got:
+                                    ts_str = datetime.now().strftime("%H:%M:%S")
+                                    print(
+                                        f"[supervisor] [{ts_str}] {lock_key} "
+                                        f"already being fixed — skipping"
+                                    )
+                                    agent_proc = start_agent(args.agent_args)
+                                    last_analysis = time.time()
+                                    continue
+                                success, output = call_claude_with_prompt(prompt, timeout=timeout)
                             # Auto-commit if Claude left uncommitted changes
                             if _auto_commit_if_needed():
                                 pass  # committed
@@ -683,7 +697,18 @@ def main() -> None:
                         stop_agent(agent_proc)
                         prompt = build_diagnostic_prompt(minutes=args.minutes)
                         head_before = get_git_head()
-                        _, output = call_claude_with_prompt(prompt, timeout=900)
+                        lock_key = f"full_analysis:{severe[0]['name']}"
+                        with FixLock(lock_key, sha=head_before) as got:
+                            if not got:
+                                ts_str = datetime.now().strftime("%H:%M:%S")
+                                print(
+                                    f"[supervisor] [{ts_str}] {lock_key} "
+                                    f"already being fixed — skipping"
+                                )
+                                agent_proc = start_agent(args.agent_args)
+                                last_analysis = time.time()
+                                continue
+                            _, output = call_claude_with_prompt(prompt, timeout=900)
                         # Auto-commit if Claude left uncommitted changes
                         if _auto_commit_if_needed():
                             pass  # committed
