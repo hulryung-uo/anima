@@ -36,52 +36,56 @@ class CircuitBreaker:
             raise ValueError("cooldown_s must be > 0")
         self._max = max_failures
         self._cooldown = cooldown_s
-        # target -> [failure_count, tripped_at]
-        self._state: dict[Hashable, list[float]] = {}
+        # Kept as two parallel dicts so each has a precise type.
+        self._counts: dict[Hashable, int] = {}
+        self._tripped_at: dict[Hashable, float] = {}
+
+    def _drop(self, target: Hashable) -> None:
+        self._counts.pop(target, None)
+        self._tripped_at.pop(target, None)
 
     def record_failure(self, target: Hashable) -> None:
         """Count one failure. Opens the breaker if max_failures reached."""
-        entry = self._state.setdefault(target, [0, 0.0])
-        entry[0] += 1
-        if entry[0] >= self._max:
-            entry[1] = time.time()
+        count = self._counts.get(target, 0) + 1
+        self._counts[target] = count
+        if count >= self._max:
+            self._tripped_at[target] = time.time()
 
     def record_success(self, target: Hashable) -> None:
         """Reset counter and cooldown for a target."""
-        self._state.pop(target, None)
+        self._drop(target)
 
     def trip(self, target: Hashable) -> None:
         """Open the breaker immediately, skipping the counter."""
-        self._state[target] = [self._max, time.time()]
+        self._counts[target] = self._max
+        self._tripped_at[target] = time.time()
 
     def reset(self, target: Hashable) -> None:
         """Remove a target from tracking entirely."""
-        self._state.pop(target, None)
+        self._drop(target)
 
     def reset_all(self) -> None:
-        self._state.clear()
+        self._counts.clear()
+        self._tripped_at.clear()
 
     def is_open(self, target: Hashable) -> bool:
         """True while the target is in its cooldown window."""
-        entry = self._state.get(target)
-        if not entry:
-            return False
-        count, tripped_at = entry
+        count = self._counts.get(target, 0)
         if count < self._max:
             return False
+        tripped_at = self._tripped_at.get(target, 0.0)
         if time.time() - tripped_at >= self._cooldown:
             # Auto-expire
-            self._state.pop(target, None)
+            self._drop(target)
             return False
         return True
 
     def failure_count(self, target: Hashable) -> int:
-        entry = self._state.get(target)
-        return entry[0] if entry else 0
+        return self._counts.get(target, 0)
 
     def open_targets(self) -> list[Hashable]:
         """List of targets whose breaker is currently open."""
-        return [t for t in list(self._state.keys()) if self.is_open(t)]
+        return [t for t in list(self._counts.keys()) if self.is_open(t)]
 
     def snapshot(self) -> dict[str, Any]:
         """Diagnostic snapshot for logging."""
@@ -89,13 +93,13 @@ class CircuitBreaker:
         return {
             "max_failures": self._max,
             "cooldown_s": self._cooldown,
-            "tracked": len(self._state),
+            "tracked": len(self._counts),
             "open": [
                 {
                     "target": str(t),
-                    "count": self._state[t][0],
+                    "count": self._counts[t],
                     "open_for_more_s": max(
-                        0.0, self._cooldown - (now - self._state[t][1])
+                        0.0, self._cooldown - (now - self._tripped_at.get(t, 0.0))
                     ),
                 }
                 for t in self.open_targets()
