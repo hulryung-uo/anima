@@ -131,23 +131,28 @@ class MineOre(Procedure):
             ctx.bus.unsubscribe(sub2)  # type: ignore[possibly-undefined]
 
         if _mine_flags["depleted"]:
-            # Mark tile as depleted in blackboard
-            depleted = ctx.blackboard.setdefault("depleted_mines", {})
-            depleted[(tx, ty)] = _time.time()
-            logger.info("mine_depleted", pos=f"({tx},{ty})")
+            # Mark the entire 8x8 ore bank as depleted (ServUO HarvestBank
+            # semantics — every tile in the bank shares one ore pool).
+            from anima.skills.gathering.mine import _bank_key
+            depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
+            bk = _bank_key(tx, ty)
+            depleted_banks[bk] = _time.time()
+            logger.info("mine_bank_depleted", pos=f"({tx},{ty})", bank=str(bk))
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
                 message=f"Vein depleted at ({tx},{ty})",
                 next_suggestion="mine_ore",
-                details={"tile": (tx, ty), "depleted": True},
+                details={"tile": (tx, ty), "bank": bk, "depleted": True},
             )
 
         if _mine_flags["too_far"]:
-            # Tile is beyond mining range — temporarily blacklist so planner
-            # doesn't pick the same tile again immediately.
-            depleted = ctx.blackboard.setdefault("depleted_mines", {})
-            depleted[(tx, ty)] = _time.time()
+            # Tile is beyond mining range — blacklist the bank so the
+            # planner moves on instead of cycling through nearby tiles
+            # in the same exhausted region.
+            from anima.skills.gathering.mine import _bank_key
+            depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
+            depleted_banks[_bank_key(tx, ty)] = _time.time()
             logger.info("mine_too_far", pos=f"({tx},{ty})", player=f"({ss.x},{ss.y})")
             return ProcedureResult(
                 success=False,
@@ -156,10 +161,10 @@ class MineOre(Procedure):
             )
 
         if _mine_flags["los_fail"]:
-            # LOS failure — tile exists but can't be seen from here.
-            # Temporarily blacklist to avoid retry loop.
-            depleted = ctx.blackboard.setdefault("depleted_mines", {})
-            depleted[(tx, ty)] = _time.time()
+            # LOS failure — same bank handling.
+            from anima.skills.gathering.mine import _bank_key
+            depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
+            depleted_banks[_bank_key(tx, ty)] = _time.time()
             logger.info("mine_los_fail", pos=f"({tx},{ty})")
             return ProcedureResult(
                 success=False,

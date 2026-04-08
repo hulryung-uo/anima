@@ -567,6 +567,11 @@ class Planner:
                         return _MoveToProcedure(
                             f"mineable tile ({tx},{ty})", tx, ty,
                         )
+                else:
+                    # No mineable tile in MOVE_RADIUS — every nearby bank
+                    # is depleted. Mark the closest mine LOCATION as
+                    # exhausted so Priority 9 picks a different one.
+                    self._mark_nearby_mine_exhausted(ctx, ss)
 
         # --- Priority 8: Continuation hint ---
         if self.continuation_hint:
@@ -690,18 +695,18 @@ class Planner:
             self._idle_ticks = 0  # give the planner another chance
             return
 
-        # Strategy 2: Clear depleted mines (maybe they've regenerated)
+        # Strategy 2: Clear depleted ore banks (maybe they've regenerated).
         # Use the actual DEPLETED_COOLDOWN (600s) — server regen is 10-20 min.
-        # Using a shorter threshold (e.g. 60s) causes the agent to retry
-        # tiles that are still depleted on the server.
         from anima.skills.gathering.mine import DEPLETED_COOLDOWN as _DEPL_CD
-        depleted = ctx.blackboard.get("depleted_mines", {})
-        old_depleted = [k for k, v in depleted.items() if now - v > _DEPL_CD]
-        for k in old_depleted:
-            del depleted[k]
-        if old_depleted:
-            logger.info("planner_cleared_depleted_mines", count=len(old_depleted))
-            ctx.blackboard["planner_intent"] = f"고갈 광산 {len(old_depleted)}개 초기화 → 재시도"
+        depleted_banks = ctx.blackboard.get("depleted_banks", {})
+        old_banks = [k for k, v in depleted_banks.items() if now - v > _DEPL_CD]
+        for k in old_banks:
+            del depleted_banks[k]
+        if old_banks:
+            logger.info("planner_cleared_depleted_banks", count=len(old_banks))
+            ctx.blackboard["planner_intent"] = (
+                f"고갈 광산 {len(old_banks)}개 초기화 → 재시도"
+            )
             self._idle_ticks = 0
             return
 
@@ -837,7 +842,8 @@ class Planner:
         # After 5 min wait, reset and try again
         self._idle_ticks = 0
         self._failed_destinations.clear()
-        ctx.blackboard.pop("depleted_mines", None)
+        ctx.blackboard.pop("depleted_banks", None)
+        ctx.blackboard.pop("exhausted_mines", None)
         ctx.blackboard.pop("refused_vendors", None)
         ctx.blackboard.pop("_skip_procedures", None)
         ctx.blackboard.pop("_make_tools_gave_up", None)
@@ -1003,13 +1009,47 @@ Write ONLY the post body, nothing else."""
             return _MoveToProcedure(best.name, best.x, best.y)
         return None
 
+    def _mark_nearby_mine_exhausted(self, ctx: AgentContext, ss) -> None:
+        """Mark the mine LOCATION nearest to the player as exhausted.
+
+        Called when _find_mineable_tile returns None — meaning every ore
+        bank within MOVE_RADIUS is depleted. The exhausted-location flag
+        causes _try_move_to_activity to prefer a different mine for ~5 min.
+        """
+        import re as _re
+        import time as _time
+        from anima.world_knowledge import ALL_LOCATIONS
+        _MINE_RE = _re.compile(r'\b(mine|mining)\b', _re.IGNORECASE)
+        nearest = None
+        nearest_dist = 999
+        for loc in ALL_LOCATIONS:
+            if not _MINE_RE.search(loc.name):
+                continue
+            d = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
+            if d < nearest_dist:
+                nearest_dist = d
+                nearest = loc
+        if nearest is None or nearest_dist > 30:
+            return  # not standing near a known mine
+        exhausted = ctx.blackboard.setdefault("exhausted_mines", {})
+        exhausted[nearest.name] = _time.time()
+        logger.info(
+            "planner_mine_exhausted_marked",
+            mine=nearest.name, dist=nearest_dist,
+        )
+
     async def _try_move_to_activity(self, ctx: AgentContext):
         """If no procedure can start, walk toward primary activity location.
 
         Uses waypoint routing: if the target is far, finds intermediate
         waypoints along the way to avoid getting stuck on building walls.
+
+        Skips mine locations marked as exhausted within the last 5 min so
+        the agent rotates between mining areas instead of camping a single
+        depleted spot.
         """
         import re
+        import time as _time
         from anima.world_knowledge import ALL_LOCATIONS
 
         ss = ctx.perception.self_state
@@ -1018,12 +1058,20 @@ Write ONLY the post body, nothing else."""
         # "mine" matches "East Mine" but not "Miners Guild".
         _ACTIVITY_RE = re.compile(r'\b(mine|mining|mountain|forest)\b', re.IGNORECASE)
         max_activity_dist = 300  # prevent cross-city routing
+        EXHAUSTED_TTL = 300.0  # 5 min
+        exhausted = ctx.blackboard.get("exhausted_mines", {})
+        now = _time.time()
+        # Drop stale entries
+        for k in [k for k, ts in exhausted.items() if now - ts > EXHAUSTED_TTL]:
+            del exhausted[k]
         mine_loc = None
         best_dist = 999999
         for loc in ALL_LOCATIONS:
             if _ACTIVITY_RE.search(loc.name):
                 if self._is_destination_failed(loc.x, loc.y):
                     continue
+                if loc.name in exhausted:
+                    continue  # recently exhausted — pick a different mine
                 dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
                 if dist <= 5:
                     continue  # Already here — skip to find next location

@@ -33,7 +33,18 @@ MINING_SKILL_ID = 45
 
 SEARCH_RADIUS = 2  # mining range is 2 tiles
 DEPLETED_COOLDOWN = 600.0  # seconds before retrying a depleted spot (server regen ~10-20 min)
-MOVE_RADIUS = 8  # how far to look for new mining spots
+MOVE_RADIUS = 24  # how far to look for new mining spots (must cross multiple banks)
+
+# ServUO HarvestBank: ore is pooled per 8x8 region (BankWidth=8, BankHeight=8).
+# When a tile reports "no metal here", the entire 8x8 bank it belongs to is empty.
+# Source: servuo Scripts/Services/Harvest/Mining.cs and Core/HarvestDefinition.cs
+BANK_WIDTH = 8
+BANK_HEIGHT = 8
+
+
+def _bank_key(x: int, y: int) -> tuple[int, int]:
+    """Map a tile coordinate to its ServUO ore bank key (x/8, y/8)."""
+    return (x // BANK_WIDTH, y // BANK_HEIGHT)
 
 # From ServUO Mining.cs m_MountainAndCaveTiles
 # Land tiles use raw graphic IDs. Static tiles are checked as (graphic | 0x4000)
@@ -95,10 +106,16 @@ def _find_mineable_tile(
     *,
     blocked: set[tuple[int, int]] | None = None,
 ) -> tuple[int, int, int, int, bool] | None:
-    """Find a mineable tile, skipping depleted and blocked spots.
+    """Find a mineable tile, skipping depleted banks and blocked spots.
 
     Checks within SEARCH_RADIUS first. If nothing found, searches
     up to MOVE_RADIUS for tiles the player can walk to.
+
+    Depletion is tracked per ServUO **ore bank** (8x8 region) rather than
+    per tile, because a single bank holds one shared ore pool — when one
+    tile in the bank reports empty, every other tile in that bank is also
+    empty until respawn.
+
     Returns (x, y, z, graphic, is_static) or None.
     """
     ss = ctx.perception.self_state
@@ -107,22 +124,24 @@ def _find_mineable_tile(
     if ctx.map_reader is None:
         return None
 
-    depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
-        "depleted_mines", {}
+    # depleted_banks: bank_key -> last_failure_ts
+    depleted_banks: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+        "depleted_banks", {}
     )
     now = time.time()
     _blocked = blocked or set()
 
-    def _is_depleted(x: int, y: int) -> bool:
-        ts = depleted.get((x, y))
+    def _is_bank_depleted(x: int, y: int) -> bool:
+        key = _bank_key(x, y)
+        ts = depleted_banks.get(key)
         if ts and now - ts < DEPLETED_COOLDOWN:
             return True
         if ts:
-            del depleted[(x, y)]
+            del depleted_banks[key]
         return False
 
     def _check_tile(x: int, y: int) -> tuple[int, int, int, int, bool] | None:
-        if _is_depleted(x, y) or (x, y) in _blocked:
+        if _is_bank_depleted(x, y) or (x, y) in _blocked:
             return None
         tile = ctx.map_reader.get_tile(x, y)
         for s in tile.statics:
@@ -343,13 +362,19 @@ class MineOre(Skill):
             fails = ctx.blackboard.get("_mine_consec_fail", 0) + 1
             ctx.blackboard["_mine_consec_fail"] = fails
             if fails >= 3:
-                # Mark this tile as depleted — move on
-                depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
-                    "depleted_mines", {}
+                # Mark the entire 8x8 ServUO ore bank as depleted — every
+                # tile in the bank shares one ore pool, so retrying any of
+                # them is wasted.
+                depleted_banks: dict[tuple[int, int], float] = (
+                    ctx.blackboard.setdefault("depleted_banks", {})
                 )
-                depleted[(tx, ty)] = time.time()
+                bk = _bank_key(tx, ty)
+                depleted_banks[bk] = time.time()
                 ctx.blackboard["_mine_consec_fail"] = 0
-                logger.info("mine_depleted", pos=f"({tx},{ty})", fails=fails)
+                logger.info(
+                    "mine_bank_depleted",
+                    pos=f"({tx},{ty})", bank=f"{bk}", fails=fails,
+                )
             else:
                 logger.info("mine_fail", pos=f"({tx},{ty})", fails=fails)
             return SkillResult(
