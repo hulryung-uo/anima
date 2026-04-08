@@ -26,6 +26,7 @@ from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureRes
 from anima.planner.circuit_breaker import CircuitBreaker
 from anima.planner.deadlock import DeadlockResolver
 from anima.planner.health import PlannerHealth
+from anima.planner.roaming import RoamingHelper
 from anima.planner.helpers import (
     _MoveToProcedure,
     _PickUpAndSmelt,
@@ -96,6 +97,7 @@ class Planner:
             max_failures=2, cooldown_s=3600.0,
         )
         self._deadlock = DeadlockResolver(self)
+        self._roaming = RoamingHelper(self)
 
     def stop(self) -> None:
         self._running = False
@@ -329,7 +331,7 @@ class Planner:
                         f"배낭 미감지, 금화 {ss.gold}g → 상점에서 도구 구매"
                     )
                     return proc
-                move = await self._move_to_location(ctx, "tinker", "provisioner")
+                move = await self._roaming.move_to_location(ctx, "tinker", "provisioner")
                 if move:
                     ctx.blackboard["planner_intent"] = (
                         f"배낭 미감지, 금화 {ss.gold}g → 상점으로 이동"
@@ -337,7 +339,7 @@ class Planner:
                     return move
 
             if time.time() > self._move_fail_until:
-                move_proc = await self._try_move_to_activity(ctx)
+                move_proc = await self._roaming.try_move_to_activity(ctx)
                 if move_proc:
                     return move_proc
 
@@ -420,7 +422,7 @@ class Planner:
                     return proc
                 # Has smeltable ore but no forge nearby — go to forge
                 _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 용광로로 이동")
-                return await self._move_to_location(ctx, "forge", "blacksmith")
+                return await self._roaming.move_to_location(ctx, "forge", "blacksmith")
             # Overweight from non-ore items (crafted items, etc.) — fall
             # through to sell/bank priorities below
 
@@ -432,7 +434,7 @@ class Planner:
                 return proc
             # Smeltable ore in backpack but no forge nearby — go to forge
             _intent(f"광석 {smeltable_ore}개 보유, 근처에 용광로 없음 → 용광로로 이동")
-            return await self._move_to_location(ctx, "forge", "blacksmith")
+            return await self._roaming.move_to_location(ctx, "forge", "blacksmith")
 
         # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
         # Skip if we just picked up ore (hint says "smelt_ore") — let smelt run
@@ -456,7 +458,7 @@ class Planner:
                     _intent("곡괭이 없음, 광석 보유 → 제련부터")
                     return proc
                 _intent("곡괭이 없음, 광석 보유, 용광로 없음 → 용광로로 이동")
-                return await self._move_to_location(ctx, "forge", "blacksmith")
+                return await self._roaming.move_to_location(ctx, "forge", "blacksmith")
 
             # 4b: Has tinker tools + ingots → try craft tools
             #     Skip if Tinkering gave up (skill too low)
@@ -474,7 +476,7 @@ class Planner:
                     _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점에서 구매")
                     return proc
                 _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점으로 이동")
-                move = await self._move_to_location(ctx, "tinker", "provisioner")
+                move = await self._roaming.move_to_location(ctx, "tinker", "provisioner")
                 if move:
                     return move
 
@@ -487,7 +489,7 @@ class Planner:
                     logger.info("planner_craft_for_gold", reason="need tools, crafting to sell")
                     return proc
                 _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 대장간으로 이동")
-                move = await self._move_to_location(ctx, "forge", "blacksmith")
+                move = await self._roaming.move_to_location(ctx, "forge", "blacksmith")
                 if move:
                     return move
 
@@ -498,7 +500,7 @@ class Planner:
                     _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 주괴 판매")
                     return proc
                 _intent(f"곡괭이 없음, 주괴 {ingot_count}개 → 상점으로 이동")
-                move = await self._move_to_location(ctx, "blacksmith", "weaponsmith")
+                move = await self._roaming.move_to_location(ctx, "blacksmith", "weaponsmith")
                 if move:
                     return move
 
@@ -536,7 +538,7 @@ class Planner:
                         _intent("교착 복구 Lv1: 불필요 아이템 버리기")
                         return _DropJunkItems(ss)
                     if time.time() > self._move_fail_until:
-                        move = await self._move_to_location(
+                        move = await self._roaming.move_to_location(
                             ctx, "bank", "tavern", "inn", "blacksmith",
                         )
                         if move:
@@ -572,7 +574,7 @@ class Planner:
             # Walk to populated area (NOT mine) to find items
             if time.time() > self._move_fail_until:
                 _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
-                move = await self._move_to_location(
+                move = await self._roaming.move_to_location(
                     ctx, "bank", "tavern", "inn", "blacksmith",
                 )
                 if move:
@@ -596,7 +598,7 @@ class Planner:
                     return proc
                 # Has tongs but no forge/anvil — go to blacksmith
                 _intent(f"주괴 {ingot_count}개 보유, 대장간 필요 → 대장간으로 이동")
-                move = await self._move_to_location(ctx, "forge", "blacksmith")
+                move = await self._roaming.move_to_location(ctx, "forge", "blacksmith")
                 if move:
                     return move
             else:
@@ -608,7 +610,7 @@ class Planner:
                         _intent(f"집게 없음, 금화 {ss.gold}g → 집게 구매")
                         return proc
                     _intent(f"집게 없음, 금화 {ss.gold}g → 대장간 상점으로 이동")
-                    move = await self._move_to_location(ctx, "blacksmith")
+                    move = await self._roaming.move_to_location(ctx, "blacksmith")
                     if move:
                         return move
                 # Sell raw ingots (to get gold for tongs, or because material blocked)
@@ -621,7 +623,7 @@ class Planner:
                     get_vendor_keywords_for_items,
                 )
                 vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
-                move = await self._move_to_location(ctx, *vendor_kw)
+                move = await self._roaming.move_to_location(ctx, *vendor_kw)
                 if move:
                     _intent(
                         f"{reason}, 주괴 {ingot_count}개 → "
@@ -647,7 +649,7 @@ class Planner:
                 return proc
             # Find vendor that buys these specific items
             vendor_kw = get_vendor_keywords_for_items(sell_graphics)
-            move = await self._move_to_location(ctx, *vendor_kw)
+            move = await self._roaming.move_to_location(ctx, *vendor_kw)
             if move:
                 logger.info("planner_sell_crafted", items=crafted_count, vendor_keywords=vendor_kw)
                 _intent(f"제작품 {crafted_count}개 보유 → {', '.join(vendor_kw)} 상점으로 이동")
@@ -662,7 +664,7 @@ class Planner:
                 _intent(f"주괴 {ingot_count}개 (제작 불가) → 주괴 판매")
                 return proc
             vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
-            move = await self._move_to_location(ctx, *vendor_kw)
+            move = await self._roaming.move_to_location(ctx, *vendor_kw)
             if move:
                 _intent(f"주괴 {ingot_count}개 → {', '.join(vendor_kw)} 상점으로 이동")
                 return move
@@ -679,7 +681,7 @@ class Planner:
                 _intent("집게 없음, 금화 없음 → 색상 주괴 판매하여 자금 마련")
                 return proc
             vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
-            move = await self._move_to_location(ctx, *vendor_kw)
+            move = await self._roaming.move_to_location(ctx, *vendor_kw)
             if move:
                 _intent(f"집게 없음 → {', '.join(vendor_kw)} 상점으로 이동")
                 return move
@@ -699,7 +701,7 @@ class Planner:
                 _intent("색상 주괴 보유 → 은행으로 이동")
             else:
                 _intent(f"금화 {ss.gold}g 보유 → 은행으로 이동")
-            return await self._move_to_location(ctx, "bank")
+            return await self._roaming.move_to_location(ctx, "bank")
 
         # --- Mining exhaustion guard ---
         # When all veins were depleted (10 consecutive failures), skip mining
@@ -739,7 +741,7 @@ class Planner:
                     # No mineable tile in MOVE_RADIUS — every nearby bank
                     # is depleted. Mark the closest mine LOCATION as
                     # exhausted so Priority 9 picks a different one.
-                    self._mark_nearby_mine_exhausted(ctx, ss)
+                    self._roaming.mark_nearby_mine_exhausted(ctx, ss)
 
         # --- Priority 8: Continuation hint ---
         if self.continuation_hint:
@@ -752,7 +754,7 @@ class Planner:
         # --- Priority 9: Move to mine ---
         if not _mine_exhausted and time.time() > self._move_fail_until:
             _intent("할 일 없음 → 광산으로 이동")
-            move_proc = await self._try_move_to_activity(ctx)
+            move_proc = await self._roaming.try_move_to_activity(ctx)
             if move_proc:
                 return move_proc
 
@@ -868,200 +870,6 @@ class Planner:
         # Prefer closest target
         candidates.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
         return candidates[0]
-
-    def _is_destination_failed(self, x: int, y: int) -> bool:
-        """Check if a destination recently failed to be reached (5-min cooldown)."""
-        import time
-        ts = self._failed_destinations.get((x, y))
-        if ts is None:
-            return False
-        if time.time() - ts < 300.0:
-            return True
-        del self._failed_destinations[(x, y)]
-        return False
-
-    async def _move_to_location(self, ctx: AgentContext, *keywords: str, max_dist: int = 300):
-        """Find nearest location matching any keyword and move there.
-
-        max_dist caps the search radius to avoid cross-city navigation attempts
-        (e.g., trying Britain vendors when in Minoc).
-        """
-        import time as _time
-        from anima.world_knowledge import ALL_LOCATIONS
-
-        ss = ctx.perception.self_state
-
-        # Mark locations we're already standing at as temporarily failed.
-        # This prevents ping-pong: arrive at vendor location → can't sell →
-        # walk to next vendor → can't sell → walk back to first one → repeat.
-        for loc in ALL_LOCATIONS:
-            name_lower = loc.name.lower()
-            if any(kw in name_lower for kw in keywords):
-                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
-                if dist <= 3 and (loc.x, loc.y) not in self._failed_destinations:
-                    self._failed_destinations[(loc.x, loc.y)] = _time.time()
-
-        best = None
-        best_dist = 999999
-        for loc in ALL_LOCATIONS:
-            name_lower = loc.name.lower()
-            if any(kw in name_lower for kw in keywords):
-                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
-                if dist > max_dist:
-                    continue  # skip locations in other cities
-                if dist > 3 and dist < best_dist:
-                    if self._is_destination_failed(loc.x, loc.y):
-                        continue
-                    best_dist = dist
-                    best = loc
-
-        if best:
-            logger.info("planner_move_to", target=best.name, dist=best_dist)
-            if ctx.bus:
-                ctx.bus.publish("movement.start", {
-                    "message": f"→ Moving to {best.name} (dist {best_dist})",
-                    "importance": 2,
-                })
-            return _MoveToProcedure(best.name, best.x, best.y)
-        return None
-
-    def _mark_nearby_mine_exhausted(self, ctx: AgentContext, ss) -> None:
-        """Mark the mine LOCATION nearest to the player as exhausted.
-
-        Called when _find_mineable_tile returns None — meaning every ore
-        bank within MOVE_RADIUS is depleted. The exhausted-location flag
-        causes _try_move_to_activity to prefer a different mine for ~5 min.
-        """
-        import re as _re
-        import time as _time
-        from anima.world_knowledge import ALL_LOCATIONS
-        _MINE_RE = _re.compile(r'\b(mine|mining)\b', _re.IGNORECASE)
-        nearest = None
-        nearest_dist = 999
-        for loc in ALL_LOCATIONS:
-            if not _MINE_RE.search(loc.name):
-                continue
-            d = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
-            if d < nearest_dist:
-                nearest_dist = d
-                nearest = loc
-        if nearest is None or nearest_dist > 30:
-            return  # not standing near a known mine
-        exhausted = ctx.blackboard.setdefault("exhausted_mines", {})
-        exhausted[nearest.name] = _time.time()
-        logger.info(
-            "planner_mine_exhausted_marked",
-            mine=nearest.name, dist=nearest_dist,
-        )
-
-    async def _try_move_to_activity(self, ctx: AgentContext):
-        """If no procedure can start, walk toward primary activity location.
-
-        Uses waypoint routing: if the target is far, finds intermediate
-        waypoints along the way to avoid getting stuck on building walls.
-
-        Skips mine locations marked as exhausted within the last 5 min so
-        the agent rotates between mining areas instead of camping a single
-        depleted spot.
-        """
-        import re
-        import time as _time
-        from anima.world_knowledge import ALL_LOCATIONS
-
-        ss = ctx.perception.self_state
-
-        # Find nearest activity location using word boundaries so that
-        # "mine" matches "East Mine" but not "Miners Guild".
-        _ACTIVITY_RE = re.compile(r'\b(mine|mining|mountain|forest)\b', re.IGNORECASE)
-        max_activity_dist = 300  # prevent cross-city routing
-        EXHAUSTED_TTL = 300.0  # 5 min
-        exhausted = ctx.blackboard.get("exhausted_mines", {})
-        now = _time.time()
-        # Drop stale entries
-        for k in [k for k, ts in exhausted.items() if now - ts > EXHAUSTED_TTL]:
-            del exhausted[k]
-        mine_loc = None
-        best_dist = 999999
-        for loc in ALL_LOCATIONS:
-            if _ACTIVITY_RE.search(loc.name):
-                if self._is_destination_failed(loc.x, loc.y):
-                    continue
-                if loc.name in exhausted:
-                    continue  # recently exhausted — pick a different mine
-                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
-                if dist <= 5:
-                    continue  # Already here — skip to find next location
-                if dist > max_activity_dist:
-                    continue  # Skip locations in other cities
-                if dist < best_dist:
-                    best_dist = dist
-                    mine_loc = loc
-
-        if not mine_loc:
-            return None
-
-        # If far away, find intermediate waypoints
-        # Pick the waypoint closest to the line between current pos and target
-        target = mine_loc
-        if best_dist > 30:
-            waypoint = _find_waypoint_toward(ss.x, ss.y, target.x, target.y, ALL_LOCATIONS)
-            if waypoint and not self._is_destination_failed(waypoint.x, waypoint.y):
-                logger.info(
-                    "planner_waypoint_routing",
-                    via=waypoint.name,
-                    pos=f"({waypoint.x},{waypoint.y})",
-                    final_target=target.name,
-                )
-                return _MoveToProcedure(waypoint.name, waypoint.x, waypoint.y)
-
-        logger.info(
-            "planner_moving_to_activity",
-            target=target.name,
-            pos=f"({target.x},{target.y})",
-            dist=best_dist,
-        )
-        if ctx.bus:
-            ctx.bus.publish("movement.start", {
-                "message": f"⛏ Heading to {target.name} (dist {best_dist})",
-                "importance": 2,
-            })
-        return _MoveToProcedure(target.name, target.x, target.y)
-
-
-def _find_waypoint_toward(sx, sy, tx, ty, locations) -> object | None:
-    """Find the best intermediate waypoint between (sx,sy) and (tx,ty).
-
-    Picks a waypoint that:
-    1. Is closer to the target than we are
-    2. Is closer to us than the target is
-    3. Is roughly on the path (not a big detour)
-    """
-    current_dist = max(abs(tx - sx), abs(ty - sy))
-    best = None
-    best_score = float("inf")
-
-    for loc in locations:
-        loc_to_target = max(abs(tx - loc.x), abs(ty - loc.y))
-        loc_to_us = max(abs(sx - loc.x), abs(sy - loc.y))
-
-        # Must be closer to target than we are
-        if loc_to_target >= current_dist:
-            continue
-        # Must be reachable (not too far from us)
-        if loc_to_us >= current_dist:
-            continue
-        # Must be closer to us than the target
-        if loc_to_us < 5:
-            continue  # already here
-
-        # Score: lower is better — prefer waypoints that progress toward target
-        score = loc_to_us + loc_to_target
-        if score < best_score:
-            best_score = score
-            best = loc
-
-    return best
-
 
 class _DropJunkItems:
     """Deadlock recovery: drop non-essential items to free weight.
