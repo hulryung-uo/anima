@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time as _time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import structlog
@@ -20,8 +21,80 @@ from anima.planner.helpers import _MoveToProcedure
 if TYPE_CHECKING:
     from anima.core.context import AgentContext
     from anima.planner.planner import Planner
+    from anima.world_knowledge import Location
 
 logger = structlog.get_logger()
+
+_FAILURE_DECAY = 300.0  # 5 minutes — failed_attempts reset to 0 after this
+
+
+@dataclass
+class LocationScore:
+    location: "Location"
+    distance: int
+    failed_attempts: int = 0
+    success_rate: float = 1.0
+    last_visit: float = 0.0
+
+    def score(self) -> float:
+        """Higher is better. Base 1000 minus distance, adjusted by history."""
+        base = 1000.0 - self.distance
+        penalty = self.failed_attempts * 50.0
+        bonus = self.success_rate * 100.0
+        # Freshness bonus: prefer locations we haven't visited recently
+        # (caps at 10 points after 10 minutes)
+        import time as _t
+        age = _t.time() - self.last_visit if self.last_visit else 600
+        freshness = min(age / 60.0, 10.0)
+        return base - penalty + bonus + freshness
+
+
+class LocationStats:
+    """Per-location visit history for cost-weighted selection."""
+
+    def __init__(self) -> None:
+        self._visits: dict[str, int] = {}
+        self._successes: dict[str, int] = {}
+        self._last_visit: dict[str, float] = {}
+        self._failed_attempts: dict[str, int] = {}
+        self._failed_at: dict[str, float] = {}  # ts of last failure
+
+    def record_visit(self, name: str, success: bool) -> None:
+        """Record a visit outcome for a named location."""
+        self._visits[name] = self._visits.get(name, 0) + 1
+        if success:
+            self._successes[name] = self._successes.get(name, 0) + 1
+        self._last_visit[name] = _time.time()
+
+    def record_failure(self, name: str) -> None:
+        """Record a navigation failure for a named location."""
+        self._failed_attempts[name] = self._failed_attempts.get(name, 0) + 1
+        self._failed_at[name] = _time.time()
+
+    def get_score(self, location: "Location", distance: int) -> LocationScore:
+        """Return a LocationScore for the given location and distance."""
+        name = location.name
+
+        # Decay failed_attempts if last failure was more than 5 minutes ago
+        failed_at = self._failed_at.get(name)
+        if failed_at is not None and _time.time() - failed_at > _FAILURE_DECAY:
+            failed = 0
+        else:
+            failed = self._failed_attempts.get(name, 0)
+
+        visits = self._visits.get(name, 0)
+        successes = self._successes.get(name, 0)
+        success_rate = (successes / visits) if visits > 0 else 1.0
+
+        last_visit = self._last_visit.get(name, 0.0)
+
+        return LocationScore(
+            location=location,
+            distance=distance,
+            failed_attempts=failed,
+            success_rate=success_rate,
+            last_visit=last_visit,
+        )
 
 
 def _find_waypoint_toward(sx, sy, tx, ty, locations) -> object | None:
@@ -64,6 +137,7 @@ class RoamingHelper:
 
     def __init__(self, planner: "Planner") -> None:
         self._planner = planner
+        self._location_stats = LocationStats()
 
     def is_destination_failed(self, x: int, y: int) -> bool:
         """Check if a destination recently failed to be reached (5-min cooldown)."""
@@ -98,29 +172,34 @@ class RoamingHelper:
                 if dist <= 3 and (loc.x, loc.y) not in self._planner._failed_destinations:
                     self._planner._failed_destinations[(loc.x, loc.y)] = _time.time()
 
-        best = None
-        best_dist = 999999
+        candidates: list[LocationScore] = []
         for loc in ALL_LOCATIONS:
             name_lower = loc.name.lower()
             if any(kw in name_lower for kw in keywords):
                 dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
                 if dist > max_dist:
                     continue  # skip locations in other cities
-                if dist > 3 and dist < best_dist:
-                    if self.is_destination_failed(loc.x, loc.y):
-                        continue
-                    best_dist = dist
-                    best = loc
+                if dist <= 3:
+                    continue  # already here (handled above as temporarily failed)
+                if self.is_destination_failed(loc.x, loc.y):
+                    continue
+                candidates.append(self._location_stats.get_score(loc, dist))
 
-        if best:
-            logger.info("planner_move_to", target=best.name, dist=best_dist)
-            if ctx.bus:
-                ctx.bus.publish("movement.start", {
-                    "message": f"→ Moving to {best.name} (dist {best_dist})",
-                    "importance": 2,
-                })
-            return _MoveToProcedure(best.name, best.x, best.y)
-        return None
+        if not candidates:
+            return None
+
+        best_scored = max(candidates, key=lambda s: s.score())
+        best = best_scored.location
+        best_dist = best_scored.distance
+
+        logger.info("planner_move_to", target=best.name, dist=best_dist)
+        if ctx.bus:
+            ctx.bus.publish("movement.start", {
+                "message": f"→ Moving to {best.name} (dist {best_dist})",
+                "importance": 2,
+            })
+        self._location_stats.record_visit(best.name, success=True)
+        return _MoveToProcedure(best.name, best.x, best.y)
 
     def mark_nearby_mine_exhausted(self, ctx: "AgentContext", ss) -> None:
         """Mark the mine LOCATION nearest to the player as exhausted.
@@ -173,8 +252,7 @@ class RoamingHelper:
         # Drop stale entries
         for k in [k for k, ts in exhausted.items() if now - ts > EXHAUSTED_TTL]:
             del exhausted[k]
-        mine_loc = None
-        best_dist = 999999
+        candidates: list[LocationScore] = []
         for loc in ALL_LOCATIONS:
             if _ACTIVITY_RE.search(loc.name):
                 if self.is_destination_failed(loc.x, loc.y):
@@ -186,12 +264,14 @@ class RoamingHelper:
                     continue  # Already here — skip to find next location
                 if dist > max_activity_dist:
                     continue  # Skip locations in other cities
-                if dist < best_dist:
-                    best_dist = dist
-                    mine_loc = loc
+                candidates.append(self._location_stats.get_score(loc, dist))
 
-        if not mine_loc:
+        if not candidates:
             return None
+
+        best_scored = max(candidates, key=lambda s: s.score())
+        mine_loc = best_scored.location
+        best_dist = best_scored.distance
 
         # If far away, find intermediate waypoints
         # Pick the waypoint closest to the line between current pos and target
@@ -218,4 +298,5 @@ class RoamingHelper:
                 "message": f"⛏ Heading to {target.name} (dist {best_dist})",
                 "importance": 2,
             })
+        self._location_stats.record_visit(target.name, success=True)
         return _MoveToProcedure(target.name, target.x, target.y)
