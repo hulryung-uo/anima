@@ -1020,7 +1020,7 @@ Write ONLY the post body, nothing else."""
                     and it.graphic in ORE_GRAPHICS
                     and it.serial not in junk
                     and it.hue not in unsmelable
-                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
+                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 2):
                 result.append(it)
         return result
 
@@ -1315,14 +1315,30 @@ class _PickUpAndSmelt:
             ore_item = ctx.perception.world.items.get(ore.serial)
             if not ore_item or ore_item.container != 0:
                 continue
+            # Verify ore is within UO pick-up range (2 tiles)
+            dist = max(abs(ore_item.x - ss.x), abs(ore_item.y - ss.y))
+            if dist > 2:
+                logger.info("ore_too_far", serial=f"0x{ore_item.serial:08X}", dist=dist)
+                continue
             await ctx.conn.send_packet(build_pick_up(ore_item.serial, ore_item.amount))
             await asyncio.sleep(0.3)
             await ctx.conn.send_packet(
                 build_drop_item(ore_item.serial, container=backpack)
             )
-            await asyncio.sleep(0.3)
-            picked += 1
-            logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount)
+            await asyncio.sleep(0.5)
+            # Verify pick up succeeded — item should now be in backpack
+            ore_check = ctx.perception.world.items.get(ore_item.serial)
+            if ore_check and ore_check.container == backpack:
+                picked += 1
+                logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount)
+            elif ore_check and ore_check.container == 0:
+                logger.warning("ore_pickup_failed", serial=f"0x{ore_item.serial:08X}",
+                               reason="still on ground after pick_up")
+            else:
+                # Item may have been consumed/merged — count as picked
+                picked += 1
+                logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount,
+                            note="item merged or removed")
 
         if picked == 0:
             return ProcedureResult(success=False, reason=FailureReason.MISSING_RESOURCE, message="no ore to pick up")
@@ -1629,7 +1645,7 @@ class _WanderAndScavenge:
         for it in ctx.perception.world.items.values():
             if (it.container == 0
                     and it.graphic in valuable
-                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
+                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 2):
                 result.append(it)
         result.sort(key=lambda it: max(abs(it.x - ss.x), abs(it.y - ss.y)))
         return result
@@ -1741,7 +1757,7 @@ class _HuntForGold:
             for it in ctx.perception.world.items.values():
                 if (it.container == 0
                         and it.graphic == GOLD_GRAPHIC
-                        and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
+                        and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 2):
                     await ctx.conn.send_packet(build_pick_up(it.serial, it.amount))
                     await asyncio.sleep(0.3)
                     await ctx.conn.send_packet(
