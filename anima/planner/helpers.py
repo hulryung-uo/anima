@@ -226,6 +226,11 @@ class _ScavengeGroundItems:
                 arrived = await go_to(ctx, item.x, item.y)
                 if not arrived:
                     continue  # skip unreachable items
+                # Re-check distance after walking — go_to may arrive
+                # near but not within UO's 2-tile pickup range
+                dist = max(abs(item.x - ss.x), abs(item.y - ss.y))
+                if dist > 2:
+                    continue
 
             # Pick up into backpack
             await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))

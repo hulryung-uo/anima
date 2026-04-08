@@ -317,7 +317,7 @@ Write ONLY the post body, nothing else."""
             if (it.container == 0
                     and it.graphic in valuable
                     and it.serial not in junk
-                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 18):
+                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 8):
                 result.append(it)
 
         # Sort by distance (closest first) for efficient pickup
