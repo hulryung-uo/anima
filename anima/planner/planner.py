@@ -384,6 +384,27 @@ class Planner:
             logger.debug("planner_no_backpack")
             return None
 
+        # --- Backpack content refresh ---
+        # Backpack serial is known but may have stale/empty contents.
+        # If weight is significant but no items are visible in the backpack,
+        # double-click it to trigger server to resend container contents (0x3C).
+        bp_items = sum(
+            1 for it in ctx.perception.world.items.values()
+            if it.container == backpack
+        )
+        if bp_items == 0 and ss.weight > 50:
+            now = _time.time()
+            if now - self._last_backpack_request > 15.0:
+                self._last_backpack_request = now
+                logger.info(
+                    "planner_refreshing_backpack",
+                    backpack=hex(backpack),
+                    weight=f"{ss.weight}/{ss.weight_max}",
+                )
+                from anima.client.packets import build_double_click
+                await ctx.conn.send_packet(build_double_click(backpack))
+                await asyncio.sleep(0.5)
+
         from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
 
         SHOVEL_GRAPHICS = {0x0F39}

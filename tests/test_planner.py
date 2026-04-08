@@ -45,6 +45,7 @@ def _make_ctx(**overrides):
     ctx.perception.self_state.gold = 50  # below bank threshold (200)
     ctx.perception.self_state.equipment = {0x15: 0x101}  # backpack
     ctx.perception.world.items = {}  # empty backpack
+    ctx.conn.send_packet = AsyncMock()
     ctx.conn.connected = True
     ctx.blackboard = {}
     ctx.bus = None
