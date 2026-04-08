@@ -478,7 +478,11 @@ def _get_timeout(attempt: int) -> int:
 
 
 def _auto_commit_if_needed() -> bool:
-    """Commit uncommitted changes left by Claude Code. Returns True if committed."""
+    """Commit uncommitted changes left by Claude Code, then push to origin.
+
+    Returns True if a commit was made. The push is best-effort: if it fails
+    (network issue, conflict, etc.) the local commit is still kept.
+    """
     try:
         status = subprocess.run(
             ["git", "diff", "--stat"],
@@ -494,12 +498,29 @@ def _auto_commit_if_needed() -> bool:
              "Auto-commit: Claude Code changes (tests passed)"],
             cwd=str(ROOT), capture_output=True, text=True,
         )
-        if result.returncode == 0:
-            print("[supervisor] Auto-committed uncommitted Claude Code changes")
-            return True
-        else:
+        if result.returncode != 0:
             print(f"[supervisor] Auto-commit failed: {result.stderr[:200]}")
             return False
+
+        print("[supervisor] Auto-committed uncommitted Claude Code changes")
+
+        # Best-effort push — don't block on network issues
+        try:
+            push = subprocess.run(
+                ["git", "push", "origin", "HEAD"],
+                cwd=str(ROOT), capture_output=True, text=True,
+                timeout=30,
+            )
+            if push.returncode == 0:
+                print("[supervisor] Auto-pushed to origin")
+            else:
+                print(f"[supervisor] Auto-push failed (commit kept locally): {push.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            print("[supervisor] Auto-push timed out (commit kept locally)")
+        except Exception as e:
+            print(f"[supervisor] Auto-push error (commit kept locally): {e}")
+
+        return True
     except Exception as e:
         print(f"[supervisor] Auto-commit error: {e}")
         return False
