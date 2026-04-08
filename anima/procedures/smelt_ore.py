@@ -171,7 +171,8 @@ class SmeltOre(Procedure):
         )
         ingots_gained = ingots_after - ingots_before
 
-        ore_hue = ore.hue  # track which hue we attempted
+        ore_hue = ore.hue
+        ore_amount = ore.amount
 
         if ingots_gained > 0:
             # Reset fail counter for this ore hue on success
@@ -185,9 +186,12 @@ class SmeltOre(Procedure):
             )
 
         # --- Smelting failed ---
-        # "not enough metal" = definitive signal → blacklist immediately.
-        # Otherwise use 3-strike counter (could be a skill check failure).
-        immediate_blacklist = _smelt_flags["not_enough"]
+        # "not enough metal" with sufficient quantity = ore type is truly
+        # unsmelable at current skill → blacklist immediately.
+        # With small amounts (< 2), the failure is a quantity issue (e.g.
+        # 1 iron ore on a shard that requires 2+), not a type issue —
+        # use the 3-strike counter so we retry once more ore accumulates.
+        immediate_blacklist = _smelt_flags["not_enough"] and ore_amount >= 2
 
         fail_counts = ctx.blackboard.setdefault("_smelt_fail_counts", {})
         fail_count = fail_counts.get(ore_hue, 0) + 1
