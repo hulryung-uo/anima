@@ -317,6 +317,8 @@ class Planner:
             1 for it in ctx.perception.world.items.values()
             if it.container == backpack and it.graphic in CRAFTED_ITEM_GRAPHICS
         )
+        from anima.procedures.bank_deposit import _has_colored_ingots
+        has_colored_ingots = _has_colored_ingots(ctx)
 
         # Periodic state snapshot (every 30s)
         now = time.time()
@@ -579,11 +581,24 @@ class Planner:
             # No vendor reachable — fall through
             logger.info("planner_sell_ingots_no_vendor", ingots=ingot_count)
 
+        # --- Priority 5d: No tongs + no gold + colored ingots → sell for tongs ---
+        # Colored ingots can't be used for basic crafting, so normally they get
+        # banked at Priority 6.  But if we need gold to buy tongs, sell them
+        # instead — otherwise the agent loops mine→smelt→bank forever.
+        if not has_tongs and ss.gold < 10 and has_colored_ingots:
+            proc = _get_proc("sell_to_vendor")
+            if proc and await proc.can_start(ctx):
+                _intent("집게 없음, 금화 없음 → 색상 주괴 판매하여 자금 마련")
+                return proc
+            vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
+            move = await self._move_to_location(ctx, *vendor_kw)
+            if move:
+                _intent(f"집게 없음 → {', '.join(vendor_kw)} 상점으로 이동")
+                return move
+
         # --- Priority 6: Gold > 200 OR colored ingots → bank ---
         # Colored (non-iron) ingots can't be used for our basic crafting
         # recipes, so they get banked rather than left in the backpack.
-        from anima.procedures.bank_deposit import _has_colored_ingots
-        has_colored_ingots = _has_colored_ingots(ctx)
         if ss.gold > 200 or has_colored_ingots:
             proc = _get_proc("bank_deposit")
             if proc and await proc.can_start(ctx):
