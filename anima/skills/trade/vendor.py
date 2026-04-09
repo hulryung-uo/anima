@@ -669,7 +669,6 @@ async def _find_vendor_async(ctx: "BrainContext") -> MobileInfo | None:
         m for m in nearby
         if m.serial != ss.serial
         and m.body in HUMAN_BODIES
-        and m.serial < 0x10000
         and not _is_refused(ctx, m.serial)
     ]
     npcs.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
@@ -726,18 +725,34 @@ def _find_vendor(
                 return True
         return False
 
+    rejected: list[str] = []
     for m in sorted(nearby, key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y)):
         if m.serial == ss.serial:
             continue
         if check_refused and _is_refused(ctx, m.serial):
+            rejected.append(f"0x{m.serial:08X} {m.name or '?'} [refused]")
             continue
-        if m.body not in HUMAN_BODIES or m.serial >= 0x10000:
+        if m.body not in HUMAN_BODIES:
             continue
         if m.notoriety == NotorietyFlag.INVULNERABLE and _is_vendor(m) and _matches_type(m):
             return m
         if _is_vendor(m) and _matches_type(m):
             return m
+        # Human-body NPC but not recognized as matching vendor
+        rejected.append(
+            f"0x{m.serial:08X} {m.name or '?'} "
+            f"notoriety={m.notoriety} is_vendor={_is_vendor(m)} "
+            f"matches_type={_matches_type(m)}"
+        )
 
+    if rejected:
+        logger.info(
+            "find_vendor_none",
+            pos=f"({ss.x},{ss.y})",
+            vendor_types=vendor_types,
+            nearby_count=len(nearby),
+            rejected=rejected[:5],
+        )
     return None
 
 
