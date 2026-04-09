@@ -477,11 +477,47 @@ def _get_timeout(attempt: int) -> int:
     return timeouts[min(attempt, len(timeouts) - 1)]
 
 
-def _auto_commit_if_needed() -> bool:
-    """Commit uncommitted changes left by Claude Code, then push to origin.
+def _auto_push_if_ahead() -> None:
+    """Push to origin if local HEAD is ahead of upstream.
 
-    Returns True if a commit was made. The push is best-effort: if it fails
-    (network issue, conflict, etc.) the local commit is still kept.
+    Best-effort: network failures, conflicts, or missing upstream never raise.
+    Runs unconditionally after every fix cycle, so it catches both:
+      - commits just made by _auto_commit_if_needed()
+      - commits Claude Code made itself but left unpushed (the common case)
+    """
+    try:
+        ahead = subprocess.run(
+            ["git", "rev-list", "--count", "@{u}..HEAD"],
+            cwd=str(ROOT), capture_output=True, text=True,
+        )
+        if ahead.returncode != 0:
+            # No upstream configured or other error — skip quietly
+            return
+        count = ahead.stdout.strip()
+        if not count or count == "0":
+            return
+
+        push = subprocess.run(
+            ["git", "push", "origin", "HEAD"],
+            cwd=str(ROOT), capture_output=True, text=True,
+            timeout=30,
+        )
+        if push.returncode == 0:
+            print(f"[supervisor] Auto-pushed {count} commit(s) to origin")
+        else:
+            print(f"[supervisor] Auto-push failed (commits kept locally): {push.stderr[:200]}")
+    except subprocess.TimeoutExpired:
+        print("[supervisor] Auto-push timed out (commits kept locally)")
+    except Exception as e:
+        print(f"[supervisor] Auto-push error (commits kept locally): {e}")
+
+
+def _auto_commit_if_needed() -> bool:
+    """Commit uncommitted changes left by Claude Code.
+
+    Returns True if a commit was made. Does NOT push — the caller should
+    invoke _auto_push_if_ahead() afterwards so that prior unpushed commits
+    are also caught up.
     """
     try:
         status = subprocess.run(
@@ -503,23 +539,6 @@ def _auto_commit_if_needed() -> bool:
             return False
 
         print("[supervisor] Auto-committed uncommitted Claude Code changes")
-
-        # Best-effort push — don't block on network issues
-        try:
-            push = subprocess.run(
-                ["git", "push", "origin", "HEAD"],
-                cwd=str(ROOT), capture_output=True, text=True,
-                timeout=30,
-            )
-            if push.returncode == 0:
-                print("[supervisor] Auto-pushed to origin")
-            else:
-                print(f"[supervisor] Auto-push failed (commit kept locally): {push.stderr[:200]}")
-        except subprocess.TimeoutExpired:
-            print("[supervisor] Auto-push timed out (commit kept locally)")
-        except Exception as e:
-            print(f"[supervisor] Auto-push error (commit kept locally): {e}")
-
         return True
     except Exception as e:
         print(f"[supervisor] Auto-commit error: {e}")
@@ -704,6 +723,8 @@ def main() -> None:
                             # Auto-commit if Claude left uncommitted changes
                             if _auto_commit_if_needed():
                                 pass  # committed
+                            # Catch up any unpushed commits (Claude's or ours)
+                            _auto_push_if_ahead()
                             head_after = get_git_head()
                             code_changed = head_before != head_after and head_after != ""
                             _log_improvement(
@@ -749,6 +770,8 @@ def main() -> None:
                         # Auto-commit if Claude left uncommitted changes
                         if _auto_commit_if_needed():
                             pass  # committed
+                        # Catch up any unpushed commits (Claude's or ours)
+                        _auto_push_if_ahead()
                         head_after = get_git_head()
                         code_changed = head_before != head_after and head_after != ""
                         _log_improvement("full_analysis", severe[0]["name"],
