@@ -100,6 +100,13 @@ class Avatar:
             char_name = persona.name
 
         # 3. Login
+        if not cfg.account.username or not cfg.account.password:
+            raise RuntimeError(
+                "Account credentials are not configured. "
+                "Set account.username / account.password in config.yaml, "
+                "or pass --user / --pass on the command line. "
+                "Run `uv run python setup.py` for an interactive setup."
+            )
         result = await conn.login(
             cfg.server.host,
             cfg.server.port,

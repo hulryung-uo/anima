@@ -208,6 +208,51 @@ uv run ruff format     # format
 - [docs/uor-skills-reference.md](docs/uor-skills-reference.md) — UOR skills & stats reference
 - [docs/self-improvement-plan.md](docs/self-improvement-plan.md) — Self-improvement system design
 
+## ⚠️ Security Notice — Please Read Before Using
+
+Anima is a **hobby/research project**, not a hardened production tool. A few things to keep in mind before you clone, fork, or run it:
+
+### Your credentials live in `config.yaml` (plaintext)
+
+- `config.yaml` is **gitignored** by default — do **not** remove it from `.gitignore` and do **not** commit the file.
+- The UO login protocol sends usernames and passwords over the wire in plaintext (no TLS). Treat any account you use with Anima as **disposable**: generate a fresh account per shard, never reuse a password you care about, and assume anyone sniffing the network between you and the server could read it.
+- API keys (Replicate, OpenAI, Anthropic, UO Tavern) sit in the same file. Rotate them if you ever share your machine or suspect a leak.
+- `setup.py` will auto-generate a strong random password for you if you leave the field blank. Use it — don't default to `username == password`.
+
+### This repo's git history contains an old test account
+
+Early in development (March 2026, commits `ded3d96` – `1ad584c`), a `config.yaml` with placeholder credentials `test5 / test5` for `uo.hulryung.com:2593` was briefly committed before being gitignored. Those credentials are still visible in the git history via `git log -p -- config.yaml`. The account on the shared test server has been invalidated, but if you mirror or fork this repo, **do not assume old history is clean** — the historical values should be treated as public.
+
+If you run your own fork, please don't commit real credentials even temporarily; rewriting public git history (BFG / `git filter-repo`) is painful and breaks every downstream fork.
+
+### The shared test server is a toy
+
+`uo.hulryung.com:2593` is a ServUO shard kept running for experimentation. It is:
+- **Not monitored for abuse** — don't run stress tests or grief the AI characters
+- **Not persistent** — the world may be wiped without notice
+- **Not production** — do not use it to test anything you care about
+
+If you want a serious environment, spin up your own ServUO shard locally and point Anima at `127.0.0.1`.
+
+### The supervisor runs `git commit && git push` automatically
+
+When you run `tools/supervisor.py` with `--claude`, the self-improvement loop will:
+1. Call Claude Code to edit your source tree
+2. Commit changes under your git identity
+3. **Push to `origin`** (this is why commits end up in your public fork)
+
+Run the supervisor on a dedicated branch or fork you're OK having rewritten. Don't run it against a branch you share with other people.
+
+### What is *not* a problem
+
+- The `uo.hulryung.com` server address is intentional and public — it's in the README on purpose.
+- Character persona names (`Bjorn`, `Grimm`, etc.) are template values, not tied to any real account.
+- `anima/brain/llm.py` contains a docstring example `api_key="sk-ant-..."` — that's a placeholder, not a real key.
+
+**TL;DR — treat Anima like you'd treat any game bot demo you grabbed off GitHub: fun to play with, not something to point at your main account or a server you care about.**
+
+---
+
 ## Try It Live — Test Server
 
 We run a public test server where you can watch AI agents in action or drop in alongside them with a real client.

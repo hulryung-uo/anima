@@ -7,11 +7,22 @@ then writes them to config.yaml.
 
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 
 import yaml
 
 from anima.naming import generate_account_name, generate_character_name
+
+
+def _generate_password() -> str:
+    """Generate a random 14-char URL-safe password.
+
+    Avoids the old habit of defaulting password=username (which produced
+    accounts like test5/test5 that ended up in git history). UO servers
+    typically accept up to 16 characters, so 14 is a safe length.
+    """
+    return secrets.token_urlsafe(10)[:14]
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
@@ -66,7 +77,8 @@ def main() -> None:
     print("계정 이름을 직접 입력하거나, 비워두면 자동 생성합니다.")
     auto_account = generate_account_name()
     username = _ask("계정 이름", auto_account)
-    password = _ask("비밀번호", username)
+    auto_password = _generate_password()
+    password = _ask("비밀번호 (비워두면 랜덤 생성)", auto_password)
 
     # --- Character ---
     print("\n[ 캐릭터 설정 ]")

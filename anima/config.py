@@ -16,8 +16,11 @@ class ServerConfig:
 
 @dataclass
 class AccountConfig:
-    username: str = "admin"
-    password: str = "admin"
+    # Empty by default — must be set in config.yaml or overridden via
+    # --user / --pass CLI flags. Avoid hardcoded fallbacks like "admin/admin"
+    # which would silently attempt weak logins against the configured server.
+    username: str = ""
+    password: str = ""
 
 
 @dataclass
