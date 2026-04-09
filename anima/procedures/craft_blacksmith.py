@@ -85,37 +85,80 @@ CRAFTED_ARMOR_GRAPHICS = {
 CRAFTED_ITEM_GRAPHICS = CRAFTED_WEAPON_GRAPHICS | CRAFTED_ARMOR_GRAPHICS
 
 
-def _has_anvil_and_forge(ctx: AgentContext) -> bool:
-    """Check that both an anvil and a forge are within 2 tiles."""
+_CRAFT_SEARCH_RANGE = 8  # Wider range for walk-to-forge feature
+
+
+def _find_nearest(
+    ctx: AgentContext, graphic_ids: set[int], distance: int,
+) -> tuple[int, int] | None:
+    """Find the nearest item/static matching graphic_ids within distance tiles."""
     ss = ctx.perception.self_state
-    world = ctx.perception.world
+    best: tuple[int, int] | None = None
+    best_dist = distance + 1
 
-    has_anvil = False
-    has_forge = False
+    for it in ctx.perception.world.nearby_items(ss.x, ss.y, distance=distance):
+        if it.graphic in graphic_ids:
+            d = max(abs(it.x - ss.x), abs(it.y - ss.y))
+            if d < best_dist:
+                best = (it.x, it.y)
+                best_dist = d
 
-    # Check dynamic world items
-    for it in world.nearby_items(ss.x, ss.y, distance=2):
-        if it.graphic in ANVIL_IDS:
-            has_anvil = True
-        if it.graphic in FORGE_IDS:
-            has_forge = True
-        if has_anvil and has_forge:
-            return True
-
-    # Check map statics
     if ctx.map_reader is not None:
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
+        for dy in range(-distance, distance + 1):
+            for dx in range(-distance, distance + 1):
+                d = max(abs(dx), abs(dy))
+                if d >= best_dist:
+                    continue
                 tile = ctx.map_reader.get_tile(ss.x + dx, ss.y + dy)
                 for s in tile.statics:
-                    if s.graphic in ANVIL_IDS:
-                        has_anvil = True
-                    if s.graphic in FORGE_IDS:
-                        has_forge = True
-                    if has_anvil and has_forge:
-                        return True
+                    if s.graphic in graphic_ids:
+                        best = (ss.x + dx, ss.y + dy)
+                        best_dist = d
+                        break
 
-    return False
+    return best
+
+
+def _has_anvil_and_forge(ctx: AgentContext) -> bool:
+    """Check that both an anvil and a forge are within 2 tiles."""
+    return (_find_nearest(ctx, ANVIL_IDS, 2) is not None
+            and _find_nearest(ctx, FORGE_IDS, 2) is not None)
+
+
+def _has_anvil_and_forge_nearby(ctx: AgentContext) -> bool:
+    """Check that both an anvil and a forge exist within walk-to range."""
+    return (_find_nearest(ctx, ANVIL_IDS, _CRAFT_SEARCH_RANGE) is not None
+            and _find_nearest(ctx, FORGE_IDS, _CRAFT_SEARCH_RANGE) is not None)
+
+
+def _find_craft_walk_target(ctx: AgentContext) -> tuple[int, int] | None:
+    """Find a position to walk to that puts us within 2 tiles of both forge and anvil.
+
+    Returns (x, y) or None.  Walks toward the anvil since forges are
+    typically multi-tile and easier to be near.
+    """
+    anvil = _find_nearest(ctx, ANVIL_IDS, _CRAFT_SEARCH_RANGE)
+    forge = _find_nearest(ctx, FORGE_IDS, _CRAFT_SEARCH_RANGE)
+    if not anvil or not forge:
+        logger.info(
+            "craft_walk_target_none",
+            has_anvil=anvil is not None,
+            has_forge=forge is not None,
+            pos=f"({ctx.perception.self_state.x},{ctx.perception.self_state.y})",
+            map_reader=ctx.map_reader is not None,
+        )
+        return None
+
+    # Walk to midpoint of forge and anvil — should be within 2 of both
+    # as long as they're within ~4 tiles of each other (typical shop layout).
+    mx, my = (anvil[0] + forge[0]) // 2, (anvil[1] + forge[1]) // 2
+    logger.info(
+        "craft_walk_target",
+        forge=f"({forge[0]},{forge[1]})",
+        anvil=f"({anvil[0]},{anvil[1]})",
+        target=f"({mx},{my})",
+    )
+    return (mx, my)
 
 
 class CraftBlacksmith(Procedure):
@@ -134,7 +177,9 @@ class CraftBlacksmith(Procedure):
             return False
         if _count_iron_ingots(ctx) < MIN_INGOTS:
             return False
-        return _has_anvil_and_forge(ctx)
+        # Accept if forge+anvil are within 2 tiles (ready to craft)
+        # OR within 8 tiles (can walk there during execute).
+        return _has_anvil_and_forge_nearby(ctx)
 
     def _pick_recipe(self, ctx: AgentContext) -> tuple[str, int, int, int] | None:
         """Pick best recipe based on skill level and available ingots.
@@ -177,11 +222,24 @@ class CraftBlacksmith(Procedure):
             )
 
         if not _has_anvil_and_forge(ctx):
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.WRONG_LOCATION,
-                message="no anvil or forge within 2 tiles",
-            )
+            # Not within crafting range — try walking to nearby forge/anvil
+            target = _find_craft_walk_target(ctx)
+            if target:
+                from anima.action.movement import go_to
+                arrived = await go_to(ctx, target[0], target[1])
+                if not arrived or not _has_anvil_and_forge(ctx):
+                    return ProcedureResult(
+                        success=False,
+                        reason=FailureReason.WRONG_LOCATION,
+                        message=f"walked to ({target[0]},{target[1]}) but still no anvil/forge within 2 tiles",
+                    )
+                logger.info("craft_bs_walked_to_forge", target=f"({target[0]},{target[1]})")
+            else:
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.WRONG_LOCATION,
+                    message="no anvil or forge within 8 tiles",
+                )
 
         recipe = self._pick_recipe(ctx)
         if not recipe:
