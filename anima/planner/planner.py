@@ -618,7 +618,14 @@ class Planner:
                     if target:
                         _intent(f"교착 복구 Lv3: {target.name or 'monster'} 사냥")
                         return _HuntForGold(target, ss)
-                    # No targets — fall through to forum
+                    # No targets in town — move to wilderness where monsters spawn
+                    if time.time() > self._move_fail_until:
+                        move = await self._roaming.move_to_location(
+                            ctx, "mine", "mining", "camp",
+                        )
+                        if move:
+                            _intent("교착 복구 Lv3: 몬스터 없음 → 야외로 이동")
+                            return move
 
                 # Level 4+: Forum escalation, then reset cycle
                 if _deadlock_level >= 4:
@@ -633,12 +640,19 @@ class Planner:
                 _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
                 return _ScavengeGroundItems(ground_items, ss)
 
-            # Walk to populated area (NOT mine) to find items
+            # Walk toward useful area — at hunting level, go to wilderness
+            # where monsters spawn; otherwise try populated town areas.
             if time.time() > self._move_fail_until:
-                _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
-                move = await self._roaming.move_to_location(
-                    ctx, "bank", "tavern", "inn", "blacksmith",
-                )
+                if _deadlock_level >= 3:
+                    _intent("교착 복구: 사냥감 탐색 → 야외로 이동")
+                    move = await self._roaming.move_to_location(
+                        ctx, "mine", "mining", "camp",
+                    )
+                else:
+                    _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
+                    move = await self._roaming.move_to_location(
+                        ctx, "bank", "tavern", "inn", "blacksmith",
+                    )
                 if move:
                     return move
 
