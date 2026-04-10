@@ -475,9 +475,11 @@ class Planner:
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
                 return proc
 
-        # --- Priority 2: Overweight → smelt (only if carrying smeltable ore) ---
+        # --- Priority 2: Overweight → smelt (only if carrying enough ore) ---
+        # Server requires ≥2 ore per pile to produce an ingot; smelting 1
+        # always fails with "not enough metal", creating a mine→smelt loop.
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.85:
-            if smeltable_ore > 0:
+            if smeltable_ore >= 2:
                 proc = _get_proc("smelt_ore")
                 if proc and await proc.can_start(ctx):
                     _intent(f"과적 ({ss.weight}/{ss.weight_max}) → 광석 제련")
@@ -489,7 +491,7 @@ class Planner:
             # through to sell/bank priorities below
 
         # --- Priority 3: Has smeltable ore → smelt ---
-        if smeltable_ore > 0:
+        if smeltable_ore >= 2:
             proc = _get_proc("smelt_ore")
             if proc and await proc.can_start(ctx):
                 _intent(f"광석 {smeltable_ore}개 보유 → 제련")
@@ -507,8 +509,9 @@ class Planner:
                 and self.continuation_hint != "smelt_ore"
                 and "pick_up_ore_and_smelt" not in skip_bb):
             ground_ore = self._find_ground_ore(ctx, ss)
-            if ground_ore:
-                _intent(f"바닥에 광석 {len(ground_ore)}개 발견 → 줍기")
+            ground_ore_total = sum(it.amount for it in ground_ore) if ground_ore else 0
+            if ground_ore and ground_ore_total >= 2:
+                _intent(f"바닥에 광석 {ground_ore_total}개 발견 → 줍기")
                 return _PickUpAndSmelt(ground_ore, ss)
 
         # --- Priority 4: No mining tools → get them ---
