@@ -947,6 +947,8 @@ class Planner:
         }
         HUMAN_BODIES = {0x0190, 0x0191}
 
+        no_gold_bodies = ctx.blackboard.get("_hunt_no_gold_bodies", set())
+
         candidates = []
         for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
             if m.serial == ss.serial:
@@ -955,6 +957,9 @@ class Planner:
                 continue
             # Don't attack humans unless clearly hostile
             if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
+                continue
+            # Skip creature types we've killed before that dropped no gold
+            if m.body in no_gold_bodies:
                 continue
             candidates.append(m)
 
@@ -1180,6 +1185,7 @@ class _HuntForGold:
         self._target_serial = target.serial
         self._target_name = target.name or "monster"
         self._target_pos = (target.x, target.y)
+        self._target_body = target.body
 
     async def can_start(self, ctx) -> bool:
         return True
@@ -1257,8 +1263,25 @@ class _HuntForGold:
                                        target=self._target_name,
                                        failures=chase_failures)
                         break
+                    continue  # not adjacent — skip attack this tick
 
-            # Re-send attack
+                # Re-check distance; mob may have moved during go_to
+                ss = ctx.perception.self_state
+                mob = ctx.perception.world.mobiles.get(self._target_serial)
+                if mob is None:
+                    target_killed = True
+                    break
+                dist = max(abs(mob.x - ss.x), abs(mob.y - ss.y))
+                if dist > 1:
+                    chase_failures += 1
+                    if chase_failures >= MAX_CHASE_FAILURES:
+                        logger.warning("hunt_chase_gave_up",
+                                       target=self._target_name,
+                                       failures=chase_failures)
+                        break
+                    continue  # still not adjacent after chase
+
+            # Re-send attack (only reached when adjacent)
             await ctx.conn.send_packet(build_attack(self._target_serial))
 
         # Exit war mode
@@ -1294,6 +1317,13 @@ class _HuntForGold:
                     await asyncio.sleep(0.3)
                     gold_picked += 1
                     logger.info("hunt_looted_gold", amount=it.amount)
+
+        # Track bodies that never drop gold so we stop wasting time on them
+        if gold_picked == 0 and self._target_body:
+            no_gold = ctx.blackboard.setdefault("_hunt_no_gold_bodies", set())
+            no_gold.add(self._target_body)
+            logger.info("hunt_no_gold_body", body=hex(self._target_body),
+                        name=self._target_name)
 
         return ProcedureResult(
             success=True,
