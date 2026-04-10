@@ -792,7 +792,7 @@ class Planner:
                 return proc
 
             # --- Priority 7b: Near mine but not close enough → walk to ore ---
-            if has_mining_tool:
+            if has_mining_tool and time.time() > self._move_fail_until:
                 from anima.skills.gathering.mine import (
                     SEARCH_RADIUS as _MINE_SEARCH_R,
                     _find_mineable_tile,

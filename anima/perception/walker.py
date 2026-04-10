@@ -35,6 +35,9 @@ class WalkerManager:
         self.walking_failed: bool = False
         self.last_step_time: float = 0.0
         self.fast_walk_keys: list[int] = [0] * MAX_FAST_WALK_STACK_SIZE
+        # Timestamp of last steps_count increment — used to detect stale
+        # walk state (server stopped responding to walk packets).
+        self._last_step_sent: float = 0.0
 
         # Denied tile cache: (x, y) -> timestamp
         self.denied_tiles: dict[tuple[int, int], float] = {}
@@ -144,6 +147,21 @@ class WalkerManager:
 
     def can_walk(self) -> bool:
         now = asyncio.get_event_loop().time() * 1000
+        # Auto-reset stale walk state: if steps_count > 0 but no
+        # confirm/deny arrived for 5 seconds, the server has lost track
+        # of our walk packets.  Reset to recover.
+        if (self.steps_count > 0
+                and self._last_step_sent > 0
+                and (now - self._last_step_sent) > 5000):
+            import structlog
+            structlog.get_logger().warning(
+                "walker_auto_reset",
+                steps_count=self.steps_count,
+                stale_ms=int(now - self._last_step_sent),
+            )
+            self.steps_count = 0
+            self.walk_sequence = 0
+            self._last_step_sent = 0.0
         return (
             not self.walking_failed
             and self.steps_count < MAX_STEP_COUNT

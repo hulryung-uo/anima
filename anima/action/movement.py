@@ -161,6 +161,22 @@ async def go_to(
                 break
             await asyncio.sleep(0.1)
         else:
+            # Walker stuck — log state and force-reset so the next go_to
+            # attempt has a chance.  The server-side walk state is already
+            # out of sync if we reach here, so resetting is the safest
+            # recovery.
+            logger.warning(
+                "go_to_walker_stuck",
+                steps_count=ctx.walker.steps_count,
+                walk_seq=ctx.walker.walk_sequence,
+                last_step_time=ctx.walker.last_step_time,
+                walking_failed=ctx.walker.walking_failed,
+                pos=f"({ss.x},{ss.y})",
+                target=f"({target_x},{target_y})",
+            )
+            ctx.walker.steps_count = 0
+            ctx.walker.walk_sequence = 0
+            ctx.walker.walking_failed = False
             return False
 
         # Take next step from path
@@ -483,6 +499,14 @@ async def _walk_one_step(
             break
         await asyncio.sleep(0.1)
     else:
+        logger.warning(
+            "walk_one_step_walker_stuck",
+            steps_count=ctx.walker.steps_count,
+            walk_seq=ctx.walker.walk_sequence,
+        )
+        ctx.walker.steps_count = 0
+        ctx.walker.walk_sequence = 0
+        ctx.walker.walking_failed = False
         return False
 
     # Turn first if not facing the right direction
