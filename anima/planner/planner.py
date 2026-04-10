@@ -1211,6 +1211,8 @@ class _HuntForGold:
         # Combat loop
         deadline = time.monotonic() + self.COMBAT_TIMEOUT
         target_killed = False
+        chase_failures = 0
+        MAX_CHASE_FAILURES = 3
 
         while time.monotonic() < deadline:
             await asyncio.sleep(self.COMBAT_TICK)
@@ -1225,6 +1227,19 @@ class _HuntForGold:
             if mob is None:
                 target_killed = True
                 break
+
+            # Chase target if it moved away
+            dist = max(abs(mob.x - ss.x), abs(mob.y - ss.y))
+            if dist > 1:
+                logger.info("hunt_chasing", target=self._target_name, dist=dist)
+                arrived = await go_to(ctx, mob.x, mob.y)
+                if not arrived:
+                    chase_failures += 1
+                    if chase_failures >= MAX_CHASE_FAILURES:
+                        logger.warning("hunt_chase_gave_up",
+                                       target=self._target_name,
+                                       failures=chase_failures)
+                        break
 
             # Re-send attack
             await ctx.conn.send_packet(build_attack(self._target_serial))
