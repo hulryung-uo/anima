@@ -30,6 +30,18 @@ logger = structlog.get_logger()
 # Minimum ingots needed to craft a tool
 MIN_INGOTS_FOR_TOOL = 4
 
+# Tinkering skill target for training mode
+TINKERING_TRAIN_TARGET = 70.0
+TINKERING_SKILL_ID = 37
+
+
+def _get_tinker_skill(ctx: AgentContext) -> float:
+    """Return current Tinkering skill value (0.0 if unknown)."""
+    for sk in ctx.perception.self_state.skills.values():
+        if sk.id == TINKERING_SKILL_ID:
+            return sk.value
+    return 0.0
+
 SHOVEL_GRAPHICS = {0x0F39}
 
 # Map craft target → (gump category text, item graphics)
@@ -50,35 +62,43 @@ class MakeTools(Procedure):
             return False
         if count_items(ctx, INGOT_GRAPHICS) < MIN_INGOTS_FOR_TOOL:
             return False
-        # Only craft if we're low on tools
+
+        # Tool-replacement mode: any required tool missing → craft it.
         has_pickaxe = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS))
         has_hatchet = bool(find_in_backpack(ctx, HATCHET_GRAPHICS))
         has_tinker = len(find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS)) >= 2
-        return not (has_pickaxe and has_hatchet and has_tinker)
+        if not (has_pickaxe and has_hatchet and has_tinker):
+            return True
+
+        # Training mode: all tools present but Tinkering still below target.
+        # Spare ingots get spent on extra pickaxes to raise the skill.
+        return _get_tinker_skill(ctx) < TINKERING_TRAIN_TARGET
 
     def _decide_craft_target(self, ctx: AgentContext) -> str | None:
         """Decide what to craft based on what's missing and skill level.
 
         If Tinkering is too low for tools, craft simple items to train first.
         """
-        # Check Tinkering skill level
-        tinker_skill = 0.0
-        for sk in ctx.perception.self_state.skills.values():
-            if sk.id == 37:  # Tinkering
-                tinker_skill = sk.value
-                break
+        tinker_skill = _get_tinker_skill(ctx)
 
-        # Need tools but skill too low? Train with simple items first
+        # Very low skill → Tinker's Tools (self-replicating, requires ~0 skill)
         if tinker_skill < 25.0:
-            # At low skill, craft Tinker's Tools to train (requires ~0 skill)
             return "Tinker's Tools"
 
+        # Mid+ skill → craft whatever is missing
         if not find_in_backpack(ctx, PICKAXE_GRAPHICS):
             return "Pickaxe"
         if not find_in_backpack(ctx, HATCHET_GRAPHICS):
             return "Hatchet"
         if len(find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS)) < 2:
             return "Tinker's Tools"
+
+        # Training mode — all tools present but Tinkering below target.
+        # Craft extra pickaxes: useful (mining consumes them) and trains the
+        # skill at the pickaxe difficulty tier (~25-70).
+        if tinker_skill < TINKERING_TRAIN_TARGET:
+            return "Pickaxe"
+
         return None
 
     async def _close_all_gumps(self, ctx: AgentContext) -> None:

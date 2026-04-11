@@ -768,6 +768,31 @@ class Planner:
                 _intent(f"집게 없음 → {', '.join(vendor_kw)} 상점으로 이동")
                 return move
 
+        # --- Priority 5e: Tinkering training ---
+        # When Tinkering is below target and we have spare ingots + tinker
+        # tools, craft extras to raise the skill. Runs after blacksmith/sell
+        # paths so the primary Blacksmith training gets first dibs on ingots;
+        # tinker training picks up whatever's left.
+        from anima.procedures.make_tools import (
+            TINKERING_TRAIN_TARGET as _TINK_TARGET,
+            TINKERING_SKILL_ID as _TINK_ID,
+        )
+        _tinker_skill = next(
+            (s.value for s in ss.skills.values() if s.id == _TINK_ID), 0.0
+        )
+        if (_tinker_skill < _TINK_TARGET
+                and ingot_count >= 4
+                and has_tinker_tools
+                and not ctx.blackboard.get("_make_tools_gave_up")
+                and ss.weight_max > 0
+                and ss.weight < ss.weight_max * 0.85):
+            proc = _get_proc("make_tools")
+            if proc and await proc.can_start(ctx):
+                _intent(
+                    f"Tinkering 훈련 ({_tinker_skill:.0f}/{_TINK_TARGET:.0f}) → 도구 제작"
+                )
+                return proc
+
         # --- Priority 6: Gold > 200 OR colored ingots → bank ---
         # Colored (non-iron) ingots can't be used for our basic crafting
         # recipes, so they get banked rather than left in the backpack.
