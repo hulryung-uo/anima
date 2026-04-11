@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.actions.gump import wait_for_gump
-from anima.actions.inventory import find_in_backpack, count_items
+from anima.actions.inventory import count_items, find_in_backpack
 from anima.client.packets import build_gump_response
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
-from anima.skills.crafting.smelt import INGOT_GRAPHICS
+from anima.procedures.craft_blacksmith import _count_iron_ingots
 from anima.skills.crafting.tinker import (
     TINKER_TOOLS_GRAPHICS,
     PICKAXE_GRAPHICS,
@@ -61,7 +61,7 @@ class MakeTools(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         if not find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS):
             return False
-        if count_items(ctx, INGOT_GRAPHICS) < MIN_INGOTS_FOR_TOOL:
+        if _count_iron_ingots(ctx) < MIN_INGOTS_FOR_TOOL:
             return False
 
         # Tool-replacement mode: any required tool missing → craft it.
@@ -123,7 +123,7 @@ class MakeTools(Procedure):
                 message="no tinker tools",
             )
 
-        if count_items(ctx, INGOT_GRAPHICS) < MIN_INGOTS_FOR_TOOL:
+        if _count_iron_ingots(ctx) < MIN_INGOTS_FOR_TOOL:
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
@@ -151,7 +151,7 @@ class MakeTools(Procedure):
             target=craft_target,
             category=category_text,
             tool_serial=f"0x{tool_serial:08X}",
-            ingots=count_items(ctx, INGOT_GRAPHICS),
+            ingots=_count_iron_ingots(ctx),
         )
 
         # 1. Open tinkering gump by double-clicking tinker tools
