@@ -190,6 +190,8 @@ class CraftBlacksmith(Procedure):
         # Legacy fallback for tests that don't install the breaker
         if time.time() < ctx.blackboard.get("_craft_bs_material_cooldown", 0):
             return False
+        if time.time() < ctx.blackboard.get("_craft_bs_location_cooldown", 0):
+            return False
         if not find_in_backpack(ctx, TONGS_GRAPHICS):
             return False
         if _count_iron_ingots(ctx) < MIN_INGOTS:
@@ -243,8 +245,14 @@ class CraftBlacksmith(Procedure):
             target = _find_craft_walk_target(ctx)
             if target:
                 from anima.action.movement import go_to
-                arrived = await go_to(ctx, target[0], target[1])
+                arrived = await go_to(ctx, target[0], target[1], exact=True)
                 if not arrived or not _has_anvil_and_forge(ctx):
+                    fails = ctx.blackboard.get("_craft_bs_location_fails", 0) + 1
+                    ctx.blackboard["_craft_bs_location_fails"] = fails
+                    if fails >= 3:
+                        ctx.blackboard["_craft_bs_location_cooldown"] = time.time() + 120
+                        ctx.blackboard["_craft_bs_location_fails"] = 0
+                        logger.warning("craft_bs_location_cooldown", fails=fails)
                     return ProcedureResult(
                         success=False,
                         reason=FailureReason.WRONG_LOCATION,
@@ -508,6 +516,7 @@ class CraftBlacksmith(Procedure):
             logger.info("craft_blacksmith_success", item=item_name, ingots_used=consumed)
             ctx.blackboard["_craft_bs_fails"] = 0
             ctx.blackboard["_craft_bs_material_fails"] = 0
+            ctx.blackboard["_craft_bs_location_fails"] = 0
             breaker = ctx.blackboard.get("_craft_material_breaker")
             if breaker is not None:
                 breaker.record_success("iron")

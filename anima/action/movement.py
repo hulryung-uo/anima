@@ -28,10 +28,11 @@ async def go_to(
     target_x: int,
     target_y: int,
     interrupt_check: Callable[[], bool] | None = None,
+    exact: bool = False,
 ) -> bool:
     """Pathfind and walk step-by-step to (target_x, target_y).
 
-    Returns True if destination reached (within 1 tile), False if failed.
+    Returns True if destination reached (within 1 tile, or exact tile if exact=True), False if failed.
 
     Features:
     - Recalculates path around permanently denied tiles
@@ -73,7 +74,7 @@ async def go_to(
 
         sx, sy = ss.x, ss.y
         remaining = max(abs(target_x - sx), abs(target_y - sy))
-        if remaining <= 1:
+        if remaining <= (0 if exact else 1):
             elapsed = _time.monotonic() - _start_time
             logger.info(
                 "go_to_arrived",
