@@ -263,13 +263,12 @@ class MakeTools(Procedure):
                     message=f"Craft failed: {entry.text}",
                 )
 
-        # Read gump notices for server feedback
+        # Read gump notices for server feedback (notice text at y≈295)
         gump_notice = ""
         for g in ctx.perception.self_state.gumps.values():
-            for label in getattr(g, "labels", []):
-                text = label if isinstance(label, str) else str(label)
-                if "295)=" in text:
-                    gump_notice = text.split("=", 1)[1] if "=" in text else text
+            for t in g.texts:
+                if t.y == 295:
+                    gump_notice = g.get_text(t.text_id)
                     break
             if gump_notice:
                 break
