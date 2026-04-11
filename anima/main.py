@@ -273,6 +273,28 @@ async def recv_loop(conn: UoConnection, handler: PacketHandler) -> None:
 # Startup: inspect self
 # ---------------------------------------------------------------------------
 
+BACKPACK_GRAPHICS = {0x0E75, 0x0E76, 0x09B2}
+
+
+def _find_player_backpack(items, player_serial: int) -> int | None:
+    """Find the player's backpack serial from world items.
+
+    Strict: must be equipped on the player (container == player_serial)
+    AND at BACKPACK layer (0x15) AND have a backpack graphic.
+
+    The AND on `container == player_serial` is critical — every nearby
+    mobile (NPC, animal, other players) has a backpack at layer 0x15 on
+    their own body. Using OR (the previous bug) would match the closest
+    NPC's backpack when the login position is inside a shop, causing the
+    agent to think its own backpack is empty.
+    """
+    for it in items.values():
+        if (it.graphic in BACKPACK_GRAPHICS
+                and it.container == player_serial
+                and it.layer == 0x15):
+            return it.serial
+    return None
+
 
 async def inspect_self(conn: UoConnection, perception: Perception) -> None:
     """Request own stats and open backpack to discover equipment/items."""
@@ -331,19 +353,22 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
         await conn.send_packet(build_double_click(serial))
         await asyncio.sleep(2.0)
 
-    # Final fallback: if backpack still not found
+    # Fallback: strict graphic scan — look for a backpack equipped on the
+    # player specifically. MUST check `container == serial` — see
+    # _find_player_backpack docstring for why OR-ing with layer==0x15 is
+    # a bug (matches nearby NPC backpacks).
     if not perception.self_state.equipment.get(Layer.BACKPACK):
-        # Try scanning world items by graphic
-        BACKPACK_GRAPHICS = {0x0E75, 0x0E76, 0x09B2}
-        for it in perception.world.items.values():
-            if it.graphic in BACKPACK_GRAPHICS and (it.container == serial or it.layer == 0x15):
-                perception.self_state.equipment[Layer.BACKPACK] = it.serial
-                logger.info("backpack_found_by_graphic", serial=f"0x{it.serial:08X}")
-                await conn.send_packet(build_double_click(it.serial))
-                await asyncio.sleep(1.0)
-                break
+        bp_serial = _find_player_backpack(perception.world.items, serial)
+        if bp_serial is not None:
+            perception.self_state.equipment[Layer.BACKPACK] = bp_serial
+            logger.info("backpack_found_by_graphic", serial=f"0x{bp_serial:08X}")
+            await conn.send_packet(build_double_click(bp_serial))
+            await asyncio.sleep(1.0)
 
-    # Last resort: try cached backpack serial from previous session
+    # Last resort: cached serial + brute-force probe
+    # Cache is more reliable than any heuristic when it exists, so we try
+    # it here. Note: the probe only accepts a candidate when items_in is
+    # non-empty, so a stale cache with a now-deleted serial is rejected.
     if not perception.self_state.equipment.get(Layer.BACKPACK):
         cache_file = Path("data/backpack_cache.json")
         cached_serial = None
