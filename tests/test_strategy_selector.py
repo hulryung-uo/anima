@@ -36,14 +36,16 @@ class TestStrategySelectorBasics:
 
 
 class TestStrategyExclusions:
-    def test_grind_mining_excludes_craft_but_allows_sell(self):
+    def test_grind_mining_allows_full_loop(self):
         s = StrategySelector()
         s._current = StrategyDecision(name=STRATEGY_GRIND_MINING, reasoning="x")
         s._active = True  # simulate post-first-LLM-refresh state
-        assert s.is_excluded("craft_blacksmith") is True
-        # sell_to_vendor is allowed: mining loop is mine→smelt→sell→mine
-        assert s.is_excluded("sell_to_vendor") is False
+        # Full mining loop: mine → smelt → craft → sell → mine.
+        # None of these should be excluded.
         assert s.is_excluded("mine_ore") is False
+        assert s.is_excluded("smelt_ore") is False
+        assert s.is_excluded("craft_blacksmith") is False
+        assert s.is_excluded("sell_to_vendor") is False
 
     def test_sell_inventory_excludes_gathering(self):
         s = StrategySelector()

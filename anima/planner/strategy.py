@@ -37,12 +37,12 @@ ALL_STRATEGIES = {
 # Which procedures each strategy EXCLUDES from selection.
 # If a strategy isn't listed, no filtering is applied.
 STRATEGY_EXCLUSIONS: dict[str, set[str]] = {
-    STRATEGY_GRIND_MINING: {
-        "craft_blacksmith",  # don't interrupt mining to craft
-        # sell_to_vendor is intentionally NOT excluded: the mining loop is
-        # mine→smelt→sell→mine. Blocking sell causes ingots to accumulate
-        # until the agent is overweight with no way to dispose of them.
-    },
+    # grind_mining has no exclusions: the full mining loop is
+    # mine → smelt → craft → sell → mine. Blocking any step (craft OR sell)
+    # causes ingots to accumulate until the agent is overweight with no way
+    # to dispose of them, OR makes the planner ping-pong between forge
+    # locations looking for one where crafting is "allowed".
+    STRATEGY_GRIND_MINING: set(),
     STRATEGY_SELL_INVENTORY: {
         "mine_ore",
         "smelt_ore",
@@ -168,7 +168,7 @@ Current state:
 - Inventory: {inventory_text}
 
 Available strategies:
-- grind_mining: focus on mining and smelting, sell ingots when inventory is full but skip crafting
+- grind_mining: full mining loop — mine, smelt, craft weapons/armor, sell them for gold
 - sell_inventory: stop gathering, clear the backpack to a vendor
 - bank_colored: deposit non-iron ingots at the bank
 - upgrade_tools: buy or craft new pickaxes / tongs
