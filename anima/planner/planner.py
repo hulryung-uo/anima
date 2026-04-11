@@ -80,6 +80,7 @@ class Planner:
         self._move_fail_until: float = 0.0  # cooldown after move-to failure
         self._failed_destinations: dict[tuple[int, int], float] = {}  # (x,y) → time
         self._last_backpack_request: float = 0.0  # cooldown for re-requesting equipment
+        self._backpack_refresh_fails: int = 0  # consecutive failed backpack refreshes
         # Idle / stuck loop detection
         self._idle_ticks: int = 0           # consecutive ticks with no procedure
         self._repeat_counter: dict[str, int] = {}  # procedure → consecutive fail count
@@ -396,14 +397,45 @@ class Planner:
             now = _time.time()
             if now - self._last_backpack_request > 15.0:
                 self._last_backpack_request = now
-                logger.info(
-                    "planner_refreshing_backpack",
-                    backpack=hex(backpack),
-                    weight=f"{ss.weight}/{ss.weight_max}",
-                )
+                self._backpack_refresh_fails += 1
                 from anima.client.packets import build_double_click
-                await ctx.conn.send_packet(build_double_click(backpack))
-                await asyncio.sleep(0.5)
+
+                if self._backpack_refresh_fails >= 4:
+                    # Serial is likely stale — re-request equipment from server
+                    logger.warning(
+                        "planner_backpack_stale_serial",
+                        serial=hex(backpack),
+                        attempts=self._backpack_refresh_fails,
+                    )
+                    player_serial = ss.serial
+                    await ctx.conn.send_packet(build_double_click(player_serial))
+                    await asyncio.sleep(1.5)
+                    new_bp = ss.equipment.get(0x15)
+                    if new_bp and new_bp != backpack:
+                        logger.info(
+                            "planner_backpack_redetected",
+                            old=hex(backpack), new=hex(new_bp),
+                        )
+                        backpack = new_bp
+                    await ctx.conn.send_packet(build_double_click(backpack))
+                    await asyncio.sleep(1.0)
+                    bp_items = sum(
+                        1 for it in ctx.perception.world.items.values()
+                        if it.container == backpack
+                    )
+                    if bp_items > 0:
+                        self._backpack_refresh_fails = 0
+                else:
+                    logger.info(
+                        "planner_refreshing_backpack",
+                        backpack=hex(backpack),
+                        weight=f"{ss.weight}/{ss.weight_max}",
+                        attempt=self._backpack_refresh_fails,
+                    )
+                    await ctx.conn.send_packet(build_double_click(backpack))
+                    await asyncio.sleep(0.5)
+        elif bp_items > 0:
+            self._backpack_refresh_fails = 0
 
         from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
 

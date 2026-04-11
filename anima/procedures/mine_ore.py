@@ -160,8 +160,7 @@ class MineOre(Procedure):
             )
 
         if _mine_flags["too_far"]:
-            bk = _trip_bank(ctx, tx, ty)
-            logger.info("mine_too_far", pos=f"({tx},{ty})", player=f"({ss.x},{ss.y})", bank=str(bk))
+            logger.info("mine_too_far", pos=f"({tx},{ty})", player=f"({ss.x},{ss.y})")
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
