@@ -395,7 +395,8 @@ class Planner:
         )
         if bp_items == 0 and ss.weight > 50:
             now = _time.time()
-            if now - self._last_backpack_request > 15.0:
+            refresh_interval = 15.0 if self._backpack_refresh_fails < 8 else 120.0
+            if now - self._last_backpack_request > refresh_interval:
                 self._last_backpack_request = now
                 self._backpack_refresh_fails += 1
                 from anima.client.packets import build_double_click
@@ -674,6 +675,13 @@ class Planner:
             if ground_items:
                 _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
                 return _ScavengeGroundItems(ground_items, ss)
+
+            # At hunting level, try to find and attack nearby monsters
+            if _deadlock_level >= 3:
+                target = self._find_huntable_target(ctx, ss)
+                if target:
+                    _intent(f"교착 복구 Lv3: {target.name or 'monster'} 사냥")
+                    return _HuntForGold(target, ss)
 
             # Walk toward useful area — at hunting level, go to wilderness
             # where monsters spawn; otherwise try populated town areas.
