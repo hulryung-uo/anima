@@ -403,7 +403,8 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
             serial=f"0x{item_serial:08X}",
         )
 
-    # Log backpack contents
+    # Log backpack contents (re-read from equipment — brute-force may have updated it)
+    backpack_serial = perception.self_state.equipment.get(Layer.BACKPACK)
     if backpack_serial:
         backpack_items = [
             item for item in perception.world.items.values() if item.container == backpack_serial
