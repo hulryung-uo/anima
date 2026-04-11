@@ -39,7 +39,9 @@ ALL_STRATEGIES = {
 STRATEGY_EXCLUSIONS: dict[str, set[str]] = {
     STRATEGY_GRIND_MINING: {
         "craft_blacksmith",  # don't interrupt mining to craft
-        "sell_to_vendor",    # don't detour to vendors
+        # sell_to_vendor is intentionally NOT excluded: the mining loop is
+        # mine→smelt→sell→mine. Blocking sell causes ingots to accumulate
+        # until the agent is overweight with no way to dispose of them.
     },
     STRATEGY_SELL_INVENTORY: {
         "mine_ore",
@@ -166,7 +168,7 @@ Current state:
 - Inventory: {inventory_text}
 
 Available strategies:
-- grind_mining: focus on mining and smelting, ignore crafting/selling detours
+- grind_mining: focus on mining and smelting, sell ingots when inventory is full but skip crafting
 - sell_inventory: stop gathering, clear the backpack to a vendor
 - bank_colored: deposit non-iron ingots at the bank
 - upgrade_tools: buy or craft new pickaxes / tongs
