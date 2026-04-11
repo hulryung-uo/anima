@@ -816,6 +816,7 @@ class Planner:
                 and ingot_count >= 4
                 and has_tinker_tools
                 and not ctx.blackboard.get("_make_tools_gave_up")
+                and _time.time() >= ctx.blackboard.get("_tinkering_blocked_until", 0)
                 and ss.weight_max > 0
                 and ss.weight < ss.weight_max * 0.85):
             proc = _get_proc("make_tools")
@@ -857,8 +858,10 @@ class Planner:
 
         # --- Priority 7: Has mining tool → mine ---
         if has_mining_tool:
-            # We have a tool again — reset gave-up flags so they can retry next time
-            ctx.blackboard.pop("_make_tools_gave_up", None)
+            if ctx.blackboard.pop("_had_no_mining_tool", False):
+                ctx.blackboard.pop("_make_tools_gave_up", None)
+        else:
+            ctx.blackboard["_had_no_mining_tool"] = True
         if not _mine_exhausted and not _sell_blocked:
             proc = _get_proc("mine_ore")
             if proc and await proc.can_start(ctx):

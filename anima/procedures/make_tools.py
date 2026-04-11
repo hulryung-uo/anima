@@ -7,6 +7,7 @@ gump buttons, matching the approach used by the CraftTinker skill.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -281,6 +282,18 @@ class MakeTools(Procedure):
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
                 message=f"Insufficient material for {craft_target} — {gump_notice}",
+            )
+
+        if "required skill" in notice_lower:
+            logger.warning("make_tools_skill_too_low", item=craft_target, notice=gump_notice)
+            ctx.blackboard["_make_tools_fails"] = 0
+            ctx.blackboard["_make_tools_gave_up"] = True
+            ctx.blackboard["_tinkering_blocked_until"] = time.time() + 300
+            await self._close_all_gumps(ctx)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.PERMANENT,
+                message=f"Skill too low for {craft_target} — {gump_notice}",
             )
 
         # Track consecutive failures — give up after 5 to prevent loop
