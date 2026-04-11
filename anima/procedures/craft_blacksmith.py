@@ -126,9 +126,19 @@ def _has_anvil_and_forge(ctx: AgentContext) -> bool:
 
 
 def _has_anvil_and_forge_nearby(ctx: AgentContext) -> bool:
-    """Check that both an anvil and a forge exist within walk-to range."""
-    return (_find_nearest(ctx, ANVIL_IDS, _CRAFT_SEARCH_RANGE) is not None
-            and _find_nearest(ctx, FORGE_IDS, _CRAFT_SEARCH_RANGE) is not None)
+    """Check that both an anvil and a forge exist within walk-to range.
+
+    Also verifies the two are close enough (Chebyshev ≤ 4) that a midpoint
+    walk target will land within 2 tiles of both.
+    """
+    if _has_anvil_and_forge(ctx):
+        return True
+    anvil = _find_nearest(ctx, ANVIL_IDS, _CRAFT_SEARCH_RANGE)
+    forge = _find_nearest(ctx, FORGE_IDS, _CRAFT_SEARCH_RANGE)
+    if not anvil or not forge:
+        return False
+    dist = max(abs(anvil[0] - forge[0]), abs(anvil[1] - forge[1]))
+    return dist <= 4
 
 
 def _find_craft_walk_target(ctx: AgentContext) -> tuple[int, int] | None:
@@ -149,9 +159,16 @@ def _find_craft_walk_target(ctx: AgentContext) -> tuple[int, int] | None:
         )
         return None
 
-    # Walk to midpoint of forge and anvil — should be within 2 of both
-    # as long as they're within ~4 tiles of each other (typical shop layout).
     mx, my = (anvil[0] + forge[0]) // 2, (anvil[1] + forge[1]) // 2
+    if (max(abs(mx - anvil[0]), abs(my - anvil[1])) > 2
+            or max(abs(mx - forge[0]), abs(my - forge[1])) > 2):
+        logger.info(
+            "craft_walk_target_too_far",
+            forge=f"({forge[0]},{forge[1]})",
+            anvil=f"({anvil[0]},{anvil[1]})",
+            midpoint=f"({mx},{my})",
+        )
+        return None
     logger.info(
         "craft_walk_target",
         forge=f"({forge[0]},{forge[1]})",
