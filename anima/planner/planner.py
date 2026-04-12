@@ -50,6 +50,13 @@ logger = structlog.get_logger()
 # Minimum delay between planner loops to prevent spin on rapid failures
 MIN_LOOP_DELAY = 0.2
 
+# Batch thresholds — mine multiple spots before smelting, accumulate ingots
+# before crafting. Reduces constant forge trips and makes each cycle
+# efficient: mine→batch-smelt→batch-craft→sell.
+# Priority 2 (overweight) still smelts at ≥2 as a safety valve.
+BATCH_SMELT_ORE = 8       # mine until this many ore, then smelt all at once
+BATCH_CRAFT_INGOTS = 16   # accumulate ingots before crafting (≈2 weapons)
+
 SUPERVISOR_HINTS_FILE = Path(__file__).parent.parent.parent / "data" / "supervisor_hints.json"
 
 
@@ -523,14 +530,16 @@ class Planner:
             # Overweight from non-ore items (crafted items, etc.) — fall
             # through to sell/bank priorities below
 
-        # --- Priority 3: Has smeltable ore → smelt ---
-        if smeltable_ore >= 2:
+        # --- Priority 3: Batch smelt — mine multiple spots first ---
+        # Only walk to forge when we've accumulated enough ore to make the
+        # trip worthwhile. Priority 2 (overweight) still smelts at ≥2 as a
+        # safety valve so the agent never gets stuck from ore weight alone.
+        if smeltable_ore >= BATCH_SMELT_ORE:
             proc = _get_proc("smelt_ore")
             if proc and await proc.can_start(ctx):
-                _intent(f"광석 {smeltable_ore}개 보유 → 제련")
+                _intent(f"광석 {smeltable_ore}개 축적 → 일괄 제련")
                 return proc
-            # Smeltable ore in backpack but no forge nearby — go to forge
-            _intent(f"광석 {smeltable_ore}개 보유, 근처에 용광로 없음 → 용광로로 이동")
+            _intent(f"광석 {smeltable_ore}개 축적, 용광로 필요 → 이동")
             return await self._roaming.move_to_location(ctx, "forge", "blacksmith")
 
         # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
@@ -708,8 +717,8 @@ class Planner:
         ctx.blackboard.pop("_deadlock_recovery_level", None)
         ctx.blackboard.pop("_deadlock_attempt_count", None)
 
-        # --- Priority 5: Has ingots → craft into weapons/armor ---
-        if ingot_count >= 8:
+        # --- Priority 5: Batch craft — accumulate ingots first ---
+        if ingot_count >= BATCH_CRAFT_INGOTS:
             if has_tongs and not craft_material_blocked:
                 proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
@@ -780,7 +789,9 @@ class Planner:
             logger.info("planner_sell_no_vendor", items=crafted_count, vendor_keywords=vendor_kw)
 
         # --- Priority 5c: Has ingots but can't craft → sell raw ingots ---
-        if ingot_count >= 10:
+        # Uses the same batch threshold so ingots aren't sold prematurely
+        # while we're still accumulating for a craft session.
+        if ingot_count >= BATCH_CRAFT_INGOTS:
             proc = _get_proc("sell_to_vendor")
             if proc and await proc.can_start(ctx):
                 _intent(f"주괴 {ingot_count}개 (제작 불가) → 주괴 판매")
@@ -821,7 +832,7 @@ class Planner:
             (s.value for s in ss.skills.values() if s.id == _TINK_ID), 0.0
         )
         if (_tinker_skill < _TINK_TARGET
-                and ingot_count >= 4
+                and 4 <= ingot_count < BATCH_CRAFT_INGOTS
                 and has_tinker_tools
                 and not ctx.blackboard.get("_make_tools_gave_up")
                 and _time.time() >= ctx.blackboard.get("_tinkering_blocked_until", 0)
