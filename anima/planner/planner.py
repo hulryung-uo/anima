@@ -748,8 +748,8 @@ class Planner:
                     if proc and await proc.can_start(ctx):
                         _intent(f"집게 없음, 금화 {ss.gold}g → 집게 구매")
                         return proc
-                    _intent(f"집게 없음, 금화 {ss.gold}g → 대장간 상점으로 이동")
-                    move = await self._roaming.move_to_location(ctx, "blacksmith")
+                    _intent(f"집게 없음, 금화 {ss.gold}g → 팅커 상점으로 이동")
+                    move = await self._roaming.move_to_location(ctx, "tinker")
                     if move:
                         return move
                 # No tongs AND no gold — last resort: sell just enough
