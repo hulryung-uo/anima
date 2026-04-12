@@ -115,8 +115,13 @@ class BuyFromVendor(Procedure):
         SHOVEL_GRAPHICS = {0x0F39}
         TOOL_GRAPHICS = PICKAXE_GRAPHICS | SHOVEL_GRAPHICS | TONGS_GRAPHICS
 
+        # Skip item serials that previously failed to purchase
+        failed_serials: set[int] = ctx.blackboard.get("_buy_failed_serials", set())
+
         target_item = None
         for item in buy_list:
+            if item.serial in failed_serials:
+                continue
             if item.graphic in TOOL_GRAPHICS:
                 if item.price > 0 and item.price <= ss.gold:
                     target_item = item
@@ -178,9 +183,14 @@ class BuyFromVendor(Procedure):
                 "buy_no_gold_spent",
                 vendor=vendor_name,
                 item=target_name,
+                item_serial=target_item.serial,
                 price=target_item.price,
                 reason="sent buy packet but gold unchanged — purchase may have failed",
             )
+            # Blacklist this specific item serial so next attempt tries a
+            # different tool from the vendor's inventory.
+            failed_serials = ctx.blackboard.setdefault("_buy_failed_serials", set())
+            failed_serials.add(target_item.serial)
             _mark_refused(ctx, vendor.serial)
             ss.vendor_buy_list = []
             ss.vendor_serial = 0
@@ -198,6 +208,8 @@ class BuyFromVendor(Procedure):
                 },
             )
 
+        # Successful purchase — clear failed serial blacklist for this vendor
+        ctx.blackboard.pop("_buy_failed_serials", None)
         return ProcedureResult(
             success=True,
             message=f"Bought {target_name} from {vendor_name} for {gold_spent}gp",

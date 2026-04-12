@@ -850,12 +850,6 @@ class Planner:
                 _intent(f"금화 {ss.gold}g 보유 → 은행으로 이동")
             return await self._roaming.move_to_location(ctx, "bank")
 
-        # --- Sell-blocked guard ---
-        # When carrying many ingots but unable to sell, skip mining to avoid
-        # pointless mine→sell-fail→mine loops.  The agent should wait for
-        # vendor cooldowns to expire or try a different recovery path.
-        _sell_blocked = ingot_count >= 50 and ss.weight > ss.weight_max * 0.6
-
         # --- Mining exhaustion guard ---
         # When all veins were depleted (10 consecutive failures), skip mining
         # for 5 min while the server regenerates resources.
@@ -869,7 +863,7 @@ class Planner:
                 ctx.blackboard.pop("_make_tools_gave_up", None)
         else:
             ctx.blackboard["_had_no_mining_tool"] = True
-        if not _mine_exhausted and not _sell_blocked:
+        if not _mine_exhausted:
             proc = _get_proc("mine_ore")
             if proc and await proc.can_start(ctx):
                 _intent("광산 근처, 곡괭이 보유 → 채광 시작")
@@ -907,7 +901,7 @@ class Planner:
             self.continuation_hint = None
 
         # --- Priority 9: Move to mine ---
-        if not _mine_exhausted and not _sell_blocked and time.time() > self._move_fail_until:
+        if not _mine_exhausted and time.time() > self._move_fail_until:
             _intent("할 일 없음 → 광산으로 이동")
             move_proc = await self._roaming.try_move_to_activity(ctx)
             if move_proc:
