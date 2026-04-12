@@ -731,36 +731,36 @@ class Planner:
                     return move
                 # Can't reach any forge — fall through to sell logic below
 
-            # Can't craft (no tongs, material blocked, or no reachable forge)
-            # If no tongs and have gold → buy tongs from blacksmith vendor
-            if not has_tongs and ss.gold >= 10:
-                proc = _get_proc("buy_from_vendor")
-                if proc and await proc.can_start(ctx):
-                    _intent(f"집게 없음, 금화 {ss.gold}g → 집게 구매")
-                    return proc
-                _intent(f"집게 없음, 금화 {ss.gold}g → 대장간 상점으로 이동")
-                move = await self._roaming.move_to_location(ctx, "blacksmith")
-                if move:
-                    return move
-            # Sell raw ingots (to get gold for tongs, or because material blocked)
-            reason = ("재료 불일치" if craft_material_blocked
-                      else "대장간 접근 불가" if has_tongs
-                      else "집게 없음")
-            proc = _get_proc("sell_to_vendor")
-            if proc and await proc.can_start(ctx):
-                _intent(f"{reason}, 주괴 {ingot_count}개 → 주괴 판매")
-                return proc
-            from anima.procedures.vendor_knowledge import (
-                get_vendor_keywords_for_items,
-            )
-            vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
-            move = await self._roaming.move_to_location(ctx, *vendor_kw)
-            if move:
-                _intent(
-                    f"{reason}, 주괴 {ingot_count}개 → "
-                    f"{', '.join(vendor_kw)} 상점으로 이동"
-                )
-                return move
+            # Strategy: ALWAYS prefer crafting over selling raw ingots.
+            # Crafted weapons sell for more gold than raw ingots, and
+            # crafting trains Blacksmithing.
+
+            # Material blocked (cooldown after "insufficient metal")
+            # → don't sell raw, mine more while cooldown expires.
+            if craft_material_blocked:
+                logger.debug("planner_craft_material_cooldown_waiting")
+                pass  # fall through to Priority 7 (mine)
+
+            # No tongs → get tongs first, then craft
+            elif not has_tongs:
+                if ss.gold >= 10:
+                    proc = _get_proc("buy_from_vendor")
+                    if proc and await proc.can_start(ctx):
+                        _intent(f"집게 없음, 금화 {ss.gold}g → 집게 구매")
+                        return proc
+                    _intent(f"집게 없음, 금화 {ss.gold}g → 대장간 상점으로 이동")
+                    move = await self._roaming.move_to_location(ctx, "blacksmith")
+                    if move:
+                        return move
+                # No tongs AND no gold — last resort: sell just enough
+                # raw ingots to fund a tongs purchase (~15g).
+                else:
+                    proc = _get_proc("sell_to_vendor")
+                    if proc and await proc.can_start(ctx):
+                        _intent(
+                            f"집게 없음, 금화 없음 → 주괴 일부 판매하여 집게 구매 자금 마련"
+                        )
+                        return proc
 
         # --- Priority 5b: Has crafted items → sell to appropriate vendor ---
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
@@ -788,21 +788,9 @@ class Planner:
             # No vendor reachable — fall through to lower priorities
             logger.info("planner_sell_no_vendor", items=crafted_count, vendor_keywords=vendor_kw)
 
-        # --- Priority 5c: Has ingots but can't craft → sell raw ingots ---
-        # Uses the same batch threshold so ingots aren't sold prematurely
-        # while we're still accumulating for a craft session.
-        if ingot_count >= BATCH_CRAFT_INGOTS:
-            proc = _get_proc("sell_to_vendor")
-            if proc and await proc.can_start(ctx):
-                _intent(f"주괴 {ingot_count}개 (제작 불가) → 주괴 판매")
-                return proc
-            vendor_kw = get_vendor_keywords_for_items(set(INGOT_GRAPHICS))
-            move = await self._roaming.move_to_location(ctx, *vendor_kw)
-            if move:
-                _intent(f"주괴 {ingot_count}개 → {', '.join(vendor_kw)} 상점으로 이동")
-                return move
-            # No vendor reachable — fall through
-            logger.info("planner_sell_ingots_no_vendor", ingots=ingot_count)
+        # Priority 5c removed: raw ingot selling is no longer a general
+        # strategy. Ingots are reserved for crafting. The only raw-sell
+        # path is the "no tongs + no gold" last resort in Priority 5.
 
         # --- Priority 5d: No tongs + no gold + colored ingots → sell for tongs ---
         # Colored ingots can't be used for basic crafting, so normally they get
