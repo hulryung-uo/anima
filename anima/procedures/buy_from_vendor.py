@@ -181,6 +181,9 @@ class BuyFromVendor(Procedure):
                 price=target_item.price,
                 reason="sent buy packet but gold unchanged — purchase may have failed",
             )
+            _mark_refused(ctx, vendor.serial)
+            ss.vendor_buy_list = []
+            ss.vendor_serial = 0
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
