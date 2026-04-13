@@ -41,6 +41,24 @@ _VENDOR_REFUSE_COOLDOWN = 300.0  # 5 min — allow retry after transient failure
 _BUY_NO_GOLD_COOLDOWN = 600.0
 
 
+async def _wait_for_gold_change(
+    ss, gold_before: int, timeout: float = 2.0,
+) -> bool:
+    """Poll until ss.gold differs from gold_before, or timeout.
+
+    Used after sending buy/sell packets. The server's 0x11 stats update
+    (which carries the new gold value) may arrive 50ms–1.5s after the
+    transaction. Polling at 0.2s intervals for up to 2.0s covers both
+    fast and slow servers without a fixed sleep.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ss.gold != gold_before:
+            return True
+        await asyncio.sleep(_POLL_INTERVAL)
+    return False
+
+
 async def _wait_for_sell_list(ctx: BrainContext, timeout: float = _VENDOR_LIST_TIMEOUT) -> bool:
     """Poll until vendor_sell_list is populated or timeout."""
     deadline = time.monotonic() + timeout

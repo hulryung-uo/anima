@@ -1,18 +1,31 @@
-"""BuyFromVendor procedure — buy items from NPC vendor via context menu."""
+"""BuyFromVendor procedure — buy tools from NPC vendor via context menu.
+
+Improvements over the original:
+- Priority-based tool selection: buys whatever the agent is missing most
+  (tongs > tinker tools > pickaxe > shovel), not just the first tool found.
+- Per-vendor item blacklist with TTL: if buying a specific item serial
+  fails, it's blacklisted for 2 minutes so the next attempt picks a
+  different item from the vendor's inventory.
+- Gold polling: waits up to 2s for the server's stats update instead of
+  a fixed 1s sleep, reducing false "gold unchanged" failures.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 import structlog
 
+from anima.actions.inventory import find_in_backpack
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.trade.vendor import (
     _CLILOC_VENDOR_BUY,
     _mark_refused,
     _request_context_menu_entry,
     _find_vendor,
+    _wait_for_gold_change,
 )
 
 if TYPE_CHECKING:
@@ -20,19 +33,46 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# Blacklisted item serials expire after this many seconds.
+# Vendor inventory refreshes periodically, so a short TTL is fine.
+_BUY_ITEM_BLACKLIST_TTL = 120.0
+
+# Priority-ordered tool categories: most critical first.
+# Tongs unlock the entire crafting chain; tinker tools let you craft
+# replacement tools; pickaxes are consumed during mining.
+_TOOL_PRIORITIES: list[tuple[str, set[int]]] = [
+    ("tongs",        {0x0FBB, 0x0FBC}),
+    ("tinker_tools", {0x1EB8, 0x1EBC}),
+    ("pickaxe",      {0x0E85, 0x0E86}),
+    ("shovel",       {0x0F39}),
+]
+
+# All tool graphics combined (for fallback "any tool" search).
+_ALL_TOOL_GRAPHICS: set[int] = set()
+for _, gfx in _TOOL_PRIORITIES:
+    _ALL_TOOL_GRAPHICS |= gfx
+
+
+def _needed_tool_graphics(ctx: AgentContext) -> list[set[int]]:
+    """Return tool graphic sets the agent is missing, in priority order."""
+    needed: list[set[int]] = []
+    for _name, graphics in _TOOL_PRIORITIES:
+        if not find_in_backpack(ctx, graphics):
+            needed.append(graphics)
+    return needed
+
 
 class BuyFromVendor(Procedure):
     name = "buy_from_vendor"
-    description = "Buy items from a nearby NPC vendor."
+    description = "Buy tools from a nearby NPC vendor."
 
-    # Tinkers sell all tools (pickaxe, shovel, tongs, tinker tools)
-    _TOOL_VENDOR_TYPES: set[str] = {"tinker"}
+    # Tinkers and provisioners both sell basic tools.
+    _TOOL_VENDOR_TYPES: set[str] = {"tinker", "provisioner"}
 
     async def can_start(self, ctx: AgentContext) -> bool:
         ss = ctx.perception.self_state
         if ss.gold < 10:
             return False
-        # Don't buy when overweight — server silently rejects purchases
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.9:
             return False
         return _find_vendor(ctx, vendor_types=self._TOOL_VENDOR_TYPES) is not None
@@ -43,7 +83,6 @@ class BuyFromVendor(Procedure):
 
         vendor = _find_vendor(ctx, vendor_types=self._TOOL_VENDOR_TYPES)
         if not vendor:
-            logger.info("buy_vendor_not_found", pos=f"({ss.x},{ss.y})")
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
@@ -53,18 +92,16 @@ class BuyFromVendor(Procedure):
         vendor_name = vendor.name or "vendor"
 
         if ss.gold < 10:
-            logger.info("buy_no_gold", vendor=vendor_name, gold=ss.gold)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
-                message=f"not enough gold ({ss.gold}gp) to buy from {vendor_name}",
+                message=f"not enough gold ({ss.gold}gp)",
             )
 
         logger.info(
             "buy_attempt",
             vendor=vendor_name,
             vendor_pos=f"({vendor.x},{vendor.y})",
-            player_pos=f"({ss.x},{ss.y})",
             gold=ss.gold,
         )
 
@@ -96,34 +133,47 @@ class BuyFromVendor(Procedure):
         from anima.client.packets import build_buy_items
         buy_list = ss.vendor_buy_list
 
-        # Log all items the vendor sells
-        available_items: list[str] = []
-        for item in buy_list:
-            name = item.name or f"0x{item.graphic:04X}"
-            available_items.append(f"{name} @{item.price}gp")
-
+        # Log vendor inventory
         logger.info(
             "buy_list_received",
             vendor=vendor_name,
             total_items=len(buy_list),
-            available=available_items,
+            available=[
+                f"{it.name or f'0x{it.graphic:04X}'} @{it.price}gp"
+                for it in buy_list[:15]
+            ],
         )
 
-        # Buy needed tools: mining tools (pickaxe/shovel) or smithing tools (tongs)
-        from anima.skills.gathering.mine import PICKAXE_GRAPHICS
-        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
-        SHOVEL_GRAPHICS = {0x0F39}
-        TOOL_GRAPHICS = PICKAXE_GRAPHICS | SHOVEL_GRAPHICS | TONGS_GRAPHICS
+        # --- Per-vendor item blacklist ---
+        blacklist: dict[int, dict[int, float]] = ctx.blackboard.get(
+            "_buy_failed_items", {}
+        )
+        now = time.monotonic()
+        vendor_bl = blacklist.get(vendor.serial, {})
+        active_bl = {s for s, t in vendor_bl.items() if now - t < _BUY_ITEM_BLACKLIST_TTL}
 
-        # Skip item serials that previously failed to purchase
-        failed_serials: set[int] = ctx.blackboard.get("_buy_failed_serials", set())
-
+        # --- Priority-based tool selection ---
+        # 1) Try each missing-tool category in priority order.
+        # 2) If nothing missing matches, try ANY affordable tool.
         target_item = None
-        for item in buy_list:
-            if item.serial in failed_serials:
-                continue
-            if item.graphic in TOOL_GRAPHICS:
-                if item.price > 0 and item.price <= ss.gold:
+        needed = _needed_tool_graphics(ctx)
+
+        for graphics_set in needed:
+            for item in buy_list:
+                if item.serial in active_bl:
+                    continue
+                if item.graphic in graphics_set and 0 < item.price <= ss.gold:
+                    target_item = item
+                    break
+            if target_item:
+                break
+
+        # Fallback: buy any affordable tool (even if we already have one)
+        if not target_item:
+            for item in buy_list:
+                if item.serial in active_bl:
+                    continue
+                if item.graphic in _ALL_TOOL_GRAPHICS and 0 < item.price <= ss.gold:
                     target_item = item
                     break
 
@@ -132,8 +182,8 @@ class BuyFromVendor(Procedure):
                 "buy_no_tools_available",
                 vendor=vendor_name,
                 gold=ss.gold,
-                wanted=[f"0x{g:04X}" for g in TOOL_GRAPHICS],
-                available=[f"0x{it.graphic:04X}" for it in buy_list[:10]],
+                needed=[n for g in needed for n in [f"0x{x:04X}" for x in g]],
+                blacklisted=len(active_bl),
             )
             _mark_refused(ctx, vendor.serial)
             ss.vendor_buy_list = []
@@ -141,7 +191,8 @@ class BuyFromVendor(Procedure):
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
-                message=f"{vendor_name} doesn't sell tools (pickaxe/shovel/tongs)",
+                message=f"no affordable tools at {vendor_name} "
+                        f"(blacklisted={len(active_bl)})",
             )
 
         target_name = target_item.name or f"0x{target_item.graphic:04X}"
@@ -151,16 +202,17 @@ class BuyFromVendor(Procedure):
             item=target_name,
             graphic=f"0x{target_item.graphic:04X}",
             price=target_item.price,
-            gold_before=gold_before,
+            gold=gold_before,
         )
 
         await ctx.conn.send_packet(build_buy_items(
             ss.vendor_serial,
             [(target_item.serial, 1)],
         ))
-        await asyncio.sleep(1.0)
 
-        # Verify purchase
+        # --- Gold polling (up to 2s) ---
+        await _wait_for_gold_change(ss, gold_before, timeout=2.0)
+
         gold_after = ss.gold
         gold_spent = max(0, gold_before - gold_after)
 
@@ -180,44 +232,29 @@ class BuyFromVendor(Procedure):
 
         if gold_spent == 0:
             logger.warning(
-                "buy_no_gold_spent",
+                "buy_failed_gold_unchanged",
                 vendor=vendor_name,
                 item=target_name,
                 item_serial=target_item.serial,
                 price=target_item.price,
-                reason="sent buy packet but gold unchanged — purchase may have failed",
             )
-            # Blacklist this specific item serial so next attempt tries a
-            # different tool from the vendor's inventory.
-            failed_serials = ctx.blackboard.setdefault("_buy_failed_serials", set())
-            failed_serials.add(target_item.serial)
+            # Blacklist this item serial for this vendor
+            bl = ctx.blackboard.setdefault("_buy_failed_items", {})
+            vendor_bl = bl.setdefault(vendor.serial, {})
+            vendor_bl[target_item.serial] = time.monotonic()
             _mark_refused(ctx, vendor.serial)
-            ss.vendor_buy_list = []
-            ss.vendor_serial = 0
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
                 message=f"Buy {target_name} from {vendor_name} failed — "
                         f"gold unchanged ({gold_before}gp→{gold_after}gp)",
-                details={
-                    "vendor": vendor_name,
-                    "item": target_name,
-                    "price": target_item.price,
-                    "gold_before": gold_before,
-                    "gold_after": gold_after,
-                },
             )
 
-        # Successful purchase — clear failed serial blacklist for this vendor
-        ctx.blackboard.pop("_buy_failed_serials", None)
+        # Success — clear blacklist for this vendor
+        bl = ctx.blackboard.get("_buy_failed_items", {})
+        bl.pop(vendor.serial, None)
         return ProcedureResult(
             success=True,
             message=f"Bought {target_name} from {vendor_name} for {gold_spent}gp",
             gold_changed=-gold_spent,
-            details={
-                "vendor": vendor_name,
-                "item": target_name,
-                "price": target_item.price,
-                "gold_spent": gold_spent,
-            },
         )

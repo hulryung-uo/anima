@@ -199,21 +199,47 @@ class SellToVendor(Procedure):
             vendor_offers=vendor_offers,
         )
 
-        # Sell all items EXCEPT tools we need to keep
+        # --- Tool keep-at-least-1 logic ---
+        # KEEP_GRAPHICS blocks ALL of a tool type from being sold.
+        # But if we have 2+ of a type, surplus can be sold. We protect
+        # exactly 1 serial per tool group and allow the rest through.
+        from anima.skills.crafting.tinker import (
+            TINKER_TOOLS_GRAPHICS as _TINKER_GFX,
+            PICKAXE_GRAPHICS as _PICK_GFX,
+            HATCHET_GRAPHICS as _HATCH_GFX,
+            SAW_GRAPHICS as _SAW_GFX,
+        )
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
+
+        _TOOL_GROUPS = [_TONGS_GFX, _TINKER_GFX, _PICK_GFX, _HATCH_GFX, _SAW_GFX]
+        protected_serials: set[int] = set()
+        relaxed_graphics: set[int] = set()
+        for group in _TOOL_GROUPS:
+            group_items = [si for si in sell_list if si.graphic in group]
+            if len(group_items) >= 2:
+                # Keep 1, allow selling the rest
+                protected_serials.add(group_items[0].serial)
+                relaxed_graphics |= group
+
+        # Effective keep: original keep minus relaxed (surplus) tool graphics
+        effective_keep = keep - relaxed_graphics
+
+        # --- Sort by value (highest first) and build sell list ---
         from anima.client.packets import build_sell_items
 
-        items_to_sell = [
-            (item.serial, item.amount) for item in sell_list
-            if item.graphic not in keep
-        ]
+        sellable = sorted(
+            [si for si in sell_list
+             if si.graphic not in effective_keep
+             and si.serial not in protected_serials],
+            key=lambda si: si.price * si.amount,
+            reverse=True,
+        )
+        items_to_sell = [(si.serial, si.amount) for si in sellable]
         items_kept = [
             si.name or f"0x{si.graphic:04X}" for si in sell_list
-            if si.graphic in keep
+            if si.graphic in effective_keep or si.serial in protected_serials
         ]
-        expected_gold = sum(
-            si.price * si.amount for si in sell_list
-            if si.graphic not in keep
-        )
+        expected_gold = sum(si.price * si.amount for si in sellable)
 
         if not items_to_sell:
             _mark_refused(ctx, vendor.serial)
@@ -233,8 +259,7 @@ class SellToVendor(Procedure):
 
         sold_names = [
             f"{si.name or f'0x{si.graphic:04X}'} x{si.amount} @{si.price}gp"
-            for si in sell_list
-            if si.graphic not in keep
+            for si in sellable
         ]
 
         logger.info(
@@ -250,7 +275,10 @@ class SellToVendor(Procedure):
             vendor.serial,
             items_to_sell,
         ))
-        await asyncio.sleep(1.0)
+
+        # Poll for gold change instead of fixed sleep
+        from anima.skills.trade.vendor import _wait_for_gold_change
+        await _wait_for_gold_change(ss, gold_before, timeout=2.0)
 
         # Verify gold changed
         gold_after = ss.gold
