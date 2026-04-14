@@ -739,7 +739,7 @@ class Planner:
         ctx.blackboard.pop("_deadlock_attempt_count", None)
 
         # --- Priority 5: Batch craft — accumulate ingots first ---
-        if ingot_count >= BATCH_CRAFT_INGOTS:
+        if expedition.phase == Phase.CRAFTING_TRIP and ingot_count >= BATCH_CRAFT_INGOTS:
             if has_tongs and not craft_material_blocked:
                 proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
@@ -812,6 +812,25 @@ class Planner:
         # Priority 5c removed: raw ingot selling is no longer a general
         # strategy. Ingots are reserved for crafting. The only raw-sell
         # path is the "no tongs + no gold" last resort in Priority 5.
+
+        # --- CRAFTING_TRIP → MINING ---
+        if expedition.phase == Phase.CRAFTING_TRIP and expedition.home_base is not None:
+            near_home = max(
+                abs(ss.x - expedition.home_base[0]),
+                abs(ss.y - expedition.home_base[1]),
+            ) <= 30
+            if expedition.should_return_to_mine(
+                ingot_count=ingot_count,
+                crafted_count=crafted_count,
+                near_home=near_home,
+            ):
+                expedition.cycles_completed += 1
+                logger.info(
+                    "expedition_cycle_complete",
+                    cycles=expedition.cycles_completed,
+                    duration_s=_time.time() - expedition.phase_started_at,
+                )
+                expedition.transition_to(Phase.MINING)
 
         # --- Priority 5d: No tongs + no gold + colored ingots → sell for tongs ---
         # Colored ingots can't be used for basic crafting, so normally they get

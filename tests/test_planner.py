@@ -117,9 +117,12 @@ class TestGameplayLoop:
     @pytest.mark.asyncio
     async def test_has_ingots_no_tongs_no_gold_sells_raw(self):
         """No tongs + no gold + many ingots → sell raw as last resort to fund tongs."""
+        from anima.planner.expedition import Phase
+
         reg = ProcedureRegistry()
         reg.register(StubProcedure("sell_to_vendor"))
         planner = Planner(reg)
+        planner._expedition.transition_to(Phase.CRAFTING_TRIP)
 
         ctx = _make_ctx(gold=0)
         _add_item(ctx, 1, PICKAXE)  # has tool so Priority 4 doesn't block
@@ -239,6 +242,8 @@ class TestSupervisorHints:
     @pytest.mark.asyncio
     async def test_expired_hint_ignored(self, tmp_path):
         """Expired hint does not skip procedure."""
+        from anima.planner.expedition import Phase
+
         hints_file = tmp_path / "supervisor_hints.json"
         hints_file.write_text(json.dumps({
             "skip_procedures": {
@@ -252,6 +257,7 @@ class TestSupervisorHints:
         reg = ProcedureRegistry()
         reg.register(StubProcedure("craft_blacksmith"))
         planner = Planner(reg)
+        planner._expedition.transition_to(Phase.CRAFTING_TRIP)
 
         ctx = _make_ctx()
         _add_item(ctx, 1, PICKAXE)
@@ -684,3 +690,65 @@ class TestCollectingTransitions:
 
         await planner.select_procedure(ctx)
         assert planner._expedition.phase == Phase.COLLECTING
+
+
+class TestCraftingTripPhase:
+    @pytest.mark.asyncio
+    async def test_mining_phase_does_not_craft_even_with_ingots(self):
+        """In MINING phase, >= BATCH_CRAFT_INGOTS ingots should NOT trigger craft."""
+        from anima.planner.expedition import Phase
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("craft_blacksmith"))
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.MINING)
+
+        ctx = _make_ctx()
+        _add_item(ctx, 0xC1, INGOT, amount=20)  # >= BATCH_CRAFT_INGOTS (16)
+        _add_item(ctx, 0xC2, TONGS, amount=1)
+        _add_item(ctx, 0xC3, PICKAXE, amount=1)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is None or proc.name != "craft_blacksmith"
+
+    @pytest.mark.asyncio
+    async def test_crafting_trip_phase_runs_craft(self):
+        """In CRAFTING_TRIP phase, >= BATCH_CRAFT_INGOTS ingots + tongs → craft."""
+        from anima.planner.expedition import Phase
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("craft_blacksmith"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.CRAFTING_TRIP)
+
+        ctx = _make_ctx()
+        _add_item(ctx, 0xC4, INGOT, amount=20)
+        _add_item(ctx, 0xC5, TONGS, amount=1)
+        _add_item(ctx, 0xC6, PICKAXE, amount=1)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "craft_blacksmith"
+
+    @pytest.mark.asyncio
+    async def test_crafting_trip_back_to_mining_when_done(self):
+        """CRAFTING_TRIP → MINING when ingots < 4, crafted_count == 0, near home."""
+        from anima.planner.expedition import Phase
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.CRAFTING_TRIP)
+        # Set home_base to the default ctx position (x=100, y=200)
+        planner._expedition.home_base = (100, 200)
+
+        ctx = _make_ctx()  # x=100, y=200 — near home
+        _add_item(ctx, 0xC7, PICKAXE, amount=1)
+        # No ingots (< 4), no crafted items → should_return_to_mine returns True
+
+        await planner.select_procedure(ctx)
+        assert planner._expedition.phase == Phase.MINING
