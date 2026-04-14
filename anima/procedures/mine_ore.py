@@ -224,6 +224,11 @@ class MineOre(Procedure):
                             junk.add(stack_target.serial)
                     break
 
+            expedition = ctx.blackboard.get("expedition")
+            if expedition is not None:
+                from anima.skills.gathering.mine import _bank_key
+                expedition.note_ore_mined(ss.x, ss.y, _bank_key(ss.x, ss.y))
+
             return ProcedureResult(
                 success=True,
                 message=f"Mined {ore_gained} ore",

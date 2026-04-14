@@ -31,6 +31,12 @@ import structlog
 from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureResult
 from anima.planner.circuit_breaker import CircuitBreaker
 from anima.planner.deadlock import DeadlockResolver
+from anima.planner.expedition import (
+    BATCH_CRAFT_INGOTS,
+    BATCH_SMELT_ORE,
+    MiningExpedition,
+    Phase,
+)
 from anima.planner.health import PlannerHealth
 from anima.planner.roaming import RoamingHelper
 from anima.planner.strategy import StrategySelector
@@ -49,13 +55,6 @@ logger = structlog.get_logger()
 
 # Minimum delay between planner loops to prevent spin on rapid failures
 MIN_LOOP_DELAY = 0.2
-
-# Batch thresholds — mine multiple spots before smelting, accumulate ingots
-# before crafting. Reduces constant forge trips and makes each cycle
-# efficient: mine→batch-smelt→batch-craft→sell.
-# Priority 2 (overweight) still smelts at ≥2 as a safety valve.
-BATCH_SMELT_ORE = 8       # mine until this many ore, then smelt all at once
-BATCH_CRAFT_INGOTS = 16   # accumulate ingots before crafting (≈2 weapons)
 
 SUPERVISOR_HINTS_FILE = Path(__file__).parent.parent.parent / "data" / "supervisor_hints.json"
 
@@ -116,6 +115,7 @@ class Planner:
         self._roaming = RoamingHelper(self)
         self._strategy = StrategySelector(interval_s=300.0)
         self._goals = GoalStack()
+        self._expedition = MiningExpedition()
 
     def stop(self) -> None:
         self._running = False
@@ -324,6 +324,22 @@ class Planner:
         from anima.skills.gathering.mine import PICKAXE_GRAPHICS, ORE_GRAPHICS
         from anima.skills.crafting.smelt import INGOT_GRAPHICS
 
+        ctx.blackboard["expedition"] = self._expedition
+        # Prune piles that have likely decayed server-side.
+        self._expedition.prune_stale_piles()
+
+        # Watchdog: if stuck in a non-IDLE phase for >10 minutes, reset.
+        if (self._expedition.phase != Phase.IDLE
+                and self._expedition.watchdog_expired(max_phase_s=600.0)):
+            stuck_s = time.time() - self._expedition.phase_started_at  # capture before transition_to resets phase_started_at
+            logger.warning(
+                "expedition_watchdog",
+                phase=self._expedition.phase.value,
+                stuck_s=stuck_s,
+            )
+            self._expedition.piles.clear()
+            self._expedition.transition_to(Phase.IDLE)
+
         # Skip procedures flagged by supervisor or repeat-failure blackboard
         skip_bb = ctx.blackboard.get("_skip_procedures", set())
 
@@ -530,31 +546,46 @@ class Planner:
             # Overweight from non-ore items (crafted items, etc.) — fall
             # through to sell/bank priorities below
 
-        # --- Priority 3: Batch smelt — mine multiple spots first ---
-        # Only walk to forge when we've accumulated enough ore to make the
-        # trip worthwhile. Priority 2 (overweight) still smelts at ≥2 as a
-        # safety valve so the agent never gets stuck from ore weight alone.
-        if smeltable_ore >= BATCH_SMELT_ORE:
+        # --- MINING → COLLECTING transition ---
+        expedition = self._expedition
+        if expedition.should_start_collecting(
+            scan_empty=not self._scan_has_mineable_bank(ctx),
+        ):
+            expedition.transition_to(Phase.COLLECTING)
+
+        # --- Priority 3: Batch smelt (only in COLLECTING) ---
+        if expedition.phase == Phase.COLLECTING and smeltable_ore >= BATCH_SMELT_ORE:
             proc = _get_proc("smelt_ore")
             if proc and await proc.can_start(ctx):
-                _intent(f"광석 {smeltable_ore}개 축적 → 일괄 제련")
+                _intent(f"수거 단계, 광석 {smeltable_ore}개 → 일괄 제련")
                 return proc
-            _intent(f"광석 {smeltable_ore}개 축적, 용광로 필요 → 이동")
+            _intent(f"수거 단계, 광석 {smeltable_ore}개, 용광로 필요 → 이동")
             return await self._roaming.move_to_location(ctx, "forge", "blacksmith")
 
-        # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
-        # Skip if we just picked up ore (hint says "smelt_ore") — let smelt run
-        # before picking up more; avoids spam when world state update is delayed.
-        # Skip if too heavy to pick up anything (same 50-stone buffer as _PickUpAndSmelt)
-        can_carry_more = ss.weight_max == 0 or ss.weight <= ss.weight_max - 50
-        if (can_carry_more
-                and self.continuation_hint != "smelt_ore"
-                and "pick_up_ore_and_smelt" not in skip_bb):
-            ground_ore = self._find_ground_ore(ctx, ss)
-            ground_ore_total = sum(it.amount for it in ground_ore) if ground_ore else 0
-            if ground_ore and ground_ore_total >= 2:
-                _intent(f"바닥에 광석 {ground_ore_total}개 발견 → 줍기")
-                return _PickUpAndSmelt(ground_ore, ss)
+        # --- Priority 3b: Collection tour — pick up next pile ---
+        if expedition.phase == Phase.COLLECTING:
+            can_carry_more = ss.weight_max == 0 or ss.weight <= ss.weight_max - 50
+            if (can_carry_more
+                    and self.continuation_hint != "smelt_ore"
+                    and "pick_up_ore_and_smelt" not in skip_bb):
+                ground_ore = self._find_ground_ore(ctx, ss)
+                if expedition.piles or (ground_ore and sum(it.amount for it in ground_ore) >= 2):
+                    _intent(
+                        f"수거 투어: 더미 {len(expedition.piles)}개 → 다음 더미 줍기"
+                    )
+                    return _PickUpAndSmelt(ground_ore, ss)
+
+        # --- COLLECTING → CRAFTING_TRIP or COLLECTING → MINING ---
+        if expedition.phase == Phase.COLLECTING and not expedition.piles:
+            weight_ratio = (ss.weight / ss.weight_max) if ss.weight_max > 0 else 0.0
+            if expedition.should_leave_mine(
+                ingot_count=ingot_count,
+                weight_ratio=weight_ratio,
+                has_pickaxe=has_mining_tool,
+            ):
+                expedition.transition_to(Phase.CRAFTING_TRIP)
+            else:
+                expedition.transition_to(Phase.MINING)
 
         # --- Priority 4: No mining tools → get them ---
         if not has_mining_tool:
@@ -718,7 +749,7 @@ class Planner:
         ctx.blackboard.pop("_deadlock_attempt_count", None)
 
         # --- Priority 5: Batch craft — accumulate ingots first ---
-        if ingot_count >= BATCH_CRAFT_INGOTS:
+        if expedition.phase == Phase.CRAFTING_TRIP and ingot_count >= BATCH_CRAFT_INGOTS:
             if has_tongs and not craft_material_blocked:
                 proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):
@@ -791,6 +822,34 @@ class Planner:
         # Priority 5c removed: raw ingot selling is no longer a general
         # strategy. Ingots are reserved for crafting. The only raw-sell
         # path is the "no tongs + no gold" last resort in Priority 5.
+
+        # --- CRAFTING_TRIP → MINING ---
+        if expedition.phase == Phase.CRAFTING_TRIP and expedition.home_base is not None:
+            near_home = max(
+                abs(ss.x - expedition.home_base[0]),
+                abs(ss.y - expedition.home_base[1]),
+            ) <= 30
+            if expedition.should_return_to_mine(
+                ingot_count=ingot_count,
+                crafted_count=crafted_count,
+                near_home=near_home,
+            ):
+                expedition.cycles_completed += 1
+                duration = _time.time() - expedition.phase_started_at
+                logger.info(
+                    "expedition_cycle_complete",
+                    cycles=expedition.cycles_completed,
+                    duration_s=duration,
+                )
+                if ctx.bus is not None:
+                    try:
+                        ctx.bus.publish("expedition.cycle_complete", {
+                            "message": f"✓ 원정 사이클 {expedition.cycles_completed}회 완료 ({duration:.0f}s)",
+                            "importance": 3,
+                        })
+                    except Exception:
+                        pass  # activity publish must never break the planner
+                expedition.transition_to(Phase.MINING)
 
         # --- Priority 5d: No tongs + no gold + colored ingots → sell for tongs ---
         # Colored ingots can't be used for basic crafting, so normally they get
@@ -980,6 +1039,11 @@ class Planner:
                         "message": f"{proc_name} failed {count}x consecutively — skipping",
                         "importance": 2,
                     })
+
+    def _scan_has_mineable_bank(self, ctx) -> bool:
+        """True if at least one un-depleted mineable bank is within MOVE_RADIUS."""
+        from anima.skills.gathering.mine import _find_mineable_tile
+        return _find_mineable_tile(ctx) is not None
 
     def _find_ground_ore(self, ctx: AgentContext, ss) -> list:
         """Find ore items on the ground near the player (excluding junk and unsmelable hues)."""

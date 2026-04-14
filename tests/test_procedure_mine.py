@@ -114,3 +114,121 @@ class TestMineOreRun:
         # Should fail gracefully (no pickaxe)
         assert not result.success
         assert result.reason == FailureReason.MISSING_RESOURCE
+
+
+def _setup_mine_success_ctx(ctx):
+    """Rig ctx so MineOre.execute reaches the ore_gained > 0 branch.
+
+    Returns (before_items, after_items, flip_to_after) — callers should
+    install a PropertyMock on type(ctx.perception.world).items that returns
+    before_items when flip_to_after[0] is False, else after_items.
+    """
+    from unittest.mock import MagicMock
+
+    pickaxe = MagicMock(container=0x101, graphic=0x0E86, amount=1, serial=0x200)
+    ore_before_item = MagicMock(container=0x101, graphic=0x19B9, amount=1, serial=0x300, hue=0)
+    ore_after_item = MagicMock(container=0x101, graphic=0x19B9, amount=2, serial=0x300, hue=0)
+
+    before_items = {0x200: pickaxe, 0x300: ore_before_item}
+    after_items = {0x200: pickaxe, 0x300: ore_after_item}
+    return before_items, after_items
+
+
+class TestMineOreExpeditionHook:
+    @pytest.mark.asyncio
+    async def test_successful_mine_registers_pile(self):
+        """A successful mine adds a pile and transitions IDLE → MINING."""
+        from unittest.mock import patch, AsyncMock, MagicMock, PropertyMock
+
+        from anima.planner.expedition import MiningExpedition, Phase
+        from anima.procedures.mine_ore import MineOre
+        from anima.skills.gathering.mine import _bank_key
+
+        proc = MineOre()
+        exp = MiningExpedition()
+        ctx = _make_ctx()
+        ctx.blackboard = {"expedition": exp}
+
+        before_items, after_items = _setup_mine_success_ctx(ctx)
+        after_mine = [False]
+
+        async def _use_on_target(*args, **kwargs):
+            after_mine[0] = True
+            return MagicMock(success=True, message="ok")
+
+        def _items_getter(self):
+            return after_items if after_mine[0] else before_items
+
+        type(ctx.perception.world).items = PropertyMock(side_effect=lambda: _items_getter(None))
+
+        with patch(
+            "anima.procedures.mine_ore._find_mineable_tile",
+            return_value=(2500, 550, 15, 220, False),
+        ), patch(
+            "anima.procedures.mine_ore.use_on_target",
+            new=_use_on_target,
+        ), patch(
+            "anima.procedures.mine_ore.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            ctx.bus = None
+            result = await proc.execute(ctx)
+
+        assert result.success is True
+        assert len(exp.piles) == 1
+        assert exp.piles[0].x == ctx.perception.self_state.x
+        assert exp.piles[0].y == ctx.perception.self_state.y
+        assert exp.piles[0].bank_key == _bank_key(
+            ctx.perception.self_state.x, ctx.perception.self_state.y,
+        )
+        assert exp.phase == Phase.MINING
+
+    @pytest.mark.asyncio
+    async def test_mine_without_expedition_does_not_crash(self):
+        """With no 'expedition' key on the blackboard, mining must still work.
+
+        This exercises the hook path end-to-end: execute reaches the
+        `ore_gained > 0` branch, the hook runs, and the `if expedition is
+        not None` guard prevents an AttributeError on the missing key.
+        """
+        from unittest.mock import patch, AsyncMock, MagicMock, PropertyMock
+
+        from anima.procedures.mine_ore import MineOre
+
+        proc = MineOre()
+        ctx = _make_ctx()
+        ctx.blackboard = {}  # No "expedition" key
+
+        before_items, after_items = _setup_mine_success_ctx(ctx)
+        after_mine = [False]
+
+        async def _use_on_target(*args, **kwargs):
+            after_mine[0] = True
+            return MagicMock(success=True, message="ok")
+
+        def _items_getter(self):
+            return after_items if after_mine[0] else before_items
+
+        type(ctx.perception.world).items = PropertyMock(side_effect=lambda: _items_getter(None))
+
+        with patch(
+            "anima.procedures.mine_ore._find_mineable_tile",
+            return_value=(2500, 550, 15, 220, False),
+        ), patch(
+            "anima.procedures.mine_ore.use_on_target",
+            new=_use_on_target,
+        ), patch(
+            "anima.procedures.mine_ore.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            ctx.bus = None
+            try:
+                result = await proc.execute(ctx)
+            except AttributeError as e:
+                # If the hook accessed .note_ore_mined on None, we'd land here.
+                raise AssertionError(
+                    f"execute() raised AttributeError — missing None-guard on expedition hook: {e}"
+                )
+
+        # We reached the hook path successfully.
+        assert result.success is True
