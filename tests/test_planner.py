@@ -694,8 +694,36 @@ class TestCollectingTransitions:
 
 class TestCraftingTripPhase:
     @pytest.mark.asyncio
-    async def test_mining_phase_does_not_craft_even_with_ingots(self):
-        """In MINING phase, >= BATCH_CRAFT_INGOTS ingots should NOT trigger craft."""
+    async def test_collecting_phase_does_not_craft_even_with_ingots(self):
+        """In COLLECTING phase, craft is deferred so the tour can finish."""
+        from anima.planner.expedition import Phase, PileRecord
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("craft_blacksmith"))
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.COLLECTING)
+        # At least one pile so COLLECTING doesn't immediately auto-exit
+        planner._expedition.piles.append(
+            PileRecord(x=1, y=1, bank_key=(0, 0), est_amount=1, last_seen_ts=time.time())
+        )
+
+        ctx = _make_ctx()
+        _add_item(ctx, 0xC1, INGOT, amount=20)  # >= BATCH_CRAFT_INGOTS (16)
+        _add_item(ctx, 0xC2, TONGS, amount=1)
+        _add_item(ctx, 0xC3, PICKAXE, amount=1)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is None or proc.name != "craft_blacksmith"
+
+    @pytest.mark.asyncio
+    async def test_mining_phase_does_craft_when_ingots_overflow(self):
+        """In MINING with ingot_count ≥ BATCH_CRAFT_INGOTS, craft is allowed.
+
+        Safety valve against the collecting trigger never firing — e.g. in
+        dense mining areas where banks always respawn before scan is empty.
+        """
         from anima.planner.expedition import Phase
 
         reg = ProcedureRegistry()
@@ -706,12 +734,13 @@ class TestCraftingTripPhase:
         planner._expedition.transition_to(Phase.MINING)
 
         ctx = _make_ctx()
-        _add_item(ctx, 0xC1, INGOT, amount=20)  # >= BATCH_CRAFT_INGOTS (16)
+        _add_item(ctx, 0xC1, INGOT, amount=20)
         _add_item(ctx, 0xC2, TONGS, amount=1)
         _add_item(ctx, 0xC3, PICKAXE, amount=1)
 
         proc = await planner.select_procedure(ctx)
-        assert proc is None or proc.name != "craft_blacksmith"
+        assert proc is not None
+        assert proc.name == "craft_blacksmith"
 
     @pytest.mark.asyncio
     async def test_crafting_trip_phase_runs_craft(self):
