@@ -240,10 +240,14 @@ class TestPhaseTransitionPredicates:
 
     def test_watchdog_not_expired_at_exact_limit(self):
         """Equality (phase_started_at == now - max_phase_s) does NOT expire."""
+        from unittest.mock import patch
+
         exp = MiningExpedition()
         exp.transition_to(Phase.MINING)
-        exp.phase_started_at = time.time() - 600.0
-        assert exp.watchdog_expired(max_phase_s=600.0) is False
+        fixed_now = 1_000_000.0
+        exp.phase_started_at = fixed_now - 600.0
+        with patch("anima.planner.expedition.time.time", return_value=fixed_now):
+            assert exp.watchdog_expired(max_phase_s=600.0) is False
 
     def test_watchdog_false_in_idle(self):
         """Fresh expedition in IDLE must never report watchdog expired."""
