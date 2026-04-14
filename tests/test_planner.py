@@ -526,3 +526,36 @@ class TestPickUpAndSmeltWithExpedition:
             result = await proc.run(ctx)
         # Picked up from the legacy path
         assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_pile_removed_on_server_refused_pickup(self):
+        """When server refuses every pickup, drop the pile to avoid a loop."""
+        from anima.planner.expedition import MiningExpedition, PileRecord
+        from anima.planner.helpers import _PickUpAndSmelt
+
+        exp = MiningExpedition()
+        pile = PileRecord(
+            x=100, y=200, bank_key=(12, 25), est_amount=2,
+            last_seen_ts=time.time(),
+        )
+        exp.piles = [pile]
+
+        ctx = _make_ctx()
+        ctx.perception.self_state.x = 100
+        ctx.perception.self_state.y = 200
+        ctx.blackboard["expedition"] = exp
+
+        # Ore visible on ground but simulate server refusal: pickup/drop
+        # packets are sent, but the item stays in container=0 after.
+        ore = MagicMock(
+            serial=0xE001, graphic=0x19B9, amount=2, container=0,
+            x=100, y=200, z=0,
+        )
+        ctx.perception.world.items = {ore.serial: ore}
+
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=True)):
+            proc = _PickUpAndSmelt(ground_ore=[], ss=ctx.perception.self_state)
+            result = await proc.run(ctx)
+
+        assert result.success is False
+        assert pile not in exp.piles, "pile must be dropped after refusal"

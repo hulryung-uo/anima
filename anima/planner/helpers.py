@@ -124,12 +124,20 @@ class _PickUpAndSmelt:
             picked = await self._pickup_into_backpack(ctx, nearby_ore, backpack)
             if picked > 0:
                 expedition.mark_pile_collected(target_pile)
-
-            if picked == 0:
+            else:
+                # Server refused every pickup attempt despite visible ore
+                # (LOS / z-level / anti-cheat). Drop the pile to avoid a
+                # loop; the ore stays on the ground for the Path B fallback.
+                logger.warning(
+                    "pile_pickup_refused_dropped",
+                    pos=f"({target_pile.x},{target_pile.y})",
+                    nearby_ore=len(nearby_ore),
+                )
+                expedition.mark_pile_collected(target_pile)
                 return ProcedureResult(
                     success=False,
-                    reason=FailureReason.MISSING_RESOURCE,
-                    message="no ore picked up at pile",
+                    reason=FailureReason.BLOCKED,
+                    message="pile pickup refused — removed from memory",
                 )
 
             await self._walk_to_forge(ctx)
