@@ -94,8 +94,10 @@ class TestMiningExpeditionBasics:
         exp = MiningExpedition()
         now = time.time()
         exp.piles = [
-            PileRecord(x=1, y=1, bank_key=(0, 0), est_amount=1, last_seen_ts=now - 1800),  # 30 min old
-            PileRecord(x=2, y=2, bank_key=(0, 0), est_amount=1, last_seen_ts=now - 600),   # 10 min old
+            # 30 min old
+            PileRecord(x=1, y=1, bank_key=(0, 0), est_amount=1, last_seen_ts=now - 1800),
+            # 10 min old
+            PileRecord(x=2, y=2, bank_key=(0, 0), est_amount=1, last_seen_ts=now - 600),
         ]
         exp.prune_stale_piles(decay_s=1200.0)  # 20 min
         assert len(exp.piles) == 1
@@ -127,7 +129,9 @@ class TestPhaseTransitionPredicates:
 
     def test_should_start_collecting_false_outside_mining(self):
         exp = MiningExpedition()  # IDLE
-        exp.piles.append(PileRecord(x=1, y=1, bank_key=(0, 0), est_amount=1, last_seen_ts=time.time()))
+        exp.piles.append(
+            PileRecord(x=1, y=1, bank_key=(0, 0), est_amount=1, last_seen_ts=time.time())
+        )
         assert exp.should_start_collecting(scan_empty=True) is False
 
     def test_should_leave_mine_by_ingot_count(self):
