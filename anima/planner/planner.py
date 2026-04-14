@@ -536,31 +536,34 @@ class Planner:
             # Overweight from non-ore items (crafted items, etc.) — fall
             # through to sell/bank priorities below
 
-        # --- Priority 3: Batch smelt — mine multiple spots first ---
-        # Only walk to forge when we've accumulated enough ore to make the
-        # trip worthwhile. Priority 2 (overweight) still smelts at ≥2 as a
-        # safety valve so the agent never gets stuck from ore weight alone.
-        if smeltable_ore >= BATCH_SMELT_ORE:
+        # --- MINING → COLLECTING transition ---
+        expedition = self._expedition
+        if expedition.should_start_collecting(
+            scan_empty=not self._scan_has_mineable_bank(ctx),
+        ):
+            expedition.transition_to(Phase.COLLECTING)
+
+        # --- Priority 3: Batch smelt (only in COLLECTING) ---
+        if expedition.phase == Phase.COLLECTING and smeltable_ore >= BATCH_SMELT_ORE:
             proc = _get_proc("smelt_ore")
             if proc and await proc.can_start(ctx):
-                _intent(f"광석 {smeltable_ore}개 축적 → 일괄 제련")
+                _intent(f"수거 단계, 광석 {smeltable_ore}개 → 일괄 제련")
                 return proc
-            _intent(f"광석 {smeltable_ore}개 축적, 용광로 필요 → 이동")
+            _intent(f"수거 단계, 광석 {smeltable_ore}개, 용광로 필요 → 이동")
             return await self._roaming.move_to_location(ctx, "forge", "blacksmith")
 
-        # --- Priority 3b: Ore on ground nearby → pick up then go smelt ---
-        # Skip if we just picked up ore (hint says "smelt_ore") — let smelt run
-        # before picking up more; avoids spam when world state update is delayed.
-        # Skip if too heavy to pick up anything (same 50-stone buffer as _PickUpAndSmelt)
-        can_carry_more = ss.weight_max == 0 or ss.weight <= ss.weight_max - 50
-        if (can_carry_more
-                and self.continuation_hint != "smelt_ore"
-                and "pick_up_ore_and_smelt" not in skip_bb):
-            ground_ore = self._find_ground_ore(ctx, ss)
-            ground_ore_total = sum(it.amount for it in ground_ore) if ground_ore else 0
-            if ground_ore and ground_ore_total >= 2:
-                _intent(f"바닥에 광석 {ground_ore_total}개 발견 → 줍기")
-                return _PickUpAndSmelt(ground_ore, ss)
+        # --- Priority 3b: Collection tour — pick up next pile ---
+        if expedition.phase == Phase.COLLECTING:
+            can_carry_more = ss.weight_max == 0 or ss.weight <= ss.weight_max - 50
+            if (can_carry_more
+                    and self.continuation_hint != "smelt_ore"
+                    and "pick_up_ore_and_smelt" not in skip_bb):
+                ground_ore = self._find_ground_ore(ctx, ss)
+                if expedition.piles or (ground_ore and sum(it.amount for it in ground_ore) >= 2):
+                    _intent(
+                        f"수거 투어: 더미 {len(expedition.piles)}개 → 다음 더미 줍기"
+                    )
+                    return _PickUpAndSmelt(ground_ore, ss)
 
         # --- Priority 4: No mining tools → get them ---
         if not has_mining_tool:
@@ -986,6 +989,11 @@ class Planner:
                         "message": f"{proc_name} failed {count}x consecutively — skipping",
                         "importance": 2,
                     })
+
+    def _scan_has_mineable_bank(self, ctx) -> bool:
+        """True if at least one un-depleted mineable bank is within MOVE_RADIUS."""
+        from anima.skills.gathering.mine import _find_mineable_tile
+        return _find_mineable_tile(ctx) is not None
 
     def _find_ground_ore(self, ctx: AgentContext, ss) -> list:
         """Find ore items on the ground near the player (excluding junk and unsmelable hues)."""

@@ -99,11 +99,14 @@ class TestGameplayLoop:
 
     @pytest.mark.asyncio
     async def test_has_ore_smelt(self):
-        """Ore in backpack → smelt before mining more."""
+        """Ore in backpack → smelt before mining more (requires COLLECTING phase)."""
+        from anima.planner.expedition import Phase
+
         reg = ProcedureRegistry()
         reg.register(StubProcedure("mine_ore"))
         reg.register(StubProcedure("smelt_ore"))
         planner = Planner(reg)
+        planner._expedition.transition_to(Phase.COLLECTING)
 
         ctx = _make_ctx()
         _add_item(ctx, 1, PICKAXE)
@@ -559,3 +562,67 @@ class TestPickUpAndSmeltWithExpedition:
 
         assert result.success is False
         assert pile not in exp.piles, "pile must be dropped after refusal"
+
+
+class TestPhaseGatedSmelt:
+    @pytest.mark.asyncio
+    async def test_mining_phase_ignores_ground_ore_pickup(self):
+        """In MINING phase, two ore on the ground does NOT trigger pick_up_ore_and_smelt."""
+        from anima.planner.expedition import Phase
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("mine_ore"))
+        reg.register(StubProcedure("smelt_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.MINING)
+
+        ctx = _make_ctx()
+        # Two ore on the ground near player
+        ore = MagicMock(serial=0xA1, graphic=0x19B9, amount=2, container=0, x=100, y=200)
+        ctx.perception.world.items = {ore.serial: ore}
+
+        proc = await planner.select_procedure(ctx)
+        # Should not be _PickUpAndSmelt
+        assert getattr(proc, "name", "") != "pick_up_ore_and_smelt"
+
+    @pytest.mark.asyncio
+    async def test_collecting_phase_does_trigger_pickup(self):
+        """In COLLECTING phase with piles, _PickUpAndSmelt is selected."""
+        from anima.planner.expedition import Phase, PileRecord
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("mine_ore"))
+        reg.register(StubProcedure("smelt_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.COLLECTING)
+        planner._expedition.piles = [
+            PileRecord(x=100, y=200, bank_key=(12, 25), est_amount=2, last_seen_ts=time.time()),
+        ]
+
+        ctx = _make_ctx()
+        proc = await planner.select_procedure(ctx)
+        assert getattr(proc, "name", "") == "pick_up_ore_and_smelt"
+
+    @pytest.mark.asyncio
+    async def test_transitions_mining_to_collecting_when_scan_empty(self):
+        """When mining scan finds nothing and piles exist, phase flips to COLLECTING."""
+        from anima.planner.expedition import Phase, PileRecord
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("mine_ore", can=False))  # mine not available
+        reg.register(StubProcedure("smelt_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.MINING)
+        planner._expedition.piles = [
+            PileRecord(x=100, y=200, bank_key=(12, 25), est_amount=2, last_seen_ts=time.time()),
+        ]
+
+        ctx = _make_ctx()
+        # Mock the scan helper to say "no banks available"
+        with patch.object(planner, "_scan_has_mineable_bank", return_value=False):
+            await planner.select_procedure(ctx)
+
+        assert planner._expedition.phase == Phase.COLLECTING
