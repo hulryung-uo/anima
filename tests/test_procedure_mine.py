@@ -114,3 +114,75 @@ class TestMineOreRun:
         # Should fail gracefully (no pickaxe)
         assert not result.success
         assert result.reason == FailureReason.MISSING_RESOURCE
+
+
+class TestMineOreExpeditionHook:
+    @pytest.mark.asyncio
+    async def test_successful_mine_registers_pile(self):
+        """A successful mine adds a pile and transitions IDLE → MINING."""
+        from unittest.mock import patch, AsyncMock, MagicMock, PropertyMock
+
+        from anima.planner.expedition import MiningExpedition, Phase
+        from anima.procedures.mine_ore import MineOre
+        from anima.skills.gathering.mine import _bank_key
+
+        proc = MineOre()
+        exp = MiningExpedition()
+        ctx = _make_ctx()
+        ctx.blackboard = {"expedition": exp}
+
+        # Pickaxe in backpack
+        pickaxe = MagicMock(container=0x101, graphic=0x0E86, amount=1, serial=0x200)
+        # Ore item — we'll vary its amount via the property trick
+        ore_before = MagicMock(container=0x101, graphic=0x19B9, amount=1, serial=0x300, hue=0)
+        ore_after = MagicMock(container=0x101, graphic=0x19B9, amount=2, serial=0x300, hue=0)
+
+        call_count = [0]
+
+        def _items_property():
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                # Call 1: find_in_backpack (pickaxe lookup), Call 2: ore_before
+                return {0x200: pickaxe, 0x300: ore_before}
+            else:
+                # Call 3+: ore_after (and any item drop iterations)
+                return {0x200: pickaxe, 0x300: ore_after}
+
+        type(ctx.perception.world).items = PropertyMock(side_effect=_items_property)
+
+        with patch(
+            "anima.procedures.mine_ore._find_mineable_tile",
+            return_value=(2500, 550, 15, 220, False),
+        ), patch(
+            "anima.procedures.mine_ore.use_on_target",
+            new=AsyncMock(return_value=MagicMock(success=True, message="ok")),
+        ), patch(
+            "anima.procedures.mine_ore.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            ctx.bus = None
+            result = await proc.execute(ctx)
+
+        assert result.success is True
+        assert len(exp.piles) == 1
+        assert exp.piles[0].x == ctx.perception.self_state.x
+        assert exp.piles[0].y == ctx.perception.self_state.y
+        assert exp.piles[0].bank_key == _bank_key(
+            ctx.perception.self_state.x, ctx.perception.self_state.y,
+        )
+        assert exp.phase == Phase.MINING
+
+    @pytest.mark.asyncio
+    async def test_mine_without_expedition_does_not_crash(self):
+        """With no 'expedition' key on the blackboard, mining must still work."""
+        proc = MineOre()
+        ctx = _make_ctx()
+        ctx.blackboard = {}
+
+        # Rig the procedure to fail early (no tools) — exercises the path
+        # without needing full mine plumbing; verifies no AttributeError
+        # from a missing expedition key.
+        result = await proc.execute(ctx)
+        assert result.success is False
+        # If the hook tried to call .note_ore_mined() on None, this would have
+        # raised AttributeError instead.
