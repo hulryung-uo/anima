@@ -565,6 +565,18 @@ class Planner:
                     )
                     return _PickUpAndSmelt(ground_ore, ss)
 
+        # --- COLLECTING → CRAFTING_TRIP or COLLECTING → MINING ---
+        if expedition.phase == Phase.COLLECTING and not expedition.piles:
+            weight_ratio = (ss.weight / ss.weight_max) if ss.weight_max > 0 else 0.0
+            if expedition.should_leave_mine(
+                ingot_count=ingot_count,
+                weight_ratio=weight_ratio,
+                has_pickaxe=has_mining_tool,
+            ):
+                expedition.transition_to(Phase.CRAFTING_TRIP)
+            else:
+                expedition.transition_to(Phase.MINING)
+
         # --- Priority 4: No mining tools → get them ---
         if not has_mining_tool:
             # 4a: Has ore → smelt first

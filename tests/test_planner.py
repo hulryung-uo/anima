@@ -626,3 +626,61 @@ class TestPhaseGatedSmelt:
             await planner.select_procedure(ctx)
 
         assert planner._expedition.phase == Phase.COLLECTING
+
+
+class TestCollectingTransitions:
+    @pytest.mark.asyncio
+    async def test_collecting_to_crafting_trip_when_ingots_enough(self):
+        from anima.planner.expedition import Phase
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("craft_blacksmith"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.COLLECTING)
+        planner._expedition.piles = []  # all collected
+
+        ctx = _make_ctx()
+        # Give the agent 16 iron ingots + tongs
+        _add_item(ctx, 0xB1, INGOT, amount=16)
+        _add_item(ctx, 0xB2, TONGS, amount=1)
+        _add_item(ctx, 0xB3, PICKAXE, amount=1)
+
+        await planner.select_procedure(ctx)
+        assert planner._expedition.phase == Phase.CRAFTING_TRIP
+
+    @pytest.mark.asyncio
+    async def test_collecting_back_to_mining_when_nothing_triggers_craft(self):
+        from anima.planner.expedition import Phase
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.COLLECTING)
+        planner._expedition.piles = []
+
+        ctx = _make_ctx()
+        _add_item(ctx, 0xB4, PICKAXE, amount=1)
+        # few ingots, light weight
+
+        await planner.select_procedure(ctx)
+        assert planner._expedition.phase == Phase.MINING
+
+    @pytest.mark.asyncio
+    async def test_collecting_stays_if_piles_not_empty(self):
+        from anima.planner.expedition import Phase, PileRecord
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.COLLECTING)
+        planner._expedition.piles = [
+            PileRecord(x=100, y=200, bank_key=(12, 25), est_amount=1, last_seen_ts=time.time()),
+        ]
+
+        ctx = _make_ctx()
+        _add_item(ctx, 0xB5, INGOT, amount=50)  # would trigger craft if piles empty
+
+        await planner.select_procedure(ctx)
+        assert planner._expedition.phase == Phase.COLLECTING
