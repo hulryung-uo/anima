@@ -31,7 +31,12 @@ import structlog
 from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureResult
 from anima.planner.circuit_breaker import CircuitBreaker
 from anima.planner.deadlock import DeadlockResolver
-from anima.planner.expedition import MiningExpedition, Phase
+from anima.planner.expedition import (
+    BATCH_CRAFT_INGOTS,
+    BATCH_SMELT_ORE,
+    MiningExpedition,
+    Phase,
+)
 from anima.planner.health import PlannerHealth
 from anima.planner.roaming import RoamingHelper
 from anima.planner.strategy import StrategySelector
@@ -50,13 +55,6 @@ logger = structlog.get_logger()
 
 # Minimum delay between planner loops to prevent spin on rapid failures
 MIN_LOOP_DELAY = 0.2
-
-# Batch thresholds — mine multiple spots before smelting, accumulate ingots
-# before crafting. Reduces constant forge trips and makes each cycle
-# efficient: mine→batch-smelt→batch-craft→sell.
-# Priority 2 (overweight) still smelts at ≥2 as a safety valve.
-BATCH_SMELT_ORE = 8       # mine until this many ore, then smelt all at once
-BATCH_CRAFT_INGOTS = 16   # accumulate ingots before crafting (≈2 weapons)
 
 SUPERVISOR_HINTS_FILE = Path(__file__).parent.parent.parent / "data" / "supervisor_hints.json"
 
