@@ -330,6 +330,17 @@ class Planner:
         # Prune piles that have likely decayed server-side.
         self._expedition.prune_stale_piles()
 
+        # Watchdog: if stuck in a non-IDLE phase for >10 minutes, reset.
+        if (self._expedition.phase != Phase.IDLE
+                and self._expedition.watchdog_expired(max_phase_s=600.0)):
+            logger.warning(
+                "expedition_watchdog",
+                phase=self._expedition.phase.value,
+                stuck_s=time.time() - self._expedition.phase_started_at,
+            )
+            self._expedition.piles.clear()
+            self._expedition.transition_to(Phase.IDLE)
+
         # Skip procedures flagged by supervisor or repeat-failure blackboard
         skip_bb = ctx.blackboard.get("_skip_procedures", set())
 
@@ -825,11 +836,21 @@ class Planner:
                 near_home=near_home,
             ):
                 expedition.cycles_completed += 1
+                duration = _time.time() - expedition.phase_started_at
                 logger.info(
                     "expedition_cycle_complete",
                     cycles=expedition.cycles_completed,
-                    duration_s=_time.time() - expedition.phase_started_at,
+                    duration_s=duration,
                 )
+                if ctx.memory_db is not None:
+                    try:
+                        ctx.memory_db.log_activity(
+                            topic="expedition.cycle_complete",
+                            message=f"✓ 원정 사이클 {expedition.cycles_completed}회 완료 ({duration:.0f}s)",
+                            importance=3,
+                        )
+                    except Exception:
+                        pass  # activity logging must never break the planner
                 expedition.transition_to(Phase.MINING)
 
         # --- Priority 5d: No tongs + no gold + colored ingots → sell for tongs ---

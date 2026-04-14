@@ -752,3 +752,25 @@ class TestCraftingTripPhase:
 
         await planner.select_procedure(ctx)
         assert planner._expedition.phase == Phase.MINING
+
+
+class TestExpeditionWatchdog:
+    @pytest.mark.asyncio
+    async def test_stuck_phase_resets_to_idle(self):
+        """If the current phase has been active > 10 min, transition to IDLE."""
+        from anima.planner.expedition import Phase, PileRecord
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self", can=False))
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+        planner._expedition.transition_to(Phase.COLLECTING)
+        planner._expedition.phase_started_at = time.time() - 700  # 11m40s ago
+        planner._expedition.piles = [
+            PileRecord(x=1, y=1, bank_key=(0, 0), est_amount=1, last_seen_ts=time.time()),
+        ]
+
+        ctx = _make_ctx()
+        await planner.select_procedure(ctx)
+        assert planner._expedition.phase == Phase.IDLE
+        assert planner._expedition.piles == []
