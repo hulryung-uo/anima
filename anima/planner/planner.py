@@ -333,10 +333,11 @@ class Planner:
         # Watchdog: if stuck in a non-IDLE phase for >10 minutes, reset.
         if (self._expedition.phase != Phase.IDLE
                 and self._expedition.watchdog_expired(max_phase_s=600.0)):
+            stuck_s = time.time() - self._expedition.phase_started_at  # capture before transition_to resets phase_started_at
             logger.warning(
                 "expedition_watchdog",
                 phase=self._expedition.phase.value,
-                stuck_s=time.time() - self._expedition.phase_started_at,
+                stuck_s=stuck_s,
             )
             self._expedition.piles.clear()
             self._expedition.transition_to(Phase.IDLE)

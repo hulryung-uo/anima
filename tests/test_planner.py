@@ -759,6 +759,7 @@ class TestExpeditionWatchdog:
     async def test_stuck_phase_resets_to_idle(self):
         """If the current phase has been active > 10 min, transition to IDLE."""
         from anima.planner.expedition import Phase, PileRecord
+        from structlog.testing import capture_logs
 
         reg = ProcedureRegistry()
         reg.register(StubProcedure("heal_self", can=False))
@@ -771,6 +772,14 @@ class TestExpeditionWatchdog:
         ]
 
         ctx = _make_ctx()
-        await planner.select_procedure(ctx)
+        with capture_logs() as logs:
+            await planner.select_procedure(ctx)
+
         assert planner._expedition.phase == Phase.IDLE
         assert planner._expedition.piles == []
+        # Warning emitted
+        assert any(
+            entry.get("event") == "expedition_watchdog"
+            and entry.get("log_level") == "warning"
+            for entry in logs
+        ), f"expected expedition_watchdog warning in logs: {logs}"
