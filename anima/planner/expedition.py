@@ -160,5 +160,12 @@ class MiningExpedition:
         return ingot_count < 4 and crafted_count == 0 and near_home
 
     def watchdog_expired(self, max_phase_s: float = 600.0) -> bool:
-        """True if the current phase has been active too long without progress."""
+        """True if the current phase has been active too long without progress.
+
+        Returns False in IDLE — the watchdog is meaningless before a phase
+        has been entered, and the initial phase_started_at=0.0 would otherwise
+        spuriously trip.
+        """
+        if self.phase == Phase.IDLE:
+            return False
         return time.time() - self.phase_started_at > max_phase_s

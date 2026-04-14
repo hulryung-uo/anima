@@ -218,3 +218,34 @@ class TestPhaseTransitionPredicates:
         exp = MiningExpedition()
         exp.transition_to(Phase.MINING)
         assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+    def test_should_leave_mine_at_weight_threshold_exact(self):
+        """weight_ratio == 0.85 is the inclusive threshold."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.COLLECTING)
+        assert exp.should_leave_mine(
+            ingot_count=1, weight_ratio=0.85, has_pickaxe=True,
+        ) is True
+
+    def test_should_return_to_mine_ingot_count_at_boundary(self):
+        """ingot_count < 4: 3 returns True, 4 blocks return."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.CRAFTING_TRIP)
+        assert exp.should_return_to_mine(
+            ingot_count=3, crafted_count=0, near_home=True,
+        ) is True
+        assert exp.should_return_to_mine(
+            ingot_count=4, crafted_count=0, near_home=True,
+        ) is False
+
+    def test_watchdog_not_expired_at_exact_limit(self):
+        """Equality (phase_started_at == now - max_phase_s) does NOT expire."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        exp.phase_started_at = time.time() - 600.0
+        assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+    def test_watchdog_false_in_idle(self):
+        """Fresh expedition in IDLE must never report watchdog expired."""
+        exp = MiningExpedition()  # phase=IDLE, phase_started_at=0.0
+        assert exp.watchdog_expired(max_phase_s=600.0) is False
