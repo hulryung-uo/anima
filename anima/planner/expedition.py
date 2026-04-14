@@ -112,3 +112,53 @@ class MiningExpedition:
             piles=len(self.piles),
             cycles=self.cycles_completed,
         )
+
+    # --- Phase-transition predicates ---
+
+    def should_start_collecting(self, scan_empty: bool) -> bool:
+        """MINING → COLLECTING when scan returned no banks and piles exist."""
+        return (
+            self.phase == Phase.MINING
+            and scan_empty
+            and len(self.piles) > 0
+        )
+
+    def should_leave_mine(
+        self,
+        *,
+        ingot_count: int,
+        weight_ratio: float,
+        has_pickaxe: bool,
+    ) -> bool:
+        """COLLECTING → CRAFTING_TRIP (assumes piles already empty).
+
+        Called only when collection is complete (`piles == []`). Any of:
+        - Enough ingots for a craft batch
+        - Overweight AND actually carrying ingots (not rocks)
+        - No pickaxe: mining can't continue, dispose of ingots first
+        """
+        if self.phase != Phase.COLLECTING:
+            return False
+        if ingot_count >= BATCH_CRAFT_INGOTS:
+            return True
+        if weight_ratio >= 0.85 and ingot_count > 0:
+            return True
+        if not has_pickaxe:
+            return True
+        return False
+
+    def should_return_to_mine(
+        self,
+        *,
+        ingot_count: int,
+        crafted_count: int,
+        near_home: bool,
+    ) -> bool:
+        """CRAFTING_TRIP → MINING when ingots disposed and we're back at the mine."""
+        if self.phase != Phase.CRAFTING_TRIP:
+            return False
+        return ingot_count < 4 and crafted_count == 0 and near_home
+
+    def watchdog_expired(self, max_phase_s: float = 600.0) -> bool:
+        """True if the current phase has been active too long without progress."""
+        return time.time() - self.phase_started_at > max_phase_s

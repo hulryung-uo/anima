@@ -105,3 +105,116 @@ class TestMiningExpeditionBasics:
         """Sanity: the batch thresholds live on the expedition module."""
         assert BATCH_SMELT_ORE == 8
         assert BATCH_CRAFT_INGOTS == 16
+
+
+class TestPhaseTransitionPredicates:
+    def test_should_start_collecting_true_when_scan_empty_and_piles(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
+        assert exp.should_start_collecting(scan_empty=True) is True
+
+    def test_should_start_collecting_false_when_piles_empty(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        assert exp.should_start_collecting(scan_empty=True) is False
+
+    def test_should_start_collecting_false_when_scan_nonempty(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
+        assert exp.should_start_collecting(scan_empty=False) is False
+
+    def test_should_start_collecting_false_outside_mining(self):
+        exp = MiningExpedition()  # IDLE
+        exp.piles.append(PileRecord(x=1, y=1, bank_key=(0, 0), est_amount=1, last_seen_ts=time.time()))
+        assert exp.should_start_collecting(scan_empty=True) is False
+
+    def test_should_leave_mine_by_ingot_count(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.COLLECTING)
+        assert exp.should_leave_mine(
+            ingot_count=BATCH_CRAFT_INGOTS, weight_ratio=0.5, has_pickaxe=True,
+        ) is True
+
+    def test_should_leave_mine_by_weight_with_ingots(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.COLLECTING)
+        assert exp.should_leave_mine(
+            ingot_count=4, weight_ratio=0.90, has_pickaxe=True,
+        ) is True
+
+    def test_should_leave_mine_weight_without_ingots_is_false(self):
+        """Overweight from non-ingots (e.g., rocks) is not a craft trigger."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.COLLECTING)
+        assert exp.should_leave_mine(
+            ingot_count=0, weight_ratio=0.95, has_pickaxe=True,
+        ) is False
+
+    def test_should_leave_mine_by_missing_pickaxe(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.COLLECTING)
+        assert exp.should_leave_mine(
+            ingot_count=0, weight_ratio=0.2, has_pickaxe=False,
+        ) is True
+
+    def test_should_leave_mine_false_when_nothing_triggers(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.COLLECTING)
+        assert exp.should_leave_mine(
+            ingot_count=4, weight_ratio=0.5, has_pickaxe=True,
+        ) is False
+
+    def test_should_leave_mine_false_outside_collecting(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        assert exp.should_leave_mine(
+            ingot_count=100, weight_ratio=0.99, has_pickaxe=False,
+        ) is False
+
+    def test_should_return_to_mine_true_when_done_and_near_home(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.CRAFTING_TRIP)
+        assert exp.should_return_to_mine(
+            ingot_count=2, crafted_count=0, near_home=True,
+        ) is True
+
+    def test_should_return_to_mine_false_when_still_has_ingots(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.CRAFTING_TRIP)
+        assert exp.should_return_to_mine(
+            ingot_count=8, crafted_count=0, near_home=True,
+        ) is False
+
+    def test_should_return_to_mine_false_when_still_has_crafted(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.CRAFTING_TRIP)
+        assert exp.should_return_to_mine(
+            ingot_count=2, crafted_count=1, near_home=True,
+        ) is False
+
+    def test_should_return_to_mine_false_when_far_from_home(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.CRAFTING_TRIP)
+        assert exp.should_return_to_mine(
+            ingot_count=2, crafted_count=0, near_home=False,
+        ) is False
+
+    def test_should_return_to_mine_false_outside_crafting_trip(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        assert exp.should_return_to_mine(
+            ingot_count=0, crafted_count=0, near_home=True,
+        ) is False
+
+    def test_watchdog_expired_when_phase_too_old(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        exp.phase_started_at = time.time() - 700  # 11m40s ago
+        assert exp.watchdog_expired(max_phase_s=600.0) is True
+
+    def test_watchdog_not_expired_when_recent(self):
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        assert exp.watchdog_expired(max_phase_s=600.0) is False
