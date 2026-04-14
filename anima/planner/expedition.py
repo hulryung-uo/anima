@@ -60,7 +60,12 @@ class MiningExpedition:
         """Register a successful mine at (x, y).
 
         Increments the existing pile at that position, or creates a new
-        one. Sets home_base on first call. Transitions IDLE → MINING.
+        one. Transitions IDLE → MINING.
+
+        `home_base` is set to (x, y) on the *first* call only and is
+        never updated thereafter — it anchors the expedition to the
+        spot where mining began so the agent can return there after
+        the forge/sell trip.
         """
         now = time.time()
         if self.home_base is None:
@@ -84,7 +89,12 @@ class MiningExpedition:
             pass
 
     def prune_stale_piles(self, decay_s: float = 1200.0) -> None:
-        """Drop piles older than decay_s seconds."""
+        """Drop piles older than decay_s seconds.
+
+        Boundary is inclusive: a pile whose `last_seen_ts` is exactly
+        `decay_s` seconds old (i.e. equal to the cutoff) is *kept*.
+        Only piles strictly older than the cutoff are removed.
+        """
         cutoff = time.time() - decay_s
         self.piles = [p for p in self.piles if p.last_seen_ts >= cutoff]
 

@@ -79,6 +79,17 @@ class TestMiningExpeditionBasics:
         assert exp.phase == Phase.MINING
         assert exp.phase_started_at >= t0
 
+    def test_transition_to_same_phase_is_noop(self):
+        """Self-transition must NOT update phase_started_at."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        first_ts = exp.phase_started_at
+        # Sleep a hair so any incorrect update would be observable
+        time.sleep(0.01)
+        exp.transition_to(Phase.MINING)
+        assert exp.phase == Phase.MINING
+        assert exp.phase_started_at == first_ts
+
     def test_prune_stale_piles_drops_old_entries(self):
         exp = MiningExpedition()
         now = time.time()
