@@ -101,11 +101,12 @@ async def go_to(
             door_positions = _get_door_positions(ctx)
 
             search_steps = max(5000, dist * 20)  # 4-directional needs large search
+            adj = not exact
             path = find_path(
                 ctx.map_reader, sx, sy, target_x, target_y,
                 max_steps=search_steps,
                 denied_tiles=denied, current_z=ss.z,
-                adjacent=True,
+                adjacent=adj,
                 door_tiles=door_positions,
             )
             recalcs += 1
@@ -118,7 +119,7 @@ async def go_to(
                     denied_tiles=permanent_denied,
                     door_tiles=door_positions,
                     current_z=ss.z,
-                    adjacent=True,
+                    adjacent=adj,
                 )
                 if path:
                     logger.info("go_to_clear_walker_denied", cleared=len(walker_denied))
@@ -135,7 +136,7 @@ async def go_to(
                         denied_tiles=permanent_denied,
                         door_tiles=door_positions,
                         current_z=alt_z,
-                        adjacent=True,
+                        adjacent=adj,
                     )
                     if path:
                         logger.info("go_to_alt_z", z=alt_z, path_len=len(path))
