@@ -65,33 +65,94 @@ class _PickUpAndSmelt:
         return True
 
     async def run(self, ctx) -> ProcedureResult:
+        from anima.action.movement import go_to
         from anima.client.packets import build_drop_item, build_pick_up
 
         ss = ctx.perception.self_state
         backpack = ss.equipment.get(0x15)
         if not backpack:
-            return ProcedureResult(success=False, reason=FailureReason.MISSING_RESOURCE, message="no backpack")
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
 
-        # Per-serial failure counter — after 2 consecutive failures on the
-        # same ore item we mark it as junk so _find_ground_ore skips it.
-        # This prevents an infinite loop when the server silently refuses
-        # a pickup (LOS, z mismatch, anti-cheat, etc.).
+        expedition = ctx.blackboard.get("expedition")
+
+        # --- Path A: expedition with remembered piles ---
+        if expedition is not None and expedition.piles:
+            # Nearest pile first
+            piles_sorted = sorted(
+                expedition.piles,
+                key=lambda p: max(abs(p.x - ss.x), abs(p.y - ss.y)),
+            )
+            target_pile = piles_sorted[0]
+            pile_dist = max(abs(target_pile.x - ss.x), abs(target_pile.y - ss.y))
+            if pile_dist > 2:
+                arrived = await go_to(ctx, target_pile.x, target_pile.y)
+                if not arrived:
+                    logger.info(
+                        "pile_unreachable_removed",
+                        pos=f"({target_pile.x},{target_pile.y})",
+                    )
+                    expedition.mark_pile_collected(target_pile)
+                    return ProcedureResult(
+                        success=False,
+                        reason=FailureReason.BLOCKED,
+                        message=f"could not reach pile ({target_pile.x},{target_pile.y})",
+                    )
+
+            # Find ore within 2 tiles of current position
+            nearby_ore = [
+                it for it in ctx.perception.world.items.values()
+                if it.graphic in (0x19B7, 0x19B8, 0x19B9, 0x19BA)
+                and it.container == 0
+                and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 2
+            ]
+            if not nearby_ore:
+                logger.info(
+                    "pile_empty_removed",
+                    pos=f"({target_pile.x},{target_pile.y})",
+                )
+                expedition.mark_pile_collected(target_pile)
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.MISSING_RESOURCE,
+                    message="pile empty at target",
+                )
+
+            picked = await self._pickup_into_backpack(ctx, nearby_ore, backpack)
+            if picked > 0:
+                expedition.mark_pile_collected(target_pile)
+
+            if picked == 0:
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.MISSING_RESOURCE,
+                    message="no ore picked up at pile",
+                )
+
+            await self._walk_to_forge(ctx)
+            return ProcedureResult(
+                success=True,
+                message=f"Picked up {picked} ore at pile ({target_pile.x},{target_pile.y}), heading to forge",
+                next_suggestion="smelt_ore",
+            )
+
+        # --- Path B: legacy ground-ore fallback (no expedition / no piles) ---
         fail_counts: dict[int, int] = ctx.blackboard.setdefault(
             "_ore_pickup_fails", {}
         )
         junk: set[int] = ctx.blackboard.setdefault("_junk_ore_serials", set())
 
-        # Pick up ore from ground into backpack (up to weight limit)
         picked = 0
         hard_failures: list[int] = []
         for ore in self._ore_items:
-            # Check weight — stop if getting heavy (leave 50 stone buffer)
             if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
                 break
             ore_item = ctx.perception.world.items.get(ore.serial)
             if not ore_item or ore_item.container != 0:
                 continue
-            # Verify ore is within UO pick-up range (2 tiles)
             dist = max(abs(ore_item.x - ss.x), abs(ore_item.y - ss.y))
             if dist > 2:
                 logger.info("ore_too_far", serial=f"0x{ore_item.serial:08X}", dist=dist)
@@ -102,7 +163,6 @@ class _PickUpAndSmelt:
                 build_drop_item(ore_item.serial, container=backpack)
             )
             await asyncio.sleep(0.5)
-            # Verify pick up succeeded — item should now be in backpack
             ore_check = ctx.perception.world.items.get(ore_item.serial)
             if ore_check and ore_check.container == backpack:
                 picked += 1
@@ -112,15 +172,12 @@ class _PickUpAndSmelt:
                     breaker.record_success(ore_item.serial)
                 logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount)
             elif ore_check and ore_check.container == 0:
-                # Server refused the pickup — count it and bail once this
-                # ore has failed twice.
                 breaker = ctx.blackboard.get("_ore_pickup_breaker")
                 if breaker is not None:
                     breaker.record_failure(ore_item.serial)
                     opened = breaker.is_open(ore_item.serial)
                     fails = breaker.failure_count(ore_item.serial)
                 else:
-                    # Legacy fallback
                     fails = fail_counts.get(ore_item.serial, 0) + 1
                     fail_counts[ore_item.serial] = fails
                     opened = fails >= 2
@@ -143,14 +200,17 @@ class _PickUpAndSmelt:
                         reason="repeated pickup failure",
                     )
             else:
-                # Item may have been consumed/merged — count as picked
                 picked += 1
                 fail_counts.pop(ore_item.serial, None)
                 breaker = ctx.blackboard.get("_ore_pickup_breaker")
                 if breaker is not None:
                     breaker.record_success(ore_item.serial)
-                logger.info("picked_up_ore", serial=f"0x{ore_item.serial:08X}", amount=ore_item.amount,
-                            note="item merged or removed")
+                logger.info(
+                    "picked_up_ore",
+                    serial=f"0x{ore_item.serial:08X}",
+                    amount=ore_item.amount,
+                    note="item merged or removed",
+                )
 
         if picked == 0:
             if hard_failures:
@@ -159,29 +219,72 @@ class _PickUpAndSmelt:
                     reason=FailureReason.BLOCKED,
                     message=f"pickup refused by server, marked {len(hard_failures)} ore as junk",
                 )
-            return ProcedureResult(success=False, reason=FailureReason.MISSING_RESOURCE, message="no ore to pick up")
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no ore to pick up",
+            )
 
-        # Now move to forge
-        from anima.world_knowledge import ALL_LOCATIONS
-        forge = None
-        best_dist = 999999
-        for loc in ALL_LOCATIONS:
-            if "forge" in loc.name.lower() or "blacksmith" in loc.name.lower():
-                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
-                if dist < best_dist:
-                    best_dist = dist
-                    forge = loc
-
-        if forge and best_dist > 3:
-            from anima.action.movement import go_to
-            logger.info("moving_to_forge", target=forge.name, dist=best_dist)
-            await go_to(ctx, forge.x, forge.y)
-
+        await self._walk_to_forge(ctx)
         return ProcedureResult(
             success=True,
             message=f"Picked up {picked} ore stacks, heading to forge",
             next_suggestion="smelt_ore",
         )
+
+    async def _pickup_into_backpack(self, ctx, ore_items, backpack) -> int:
+        """Pick each ore in the list into the backpack, respecting weight limit."""
+        from anima.client.packets import build_drop_item, build_pick_up
+
+        ss = ctx.perception.self_state
+        picked = 0
+        for ore_item in ore_items:
+            if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
+                break
+            current = ctx.perception.world.items.get(ore_item.serial)
+            if not current or current.container != 0:
+                continue
+            await ctx.conn.send_packet(build_pick_up(ore_item.serial, ore_item.amount))
+            await asyncio.sleep(0.3)
+            await ctx.conn.send_packet(
+                build_drop_item(ore_item.serial, container=backpack)
+            )
+            await asyncio.sleep(0.5)
+            verify = ctx.perception.world.items.get(ore_item.serial)
+            if verify and verify.container == backpack:
+                picked += 1
+                logger.info(
+                    "picked_up_ore",
+                    serial=f"0x{ore_item.serial:08X}",
+                    amount=ore_item.amount,
+                )
+            elif verify is None:
+                picked += 1
+                logger.info(
+                    "picked_up_ore",
+                    serial=f"0x{ore_item.serial:08X}",
+                    amount=ore_item.amount,
+                    note="item merged or removed",
+                )
+        return picked
+
+    async def _walk_to_forge(self, ctx) -> None:
+        """Best-effort walk to the nearest forge/blacksmith location."""
+        from anima.action.movement import go_to
+        from anima.world_knowledge import ALL_LOCATIONS
+
+        ss = ctx.perception.self_state
+        forge = None
+        best_dist = 999_999
+        for loc in ALL_LOCATIONS:
+            if "forge" in loc.name.lower() or "blacksmith" in loc.name.lower():
+                d = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
+                if d < best_dist:
+                    best_dist = d
+                    forge = loc
+        if forge and best_dist > 3:
+            logger.info("moving_to_forge", target=forge.name, dist=best_dist)
+            await go_to(ctx, forge.x, forge.y)
 
 
 class _ScavengeGroundItems:

@@ -418,3 +418,111 @@ class TestExpeditionWiring:
         await planner.select_procedure(ctx)
         assert isinstance(ctx.blackboard.get("expedition"), MiningExpedition)
         assert ctx.blackboard["expedition"] is planner._expedition
+
+
+class TestPickUpAndSmeltWithExpedition:
+    @pytest.mark.asyncio
+    async def test_uses_pile_location_when_available(self):
+        """When expedition has piles, _PickUpAndSmelt targets the nearest pile."""
+        from anima.planner.expedition import MiningExpedition, PileRecord
+        from anima.planner.helpers import _PickUpAndSmelt
+
+        exp = MiningExpedition()
+        exp.piles = [
+            PileRecord(x=2460, y=558, bank_key=(307, 69), est_amount=3, last_seen_ts=time.time()),
+            PileRecord(x=2480, y=560, bank_key=(310, 70), est_amount=2, last_seen_ts=time.time()),
+        ]
+
+        ctx = _make_ctx()
+        ctx.perception.self_state.x = 2465
+        ctx.perception.self_state.y = 559
+        ctx.blackboard["expedition"] = exp
+
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=True)):
+            proc = _PickUpAndSmelt(ground_ore=[], ss=ctx.perception.self_state)
+            # The nearest pile is (2460, 558) at distance 5 (vs. distance ~15)
+            # Run the procedure (it will go_to that pile and attempt pickup).
+            await proc.run(ctx)
+            # go_to should have been called for (2460, 558)
+            import anima.action.movement
+            # We patched it — check the patched AsyncMock was awaited with the nearest pile
+            assert anima.action.movement.go_to.await_args.args[1:3] == (2460, 558)
+
+    @pytest.mark.asyncio
+    async def test_marks_pile_collected_on_success(self):
+        """After picking up, the pile is removed from expedition memory."""
+        from anima.planner.expedition import MiningExpedition, PileRecord
+        from anima.planner.helpers import _PickUpAndSmelt
+
+        exp = MiningExpedition()
+        pile = PileRecord(x=2460, y=558, bank_key=(307, 69), est_amount=1, last_seen_ts=time.time())
+        exp.piles = [pile]
+
+        ctx = _make_ctx()
+        ctx.perception.self_state.x = 2460
+        ctx.perception.self_state.y = 558
+        ctx.blackboard["expedition"] = exp
+
+        # Put one ore on the ground at the pile position
+        ore = MagicMock(
+            serial=0xDEAD0001, graphic=0x19B9, amount=2, container=0,
+            x=2460, y=558, z=0,
+        )
+        ctx.perception.world.items = {ore.serial: ore}
+
+        # Simulate server consuming the ore on pickup (item disappears from world)
+        async def _sim_pickup(pkt):
+            ctx.perception.world.items.pop(ore.serial, None)
+        ctx.conn.send_packet = AsyncMock(side_effect=_sim_pickup)
+
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=True)):
+            proc = _PickUpAndSmelt(ground_ore=[ore], ss=ctx.perception.self_state)
+            result = await proc.run(ctx)
+
+        assert result.success is True
+        assert pile not in exp.piles
+
+    @pytest.mark.asyncio
+    async def test_removes_pile_on_go_to_failure(self):
+        """If we can't reach the pile, remove it from memory."""
+        from anima.planner.expedition import MiningExpedition, PileRecord
+        from anima.planner.helpers import _PickUpAndSmelt
+
+        exp = MiningExpedition()
+        pile = PileRecord(x=9999, y=9999, bank_key=(0, 0), est_amount=1, last_seen_ts=time.time())
+        exp.piles = [pile]
+
+        ctx = _make_ctx()
+        ctx.blackboard["expedition"] = exp
+
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=False)):
+            proc = _PickUpAndSmelt(ground_ore=[], ss=ctx.perception.self_state)
+            await proc.run(ctx)
+
+        assert pile not in exp.piles
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_ground_ore_when_no_piles(self):
+        """Without expedition piles, behave like before: use `ground_ore` arg."""
+        from anima.planner.helpers import _PickUpAndSmelt
+
+        ctx = _make_ctx()
+        # No expedition on blackboard
+        ore = MagicMock(
+            serial=0xDEAD0002, graphic=0x19B9, amount=2, container=0,
+            x=100, y=200, z=0,
+        )
+        ctx.perception.world.items = {ore.serial: ore}
+        ctx.perception.self_state.x = 100
+        ctx.perception.self_state.y = 200
+
+        # Simulate server consuming the ore on pickup (item disappears from world)
+        async def _sim_pickup(pkt):
+            ctx.perception.world.items.pop(ore.serial, None)
+        ctx.conn.send_packet = AsyncMock(side_effect=_sim_pickup)
+
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=True)):
+            proc = _PickUpAndSmelt(ground_ore=[ore], ss=ctx.perception.self_state)
+            result = await proc.run(ctx)
+        # Picked up from the legacy path
+        assert result.success is True
