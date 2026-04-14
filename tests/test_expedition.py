@@ -121,11 +121,25 @@ class TestPhaseTransitionPredicates:
         exp.transition_to(Phase.MINING)
         assert exp.should_start_collecting(scan_empty=True) is False
 
-    def test_should_start_collecting_false_when_scan_nonempty(self):
+    def test_should_start_collecting_false_when_scan_nonempty_below_aux_threshold(self):
+        """Below AUX_COLLECT_PILE_THRESHOLD piles and scan not empty → stay MINING."""
         exp = MiningExpedition()
         exp.transition_to(Phase.MINING)
         exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
         assert exp.should_start_collecting(scan_empty=False) is False
+
+    def test_should_start_collecting_true_by_aux_pile_threshold(self):
+        """Piles >= AUX_COLLECT_PILE_THRESHOLD forces COLLECTING regardless of scan."""
+        from anima.planner.expedition import AUX_COLLECT_PILE_THRESHOLD
+
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        # Seed piles at distinct coords so they register as separate records
+        for i in range(AUX_COLLECT_PILE_THRESHOLD):
+            exp.note_ore_mined(x=100 + i, y=100, bank_key=(12, 12))
+        assert len(exp.piles) == AUX_COLLECT_PILE_THRESHOLD
+        # scan_empty=False — dense mining area; aux trigger should still fire
+        assert exp.should_start_collecting(scan_empty=False) is True
 
     def test_should_start_collecting_false_outside_mining(self):
         exp = MiningExpedition()  # IDLE

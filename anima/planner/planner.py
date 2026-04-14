@@ -749,7 +749,11 @@ class Planner:
         ctx.blackboard.pop("_deadlock_attempt_count", None)
 
         # --- Priority 5: Batch craft — accumulate ingots first ---
-        if expedition.phase == Phase.CRAFTING_TRIP and ingot_count >= BATCH_CRAFT_INGOTS:
+        # Gated by phase to avoid crafting mid-collection tour, but allowed
+        # in MINING too so ingots never pile up indefinitely when the
+        # COLLECTING trigger does not fire (e.g. in dense mining areas
+        # where banks always respawn before MINING exits).
+        if ingot_count >= BATCH_CRAFT_INGOTS and expedition.phase != Phase.COLLECTING:
             if has_tongs and not craft_material_blocked:
                 proc = _get_proc("craft_blacksmith")
                 if proc and await proc.can_start(ctx):

@@ -29,6 +29,14 @@ logger = structlog.get_logger()
 BATCH_SMELT_ORE = 8        # accumulate this many ore before a forge run
 BATCH_CRAFT_INGOTS = 16    # accumulate ingots before crafting (≈2 weapons)
 
+# Auxiliary trigger for MINING → COLLECTING. The primary trigger is "no
+# mineable banks in range", but in dense mining areas (e.g. Minoc) banks
+# respawn on a 10 min cooldown and the scan almost never reports empty,
+# leaving MINING to only exit via the watchdog — which clears piles and
+# resets progress. This threshold forces the transition once enough piles
+# are accumulated to be worth a collection tour regardless of scan state.
+AUX_COLLECT_PILE_THRESHOLD = 3
+
 
 class Phase(str, Enum):
     IDLE          = "idle"
@@ -116,12 +124,20 @@ class MiningExpedition:
     # --- Phase-transition predicates ---
 
     def should_start_collecting(self, scan_empty: bool) -> bool:
-        """MINING → COLLECTING when scan returned no banks and piles exist."""
-        return (
-            self.phase == Phase.MINING
-            and scan_empty
-            and len(self.piles) > 0
-        )
+        """MINING → COLLECTING.
+
+        Primary trigger: no mineable banks in range and at least one pile.
+        Aux trigger: enough piles accumulated to be worth a tour, even if
+        banks are still available — prevents MINING from running forever
+        in dense mining areas where scan never reports empty.
+        """
+        if self.phase != Phase.MINING:
+            return False
+        if not self.piles:
+            return False
+        if scan_empty:
+            return True
+        return len(self.piles) >= AUX_COLLECT_PILE_THRESHOLD
 
     def should_leave_mine(
         self,
