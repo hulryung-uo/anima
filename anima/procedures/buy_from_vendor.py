@@ -66,8 +66,7 @@ class BuyFromVendor(Procedure):
     name = "buy_from_vendor"
     description = "Buy tools from a nearby NPC vendor."
 
-    # Tinkers and provisioners both sell basic tools.
-    _TOOL_VENDOR_TYPES: set[str] = {"tinker", "provisioner"}
+    _TOOL_VENDOR_TYPES: set[str] = {"tinker"}
 
     async def can_start(self, ctx: AgentContext) -> bool:
         ss = ctx.perception.self_state
