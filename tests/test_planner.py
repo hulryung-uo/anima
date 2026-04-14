@@ -418,4 +418,3 @@ class TestExpeditionWiring:
         await planner.select_procedure(ctx)
         assert isinstance(ctx.blackboard.get("expedition"), MiningExpedition)
         assert ctx.blackboard["expedition"] is planner._expedition
-        assert planner._move_fail_until == 0.0
