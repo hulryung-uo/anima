@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -394,4 +395,27 @@ class TestDeadlockRecovery:
 
         assert planner._idle_ticks == 0
         assert len(planner._failed_destinations) == 0
+
+
+class TestExpeditionWiring:
+    @pytest.mark.asyncio
+    async def test_expedition_attached_to_planner(self):
+        """Planner.__init__ creates a MiningExpedition."""
+        from anima.planner.expedition import MiningExpedition
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        assert isinstance(planner._expedition, MiningExpedition)
+
+    @pytest.mark.asyncio
+    async def test_expedition_published_to_blackboard(self):
+        """After _select_procedure, ctx.blackboard['expedition'] is set."""
+        from anima.planner.expedition import MiningExpedition
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        ctx = _make_ctx()
+        await planner.select_procedure(ctx)
+        assert isinstance(ctx.blackboard.get("expedition"), MiningExpedition)
+        assert ctx.blackboard["expedition"] is planner._expedition
         assert planner._move_fail_until == 0.0

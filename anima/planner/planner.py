@@ -31,6 +31,7 @@ import structlog
 from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureResult
 from anima.planner.circuit_breaker import CircuitBreaker
 from anima.planner.deadlock import DeadlockResolver
+from anima.planner.expedition import MiningExpedition, Phase
 from anima.planner.health import PlannerHealth
 from anima.planner.roaming import RoamingHelper
 from anima.planner.strategy import StrategySelector
@@ -116,6 +117,7 @@ class Planner:
         self._roaming = RoamingHelper(self)
         self._strategy = StrategySelector(interval_s=300.0)
         self._goals = GoalStack()
+        self._expedition = MiningExpedition()
 
     def stop(self) -> None:
         self._running = False
@@ -323,6 +325,10 @@ class Planner:
         from anima.actions.inventory import find_in_backpack, count_items
         from anima.skills.gathering.mine import PICKAXE_GRAPHICS, ORE_GRAPHICS
         from anima.skills.crafting.smelt import INGOT_GRAPHICS
+
+        ctx.blackboard["expedition"] = self._expedition
+        # Prune piles that have likely decayed server-side.
+        self._expedition.prune_stale_piles()
 
         # Skip procedures flagged by supervisor or repeat-failure blackboard
         skip_bb = ctx.blackboard.get("_skip_procedures", set())
