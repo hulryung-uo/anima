@@ -842,15 +842,14 @@ class Planner:
                     cycles=expedition.cycles_completed,
                     duration_s=duration,
                 )
-                if ctx.memory_db is not None:
+                if ctx.bus is not None:
                     try:
-                        ctx.memory_db.log_activity(
-                            topic="expedition.cycle_complete",
-                            message=f"✓ 원정 사이클 {expedition.cycles_completed}회 완료 ({duration:.0f}s)",
-                            importance=3,
-                        )
+                        ctx.bus.publish("expedition.cycle_complete", {
+                            "message": f"✓ 원정 사이클 {expedition.cycles_completed}회 완료 ({duration:.0f}s)",
+                            "importance": 3,
+                        })
                     except Exception:
-                        pass  # activity logging must never break the planner
+                        pass  # activity publish must never break the planner
                 expedition.transition_to(Phase.MINING)
 
         # --- Priority 5d: No tongs + no gold + colored ingots → sell for tongs ---
