@@ -275,6 +275,8 @@ async def go_to(
                 if ss.stam >= 2:
                     path = []
                     continue
+                logger.info("go_to_fatigue_timeout", stam=ss.stam, pos=f"({sx},{sy})")
+                return False
 
             # Not a door — add to permanent denied and recalculate.
             # Only deny the exact tile the server rejected.
