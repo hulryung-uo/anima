@@ -35,6 +35,14 @@ SEARCH_RADIUS = 2  # mining range is 2 tiles
 DEPLETED_COOLDOWN = 600.0  # seconds before retrying a depleted spot (server regen ~10-20 min)
 MOVE_RADIUS = 24  # how far to look for new mining spots (must cross multiple banks)
 
+# Voluntary bank cooldown — after N consecutive successful mines at the
+# same (x, y), the bank is marked "paused" so _find_mineable_tile picks
+# a different spot. This forces the agent to explore rather than sit on
+# a single pool indefinitely (ServUO banks respawn faster than a slow
+# agent can deplete them, so natural depletion alone never fires).
+SAME_SPOT_MINE_LIMIT = 3
+VOLUNTARY_COOLDOWN_S = 120.0
+
 # ServUO HarvestBank: ore is pooled per 8x8 region (BankWidth=8, BankHeight=8).
 # When a tile reports "no metal here", the entire 8x8 bank it belongs to is empty.
 # Source: servuo Scripts/Services/Harvest/Mining.cs and Core/HarvestDefinition.cs
@@ -131,6 +139,10 @@ def _find_mineable_tile(
     depleted_banks: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
         "depleted_banks", {}
     )
+    # Banks temporarily paused to force exploration — see SAME_SPOT_MINE_LIMIT.
+    voluntary_cd: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+        "_voluntary_cooldown_banks", {}
+    )
     now = time.time()
     _blocked = blocked or set()
 
@@ -143,6 +155,12 @@ def _find_mineable_tile(
             return True
         if ts:
             del depleted_banks[key]
+        # Voluntary exploration cooldown (short, self-expiring)
+        vts = voluntary_cd.get(key)
+        if vts and now - vts < VOLUNTARY_COOLDOWN_S:
+            return True
+        if vts:
+            del voluntary_cd[key]
         return False
 
     def _check_tile(x: int, y: int) -> tuple[int, int, int, int, bool] | None:

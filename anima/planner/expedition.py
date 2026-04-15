@@ -33,9 +33,13 @@ BATCH_CRAFT_INGOTS = 16    # accumulate ingots before crafting (≈2 weapons)
 # mineable banks in range", but in dense mining areas (e.g. Minoc) banks
 # respawn on a 10 min cooldown and the scan almost never reports empty,
 # leaving MINING to only exit via the watchdog — which clears piles and
-# resets progress. This threshold forces the transition once enough piles
-# are accumulated to be worth a collection tour regardless of scan state.
-AUX_COLLECT_PILE_THRESHOLD = 3
+# resets progress.
+#
+# This threshold is the total ORE accumulated across all piles (sum of
+# est_amount), not the number of distinct pile locations — an agent that
+# mines repeatedly at the same (x,y) still produces one pile with a
+# growing est_amount, and counting locations would never trigger.
+AUX_COLLECT_ORE_THRESHOLD = 10
 
 
 class Phase(str, Enum):
@@ -127,8 +131,8 @@ class MiningExpedition:
         """MINING → COLLECTING.
 
         Primary trigger: no mineable banks in range and at least one pile.
-        Aux trigger: enough piles accumulated to be worth a tour, even if
-        banks are still available — prevents MINING from running forever
+        Aux trigger: enough total ore accumulated to be worth a tour, even
+        if banks are still available — prevents MINING from running forever
         in dense mining areas where scan never reports empty.
         """
         if self.phase != Phase.MINING:
@@ -137,7 +141,8 @@ class MiningExpedition:
             return False
         if scan_empty:
             return True
-        return len(self.piles) >= AUX_COLLECT_PILE_THRESHOLD
+        total_ore = sum(p.est_amount for p in self.piles)
+        return total_ore >= AUX_COLLECT_ORE_THRESHOLD
 
     def should_leave_mine(
         self,
