@@ -349,9 +349,15 @@ def _encode_keywords(keyword_ids: list[int]) -> bytes:
     return bytes(result)
 
 
-# Common speech keywords (from speech.mul) — used by ServUO NPC dispatch
+# Common speech keywords (from speech.mul) — used by ServUO NPC dispatch.
+# Banker keywords (0x0000–0x0003) map to the switch in
+# Scripts/Mobiles/NPCs/Banker.cs. Without the keyword encoding the
+# server receives only text, and Banker.HandleSpeech never fires.
 SPEECH_KEYWORDS: dict[str, list[int]] = {
+    "withdraw": [0x0000],
+    "balance": [0x0001],
     "bank": [0x0002],
+    "check": [0x0003],
     "vendor sell": [0x014D],
     "vendor buy": [0x003C],
     "guards": [0x0007],
