@@ -257,6 +257,25 @@ async def go_to(
         if ss.x != prev_x or ss.y != prev_y:
             path.pop(0)
         else:
+            # Walk denied — check if it's stamina depletion, not terrain.
+            # UO server rejects ALL walks at stam==0 ("too fatigued").
+            if ss.stam_max > 0 and ss.stam < 2:
+                logger.info(
+                    "go_to_fatigue_wait",
+                    stam=ss.stam,
+                    stam_max=ss.stam_max,
+                    pos=f"({sx},{sy})",
+                )
+                for _ in range(30):
+                    if interrupt_check is not None and interrupt_check():
+                        return False
+                    await asyncio.sleep(1.0)
+                    if ss.stam >= 2:
+                        break
+                if ss.stam >= 2:
+                    path = []
+                    continue
+
             # Not a door — add to permanent denied and recalculate.
             # Only deny the exact tile the server rejected.
             # Speculative probing of perpendicular tiles was removed because
