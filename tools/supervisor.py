@@ -67,6 +67,19 @@ IDLE_THRESHOLD = 600       # 10 minutes no progress → idle
 MAX_RESTARTS_PER_HOUR = 4  # prevent restart loop — too fast kills server sessions
 
 _last_status_key: tuple | None = None
+_last_event_ts: float = 0.0
+
+# Procedures whose action.end events are surfaced on stdio so the user
+# sees buy/sell/craft outcomes (success message + reason) live, not just
+# next-step intent. Add to this set if a procedure's outcome is "newsworthy".
+_NOTABLE_EVENT_PROCEDURES = {
+    "buy_from_vendor",
+    "sell_to_vendor",
+    "craft_blacksmith",
+    "make_tools",
+    "smelt_ore",
+    "bank_deposit",
+}
 
 
 def _debug(msg: str) -> None:
@@ -87,19 +100,42 @@ def _alert(msg: str) -> None:
 
 
 def _print_status() -> None:
-    """Print a compact one-line status snapshot of the agent.
+    """Print a compact one-line status snapshot + any new notable events.
 
-    Reads data/state.json and prints only when the key fields change, so
-    stdio shows a stream of meaningful transitions rather than repeating
-    the same state every 5s.
+    Status (pos / hp / weight / gold / proc / intent) prints only when it
+    changes. Notable procedure outcomes (buy/sell/craft) print every time a
+    new action.end event for them shows up in state.json's activity feed,
+    so stdio surfaces "샀나 못샀나, 왜 못샀나" live.
     """
-    global _last_status_key
+    global _last_status_key, _last_event_ts
     if not STATE_FILE.exists():
         return
     try:
         s = json.loads(STATE_FILE.read_text())
     except Exception:
         return
+
+    # --- Notable events first (so they precede the status line) ---
+    for entry in s.get("activity", []):
+        ts_e = entry.get("ts", 0)
+        if ts_e <= _last_event_ts:
+            continue
+        topic = entry.get("topic", "")
+        msg = entry.get("message") or ""
+        if topic == "action.end":
+            # Format: "✓ <proc>: <result-msg>" or "✗ <proc>: <fail-msg>"
+            # Extract proc name (between leading icon and ':')
+            proc_name = ""
+            if ":" in msg:
+                head = msg.split(":", 1)[0].strip()
+                # Drop leading icon (✓ / ✗) and whitespace
+                proc_name = head.lstrip("✓✗ \t")
+            if proc_name in _NOTABLE_EVENT_PROCEDURES:
+                t = time.strftime("%H:%M:%S", time.localtime(ts_e))
+                print(f"[{t}] EVENT: {msg}", flush=True)
+        _last_event_ts = max(_last_event_ts, ts_e)
+
+    # --- Status line (de-duped) ---
     p = s.get("status") or {}
     if not p:
         return
