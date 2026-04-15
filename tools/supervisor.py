@@ -101,12 +101,19 @@ def read_agent_state() -> dict | None:
 
 
 def _check_action_log_loops() -> str | None:
-    """Check action_logs for stuck loop patterns (last 5 minutes)."""
+    """Check action_logs for stuck loop patterns (last 8 minutes).
+
+    Raised from 5 to 8 min after the expedition-cycle redesign:
+    COLLECTING tours legitimately walk 30+ tiles to remembered piles,
+    and a single `pick_up_ore_and_smelt` can exceed 5 min without
+    completing. 8 min stays aggressive enough to catch real stalls
+    while tolerating normal tour durations.
+    """
     if not DB_FILE.exists():
         return None
     try:
         conn = sqlite3.connect(str(DB_FILE))
-        cutoff = time.time() - 300  # last 5 min
+        cutoff = time.time() - 480  # last 8 min
 
         rows = conn.execute("""
             SELECT procedure, result, COUNT(*) as cnt
@@ -136,7 +143,7 @@ def _check_action_log_loops() -> str | None:
                     st = json.loads(STATE_FILE.read_text())
                     if time.time() - st.get("ts", 0) < 30:
                         conn.close()
-                        return "agent alive but zero procedures in 5min (planner idle loop)"
+                        return "agent alive but zero procedures in 8min (planner idle loop)"
                 except Exception:
                     pass
 
