@@ -501,3 +501,86 @@ def test_skill_type_0xFE_ignored():
 
     h.dispatch(0x3A, bytes(data))
     assert len(p.self_state.skills) == 0  # nothing parsed
+
+
+# ---------------------------------------------------------------------------
+# ClilocMessage (0xC1) — tilde substitution variants
+# ---------------------------------------------------------------------------
+
+
+def _build_cliloc_packet(
+    serial: int,
+    cliloc_num: int,
+    name: str,
+    args: str,
+    msg_type: int = 6,
+    hue: int = 0,
+    font: int = 3,
+) -> bytes:
+    """Build a 0xC1 ClilocMessage packet for testing."""
+    buf = PacketWriter()
+    buf.write_u8(0xC1)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u32(serial)
+    buf.write_u16(0)  # graphic
+    buf.write_u8(msg_type)
+    buf.write_u16(hue)
+    buf.write_u16(font)
+    buf.write_u32(cliloc_num)
+
+    name_bytes = name.encode("ascii")[:30].ljust(30, b"\x00")
+    buf.write_bytes(name_bytes)
+
+    args_encoded = args.encode("utf-16-le") + b"\x00\x00"
+    buf.write_bytes(args_encoded)
+
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_cliloc_amount_substitution(monkeypatch):
+    """~1_AMOUNT~ (bank balance) must be substituted, not just ~1_val~."""
+    h, p, w = _make_stack()
+
+    monkeypatch.setattr(
+        "anima.perception.handlers.cliloc_text",
+        lambda n: {1042759: "Thy current bank balance is ~1_AMOUNT~ gold."}.get(n, ""),
+    )
+
+    captured = []
+    p.events.subscribe_sync(lambda e: captured.append(e))
+
+    pkt = _build_cliloc_packet(
+        serial=0x0099, cliloc_num=1042759, name="Adeline the banker", args="1234",
+    )
+    h.dispatch(0xC1, pkt)
+
+    speech_events = [e for e in captured if e.type == GameEventType.SPEECH_HEARD]
+    assert len(speech_events) == 1
+    text = speech_events[0].data["text"]
+    assert "1234" in text, f"Amount not substituted: {text!r}"
+    assert "~" not in text, f"Unresolved tilde marker: {text!r}"
+
+
+def test_cliloc_val_substitution(monkeypatch):
+    """~1_val~ patterns still work after the regex change."""
+    h, p, w = _make_stack()
+
+    monkeypatch.setattr(
+        "anima.perception.handlers.cliloc_text",
+        lambda n: {500000: "You see ~1_val~ here."}.get(n, ""),
+    )
+
+    captured = []
+    p.events.subscribe_sync(lambda e: captured.append(e))
+
+    pkt = _build_cliloc_packet(
+        serial=0x0099, cliloc_num=500000, name="System", args="a pile of gold",
+    )
+    h.dispatch(0xC1, pkt)
+
+    speech_events = [e for e in captured if e.type == GameEventType.SPEECH_HEARD]
+    assert len(speech_events) == 1
+    text = speech_events[0].data["text"]
+    assert "a pile of gold" in text, f"~1_val~ not substituted: {text!r}"

@@ -649,16 +649,15 @@ def register_handlers(
         if base_text and args:
             parts = args.split("\t")
             text = base_text
+            import re as _re
             for i, part in enumerate(parts):
-                text = text.replace(f"~{i + 1}_val~", part)
-                text = text.replace(f"~{i + 1}~", part)
+                text = _re.sub(rf"~{i + 1}(?:_[^~]*)?~", part, text, count=1)
                 text = text.replace(f"#{i + 1}", part)
         elif base_text:
             text = base_text
         else:
             text = f"[cliloc {cliloc_num}]"
 
-        # Clean up tilde markers that weren't replaced
         import re as _re
         text = _re.sub(r"~\d+[^~]*~", "", text).strip()
 
