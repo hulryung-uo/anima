@@ -51,11 +51,15 @@ IMPROVEMENTS_LOG = ROOT / "data" / "improvements.jsonl"
 HINTS_FILE = ROOT / "data" / "supervisor_hints.json"
 
 # Output split:
-# - Status updates (agent intent / pos / weight / goldprocedure) go to stdio.
+# - Status updates (agent intent / pos / weight / gold / procedure) go to stdio.
 # - Operational noise (analysis reports, auto-push/commit, quick-fix attempts)
-#   goes to this log file, so stdio stays readable while debugging context
-#   is preserved for later.
+#   goes to SUPERVISOR_LOG.
+# - The agent's own console output (structlog INFO/DEBUG lines) is verbose
+#   enough to drown the status feed, so we redirect it to AGENT_STDIO_LOG.
+#   The agent also writes structured logs to data/anima.log via its own
+#   handler — AGENT_STDIO_LOG only catches stray prints / tracebacks.
 SUPERVISOR_LOG = ROOT / "data" / "supervisor.log"
+AGENT_STDIO_LOG = ROOT / "data" / "agent_stdio.log"
 
 WARMUP_SECONDS = 90
 STUCK_THRESHOLD = 300      # 5 minutes no activity → stuck
@@ -136,8 +140,13 @@ def get_git_head() -> str:
 def start_agent(extra_args: list[str] | None = None) -> subprocess.Popen:
     cmd = AGENT_CMD + (extra_args or [])
     _alert(f"Starting agent: {' '.join(cmd)}")
-    proc = subprocess.Popen(cmd, cwd=str(ROOT))
-    _alert(f"Agent PID {proc.pid}")
+    # Route agent stdout/stderr to a dedicated log so the supervisor's
+    # status feed stays readable. The agent writes its own structured log
+    # to data/anima.log; this catches stray prints and tracebacks only.
+    AGENT_STDIO_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log_fp = open(AGENT_STDIO_LOG, "ab", buffering=0)
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=log_fp, stderr=log_fp)
+    _alert(f"Agent PID {proc.pid} (stdio → {AGENT_STDIO_LOG})")
     return proc
 
 
