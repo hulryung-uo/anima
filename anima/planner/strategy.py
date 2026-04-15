@@ -44,9 +44,11 @@ STRATEGY_EXCLUSIONS: dict[str, set[str]] = {
     # locations looking for one where crafting is "allowed".
     STRATEGY_GRIND_MINING: set(),
     STRATEGY_SELL_INVENTORY: {
+        # Don't gather more — but smelting and crafting are prerequisites
+        # for actually selling what's already in the backpack (raw ingots
+        # have no dedicated sell path outside the no-tool case; crafted
+        # items do). Excluding them strands inventory-heavy ingots.
         "mine_ore",
-        "smelt_ore",
-        "craft_blacksmith",
     },
     STRATEGY_BANK_COLORED: {
         "mine_ore",
@@ -103,9 +105,27 @@ class StrategySelector:
 
         Returns True if a refresh happened (whether or not the strategy
         actually changed).
+
+        Strategy changes are suppressed while the expedition is in the
+        middle of an active COLLECTING or CRAFTING_TRIP cycle — the LLM
+        was observed interrupting a productive run mid-sequence (picking
+        sell_inventory while the agent was smelting at the forge), which
+        stranded the in-progress batch. Only re-evaluate at natural
+        boundaries: IDLE or MINING phase.
         """
         if not self.should_refresh():
             return False
+
+        expedition = ctx.blackboard.get("expedition") if hasattr(ctx, "blackboard") else None
+        if expedition is not None:
+            phase_val = getattr(getattr(expedition, "phase", None), "value", None)
+            if phase_val in {"collecting", "crafting_trip"}:
+                logger.debug(
+                    "strategy_refresh_deferred",
+                    phase=phase_val,
+                    current=self._current.name,
+                )
+                return False
         llm = getattr(ctx, "llm", None)
         if llm is None:
             # No LLM configured — stay on default
