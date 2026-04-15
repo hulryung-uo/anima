@@ -47,12 +47,16 @@ class TestStrategyExclusions:
         assert s.is_excluded("craft_blacksmith") is False
         assert s.is_excluded("sell_to_vendor") is False
 
-    def test_sell_inventory_excludes_gathering(self):
+    def test_sell_inventory_excludes_mining_only(self):
+        """sell_inventory blocks further gathering (mine_ore) but keeps
+        smelt_ore and craft_blacksmith — they're prerequisites for
+        actually disposing of backpack contents."""
         s = StrategySelector()
         s._current = StrategyDecision(name=STRATEGY_SELL_INVENTORY, reasoning="x")
-        s._active = True  # simulate post-first-LLM-refresh state
+        s._active = True
         assert s.is_excluded("mine_ore") is True
-        assert s.is_excluded("smelt_ore") is True
+        assert s.is_excluded("smelt_ore") is False
+        assert s.is_excluded("craft_blacksmith") is False
         assert s.is_excluded("sell_to_vendor") is False
 
     def test_unknown_procedure_not_excluded(self):
