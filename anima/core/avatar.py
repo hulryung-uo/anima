@@ -207,6 +207,7 @@ class Avatar:
         from anima.procedures.base import ProcedureRegistry
         from anima.procedures.bank_deposit import BankDeposit as BankDepositProc
         from anima.procedures.buy_from_vendor import BuyFromVendor as BuyFromVendorProc
+        from anima.procedures.check_bank_balance import CheckBankBalance as CheckBankBalanceProc
         from anima.procedures.chop_wood import ChopWood as ChopWoodProc
         from anima.procedures.craft_blacksmith import CraftBlacksmith as CraftBlacksmithProc
         from anima.procedures.make_tools import MakeTools as MakeToolsProc
@@ -218,7 +219,7 @@ class Avatar:
         for proc_cls in [
             MineOreProc, SmeltOreProc, ChopWoodProc, MakeToolsProc,
             CraftBlacksmithProc, BuyFromVendorProc, SellToVendorProc,
-            BankDepositProc,
+            BankDepositProc, CheckBankBalanceProc,
         ]:
             procedure_registry.register(proc_cls())
         logger.info("procedures_registered", count=len(procedure_registry.all_procedures))

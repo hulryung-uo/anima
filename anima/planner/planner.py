@@ -636,21 +636,66 @@ class Planner:
                     _intent(f"곡괭이 없음, 주석도구+주괴 {ingot_count}개 → 도구 제작")
                     return proc
 
-            # 4c: Has gold → buy tools directly (pickaxe costs ~11 gold).
-            # Skip when buy is in cooldown — buy_from_vendor sets a 10-min
-            # disable flag after a "gold unchanged" failure (which on this
-            # server means the bank gold pool is empty and retrying will
-            # never succeed). The fallthrough to 4d/4e/4f handles it.
+            # 4c: Buy tools from a tinker (pickaxe costs ~11 gold).
+            # This server deducts vendor purchases from BANK GOLD, not
+            # backpack. We cache the last reading in `bank_balance`:
+            #   - fresh + sufficient → proceed to buy_from_vendor
+            #   - fresh + insufficient → disable buy, fall through
+            #   - stale/missing + banker nearby → check_bank_balance first
+            #   - stale/missing + no banker → blind try (old behavior);
+            #     buy_from_vendor will self-disable on failure.
             buy_disabled_until = ctx.blackboard.get("_buy_disabled_until", 0)
             if ss.gold >= 10 and time.time() >= buy_disabled_until:
-                proc = _get_proc("buy_from_vendor")
-                if proc and await proc.can_start(ctx):
-                    _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점에서 구매")
-                    return proc
-                _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점으로 이동")
-                move = await self._roaming.move_to_location(ctx, "tinker")
-                if move:
-                    return move
+                PICKAXE_COST = 11
+                bal_cache = ctx.blackboard.get("bank_balance") or {}
+                bal_amount = bal_cache.get("amount")
+                bal_ts = bal_cache.get("ts", 0)
+                bal_fresh = (
+                    bal_amount is not None
+                    and (time.time() - bal_ts) < 600
+                )
+
+                if bal_fresh and bal_amount < PICKAXE_COST:
+                    # Known insufficient → skip buy, block for 10 min
+                    ctx.blackboard["_buy_disabled_until"] = time.time() + 600
+                    _intent(
+                        f"은행 잔액 {bal_amount}gp 부족 → 구매 건너뛰고 다른 경로 시도"
+                    )
+                    # Fall through to 4d/4e/4f below
+                elif bal_fresh:
+                    # Known sufficient → buy
+                    proc = _get_proc("buy_from_vendor")
+                    if proc and await proc.can_start(ctx):
+                        _intent(
+                            f"곡괭이 없음, 은행 {bal_amount}gp → 상점에서 구매"
+                        )
+                        return proc
+                    _intent(f"곡괭이 없음, 은행 {bal_amount}gp → 상점으로 이동")
+                    move = await self._roaming.move_to_location(ctx, "tinker")
+                    if move:
+                        return move
+                else:
+                    # Unknown balance. Prefer reading it from a banker.
+                    cbb = _get_proc("check_bank_balance")
+                    if cbb and await cbb.can_start(ctx):
+                        _intent("곡괭이 없음 → 은행 잔액 먼저 확인")
+                        return cbb
+                    # No banker reachable right now → blind buy attempt;
+                    # buy_from_vendor self-disables on failure.
+                    proc = _get_proc("buy_from_vendor")
+                    if proc and await proc.can_start(ctx):
+                        _intent(
+                            f"곡괭이 없음, 금화 {ss.gold}g (은행 미확인) → 상점에서 구매"
+                        )
+                        return proc
+                    _intent(
+                        f"곡괭이 없음, 금화 {ss.gold}g → 은행/상점으로 이동"
+                    )
+                    move = await self._roaming.move_to_location(
+                        ctx, "bank", "tinker",
+                    )
+                    if move:
+                        return move
 
             # 4d: Has ingots + tongs → craft weapons to sell for gold to buy tools
             #     Skip when material cooldown is active (iron forcing failed)
