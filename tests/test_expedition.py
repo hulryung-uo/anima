@@ -121,24 +121,40 @@ class TestPhaseTransitionPredicates:
         exp.transition_to(Phase.MINING)
         assert exp.should_start_collecting(scan_empty=True) is False
 
-    def test_should_start_collecting_false_when_scan_nonempty_below_aux_threshold(self):
-        """Below AUX_COLLECT_PILE_THRESHOLD piles and scan not empty → stay MINING."""
+    def test_should_start_collecting_false_when_scan_nonempty_below_threshold(self):
+        """Total ore below AUX_COLLECT_ORE_THRESHOLD → stay MINING."""
         exp = MiningExpedition()
         exp.transition_to(Phase.MINING)
-        exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
+        exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))  # est=1
         assert exp.should_start_collecting(scan_empty=False) is False
 
-    def test_should_start_collecting_true_by_aux_pile_threshold(self):
-        """Piles >= AUX_COLLECT_PILE_THRESHOLD forces COLLECTING regardless of scan."""
-        from anima.planner.expedition import AUX_COLLECT_PILE_THRESHOLD
+    def test_should_start_collecting_true_by_total_ore_single_pile(self):
+        """Repeated mining at one spot hits the ore threshold even with 1 pile."""
+        from anima.planner.expedition import AUX_COLLECT_ORE_THRESHOLD
 
         exp = MiningExpedition()
         exp.transition_to(Phase.MINING)
-        # Seed piles at distinct coords so they register as separate records
-        for i in range(AUX_COLLECT_PILE_THRESHOLD):
-            exp.note_ore_mined(x=100 + i, y=100, bank_key=(12, 12))
-        assert len(exp.piles) == AUX_COLLECT_PILE_THRESHOLD
-        # scan_empty=False — dense mining area; aux trigger should still fire
+        # Stays at one spot → one pile whose est_amount grows each mine.
+        for _ in range(AUX_COLLECT_ORE_THRESHOLD):
+            exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
+        assert len(exp.piles) == 1
+        assert exp.piles[0].est_amount == AUX_COLLECT_ORE_THRESHOLD
+        assert exp.should_start_collecting(scan_empty=False) is True
+
+    def test_should_start_collecting_true_by_total_ore_multi_pile(self):
+        """Sum of est_amount across piles crosses threshold → COLLECTING."""
+        from anima.planner.expedition import AUX_COLLECT_ORE_THRESHOLD
+
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        half = AUX_COLLECT_ORE_THRESHOLD // 2
+        # Two spots, each contributing half; sum reaches threshold.
+        for _ in range(half):
+            exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
+        for _ in range(AUX_COLLECT_ORE_THRESHOLD - half):
+            exp.note_ore_mined(x=200, y=200, bank_key=(25, 25))
+        assert len(exp.piles) == 2
+        assert sum(p.est_amount for p in exp.piles) == AUX_COLLECT_ORE_THRESHOLD
         assert exp.should_start_collecting(scan_empty=False) is True
 
     def test_should_start_collecting_false_outside_mining(self):

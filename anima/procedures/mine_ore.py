@@ -224,10 +224,42 @@ class MineOre(Procedure):
                             junk.add(stack_target.serial)
                     break
 
+            from anima.skills.gathering.mine import (
+                SAME_SPOT_MINE_LIMIT,
+                _bank_key,
+            )
+
             expedition = ctx.blackboard.get("expedition")
             if expedition is not None:
-                from anima.skills.gathering.mine import _bank_key
                 expedition.note_ore_mined(ss.x, ss.y, _bank_key(ss.x, ss.y))
+
+            # Track consecutive successful mines at the same (x, y).
+            # After SAME_SPOT_MINE_LIMIT hits, pause this bank so the
+            # agent walks to a fresh spot — ServUO banks respawn faster
+            # than natural depletion in low-skill windows.
+            same_spot = ctx.blackboard.setdefault(
+                "_mine_same_spot", {"pos": None, "count": 0}
+            )
+            cur_pos = (ss.x, ss.y)
+            if same_spot.get("pos") == cur_pos:
+                same_spot["count"] = same_spot.get("count", 0) + 1
+            else:
+                same_spot["pos"] = cur_pos
+                same_spot["count"] = 1
+            if same_spot["count"] >= SAME_SPOT_MINE_LIMIT:
+                voluntary_cd = ctx.blackboard.setdefault(
+                    "_voluntary_cooldown_banks", {}
+                )
+                bk = _bank_key(ss.x, ss.y)
+                voluntary_cd[bk] = time.time()
+                logger.info(
+                    "mine_same_spot_pause",
+                    bank=str(bk),
+                    pos=f"({ss.x},{ss.y})",
+                    after=same_spot["count"],
+                )
+                same_spot["pos"] = None
+                same_spot["count"] = 0
 
             return ProcedureResult(
                 success=True,
