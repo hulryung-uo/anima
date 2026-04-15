@@ -43,6 +43,26 @@ MOVE_RADIUS = 24  # how far to look for new mining spots (must cross multiple ba
 SAME_SPOT_MINE_LIMIT = 3
 VOLUNTARY_COOLDOWN_S = 120.0
 
+# Mineable-tile geographic filter. ServUO marks many decorative rocks in
+# towns and roads with the same tile graphics as real ore veins, so
+# _find_mineable_tile would otherwise happily return e.g. (2497, 565) in
+# Minoc's blacksmith district. Constrain mining to within
+# MINING_AREA_RADIUS tiles of a known mine entrance — extend the list as
+# new mining zones are discovered.
+MINING_AREA_RADIUS = 40  # Chebyshev distance
+KNOWN_MINING_AREAS: list[tuple[int, int]] = [
+    (2553, 496),  # Minoc East Mine
+    (2590, 532),  # Minoc Mining Camp
+]
+
+
+def _is_in_known_mining_area(x: int, y: int) -> bool:
+    """True if (x, y) lies within MINING_AREA_RADIUS of a known mine."""
+    for mx, my in KNOWN_MINING_AREAS:
+        if max(abs(x - mx), abs(y - my)) <= MINING_AREA_RADIUS:
+            return True
+    return False
+
 # ServUO HarvestBank: ore is pooled per 8x8 region (BankWidth=8, BankHeight=8).
 # When a tile reports "no metal here", the entire 8x8 bank it belongs to is empty.
 # Source: servuo Scripts/Services/Harvest/Mining.cs and Core/HarvestDefinition.cs
@@ -164,6 +184,10 @@ def _find_mineable_tile(
         return False
 
     def _check_tile(x: int, y: int) -> tuple[int, int, int, int, bool] | None:
+        # Reject decorative rocks in towns/roads that happen to share
+        # graphics with real ore veins (e.g. Minoc blacksmith district).
+        if not _is_in_known_mining_area(x, y):
+            return None
         if _is_bank_depleted(x, y) or (x, y) in _blocked:
             return None
         tile = ctx.map_reader.get_tile(x, y)
