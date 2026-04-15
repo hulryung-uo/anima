@@ -50,10 +50,76 @@ CLAUDE_LOG = ROOT / "data" / "claude_code.log"
 IMPROVEMENTS_LOG = ROOT / "data" / "improvements.jsonl"
 HINTS_FILE = ROOT / "data" / "supervisor_hints.json"
 
+# Output split:
+# - Status updates (agent intent / pos / weight / goldprocedure) go to stdio.
+# - Operational noise (analysis reports, auto-push/commit, quick-fix attempts)
+#   goes to this log file, so stdio stays readable while debugging context
+#   is preserved for later.
+SUPERVISOR_LOG = ROOT / "data" / "supervisor.log"
+
 WARMUP_SECONDS = 90
 STUCK_THRESHOLD = 300      # 5 minutes no activity → stuck
 IDLE_THRESHOLD = 600       # 10 minutes no progress → idle
 MAX_RESTARTS_PER_HOUR = 4  # prevent restart loop — too fast kills server sessions
+
+_last_status_key: tuple | None = None
+
+
+def _debug(msg: str) -> None:
+    """Append one operational event to data/supervisor.log."""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        SUPERVISOR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(SUPERVISOR_LOG, "a") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _alert(msg: str) -> None:
+    """Operational event important enough to surface on stdio (crashes, recoveries)."""
+    _debug(msg)
+    print(f"[supervisor] {msg}", flush=True)
+
+
+def _print_status() -> None:
+    """Print a compact one-line status snapshot of the agent.
+
+    Reads data/state.json and prints only when the key fields change, so
+    stdio shows a stream of meaningful transitions rather than repeating
+    the same state every 5s.
+    """
+    global _last_status_key
+    if not STATE_FILE.exists():
+        return
+    try:
+        s = json.loads(STATE_FILE.read_text())
+    except Exception:
+        return
+    p = s.get("status") or {}
+    if not p:
+        return
+    intent = (p.get("intent") or "").strip()
+    proc = (p.get("procedure") or "").strip() or "-"
+    key = (
+        p.get("x"), p.get("y"),
+        p.get("hp"), p.get("weight"), p.get("gold"),
+        proc, intent,
+    )
+    if key == _last_status_key:
+        return
+    _last_status_key = key
+
+    ts = time.strftime("%H:%M:%S")
+    pos = f"({p.get('x','?')},{p.get('y','?')})"
+    hp = f"{p.get('hp','?')}/{p.get('hp_max','?')}"
+    w = f"{p.get('weight','?')}/{p.get('weight_max','?')}"
+    g = p.get('gold', '?')
+    intent_short = intent[:60]
+    print(
+        f"[{ts}] pos={pos} hp={hp} w={w} g={g} proc={proc} intent='{intent_short}'",
+        flush=True,
+    )
 
 
 def get_git_head() -> str:
@@ -69,16 +135,16 @@ def get_git_head() -> str:
 
 def start_agent(extra_args: list[str] | None = None) -> subprocess.Popen:
     cmd = AGENT_CMD + (extra_args or [])
-    print(f"[supervisor] Starting agent: {' '.join(cmd)}")
+    _alert(f"Starting agent: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd, cwd=str(ROOT))
-    print(f"[supervisor] Agent PID {proc.pid}")
+    _alert(f"Agent PID {proc.pid}")
     return proc
 
 
 def stop_agent(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
-    print(f"[supervisor] Stopping agent PID {proc.pid}...")
+    _alert(f"Stopping agent PID {proc.pid}...")
     proc.send_signal(signal.SIGINT)
     try:
         proc.wait(timeout=10)
@@ -189,8 +255,7 @@ def check_agent_health(state: dict | None) -> str | None:
 
 def auto_recover(proc: subprocess.Popen, reason: str, extra_args: list[str]) -> subprocess.Popen:
     """Level 1: Stop agent, clear transient state, restart."""
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[supervisor] [{ts}] AUTO-RECOVER: {reason}")
+    _alert(f"AUTO-RECOVER: {reason}")
 
     stop_agent(proc)
 
@@ -401,24 +466,23 @@ def run_full_analysis(minutes: int) -> tuple[list[dict], str | None]:
     """Run comprehensive log + DB analysis."""
     from self_improve import detect_problems, generate_report, parse_recent_log, save_report
 
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[supervisor] [{ts}] Full analysis (last {minutes} min)...")
+    _debug(f"Full analysis (last {minutes} min)...")
 
     data = parse_recent_log(minutes=minutes)
     if "error" in data:
-        print(f"[supervisor] Analysis error: {data['error']}")
+        _debug(f"Analysis error: {data['error']}")
         return [], None
 
     problems = detect_problems(data)
     report = generate_report(data, problems)
     path = save_report(report)
 
-    print(f"[supervisor] Report: {path}")
+    _debug(f"Report: {path}")
     if problems:
         for p in problems:
-            print(f"[supervisor]   [{p['severity']}] {p['name']}: {p['description']}")
+            _debug(f"  [{p['severity']}] {p['name']}: {p['description']}")
     else:
-        print(f"[supervisor] No problems detected.")
+        _debug("No problems detected.")
 
     return problems, str(path) if path else None
 
@@ -510,13 +574,13 @@ def _auto_push_if_ahead() -> None:
             timeout=30,
         )
         if push.returncode == 0:
-            print(f"[supervisor] Auto-pushed {count} commit(s) to origin")
+            _debug(f"Auto-pushed {count} commit(s) to origin")
         else:
-            print(f"[supervisor] Auto-push failed (commits kept locally): {push.stderr[:200]}")
+            _debug(f"Auto-push failed (commits kept locally): {push.stderr[:200]}")
     except subprocess.TimeoutExpired:
-        print("[supervisor] Auto-push timed out (commits kept locally)")
+        _debug("Auto-push timed out (commits kept locally)")
     except Exception as e:
-        print(f"[supervisor] Auto-push error (commits kept locally): {e}")
+        _debug(f"Auto-push error (commits kept locally): {e}")
 
 
 def _auto_commit_if_needed() -> bool:
@@ -542,13 +606,13 @@ def _auto_commit_if_needed() -> bool:
             cwd=str(ROOT), capture_output=True, text=True,
         )
         if result.returncode != 0:
-            print(f"[supervisor] Auto-commit failed: {result.stderr[:200]}")
+            _debug(f"Auto-commit failed: {result.stderr[:200]}")
             return False
 
-        print("[supervisor] Auto-committed uncommitted Claude Code changes")
+        _debug("Auto-committed uncommitted Claude Code changes")
         return True
     except Exception as e:
-        print(f"[supervisor] Auto-commit error: {e}")
+        _debug(f"Auto-commit error: {e}")
         return False
 
 
@@ -583,7 +647,7 @@ def main() -> None:
 
     use_claude = not args.no_claude
     mode = "Level 1-3" if use_claude else "Level 1 only"
-    print(f"[supervisor] Starting ({mode}, interval={args.interval}s)")
+    _alert(f"Starting ({mode}, interval={args.interval}s); debug log → {SUPERVISOR_LOG}")
 
     agent_proc = start_agent(args.agent_args)
     last_analysis = time.time()
@@ -600,9 +664,12 @@ def main() -> None:
         while True:
             now = time.time()
 
+            # Stream agent state to stdio (only when meaningfully changed)
+            _print_status()
+
             # Check if agent process is alive
             if agent_proc.poll() is not None:
-                print(f"[supervisor] Agent exited (code {agent_proc.returncode})")
+                _alert(f"Agent exited (code {agent_proc.returncode})")
                 time.sleep(10)
                 agent_proc = start_agent(args.agent_args)
                 last_analysis = now
@@ -630,11 +697,11 @@ def main() -> None:
                         tools_changed = False
 
                     if tools_changed:
-                        print(f"[supervisor] tools/ changed ({last_git_head[:8]} → {current_head[:8]}) — restarting supervisor")
+                        _alert(f"tools/ changed ({last_git_head[:8]} → {current_head[:8]}) — restarting supervisor")
                         stop_agent(agent_proc)
                         os.execv(sys.executable, [sys.executable] + sys.argv)
 
-                    print(f"[supervisor] Code changed ({last_git_head[:8]} → {current_head[:8]}) — restarting agent")
+                    _alert(f"Code changed ({last_git_head[:8]} → {current_head[:8]}) — restarting agent")
                     last_git_head = current_head
                     consecutive_recoveries = 0
                     stop_agent(agent_proc)
@@ -653,7 +720,7 @@ def main() -> None:
                         # (caps at 180s so supervisor doesn't hang indefinitely)
                         if consecutive_recoveries > 0:
                             wait = min(consecutive_recoveries * 60, 180)
-                            print(f"[supervisor] Backoff: waiting {wait}s before recovery #{consecutive_recoveries + 1}")
+                            _debug(f"Backoff: waiting {wait}s before recovery #{consecutive_recoveries + 1}")
                             time.sleep(wait)
                         restarts_this_hour.append(now)
                         consecutive_recoveries += 1
@@ -661,7 +728,7 @@ def main() -> None:
                         last_analysis = now
                         continue
                     else:
-                        print(f"[supervisor] ⚠ Too many restarts ({len(restarts_this_hour)}/hr), skipping")
+                        _alert(f"⚠ Too many restarts ({len(restarts_this_hour)}/hr), skipping")
                 else:
                     consecutive_recoveries = 0  # reset on healthy check
 
@@ -684,8 +751,7 @@ def main() -> None:
 
                     if worst["fail_rate"] > 0.8 and worst["total"] > 10:
                         if attempts >= MAX_FIX_ATTEMPTS:
-                            ts = datetime.now().strftime("%H:%M:%S")
-                            print(f"[supervisor] [{ts}] Skipping {fix_key} — already failed {attempts} fix attempts")
+                            _debug(f"Skipping {fix_key} — already failed {attempts} fix attempts")
                             _log_improvement(
                                 f"skip:{worst['procedure']}",
                                 f"gave up after {attempts} failed fix attempts for {worst['top_failure']}",
@@ -695,19 +761,14 @@ def main() -> None:
                         else:
                             proc_name = worst["procedure"]
                             timeout = _get_timeout(attempts)
-                            ts = datetime.now().strftime("%H:%M:%S")
-                            print(f"[supervisor] [{ts}] TARGETED FIX: {proc_name} ({worst['top_failure']}) attempt={attempts + 1} timeout={timeout}s")
+                            _debug(f"TARGETED FIX: {proc_name} ({worst['top_failure']}) attempt={attempts + 1} timeout={timeout}s")
                             stop_agent(agent_proc)
                             prompt = build_diagnostic_prompt(failure=worst)
                             head_before = get_git_head()
                             lock_key = f"targeted_fix:{fix_key}"
                             with FixLock(lock_key, sha=head_before) as got:
                                 if not got:
-                                    ts_str = datetime.now().strftime("%H:%M:%S")
-                                    print(
-                                        f"[supervisor] [{ts_str}] {lock_key} "
-                                        f"already being fixed — skipping"
-                                    )
+                                    _debug(f"{lock_key} already being fixed — skipping")
                                     agent_proc = start_agent(args.agent_args)
                                     last_analysis = time.time()
                                     continue
@@ -717,15 +778,15 @@ def main() -> None:
                                     quick_diag, fix_key, timeout=60,
                                 )
                                 if q_committed and q_success:
-                                    print(f"[supervisor] Quick fix committed for {fix_key}")
+                                    _debug(f"Quick fix committed for {fix_key}")
                                     success, output = True, q_output
                                 elif q_success and not is_too_complex(q_output):
                                     # Haiku ran cleanly but didn't commit; escalate
-                                    print(f"[supervisor] Quick fix ran without changes — escalating to Opus")
+                                    _debug("Quick fix ran without changes — escalating to Opus")
                                     success, output = call_claude_with_prompt(prompt, timeout=timeout)
                                 else:
                                     # Too complex or failed → Opus
-                                    print(f"[supervisor] Quick fix says too complex — escalating to Opus")
+                                    _debug("Quick fix says too complex — escalating to Opus")
                                     success, output = call_claude_with_prompt(prompt, timeout=timeout)
                             # Auto-commit if Claude left uncommitted changes
                             if _auto_commit_if_needed():
@@ -742,13 +803,13 @@ def main() -> None:
                                 output_preview=output[:500],
                             )
                             if code_changed:
-                                print(f"[supervisor] Targeted fix committed for {proc_name}")
+                                _debug(f"Targeted fix committed for {proc_name}")
                                 fix_attempts[fix_key] = 0
                             elif success:
-                                print(f"[supervisor] Claude ran but no changes for {proc_name}")
+                                _debug(f"Claude ran but no changes for {proc_name}")
                                 fix_attempts[fix_key] = attempts + 1
                             else:
-                                print(f"[supervisor] Claude failed for {proc_name}")
+                                _debug(f"Claude failed for {proc_name}")
                                 fix_attempts[fix_key] = attempts + 1
                             agent_proc = start_agent(args.agent_args)
                             last_analysis = time.time()
@@ -765,11 +826,7 @@ def main() -> None:
                         lock_key = f"full_analysis:{severe[0]['name']}"
                         with FixLock(lock_key, sha=head_before) as got:
                             if not got:
-                                ts_str = datetime.now().strftime("%H:%M:%S")
-                                print(
-                                    f"[supervisor] [{ts_str}] {lock_key} "
-                                    f"already being fixed — skipping"
-                                )
+                                _debug(f"{lock_key} already being fixed — skipping")
                                 agent_proc = start_agent(args.agent_args)
                                 last_analysis = time.time()
                                 continue
@@ -791,9 +848,9 @@ def main() -> None:
                 run_full_analysis(args.minutes)
 
     except KeyboardInterrupt:
-        print("\n[supervisor] Shutting down...")
+        _alert("Shutting down...")
         stop_agent(agent_proc)
-        print("[supervisor] Done.")
+        _alert("Done.")
 
 
 if __name__ == "__main__":
