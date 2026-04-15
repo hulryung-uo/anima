@@ -85,12 +85,39 @@ class TestMaybeRefreshLLM:
         ctx.perception.self_state.weight = 300
         ctx.perception.self_state.weight_max = 400
         ctx.perception.self_state.equipment = {0x15: 0x101}
-        ctx.perception.world.items = {}
+        # Provide one sellable iron ingot so the sanity check accepts
+        # sell_inventory (otherwise it falls back to grind_mining).
+        ingot = MagicMock(container=0x101, graphic=0x1BF2, amount=5, hue=0)
+        ctx.perception.world.items = {0x200: ingot}
 
         changed = await s.maybe_refresh(ctx)
         assert changed is True
         assert s.current.name == STRATEGY_SELL_INVENTORY
         assert "inventory too full" in s.current.reasoning
+
+    @pytest.mark.asyncio
+    async def test_llm_sell_inventory_rejected_when_nothing_to_sell(self):
+        """Sanity check overrides LLM when no sellable items exist."""
+        s = StrategySelector()
+        s._last_refresh = 0.0
+
+        ctx = MagicMock()
+        fake_llm = MagicMock()
+        fake_llm.chat = AsyncMock(return_value=MagicMock(
+            text="STRATEGY: sell_inventory\nREASONING: free up weight"
+        ))
+        ctx.llm = fake_llm
+        ctx.perception.self_state.gold = 100
+        ctx.perception.self_state.weight = 50
+        ctx.perception.self_state.weight_max = 400
+        ctx.perception.self_state.equipment = {0x15: 0x101}
+        # Empty backpack — nothing sellable
+        ctx.perception.world.items = {}
+
+        changed = await s.maybe_refresh(ctx)
+        assert changed is True
+        assert s.current.name == STRATEGY_GRIND_MINING
+        assert "auto-fallback" in s.current.reasoning
 
     @pytest.mark.asyncio
     async def test_llm_unknown_response_rejected(self):

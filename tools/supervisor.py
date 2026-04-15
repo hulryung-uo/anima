@@ -81,6 +81,13 @@ _NOTABLE_EVENT_PROCEDURES = {
     "bank_deposit",
 }
 
+# Topics whose every event surfaces on stdio regardless of action.end
+# parsing — used for explicit planner-level signals (e.g. "no progress
+# path, user intervention required") and strategy decisions.
+_NOTABLE_TOPICS = {
+    "planner.stopped",
+}
+
 
 def _debug(msg: str) -> None:
     """Append one operational event to data/supervisor.log."""
@@ -122,13 +129,14 @@ def _print_status() -> None:
             continue
         topic = entry.get("topic", "")
         msg = entry.get("message") or ""
-        if topic == "action.end":
+        if topic in _NOTABLE_TOPICS:
+            t = time.strftime("%H:%M:%S", time.localtime(ts_e))
+            print(f"[{t}] EVENT: {msg}", flush=True)
+        elif topic == "action.end":
             # Format: "✓ <proc>: <result-msg>" or "✗ <proc>: <fail-msg>"
-            # Extract proc name (between leading icon and ':')
             proc_name = ""
             if ":" in msg:
                 head = msg.split(":", 1)[0].strip()
-                # Drop leading icon (✓ / ✗) and whitespace
                 proc_name = head.lstrip("✓✗ \t")
             if proc_name in _NOTABLE_EVENT_PROCEDURES:
                 t = time.strftime("%H:%M:%S", time.localtime(ts_e))

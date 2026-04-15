@@ -636,8 +636,13 @@ class Planner:
                     _intent(f"곡괭이 없음, 주석도구+주괴 {ingot_count}개 → 도구 제작")
                     return proc
 
-            # 4c: Has gold → buy tools directly (pickaxe costs ~11 gold)
-            if ss.gold >= 10:
+            # 4c: Has gold → buy tools directly (pickaxe costs ~11 gold).
+            # Skip when buy is in cooldown — buy_from_vendor sets a 10-min
+            # disable flag after a "gold unchanged" failure (which on this
+            # server means the bank gold pool is empty and retrying will
+            # never succeed). The fallthrough to 4d/4e/4f handles it.
+            buy_disabled_until = ctx.blackboard.get("_buy_disabled_until", 0)
+            if ss.gold >= 10 and time.time() >= buy_disabled_until:
                 proc = _get_proc("buy_from_vendor")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 금화 {ss.gold}g → 상점에서 구매")
@@ -670,6 +675,32 @@ class Planner:
                 move = await self._roaming.move_to_location(ctx, "blacksmith", "weaponsmith")
                 if move:
                     return move
+
+            # NEW STOP: explicit standstill when no recovery path exists.
+            # If buy was just disabled (bank gold likely empty) AND we have
+            # no ingots to make_tools / craft / sell, then deadlock recovery
+            # (random walk, scavenge, monster hunt) is futile — the agent
+            # would need user intervention (drop ingots, refill bank) to
+            # progress. Surface the standstill on stdio and yield this tick
+            # so the loop visibility is maintained without burning cycles.
+            buy_disabled = time.time() < ctx.blackboard.get("_buy_disabled_until", 0)
+            if buy_disabled and ingot_count == 0 and ore_count == 0:
+                _intent(
+                    "정지: 도구 없음, 잉갓 없음, 구매 불가 — 사용자 개입 필요"
+                )
+                logger.warning(
+                    "planner_no_progress_path",
+                    reason="no tool, no ingots, buy disabled — user must intervene",
+                )
+                if ctx.bus is not None:
+                    try:
+                        ctx.bus.publish("planner.stopped", {
+                            "message": "✗ 정지: 도구 없음, 잉갓 없음, 구매 불가",
+                            "importance": 3,
+                        })
+                    except Exception:
+                        pass
+                return None
 
             # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
             # Progressive recovery:

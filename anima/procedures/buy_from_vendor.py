@@ -242,11 +242,18 @@ class BuyFromVendor(Procedure):
             vendor_bl = bl.setdefault(vendor.serial, {})
             vendor_bl[target_item.serial] = time.monotonic()
             _mark_refused(ctx, vendor.serial)
+            # Disable buy attempts for 10 min: this server deducts gold from
+            # the bank, not the backpack, so a "gold unchanged" failure on
+            # an in-stock affordable item almost always means the bank is
+            # empty. Repeating buy attempts in this state burns time and
+            # never works. Planner falls through to make_tools or stop.
+            ctx.blackboard["_buy_disabled_until"] = time.time() + 600
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
                 message=f"Buy {target_name} from {vendor_name} failed — "
-                        f"gold unchanged ({gold_before}gp→{gold_after}gp)",
+                        f"bank gold likely empty ({gold_before}gp backpack, "
+                        f"buy disabled 10min)",
             )
 
         # Success — clear blacklist for this vendor

@@ -124,6 +124,24 @@ class StrategySelector:
             )
             self._last_refresh = time.time()
             return False
+
+        # Sanity-check the LLM choice against actual state. The model
+        # sometimes picks "sell_inventory" with an empty backpack or
+        # "bank_colored" without colored ingots, which then blocks
+        # mining and strands the agent. Override with grind_mining when
+        # the chosen strategy is incompatible with current inventory.
+        if not self._is_strategy_viable(ctx, new_decision.name):
+            logger.info(
+                "strategy_rejected",
+                llm_choice=new_decision.name,
+                reason="state incompatible with strategy preconditions",
+                fallback=self.DEFAULT_STRATEGY,
+            )
+            new_decision = StrategyDecision(
+                name=self.DEFAULT_STRATEGY,
+                reasoning=f"auto-fallback: {new_decision.name} not viable",
+            )
+
         previous = self._current.name
         self._current = new_decision
         self._last_refresh = time.time()
@@ -135,6 +153,42 @@ class StrategySelector:
                 to=new_decision.name,
                 reasoning=new_decision.reasoning[:100],
             )
+        return True
+
+    def _is_strategy_viable(self, ctx: "AgentContext", name: str) -> bool:
+        """Reject strategies whose preconditions are obviously not met."""
+        if name == STRATEGY_GRIND_MINING:
+            return True  # always viable; default
+        if name == STRATEGY_FILL_COFFERS:
+            return True  # broad enough to be always plausible
+        if name == STRATEGY_UPGRADE_TOOLS:
+            return True  # tool replacement always reasonable
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15) if hasattr(ss.equipment, "get") else None
+        items = list(ctx.perception.world.items.values())
+
+        if name == STRATEGY_SELL_INVENTORY:
+            # Need at least one sellable thing in backpack.
+            from anima.skills.gathering.mine import ORE_GRAPHICS
+            from anima.skills.crafting.smelt import INGOT_GRAPHICS
+            from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
+            sellable_graphics = ORE_GRAPHICS | INGOT_GRAPHICS | CRAFTED_ITEM_GRAPHICS
+            return any(
+                getattr(it, "container", 0) == backpack
+                and getattr(it, "graphic", 0) in sellable_graphics
+                for it in items
+            )
+
+        if name == STRATEGY_BANK_COLORED:
+            from anima.skills.crafting.smelt import INGOT_GRAPHICS
+            return any(
+                getattr(it, "container", 0) == backpack
+                and getattr(it, "graphic", 0) in INGOT_GRAPHICS
+                and getattr(it, "hue", 0) != 0  # non-iron
+                for it in items
+            )
+
         return True
 
     async def _ask_llm(self, ctx: "AgentContext", llm) -> StrategyDecision:
