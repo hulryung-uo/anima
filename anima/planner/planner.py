@@ -28,7 +28,13 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.procedures.base import FailureReason, ProcedureRegistry, ProcedureResult
+from anima.procedures.base import (
+    FailureReason,
+    Procedure,
+    ProcedureRegistry,
+    ProcedureResult,
+    _record_action_log,
+)
 from anima.planner.circuit_breaker import CircuitBreaker
 from anima.planner.deadlock import DeadlockResolver
 from anima.planner.expedition import (
@@ -273,8 +279,31 @@ class Planner:
                 "importance": 1,
             })
 
+        _proc_start = _time.monotonic()
         result = await proc.run(ctx)
         ctx.blackboard["current_procedure"] = None
+
+        # Helper procedures (ad-hoc classes like _MoveToProcedure,
+        # _PickUpAndSmelt, etc.) don't subclass Procedure and therefore
+        # don't auto-write action_logs. Supervisor reads action_logs to
+        # detect idle planner loops, so writing an entry here keeps long
+        # helper-driven tours (e.g. COLLECTING pile visits) visible as
+        # liveness.
+        if result is not None and not isinstance(proc, Procedure):
+            ss = ctx.perception.self_state
+            await _record_action_log(
+                memory_db=ctx.memory_db,
+                agent_name=ctx.persona.name if ctx.persona else "unknown",
+                procedure=proc.name,
+                location_x=ss.x,
+                location_y=ss.y,
+                result_str="success" if result.success else (
+                    result.reason.value if result.reason else "failure"
+                ),
+                message=result.message or "",
+                duration_ms=(_time.monotonic() - _proc_start) * 1000,
+                details=result.details,
+            )
 
         # Track failed move destinations to prevent retry loops
         if result and not result.success and isinstance(proc, _MoveToProcedure):
