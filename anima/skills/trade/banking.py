@@ -252,8 +252,8 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
 
-    # Pass 1: name match (banker, minter, etc.)
-    _BANKER_NAMES = {"banker", "minter"}
+    # Pass 1: name match — only actual bankers respond to "balance" / "bank"
+    _BANKER_NAMES = {"banker"}
     for m in nearby:
         if m.serial == ss.serial:
             continue
