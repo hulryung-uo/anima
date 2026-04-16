@@ -100,7 +100,7 @@ async def go_to(
             # Collect dynamic door world items → force passable in pathfinder
             door_positions = _get_door_positions(ctx)
 
-            search_steps = max(5000, dist * 20)  # 4-directional needs large search
+            search_steps = max(10000, dist * 30)  # urban terrain needs larger budget
             adj = not exact
             path = find_path(
                 ctx.map_reader, sx, sy, target_x, target_y,
@@ -144,6 +144,33 @@ async def go_to(
 
                 if path:
                     continue
+
+                # Intermediate-target fallback: if the full path is too
+                # complex for A*, try reaching a point ~15 tiles toward
+                # the destination.  The main loop will re-pathfind to
+                # the original target from the new position.
+                if remaining > 15:
+                    frac = 15.0 / remaining
+                    mid_x = sx + int((target_x - sx) * frac)
+                    mid_y = sy + int((target_y - sy) * frac)
+                    mid_path = find_path(
+                        ctx.map_reader, sx, sy, mid_x, mid_y,
+                        max_steps=search_steps,
+                        denied_tiles=permanent_denied,
+                        current_z=ss.z,
+                        adjacent=True,
+                        door_tiles=door_positions,
+                    )
+                    if mid_path:
+                        logger.info(
+                            "go_to_intermediate",
+                            pos=f"({sx},{sy})",
+                            mid=f"({mid_x},{mid_y})",
+                            target=f"({target_x},{target_y})",
+                            mid_len=len(mid_path),
+                        )
+                        path = mid_path
+                        continue
 
                 logger.info(
                     "go_to_no_path", pos=f"({sx},{sy},{ss.z})",

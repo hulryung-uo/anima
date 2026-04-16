@@ -1264,8 +1264,24 @@ class Planner:
         if not candidates:
             return None
 
-        # Prefer closest target
+        # Prefer closest target, but skip unreachable ones (behind walls,
+        # inside buildings) to avoid wasting go_to budget on hopeless targets.
         candidates.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
+
+        if ctx.map_reader:
+            from anima.pathfinding import find_path
+
+            for c in candidates:
+                quick_path = find_path(
+                    ctx.map_reader, ss.x, ss.y, c.x, c.y,
+                    max_steps=500,
+                    current_z=ss.z,
+                    adjacent=True,
+                )
+                if quick_path:
+                    return c
+            return None  # none reachable
+
         return candidates[0]
 
 class _DropJunkItems:
