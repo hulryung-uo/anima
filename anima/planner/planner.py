@@ -1037,7 +1037,14 @@ class Planner:
                 _intent("교착 복구: 모든 경로 차단 → 랜덤 방향 탐색")
                 return _DesperateExploration(ss)
 
-            # Lower levels: return None; attempt counter was already
+            # Levels 2-3: hunting returned None (all targets unreachable
+            # or blacklisted) and movement is blocked.  Don't just return
+            # None and waste 3 attempts — wander to discover new terrain.
+            if _deadlock_level >= 2:
+                _intent("교착 복구: 사냥/이동 불가 → 마을 주변 탐색")
+                return _WanderAndScavenge(ss)
+
+            # Level 0-1: return None; attempt counter was already
             # incremented so we'll escalate after 3 idle entries.
             _intent("교착 상태: 복구 시도 중 → 다음 레벨로 에스컬레이션 대기")
             return None
@@ -1459,6 +1466,17 @@ class Planner:
 
         no_gold_bodies = ctx.blackboard.get("_hunt_no_gold_bodies", set())
 
+        # Skip targets we already failed to reach (behind walls, inside
+        # buildings).  Entries expire after 5 minutes so the agent retries
+        # if the target moves to a reachable position.
+        import time as _t
+        unreachable: dict[int, float] = ctx.blackboard.get("_hunt_unreachable", {})
+        now = _t.time()
+        # Lazy cleanup of expired entries
+        expired = [s for s, t in unreachable.items() if now - t > 300]
+        for s in expired:
+            del unreachable[s]
+
         candidates = []
         for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
             if m.serial == ss.serial:
@@ -1473,6 +1491,9 @@ class Planner:
                 continue
             # Skip creature types we've killed before that dropped no gold
             if m.body in no_gold_bodies:
+                continue
+            # Skip targets we failed to reach recently
+            if m.serial in unreachable:
                 continue
             candidates.append(m)
 
@@ -1587,8 +1608,12 @@ class _DropJunkItems:
         GOLD_GRAPHIC = 0x0EED
         SHOVEL_GRAPHICS = {0x0F39}
         BANDAGE_GRAPHIC = 0x0E21
+        # Daggers — the agent's most common starting weapon; needed for
+        # hunt_for_gold combat.  Dropping them before Level 5 makes
+        # hunting futile.
+        DAGGER_GRAPHICS = {0x0F51, 0x0F52}
 
-        # Keep items useful for the mining/crafting loop
+        # Keep items useful for the mining/crafting loop + combat
         keep = (
             ORE_GRAPHICS
             | INGOT_GRAPHICS
@@ -1596,6 +1621,7 @@ class _DropJunkItems:
             | SHOVEL_GRAPHICS
             | TINKER_TOOLS_GRAPHICS
             | TONGS_GRAPHICS
+            | DAGGER_GRAPHICS
             | {GOLD_GRAPHIC, BANDAGE_GRAPHIC}
         )
 
@@ -2080,6 +2106,16 @@ class _HuntForGold:
         if dist > 1:
             arrived = await go_to(ctx, self._target_pos[0], self._target_pos[1])
             if not arrived:
+                # Blacklist this target so _find_huntable_target skips it
+                # on subsequent ticks (expires after 5 min).
+                import time as _t
+                unreachable = ctx.blackboard.setdefault("_hunt_unreachable", {})
+                unreachable[self._target_serial] = _t.time()
+                logger.info(
+                    "hunt_target_unreachable",
+                    serial=f"0x{self._target_serial:08X}",
+                    name=self._target_name,
+                )
                 return ProcedureResult(
                     success=False,
                     reason=FailureReason.BLOCKED,
