@@ -892,6 +892,16 @@ class Planner:
                             vendor_npc.x, vendor_npc.y,
                         )
 
+            # --- Sell if vendor already within range (any level) ---
+            # At levels 1+ we don't walk to vendors (that caused the
+            # monopolisation bug fixed in 11a8cba).  But if exploration
+            # already positioned us near a vendor, seize the chance.
+            if _deadlock_level >= 1 and self._has_sellable_junk(ctx, ss):
+                proc = _get_proc("sell_to_vendor")
+                if proc and await proc.can_start(ctx):
+                    _intent("교착 복구: 인근 상인 발견 → 아이템 판매 시도")
+                    return proc
+
             # After 3 attempts at current level, escalate to next.
             if _deadlock_attempts >= 3:
                 _deadlock_level += 1
@@ -2293,7 +2303,9 @@ class _DesperateExploration:
             )
 
         found_vendor = False
+        found_vendor_mob = None
         found_monster = False
+        found_monster_mob = None
         items_picked = 0
         spots_visited = 0
 
@@ -2331,6 +2343,7 @@ class _DesperateExploration:
                     continue
                 if _is_vendor(m):
                     found_vendor = True
+                    found_vendor_mob = m
                     logger.info(
                         "desperate_explore_found_vendor",
                         name=m.name,
@@ -2339,6 +2352,10 @@ class _DesperateExploration:
                     break
 
             # --- Scan for huntable monsters ---
+            # Include small town animals (cats, rats) — they may drop
+            # gold and are often the only huntable creatures in town.
+            # Respect no_gold_bodies (body types that never dropped gold)
+            # and unreachable blacklist (serials we failed to reach).
             from anima.perception.enums import NotorietyFlag
             ATTACKABLE = {
                 NotorietyFlag.ATTACKABLE,
@@ -2347,7 +2364,10 @@ class _DesperateExploration:
                 NotorietyFlag.MURDERER,
             }
             HUMAN_BODY_IDS = {0x0190, 0x0191}
-            TOWN_PETS = {0x00C9, 0x00D9, 0x00EE}
+            _no_gold = ctx.blackboard.get("_hunt_no_gold_bodies", set())
+            _unreachable = ctx.blackboard.get("_hunt_unreachable", {})
+            import time as _t
+            _now = _t.time()
             for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
                 if m.serial == ss.serial:
                     continue
@@ -2355,9 +2375,12 @@ class _DesperateExploration:
                     continue
                 if m.body in HUMAN_BODY_IDS and m.notoriety == NotorietyFlag.ATTACKABLE:
                     continue
-                if m.body in TOWN_PETS:
+                if m.body in _no_gold:
+                    continue
+                if m.serial in _unreachable and _now - _unreachable[m.serial] <= 300:
                     continue
                 found_monster = True
+                found_monster_mob = m
                 logger.info(
                     "desperate_explore_found_monster",
                     name=m.name,
@@ -2392,6 +2415,33 @@ class _DesperateExploration:
             # Stop early if we found something actionable
             if found_vendor or found_monster or items_picked >= 3:
                 break
+
+        # --- Approach discoveries ---
+        # Exploration scans at 18 tiles but vendor interaction needs 8
+        # and combat needs adjacency.  Walk toward the discovery so the
+        # next planner tick can dispatch sell/hunt procedures.
+        if found_vendor_mob:
+            ss = ctx.perception.self_state
+            vdist = max(abs(found_vendor_mob.x - ss.x),
+                        abs(found_vendor_mob.y - ss.y))
+            if vdist > 6:
+                logger.info(
+                    "desperate_explore_approaching_vendor",
+                    name=found_vendor_mob.name,
+                    dist=vdist,
+                )
+                await go_to(ctx, found_vendor_mob.x, found_vendor_mob.y)
+        elif found_monster_mob:
+            ss = ctx.perception.self_state
+            mdist = max(abs(found_monster_mob.x - ss.x),
+                        abs(found_monster_mob.y - ss.y))
+            if mdist > 2:
+                logger.info(
+                    "desperate_explore_approaching_monster",
+                    name=found_monster_mob.name,
+                    dist=mdist,
+                )
+                await go_to(ctx, found_monster_mob.x, found_monster_mob.y)
 
         parts = []
         if found_vendor:
