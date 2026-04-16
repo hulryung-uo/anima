@@ -246,7 +246,7 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
     ServUO Banker.HandlesOnSpeech checks InRange(from, 12).
     Detection priority:
     1. Name contains "banker"
-    2. INVULNERABLE notoriety
+    2. Near known bank + INVULNERABLE + unnamed or "bank" in name
     3. Near known bank + human body NPC (fallback if notoriety not set)
     """
     ss = ctx.perception.self_state
@@ -261,12 +261,18 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
         if any(n in name_lower for n in _BANKER_NAMES):
             return m
 
-    # Pass 2: INVULNERABLE notoriety
-    for m in nearby:
-        if m.serial == ss.serial:
-            continue
-        if m.notoriety == NotorietyFlag.INVULNERABLE:
-            return m
+    # Pass 2: INVULNERABLE notoriety — only near known bank, and only if
+    # name is not yet loaded (OPL pending) or contains "bank".  Without the
+    # location gate every town-NPC vendor (provisioner, cobbler, …) matched
+    # because all are INVULNERABLE.
+    if _near_bank(ss.x, ss.y):
+        for m in nearby:
+            if m.serial == ss.serial:
+                continue
+            if m.notoriety == NotorietyFlag.INVULNERABLE:
+                name_lower = (m.name or "").lower()
+                if not name_lower or "bank" in name_lower:
+                    return m
 
     # Pass 3: near known bank → closest human NPC
     if _near_bank(ss.x, ss.y):
