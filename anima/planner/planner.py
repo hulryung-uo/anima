@@ -803,12 +803,21 @@ class Planner:
             #   Level 4: forum escalation, then reset cycle
             logger.info("planner_deadlock_recovery_attempt")
 
+            # Clear failed destinations each cycle so the agent can retry
+            # paths that were blocked in previous recovery attempts.
+            self._failed_destinations.clear()
+            self._move_fail_until = 0.0
+
             _deadlock_attempts = ctx.blackboard.get("_deadlock_attempt_count", 0)
             _deadlock_level = ctx.blackboard.get("_deadlock_recovery_level", 0)
 
             # Always count visits — this drives escalation even when
             # nothing is found (unlike the old scavenge-only counter).
             ctx.blackboard["_deadlock_attempt_count"] = _deadlock_attempts + 1
+
+            # Compute item-aware vendor keywords from actual backpack contents
+            # so we walk to the RIGHT vendor type (e.g. "arms" for daggers).
+            _sell_vendor_kw = self._sellable_vendor_keywords(ctx, ss)
 
             # --- Sell non-essential items for gold ---
             # Agent may have junk items (clothing, books, weapons) that
@@ -818,10 +827,10 @@ class Planner:
                 if proc and await proc.can_start(ctx):
                     _intent("교착 복구: 불필요 아이템 판매 → 금화 확보")
                     return proc
-                # No vendor nearby → walk to vendor-rich area
+                # No vendor nearby → walk to matching vendor type
                 if time.time() > self._move_fail_until:
                     move = await self._roaming.move_to_location(
-                        ctx, "blacksmith", "weaponsmith", "provisioner", "tailor",
+                        ctx, *_sell_vendor_kw,
                     )
                     if move:
                         _intent("교착 복구: 판매 위해 상점으로 이동")
@@ -846,7 +855,7 @@ class Planner:
                         return _DropJunkItems(ss)
                     if time.time() > self._move_fail_until:
                         move = await self._roaming.move_to_location(
-                            ctx, "blacksmith", "weaponsmith", "provisioner", "tailor",
+                            ctx, *_sell_vendor_kw,
                         )
                         if move:
                             _intent("교착 복구 Lv1: 상점 방문하여 아이템 판매")
@@ -1283,6 +1292,28 @@ class Planner:
             for it in ctx.perception.world.items.values()
         )
 
+    def _sellable_vendor_keywords(self, ctx: AgentContext, ss) -> list[str]:
+        """Return location keywords for vendors that buy the agent's junk items.
+
+        Uses ITEM_VENDOR_MAP to map actual backpack items → vendor types,
+        so the agent walks to the RIGHT vendor (e.g. "arms" for daggers,
+        "tailor" for clothing) instead of generic shop keywords.
+        """
+        from anima.procedures.vendor_knowledge import get_vendor_keywords_for_items
+        from anima.skills.trade.vendor import KEEP_GRAPHICS
+
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ["blacksmith", "arms", "provisioner", "tailor"]
+        sellable_graphics = {
+            it.graphic
+            for it in ctx.perception.world.items.values()
+            if it.container == backpack and it.graphic not in KEEP_GRAPHICS
+        }
+        if not sellable_graphics:
+            return ["blacksmith", "arms", "provisioner", "tailor"]
+        return get_vendor_keywords_for_items(sellable_graphics)
+
     def _find_huntable_target(self, ctx: AgentContext, ss):
         """Find a nearby monster the agent can attack for gold loot."""
         from anima.perception.enums import NotorietyFlag
@@ -1514,8 +1545,14 @@ class _WanderAndScavenge:
 
     @staticmethod
     def _scan_valuables(ctx, ss) -> list:
-        """Find valuable ground items within pickup range of current pos."""
+        """Find valuable ground items within pickup range of current pos.
+
+        Includes mining items (tools, ore, ingots, gold) AND any item
+        that vendors will buy (weapons, clothing, etc.) so the agent
+        can sell them for gold during deadlock recovery.
+        """
         from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
+        from anima.procedures.vendor_knowledge import ITEM_VENDOR_MAP
         from anima.skills.crafting.smelt import INGOT_GRAPHICS
         from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
         from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
@@ -1527,6 +1564,7 @@ class _WanderAndScavenge:
             ORE_GRAPHICS | INGOT_GRAPHICS | PICKAXE_GRAPHICS
             | SHOVEL_GRAPHICS | TINKER_TOOLS_GRAPHICS | TONGS_GRAPHICS
             | {GOLD_GRAPHIC}
+            | set(ITEM_VENDOR_MAP.keys())
         )
 
         result = []
