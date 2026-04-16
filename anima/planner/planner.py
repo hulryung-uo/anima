@@ -844,6 +844,14 @@ class Planner:
                     if move:
                         _intent(f"교착 복구: {_sell_vendor_kw[0]} 상점으로 이동")
                         return move
+                    # Named locations blocked → walk to a visible vendor NPC
+                    vendor_npc = self._find_visible_vendor_npc(ctx, ss)
+                    if vendor_npc:
+                        _intent(f"교착 복구: 근처 상인 {vendor_npc.name or 'NPC'} 방문")
+                        return _MoveToProcedure(
+                            vendor_npc.name or "vendor",
+                            vendor_npc.x, vendor_npc.y,
+                        )
 
             # After 3 attempts at current level, escalate to next.
             if _deadlock_attempts >= 3:
@@ -897,13 +905,28 @@ class Planner:
                     if target:
                         _intent(f"교착 복구 Lv4: {target.name or 'monster'} 사냥")
                         return _HuntForGold(target, ss)
-                    # No targets in town — move to wilderness where monsters spawn
+                    # No targets in town — try wilderness, then town locations
                     if time.time() > self._move_fail_until:
                         move = await self._roaming.move_to_location(
                             ctx, "mine", "mining", "camp",
                         )
                         if move:
                             _intent("교착 복구 Lv4: 몬스터 없음 → 야외로 이동")
+                            return move
+                        # Wilderness blocked — try visible vendor NPC
+                        vendor_npc = self._find_visible_vendor_npc(ctx, ss)
+                        if vendor_npc:
+                            _intent(f"교착 복구 Lv4: 근처 상인 {vendor_npc.name or 'NPC'} 방문")
+                            return _MoveToProcedure(
+                                vendor_npc.name or "vendor",
+                                vendor_npc.x, vendor_npc.y,
+                            )
+                        # No visible vendors — try town locations
+                        move = await self._roaming.move_to_location(
+                            ctx, "bank", "tavern", "inn", "guild", "road",
+                        )
+                        if move:
+                            _intent("교착 복구 Lv4: 야외 이동 불가 → 마을로 이동")
                             return move
 
                 # Level 5+: Forum escalation, then reset cycle
@@ -930,17 +953,35 @@ class Planner:
             # where monsters spawn; otherwise try populated town areas.
             if time.time() > self._move_fail_until:
                 if _deadlock_level >= 4:
-                    _intent("교착 복구: 사냥감 탐색 → 야외로 이동")
+                    # Try wilderness first (monsters spawn near mines/camps)
                     move = await self._roaming.move_to_location(
                         ctx, "mine", "mining", "camp",
                     )
+                    if move:
+                        _intent("교착 복구: 사냥감 탐색 → 야외로 이동")
+                        return move
+                    # Wilderness blocked — try visible vendor NPC directly
+                    vendor_npc = self._find_visible_vendor_npc(ctx, ss)
+                    if vendor_npc:
+                        _intent(f"교착 복구: 근처 상인 {vendor_npc.name or 'NPC'} 방문")
+                        return _MoveToProcedure(
+                            vendor_npc.name or "vendor",
+                            vendor_npc.x, vendor_npc.y,
+                        )
+                    # No visible vendors — try town locations as last resort
+                    move = await self._roaming.move_to_location(
+                        ctx, "bank", "tavern", "inn", "guild", "road",
+                    )
+                    if move:
+                        _intent("교착 복구: 마을 중심부로 이동 → 상인 탐색")
+                        return move
                 else:
-                    _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
                     move = await self._roaming.move_to_location(
                         ctx, "bank", "tavern", "inn", "blacksmith",
                     )
-                if move:
-                    return move
+                    if move:
+                        _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
+                        return move
 
             # All immediate paths exhausted — return None; attempt counter
             # was already incremented so we'll escalate after 3 idle entries.
@@ -1395,6 +1436,57 @@ class Planner:
             return None  # none reachable
 
         return candidates[0]
+
+    def _find_visible_vendor_npc(self, ctx: AgentContext, ss):
+        """Find a vendor NPC visible in the world state worth walking toward.
+
+        Unlike _find_vendor (8-tile interaction range), this scans the full
+        18-tile visibility range.  Used in deadlock recovery when named-
+        location movement is blocked but a vendor NPC is actually visible.
+        """
+        from anima.skills.trade.vendor import (
+            HUMAN_BODIES,
+            _is_refused,
+            _is_vendor,
+        )
+
+        candidates = []
+        for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
+            if m.serial == ss.serial:
+                continue
+            if m.body not in HUMAN_BODIES:
+                continue
+            if _is_refused(ctx, m.serial):
+                continue
+            if not _is_vendor(m):
+                continue
+            dist = max(abs(m.x - ss.x), abs(m.y - ss.y))
+            if dist <= 2:
+                continue  # already next to this vendor
+            candidates.append((m, dist))
+
+        if not candidates:
+            return None
+
+        # Prefer closest reachable vendor
+        candidates.sort(key=lambda pair: pair[1])
+
+        if ctx.map_reader:
+            from anima.pathfinding import find_path
+
+            for m, _d in candidates:
+                quick_path = find_path(
+                    ctx.map_reader, ss.x, ss.y, m.x, m.y,
+                    max_steps=500,
+                    current_z=ss.z,
+                    adjacent=True,
+                )
+                if quick_path:
+                    return m
+            return None  # none reachable
+
+        return candidates[0][0]
+
 
 class _DropJunkItems:
     """Deadlock recovery: drop non-essential items to free weight.
