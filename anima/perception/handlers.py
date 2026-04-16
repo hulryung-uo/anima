@@ -1110,8 +1110,16 @@ def register_handlers(
         container_item = p.world.items.get(container_serial)
         vendor_serial = container_item.container if container_item else 0
 
-        # Gather items that are inside this container (from 0x3C)
-        container_items = [it for it in p.world.items.values() if it.container == container_serial]
+        # Gather items that are inside this container (from 0x3C).
+        # ServUO sends 0x3C in REVERSE order (list.Count-1 .. 0) while
+        # 0x74 is sent FORWARD (0 .. list.Count-1). Each 0x3C item has
+        # x=(original_index + 1), y=1, so sorting by (x, y) ascending
+        # recovers the canonical order that the price list expects.
+        # See ServUO Packets.cs:306-310.
+        container_items = sorted(
+            (it for it in p.world.items.values() if it.container == container_serial),
+            key=lambda it: (it.x, it.y),
+        )
 
         buy_items: list[VendorBuyItem] = []
         for i in range(count):
