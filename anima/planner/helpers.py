@@ -292,7 +292,7 @@ class _PickUpAndSmelt:
                     forge = loc
         if forge and best_dist > 3:
             logger.info("moving_to_forge", target=forge.name, dist=best_dist)
-            await go_to(ctx, forge.x, forge.y)
+            await go_to(ctx, forge.nav_x, forge.nav_y)
 
 
 class _ScavengeGroundItems:

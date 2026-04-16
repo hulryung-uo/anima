@@ -63,6 +63,7 @@ async def go_to(
     permanent_denied: set[tuple[int, int]] = set()  # tiles that always block
     _door_tried: set[tuple[int, int]] = set()  # door tiles already attempted
     _opened_door_positions: set[tuple[int, int]] = set()  # positions where opened doors moved TO
+    _mobile_waits: dict[tuple[int, int], int] = {}  # tiles waited on due to NPC blocking
     consecutive_denials_without_progress = 0
     last_progress_pos: tuple[int, int] = (ss.x, ss.y)
 
@@ -356,7 +357,28 @@ async def go_to(
                 logger.info("go_to_fatigue_timeout", stam=ss.stam, pos=f"({sx},{sy})")
                 return False
 
-            # Not a door — add to permanent denied and recalculate.
+            # Check if a mobile (NPC/animal) is on the denied tile.
+            # NPCs wander and vacate tiles — don't permanently deny them.
+            # Wait briefly for the NPC to move, then retry the path.
+            mobile_at_tile = any(
+                mob.x == next_x and mob.y == next_y
+                for mob in ctx.perception.world.mobiles.values()
+                if mob.serial != ss.serial
+            )
+            if mobile_at_tile:
+                waits = _mobile_waits.get((next_x, next_y), 0)
+                if waits < 3:
+                    _mobile_waits[(next_x, next_y)] = waits + 1
+                    logger.info(
+                        "go_to_mobile_blocked",
+                        pos=f"({sx},{sy})", blocked=f"({next_x},{next_y})",
+                        wait=waits + 1,
+                    )
+                    await asyncio.sleep(1.5)
+                    path = []  # recalculate — NPC may have moved
+                    continue
+
+            # Not a door, not a mobile — add to permanent denied.
             # Only deny the exact tile the server rejected.
             # Speculative probing of perpendicular tiles was removed because
             # it creates false denials at building corners, blocking the

@@ -203,10 +203,10 @@ class RoamingHelper:
                 logger.info(
                     "planner_waypoint_routing",
                     via=waypoint.name,
-                    pos=f"({waypoint.x},{waypoint.y})",
+                    pos=f"({waypoint.nav_x},{waypoint.nav_y})",
                     final_target=best.name,
                 )
-                return _MoveToProcedure(waypoint.name, waypoint.x, waypoint.y)
+                return _MoveToProcedure(waypoint.name, waypoint.nav_x, waypoint.nav_y)
 
         if ctx.bus:
             ctx.bus.publish("movement.start", {
@@ -214,7 +214,7 @@ class RoamingHelper:
                 "importance": 2,
             })
         self._location_stats.record_visit(best.name, success=True)
-        return _MoveToProcedure(best.name, best.x, best.y)
+        return _MoveToProcedure(best.name, best.nav_x, best.nav_y)
 
     def mark_nearby_mine_exhausted(self, ctx: "AgentContext", ss) -> None:
         """Mark the mine LOCATION nearest to the player as exhausted.
@@ -297,15 +297,15 @@ class RoamingHelper:
                 logger.info(
                     "planner_waypoint_routing",
                     via=waypoint.name,
-                    pos=f"({waypoint.x},{waypoint.y})",
+                    pos=f"({waypoint.nav_x},{waypoint.nav_y})",
                     final_target=target.name,
                 )
-                return _MoveToProcedure(waypoint.name, waypoint.x, waypoint.y)
+                return _MoveToProcedure(waypoint.name, waypoint.nav_x, waypoint.nav_y)
 
         logger.info(
             "planner_moving_to_activity",
             target=target.name,
-            pos=f"({target.x},{target.y})",
+            pos=f"({target.nav_x},{target.nav_y})",
             dist=best_dist,
         )
         if ctx.bus:
@@ -314,4 +314,4 @@ class RoamingHelper:
                 "importance": 2,
             })
         self._location_stats.record_visit(target.name, success=True)
-        return _MoveToProcedure(target.name, target.x, target.y)
+        return _MoveToProcedure(target.name, target.nav_x, target.nav_y)
