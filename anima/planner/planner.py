@@ -797,11 +797,12 @@ class Planner:
             # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
             # Progressive recovery:
             #   Level 0: sell junk to vendor / scavenge nearby (3 attempts)
-            #   Level 1: walk to vendor area to sell junk / drop heavy junk
+            #   Level 1: drop ALL unsellable junk to unblock strategies
             #   Level 2: wander-explore (random walk scanning for items)
-            #   Level 3: relocate to different city (Britain)
-            #   Level 4: hunt monsters for gold
-            #   Level 5: forum escalation, then reset cycle
+            #   Level 3: beg at bank — walk to populated area, ask for help
+            #   Level 4: relocate to different city (Britain)
+            #   Level 5: hunt monsters for gold
+            #   Level 6+: forum escalation, then reset cycle
             logger.info("planner_deadlock_recovery_attempt")
 
             # Don't clear _failed_destinations or _move_fail_until here.
@@ -826,10 +827,13 @@ class Planner:
             _vendor_idx = ctx.blackboard.get("_deadlock_vendor_idx", 0)
             _sell_vendor_kw = [_all_vendor_kw[_vendor_idx % len(_all_vendor_kw)]] if _all_vendor_kw else []
 
-            # --- Sell non-essential items for gold ---
+            # --- Sell non-essential items for gold (Level 0 only) ---
             # Agent may have junk items (clothing, books, weapons) that
             # vendors will buy. Even a few gold can fund a pickaxe (~11g).
-            if self._has_sellable_junk(ctx, ss):
+            # Gate on Level 0: once sell attempts fail 3 times and the
+            # level escalates, stop retrying — the sell-junk block would
+            # otherwise monopolize every tick and prevent escalation.
+            if _deadlock_level == 0 and self._has_sellable_junk(ctx, ss):
                 proc = _get_proc("sell_to_vendor")
                 if proc and await proc.can_start(ctx):
                     _intent("교착 복구: 불필요 아이템 판매 → 금화 확보")
@@ -874,36 +878,37 @@ class Planner:
                     weight=f"{ss.weight}/{ss.weight_max}",
                 )
 
-                # Level 1: Walk to vendor area to sell, or drop heavy junk
+                # Level 1: Drop ALL unsellable junk
+                # Purpose isn't reducing weight — it's clearing the
+                # _has_sellable_junk flag so future Level-0 retries
+                # (after a full reset) won't re-trap the agent.
                 if _deadlock_level == 1:
-                    if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.5:
-                        _intent("교착 복구 Lv1: 불필요 아이템 버리기")
+                    if self._has_sellable_junk(ctx, ss):
+                        _intent("교착 복구 Lv1: 판매 불가 아이템 버리기")
                         return _DropJunkItems(ss)
-                    if time.time() > self._move_fail_until:
-                        move = await self._roaming.move_to_location(
-                            ctx, *_sell_vendor_kw,
-                        )
-                        if move:
-                            _intent("교착 복구 Lv1: 상점 방문하여 아이템 판매")
-                            return move
 
                 # Level 2: Wander-explore — random walk around town
                 elif _deadlock_level == 2:
                     _intent("교착 복구 Lv2: 마을 주변 탐색 (랜덤 이동)")
                     return _WanderAndScavenge(ss)
 
-                # Level 3: Relocate to a different city (Britain)
+                # Level 3: Beg at bank — walk to populated area, ask for help
+                elif _deadlock_level == 3:
+                    _intent("교착 복구 Lv3: 은행/광장으로 이동하여 도움 요청")
+                    return _BegAtBank(ss)
+
+                # Level 4: Relocate to a different city (Britain)
                 # Local town is exhausted — walk to Britain which has
                 # more vendor variety, player traffic, and ground items.
-                elif _deadlock_level == 3:
-                    _intent("교착 복구 Lv3: 다른 도시로 이동 (Britain)")
+                elif _deadlock_level == 4:
+                    _intent("교착 복구 Lv4: 다른 도시로 이동 (Britain)")
                     return _RelocateToCity(ss)
 
-                # Level 4: Hunt monsters for gold
-                elif _deadlock_level == 4:
+                # Level 5: Hunt monsters for gold
+                elif _deadlock_level == 5:
                     target = self._find_huntable_target(ctx, ss)
                     if target:
-                        _intent(f"교착 복구 Lv4: {target.name or 'monster'} 사냥")
+                        _intent(f"교착 복구 Lv5: {target.name or 'monster'} 사냥")
                         return _HuntForGold(target, ss)
                     # No targets in town — try wilderness, then town locations
                     if time.time() > self._move_fail_until:
@@ -911,12 +916,12 @@ class Planner:
                             ctx, "mine", "mining", "camp",
                         )
                         if move:
-                            _intent("교착 복구 Lv4: 몬스터 없음 → 야외로 이동")
+                            _intent("교착 복구 Lv5: 몬스터 없음 → 야외로 이동")
                             return move
                         # Wilderness blocked — try visible vendor NPC
                         vendor_npc = self._find_visible_vendor_npc(ctx, ss)
                         if vendor_npc:
-                            _intent(f"교착 복구 Lv4: 근처 상인 {vendor_npc.name or 'NPC'} 방문")
+                            _intent(f"교착 복구 Lv5: 근처 상인 {vendor_npc.name or 'NPC'} 방문")
                             return _MoveToProcedure(
                                 vendor_npc.name or "vendor",
                                 vendor_npc.x, vendor_npc.y,
@@ -926,16 +931,16 @@ class Planner:
                             ctx, "bank", "tavern", "inn", "guild", "road",
                         )
                         if move:
-                            _intent("교착 복구 Lv4: 야외 이동 불가 → 마을로 이동")
+                            _intent("교착 복구 Lv5: 야외 이동 불가 → 마을로 이동")
                             return move
                     # All named locations exhausted — desperate exploration
-                    _intent("교착 복구 Lv4: 탐색 실패 → 랜덤 방향 원거리 탐색")
+                    _intent("교착 복구 Lv5: 탐색 실패 → 랜덤 방향 원거리 탐색")
                     return _DesperateExploration(ss)
 
-                # Level 5+: Forum escalation, then reset cycle
-                if _deadlock_level >= 5:
+                # Level 6+: Forum escalation, then reset cycle
+                if _deadlock_level >= 6:
                     ctx.blackboard["_deadlock_recovery_level"] = 0
-                    _intent("교착 상태 Lv5: 포럼에 도움 요청")
+                    _intent("교착 상태 Lv6: 포럼에 도움 요청")
                     await self._deadlock.escalate_to_forum(ctx)
                     return None
 
@@ -946,16 +951,16 @@ class Planner:
                 return _ScavengeGroundItems(ground_items, ss)
 
             # At hunting level, try to find and attack nearby monsters
-            if _deadlock_level >= 4:
+            if _deadlock_level >= 5:
                 target = self._find_huntable_target(ctx, ss)
                 if target:
-                    _intent(f"교착 복구 Lv4: {target.name or 'monster'} 사냥")
+                    _intent(f"교착 복구 Lv5: {target.name or 'monster'} 사냥")
                     return _HuntForGold(target, ss)
 
             # Walk toward useful area — at hunting level, go to wilderness
             # where monsters spawn; otherwise try populated town areas.
             if time.time() > self._move_fail_until:
-                if _deadlock_level >= 4:
+                if _deadlock_level >= 5:
                     # Try wilderness first (monsters spawn near mines/camps)
                     move = await self._roaming.move_to_location(
                         ctx, "mine", "mining", "camp",
@@ -986,9 +991,9 @@ class Planner:
                         _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
                         return move
 
-            # All immediate paths exhausted at Level 3+ — try desperate
+            # All immediate paths exhausted at Level 4+ — try desperate
             # exploration (random walk in new direction) before giving up.
-            if _deadlock_level >= 3:
+            if _deadlock_level >= 4:
                 _intent("교착 복구: 모든 경로 차단 → 랜덤 방향 탐색")
                 return _DesperateExploration(ss)
 
@@ -1580,8 +1585,164 @@ class _DropJunkItems:
         )
 
 
+class _BegAtBank:
+    """Deadlock recovery Lv3: walk to a populated area and ask for help.
+
+    Banks and taverns are where players congregate and drop items.
+    The agent walks toward visible human NPCs or players, says it
+    needs help in-game, then scans for any items that appear on the
+    ground (other players may drop spare tools or gold).
+
+    This is realistic UO behavior — Britain Bank is famous for
+    charitable item drops and player interaction.
+    """
+
+    WAIT_TICKS = 6       # how many 5-second waits (total ~30s)
+    TICK_DELAY = 5.0     # seconds between scans while begging
+    SCAN_RADIUS = 3      # tiles to check for dropped items
+
+    def __init__(self, ss) -> None:
+        self.name = "beg_at_bank"
+        self.description = "Ask nearby players for help"
+        self._start_pos = (ss.x, ss.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+
+        from anima.action.movement import go_to
+        from anima.client.packets import (
+            build_drop_item,
+            build_pick_up,
+            build_unicode_speech,
+        )
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
+
+        # Walk toward nearest human NPC cluster (players gather near them)
+        HUMAN_BODIES = {0x0190, 0x0191}
+        humans = [
+            m for m in ctx.perception.world.nearby_mobiles(
+                ss.x, ss.y, distance=18,
+            )
+            if m.serial != ss.serial and m.body in HUMAN_BODIES
+        ]
+        if humans:
+            # Walk toward the closest human
+            humans.sort(
+                key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y),
+            )
+            target = humans[0]
+            dist = max(abs(target.x - ss.x), abs(target.y - ss.y))
+            if dist > 3:
+                await go_to(ctx, target.x, target.y)
+
+        # Say we need help
+        ss = ctx.perception.self_state
+        try:
+            await ctx.conn.send_packet(build_unicode_speech(
+                "Hail! I'm a miner down on my luck. "
+                "Lost all my tools and coin. "
+                "Could anyone spare a pickaxe or a few gold?"
+            ))
+            await asyncio.sleep(2.0)
+            await ctx.conn.send_packet(build_unicode_speech(
+                "I'll repay the favor in ingots "
+                "once I'm back on my feet."
+            ))
+        except Exception:
+            pass
+
+        logger.info(
+            "beg_at_bank_waiting",
+            pos=f"({ss.x},{ss.y})",
+            nearby_humans=len(humans),
+        )
+
+        # Wait and scan for items appearing on ground
+        items_picked = 0
+        gold_received = False
+
+        for _ in range(self.WAIT_TICKS):
+            await asyncio.sleep(self.TICK_DELAY)
+
+            ss = ctx.perception.self_state
+
+            # Check if someone gave us gold directly
+            if ss.gold >= 10:
+                gold_received = True
+                logger.info("beg_received_gold", gold=ss.gold)
+                break
+
+            # Check if someone gave us a tool
+            from anima.actions.inventory import find_in_backpack
+            from anima.skills.gathering.mine import PICKAXE_GRAPHICS
+            if find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}):
+                logger.info("beg_received_tool")
+                return ProcedureResult(
+                    success=True,
+                    message="Received a mining tool from another player!",
+                )
+
+            # Scan for items on ground within pickup range
+            for it in ctx.perception.world.items.values():
+                if (it.container == 0
+                        and max(abs(it.x - ss.x), abs(it.y - ss.y))
+                        <= self.SCAN_RADIUS):
+                    if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
+                        break
+                    dist = max(abs(it.x - ss.x), abs(it.y - ss.y))
+                    if dist > 2:
+                        arrived = await go_to(ctx, it.x, it.y)
+                        if not arrived:
+                            continue
+                    await ctx.conn.send_packet(
+                        build_pick_up(it.serial, it.amount)
+                    )
+                    await asyncio.sleep(0.3)
+                    await ctx.conn.send_packet(
+                        build_drop_item(it.serial, container=backpack)
+                    )
+                    await asyncio.sleep(0.3)
+                    items_picked += 1
+                    logger.info(
+                        "beg_picked_item",
+                        serial=f"0x{it.serial:08X}",
+                        graphic=f"0x{it.graphic:04X}",
+                    )
+
+            if items_picked >= 3:
+                break
+
+        if gold_received or items_picked > 0:
+            parts = []
+            if gold_received:
+                parts.append(f"received {ss.gold}gp")
+            if items_picked:
+                parts.append(f"picked up {items_picked} items")
+            return ProcedureResult(
+                success=True,
+                message=f"Begged at bank: {', '.join(parts)}",
+            )
+
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.MISSING_RESOURCE,
+            message="Begged at bank but no one helped",
+        )
+
+
 class _RelocateToCity:
-    """Deadlock recovery Lv3: walk to a different city entirely.
+    """Deadlock recovery Lv4: walk to a different city entirely.
 
     When local town options are exhausted (vendors refuse items, nothing
     on the ground, no huntable monsters), relocate to Britain — the most
@@ -1794,7 +1955,7 @@ class _WanderAndScavenge:
 
 
 class _HuntForGold:
-    """Deadlock recovery Lv3: attack a nearby monster and loot gold.
+    """Deadlock recovery Lv5: attack a nearby monster and loot gold.
 
     Walks to the target, enters war mode, fights until target dies or
     timeout, then picks up any gold dropped on the ground.
@@ -1964,7 +2125,7 @@ class _HuntForGold:
 
 
 class _DesperateExploration:
-    """Deadlock recovery Lv4 fallback: random long-distance walk.
+    """Deadlock recovery Lv5 fallback: random long-distance walk.
 
     When all named locations, hunting, and relocation fail, the agent
     is trapped in a loop of exhausted destinations.  This procedure
