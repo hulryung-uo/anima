@@ -814,6 +814,20 @@ class Planner:
             _deadlock_attempts = ctx.blackboard.get("_deadlock_attempt_count", 0)
             _deadlock_level = ctx.blackboard.get("_deadlock_recovery_level", 0)
 
+            # Gold-progress anti-escalation: if the agent is earning gold
+            # (e.g. from killing rats), reset the attempt counter so it
+            # stays at the current level and keeps hunting instead of
+            # escalating past a working strategy.
+            _prev_gold = ctx.blackboard.get("_deadlock_last_gold", 0)
+            if ss.gold > _prev_gold:
+                logger.info(
+                    "deadlock_gold_progress",
+                    prev=_prev_gold, now=ss.gold,
+                )
+                _deadlock_attempts = 0
+                ctx.blackboard["_deadlock_attempt_count"] = 0
+            ctx.blackboard["_deadlock_last_gold"] = ss.gold
+
             # Always count visits — this drives escalation even when
             # nothing is found (unlike the old scavenge-only counter).
             ctx.blackboard["_deadlock_attempt_count"] = _deadlock_attempts + 1
@@ -826,6 +840,27 @@ class Planner:
             _all_vendor_kw = self._sellable_vendor_keywords(ctx, ss)
             _vendor_idx = ctx.blackboard.get("_deadlock_vendor_idx", 0)
             _sell_vendor_kw = [_all_vendor_kw[_vendor_idx % len(_all_vendor_kw)]] if _all_vendor_kw else []
+
+            # --- Buy tools escape hatch ---
+            # If the agent accumulated gold (from hunting rats, begging,
+            # or selling junk), try buying a pickaxe immediately.  The
+            # normal buy-tools logic lives at Priority 4.5 which is
+            # AFTER the deadlock block — the agent can never reach it
+            # while trapped here.  This closes the loop:
+            # hunt rats → gold → buy pickaxe → exit deadlock.
+            if ss.gold >= 10:
+                proc = _get_proc("buy_from_vendor")
+                if proc and await proc.can_start(ctx):
+                    _intent("교착 복구: 금화 확보됨 → 도구 구매 시도")
+                    return proc
+                # No vendor nearby — walk to a blacksmith to buy tools
+                if time.time() > self._move_fail_until:
+                    move = await self._roaming.move_to_location(
+                        ctx, "blacksmith", "arms", "provisioner",
+                    )
+                    if move:
+                        _intent("교착 복구: 금화 보유 → 도구 상점으로 이동")
+                        return move
 
             # --- Sell non-essential items for gold (Level 0 only) ---
             # Agent may have junk items (clothing, books, weapons) that
@@ -904,9 +939,11 @@ class Planner:
                     _intent("교착 복구 Lv4: 다른 도시로 이동 (Britain)")
                     return _RelocateToCity(ss)
 
-                # Level 5: Hunt monsters for gold
+                # Level 5: Hunt monsters for gold (including small animals)
                 elif _deadlock_level == 5:
-                    target = self._find_huntable_target(ctx, ss)
+                    target = self._find_huntable_target(
+                        ctx, ss, include_small_animals=True,
+                    )
                     if target:
                         _intent(f"교착 복구 Lv5: {target.name or 'monster'} 사냥")
                         return _HuntForGold(target, ss)
@@ -950,17 +987,20 @@ class Planner:
                 _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
                 return _ScavengeGroundItems(ground_items, ss)
 
-            # At hunting level, try to find and attack nearby monsters
-            if _deadlock_level >= 5:
-                target = self._find_huntable_target(ctx, ss)
+            # Hunt nearby creatures for gold — at level 2+ include small
+            # animals (rats drop 1-5gp, enough to bootstrap a pickaxe).
+            if _deadlock_level >= 2:
+                target = self._find_huntable_target(
+                    ctx, ss, include_small_animals=True,
+                )
                 if target:
-                    _intent(f"교착 복구 Lv5: {target.name or 'monster'} 사냥")
+                    _intent(f"교착 복구: {target.name or 'creature'} 사냥 → 금화 확보")
                     return _HuntForGold(target, ss)
 
-            # Walk toward useful area — at hunting level, go to wilderness
-            # where monsters spawn; otherwise try populated town areas.
+            # Walk toward useful area — at level 3+ try wilderness where
+            # monsters spawn; otherwise try populated town areas.
             if time.time() > self._move_fail_until:
-                if _deadlock_level >= 5:
+                if _deadlock_level >= 3:
                     # Try wilderness first (monsters spawn near mines/camps)
                     move = await self._roaming.move_to_location(
                         ctx, "mine", "mining", "camp",
@@ -1394,8 +1434,16 @@ class Planner:
             return ["blacksmith", "arms", "provisioner", "tailor"]
         return get_vendor_keywords_for_items(sellable_graphics)
 
-    def _find_huntable_target(self, ctx: AgentContext, ss):
-        """Find a nearby monster the agent can attack for gold loot."""
+    def _find_huntable_target(
+        self, ctx: AgentContext, ss, *,
+        include_small_animals: bool = False,
+    ):
+        """Find a nearby monster the agent can attack for gold loot.
+
+        When *include_small_animals* is True (used in deadlock recovery),
+        rats and other small town creatures are included — they drop 1-5
+        gold in classic UO and are a viable bootstrap income source.
+        """
         from anima.perception.enums import NotorietyFlag
 
         ATTACKABLE = {
@@ -1420,8 +1468,8 @@ class Planner:
             # Don't attack humans unless clearly hostile
             if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
                 continue
-            # Skip small town animals — unreachable indoors, no gold drops
-            if m.body in TOWN_PETS:
+            # Skip small town animals unless deadlock-hunting for gold
+            if m.body in TOWN_PETS and not include_small_animals:
                 continue
             # Skip creature types we've killed before that dropped no gold
             if m.body in no_gold_bodies:
@@ -1975,6 +2023,20 @@ class _HuntForGold:
     async def can_start(self, ctx) -> bool:
         return True
 
+    # Weapon graphics the agent can equip for combat (one-handed)
+    _WEAPON_GRAPHICS = {
+        0x0F51, 0x0F52,  # dagger
+        0x0F5E, 0x0F5F,  # broadsword
+        0x13FF, 0x1400,  # katana
+        0x13B6, 0x13B7,  # scimitar
+        0x0F49, 0x0F4A,  # axe
+        0x0EC4, 0x0EC5,  # skinning knife
+        0x0F61, 0x0F62,  # longsword
+        0x1401, 0x1402,  # kryss
+        0x13B9, 0x13BA,  # viking sword
+        0x0E85, 0x0E86,  # pickaxe (also a weapon)
+    }
+
     async def run(self, ctx) -> ProcedureResult:
         import asyncio
         import time
@@ -1982,6 +2044,7 @@ class _HuntForGold:
         from anima.action.movement import go_to
         from anima.client.packets import (
             build_attack,
+            build_double_click,
             build_drop_item,
             build_pick_up,
             build_war_mode,
@@ -1996,6 +2059,20 @@ class _HuntForGold:
                 reason=FailureReason.BLOCKED,
                 message="Cannot fight while dead",
             )
+
+        # Equip a weapon from backpack if not already wielding one.
+        # Double-clicking a weapon auto-equips it to the correct slot.
+        backpack = ss.equipment.get(0x15)
+        has_weapon_equipped = ss.equipment.get(0x01) or ss.equipment.get(0x02)
+        if not has_weapon_equipped and backpack:
+            for it in ctx.perception.world.items.values():
+                if (it.container == backpack
+                        and it.graphic in self._WEAPON_GRAPHICS):
+                    await ctx.conn.send_packet(build_double_click(it.serial))
+                    await asyncio.sleep(0.5)
+                    logger.info("hunt_equipped_weapon",
+                                graphic=f"0x{it.graphic:04X}")
+                    break
 
         # Walk toward target if not adjacent
         dist = max(abs(self._target_pos[0] - ss.x),
