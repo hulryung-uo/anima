@@ -803,10 +803,11 @@ class Planner:
             #   Level 4: forum escalation, then reset cycle
             logger.info("planner_deadlock_recovery_attempt")
 
-            # Clear failed destinations each cycle so the agent can retry
-            # paths that were blocked in previous recovery attempts.
-            self._failed_destinations.clear()
-            self._move_fail_until = 0.0
+            # Don't clear _failed_destinations or _move_fail_until here.
+            # Their natural cooldowns (5 min / 30s) cause move_to_location
+            # to return None for exhausted destinations, letting the code
+            # fall through to the escalation check instead of retrying the
+            # same blocked paths forever.
 
             _deadlock_attempts = ctx.blackboard.get("_deadlock_attempt_count", 0)
             _deadlock_level = ctx.blackboard.get("_deadlock_recovery_level", 0)
@@ -841,6 +842,9 @@ class Planner:
                 _deadlock_level += 1
                 ctx.blackboard["_deadlock_recovery_level"] = _deadlock_level
                 ctx.blackboard["_deadlock_attempt_count"] = 0
+                # Fresh destinations for the new level so higher-level
+                # strategies (wander, hunt) aren't blocked by stale entries.
+                self._failed_destinations.clear()
                 logger.warning(
                     "planner_deadlock_escalating",
                     attempts=_deadlock_attempts,
