@@ -193,6 +193,21 @@ class RoamingHelper:
         best_dist = best_scored.distance
 
         logger.info("planner_move_to", target=best.name, dist=best_dist)
+
+        # Waypoint routing for longer distances — urban areas have building
+        # walls that exhaust the A* budget on direct point-to-point paths.
+        if best_dist > 20:
+            from anima.world_knowledge import ALL_LOCATIONS as _all_locs
+            waypoint = _find_waypoint_toward(ss.x, ss.y, best.x, best.y, _all_locs)
+            if waypoint and not self.is_destination_failed(waypoint.x, waypoint.y):
+                logger.info(
+                    "planner_waypoint_routing",
+                    via=waypoint.name,
+                    pos=f"({waypoint.x},{waypoint.y})",
+                    final_target=best.name,
+                )
+                return _MoveToProcedure(waypoint.name, waypoint.x, waypoint.y)
+
         if ctx.bus:
             ctx.bus.publish("movement.start", {
                 "message": f"→ Moving to {best.name} (dist {best_dist})",

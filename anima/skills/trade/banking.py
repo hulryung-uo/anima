@@ -237,9 +237,6 @@ async def _wait_for_bank_box(ctx: BrainContext) -> int | None:
     return None
 
 
-HUMAN_BODIES = {0x0190, 0x0191}  # male, female
-
-
 def _find_banker(ctx: BrainContext) -> MobileInfo | None:
     """Find a banker NPC within speech range (12 tiles).
 
@@ -247,7 +244,6 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
     Detection priority:
     1. Name contains "banker"
     2. Near known bank + INVULNERABLE + unnamed or "bank" in name
-    3. Near known bank + human body NPC (fallback if notoriety not set)
     """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
@@ -273,22 +269,6 @@ def _find_banker(ctx: BrainContext) -> MobileInfo | None:
                 name_lower = (m.name or "").lower()
                 if not name_lower or "bank" in name_lower:
                     return m
-
-    # Pass 3: near known bank → closest human NPC
-    if _near_bank(ss.x, ss.y):
-        npc_candidates = []
-        for m in nearby:
-            if m.serial == ss.serial:
-                continue
-            # Human body, not a player (low serial = NPC in most servers)
-            if m.body in HUMAN_BODIES and m.serial < 0x10000:
-                npc_candidates.append(m)
-        if npc_candidates:
-            # Pick closest
-            npc_candidates.sort(
-                key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y),
-            )
-            return npc_candidates[0]
 
     return None
 
