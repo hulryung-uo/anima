@@ -86,6 +86,8 @@ _NOTABLE_EVENT_PROCEDURES = {
 # path, user intervention required") and strategy decisions.
 _NOTABLE_TOPICS = {
     "planner.stopped",
+    "planner.death",
+    "planner.critical_hp",
 }
 
 
@@ -149,9 +151,11 @@ def _print_status() -> None:
         return
     intent = (p.get("intent") or "").strip()
     proc = (p.get("procedure") or "").strip() or "-"
+    hp_cur = p.get("hp", 0)
+    hp_max = p.get("hp_max", 1)
     key = (
         p.get("x"), p.get("y"),
-        p.get("hp"), p.get("weight"), p.get("gold"),
+        hp_cur, p.get("weight"), p.get("gold"),
         proc, intent,
     )
     if key == _last_status_key:
@@ -160,12 +164,23 @@ def _print_status() -> None:
 
     ts = time.strftime("%H:%M:%S")
     pos = f"({p.get('x','?')},{p.get('y','?')})"
-    hp = f"{p.get('hp','?')}/{p.get('hp_max','?')}"
     w = f"{p.get('weight','?')}/{p.get('weight_max','?')}"
     g = p.get('gold', '?')
     intent_short = intent[:60]
+
+    # HP alert prefix
+    if hp_cur <= 0 and hp_max > 0:
+        hp_str = f"DEAD(0/{hp_max})"
+        prefix = "☠ "
+    elif hp_max > 0 and hp_cur < hp_max * 0.3:
+        hp_str = f"LOW({hp_cur}/{hp_max})"
+        prefix = "⚠ "
+    else:
+        hp_str = f"{hp_cur}/{hp_max}"
+        prefix = ""
+
     print(
-        f"[{ts}] pos={pos} hp={hp} w={w} g={g} proc={proc} intent='{intent_short}'",
+        f"{prefix}[{ts}] pos={pos} hp={hp_str} w={w} g={g} proc={proc} intent='{intent_short}'",
         flush=True,
     )
 

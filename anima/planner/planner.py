@@ -585,7 +585,32 @@ class Planner:
             ctx.blackboard["planner_intent"] = text
 
         # --- Priority 1: Survival ---
+        if ss.hits_max > 0 and ss.hits <= 0:
+            # DEAD — surface prominently so supervisor/user sees it.
+            logger.warning("agent_dead", hp=ss.hits, hp_max=ss.hits_max)
+            if ctx.bus is not None:
+                try:
+                    ctx.bus.publish("planner.death", {
+                        "message": f"☠ 사망 (HP {ss.hits}/{ss.hits_max})",
+                        "importance": 5,
+                    })
+                except Exception:
+                    pass
+            _intent(f"사망 상태 — 부활 필요")
+            proc = self.registry.get("seek_resurrection")
+            if proc and await proc.can_start(ctx):
+                return proc
+            return None
         if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:
+            logger.warning("agent_low_hp", hp=ss.hits, hp_max=ss.hits_max)
+            if ctx.bus is not None:
+                try:
+                    ctx.bus.publish("planner.critical_hp", {
+                        "message": f"⚠ HP 위험 ({ss.hits}/{ss.hits_max})",
+                        "importance": 4,
+                    })
+                except Exception:
+                    pass
             proc = self.registry.get("heal_self")
             if proc and await proc.can_start(ctx):
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
