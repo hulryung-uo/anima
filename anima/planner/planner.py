@@ -1294,6 +1294,9 @@ class Planner:
             NotorietyFlag.MURDERER,
         }
         HUMAN_BODIES = {0x0190, 0x0191}
+        # Small harmless town animals: often behind walls/inside buildings
+        # and never drop gold. Skip them to avoid wasting movement budget.
+        TOWN_PETS = {0x00C9, 0x00D9, 0x00EE}  # cat, dog, rat
 
         no_gold_bodies = ctx.blackboard.get("_hunt_no_gold_bodies", set())
 
@@ -1305,6 +1308,9 @@ class Planner:
                 continue
             # Don't attack humans unless clearly hostile
             if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
+                continue
+            # Skip small town animals — unreachable indoors, no gold drops
+            if m.body in TOWN_PETS:
                 continue
             # Skip creature types we've killed before that dropped no gold
             if m.body in no_gold_bodies:

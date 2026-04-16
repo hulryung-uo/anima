@@ -44,6 +44,48 @@ _SHIELDS = [0x1B72, 0x1B73, 0x1B74, 0x1B76, 0x1B78, 0x1B7A, 0x1B7B]
 for g in _SHIELDS:
     ITEM_VENDOR_MAP[g] = ["blacksmith", "arms"]
 
+# Daggers → blacksmith, arms (common starting weapons)
+_DAGGERS = [0x0F51, 0x0F52]
+for g in _DAGGERS:
+    ITEM_VENDOR_MAP[g] = ["blacksmith", "arms"]
+
+# Clothing → tailor (shirts, kilts, half aprons, shoes, etc.)
+_CLOTHING = [
+    0x1517, 0x1518,  # shirt
+    0x1537, 0x1538,  # kilt
+    0x153B, 0x153C,  # half apron
+    0x170F, 0x1710,  # shoes
+    0x1515, 0x1516,  # cloak
+    0x1531, 0x1532,  # skirt
+    0x1539, 0x153A,  # body sash
+    0x1541, 0x1542,  # surcoat
+    0x1EFD, 0x1EFE,  # fancy shirt
+    0x1F01, 0x1F02,  # tunic
+    0x1F03, 0x1F04,  # fancy dress
+    0x1F7B, 0x1F7C,  # doublet
+    0x1F9F, 0x1FA0,  # robe
+    0x152E, 0x152F,  # bandana
+    0x1544, 0x1545,  # feathered hat
+    0x1713, 0x1714,  # sandals
+    0x1711, 0x1712,  # boots
+]
+for g in _CLOTHING:
+    ITEM_VENDOR_MAP[g] = ["tailor"]
+
+# Candles, torches → provisioner (SBProvisioner buy list)
+_PROVISIONS = [
+    0x0A28, 0x0A0F, 0x0A10, 0x0A11,  # candles
+    0x0A26,  # candle
+    0x0F6B, 0x0F64,  # torches
+]
+for g in _PROVISIONS:
+    ITEM_VENDOR_MAP[g] = ["provisioner"]
+
+# Books, scrolls → mage, provisioner
+_BOOKS = [0x0FEF, 0x0FF0, 0x0FF1, 0x0FF2, 0x0FF3, 0x0FF4, 0x0FBD, 0x0FBE]
+for g in _BOOKS:
+    ITEM_VENDOR_MAP[g] = ["mage", "provisioner"]
+
 
 def get_vendor_keywords_for_items(item_graphics: set[int]) -> list[str]:
     """Given a set of item graphics, return vendor keywords to search for."""
