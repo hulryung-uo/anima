@@ -799,8 +799,9 @@ class Planner:
             #   Level 0: sell junk to vendor / scavenge nearby (3 attempts)
             #   Level 1: walk to vendor area to sell junk / drop heavy junk
             #   Level 2: wander-explore (random walk scanning for items)
-            #   Level 3: hunt monsters for gold
-            #   Level 4: forum escalation, then reset cycle
+            #   Level 3: relocate to different city (Britain)
+            #   Level 4: hunt monsters for gold
+            #   Level 5: forum escalation, then reset cycle
             logger.info("planner_deadlock_recovery_attempt")
 
             # Don't clear _failed_destinations or _move_fail_until here.
@@ -818,7 +819,12 @@ class Planner:
 
             # Compute item-aware vendor keywords from actual backpack contents
             # so we walk to the RIGHT vendor type (e.g. "arms" for daggers).
-            _sell_vendor_kw = self._sellable_vendor_keywords(ctx, ss)
+            # Rotate through vendor types one at a time so the agent tries
+            # blacksmith, then tailor, then provisioner — not all at once
+            # (which picks the nearest, often the wrong type).
+            _all_vendor_kw = self._sellable_vendor_keywords(ctx, ss)
+            _vendor_idx = ctx.blackboard.get("_deadlock_vendor_idx", 0)
+            _sell_vendor_kw = [_all_vendor_kw[_vendor_idx % len(_all_vendor_kw)]] if _all_vendor_kw else []
 
             # --- Sell non-essential items for gold ---
             # Agent may have junk items (clothing, books, weapons) that
@@ -829,12 +835,14 @@ class Planner:
                     _intent("교착 복구: 불필요 아이템 판매 → 금화 확보")
                     return proc
                 # No vendor nearby → walk to matching vendor type
+                # Rotate to next vendor type for subsequent attempts
+                ctx.blackboard["_deadlock_vendor_idx"] = _vendor_idx + 1
                 if time.time() > self._move_fail_until:
                     move = await self._roaming.move_to_location(
                         ctx, *_sell_vendor_kw,
                     )
                     if move:
-                        _intent("교착 복구: 판매 위해 상점으로 이동")
+                        _intent(f"교착 복구: {_sell_vendor_kw[0]} 상점으로 이동")
                         return move
 
             # After 3 attempts at current level, escalate to next.
@@ -842,9 +850,15 @@ class Planner:
                 _deadlock_level += 1
                 ctx.blackboard["_deadlock_recovery_level"] = _deadlock_level
                 ctx.blackboard["_deadlock_attempt_count"] = 0
-                # Fresh destinations for the new level so higher-level
-                # strategies (wander, hunt) aren't blocked by stale entries.
+                # Fresh state for the new level so higher-level strategies
+                # aren't blocked by stale entries from previous levels.
                 self._failed_destinations.clear()
+                # Clear refused vendors — a vendor that refused at Level 0
+                # (wrong type) shouldn't block Level 1 from retrying after
+                # the agent walks to a different vendor.
+                ctx.blackboard.pop("refused_vendors", None)
+                # Reset vendor rotation index for the new level
+                ctx.blackboard.pop("_deadlock_vendor_idx", None)
                 logger.warning(
                     "planner_deadlock_escalating",
                     attempts=_deadlock_attempts,
@@ -870,11 +884,18 @@ class Planner:
                     _intent("교착 복구 Lv2: 마을 주변 탐색 (랜덤 이동)")
                     return _WanderAndScavenge(ss)
 
-                # Level 3: Hunt monsters for gold
+                # Level 3: Relocate to a different city (Britain)
+                # Local town is exhausted — walk to Britain which has
+                # more vendor variety, player traffic, and ground items.
                 elif _deadlock_level == 3:
+                    _intent("교착 복구 Lv3: 다른 도시로 이동 (Britain)")
+                    return _RelocateToCity(ss)
+
+                # Level 4: Hunt monsters for gold
+                elif _deadlock_level == 4:
                     target = self._find_huntable_target(ctx, ss)
                     if target:
-                        _intent(f"교착 복구 Lv3: {target.name or 'monster'} 사냥")
+                        _intent(f"교착 복구 Lv4: {target.name or 'monster'} 사냥")
                         return _HuntForGold(target, ss)
                     # No targets in town — move to wilderness where monsters spawn
                     if time.time() > self._move_fail_until:
@@ -882,13 +903,13 @@ class Planner:
                             ctx, "mine", "mining", "camp",
                         )
                         if move:
-                            _intent("교착 복구 Lv3: 몬스터 없음 → 야외로 이동")
+                            _intent("교착 복구 Lv4: 몬스터 없음 → 야외로 이동")
                             return move
 
-                # Level 4+: Forum escalation, then reset cycle
-                if _deadlock_level >= 4:
+                # Level 5+: Forum escalation, then reset cycle
+                if _deadlock_level >= 5:
                     ctx.blackboard["_deadlock_recovery_level"] = 0
-                    _intent("교착 상태 Lv4: 포럼에 도움 요청")
+                    _intent("교착 상태 Lv5: 포럼에 도움 요청")
                     await self._deadlock.escalate_to_forum(ctx)
                     return None
 
@@ -899,16 +920,16 @@ class Planner:
                 return _ScavengeGroundItems(ground_items, ss)
 
             # At hunting level, try to find and attack nearby monsters
-            if _deadlock_level >= 3:
+            if _deadlock_level >= 4:
                 target = self._find_huntable_target(ctx, ss)
                 if target:
-                    _intent(f"교착 복구 Lv3: {target.name or 'monster'} 사냥")
+                    _intent(f"교착 복구 Lv4: {target.name or 'monster'} 사냥")
                     return _HuntForGold(target, ss)
 
             # Walk toward useful area — at hunting level, go to wilderness
             # where monsters spawn; otherwise try populated town areas.
             if time.time() > self._move_fail_until:
-                if _deadlock_level >= 3:
+                if _deadlock_level >= 4:
                     _intent("교착 복구: 사냥감 탐색 → 야외로 이동")
                     move = await self._roaming.move_to_location(
                         ctx, "mine", "mining", "camp",
@@ -1455,6 +1476,96 @@ class _DropJunkItems:
             success=dropped > 0,
             message=f"Dropped {dropped} junk items to free weight",
             reason=None if dropped > 0 else FailureReason.MISSING_RESOURCE,
+        )
+
+
+class _RelocateToCity:
+    """Deadlock recovery Lv3: walk to a different city entirely.
+
+    When local town options are exhausted (vendors refuse items, nothing
+    on the ground, no huntable monsters), relocate to Britain — the most
+    populated city with the widest vendor variety and highest player
+    traffic.  Britain Bank is a popular trading spot where items are
+    often left on the ground.
+
+    Uses waypoint-style navigation: first walks toward the general
+    direction, relying on the planner's next tick to continue or sell
+    once vendors are nearby.
+    """
+
+    # Britain Bank — most trafficked area in UO
+    _TARGET_NAME = "West Britain Bank"
+    _TARGET_X = 1425
+    _TARGET_Y = 1690
+
+    def __init__(self, ss) -> None:
+        self.name = "relocate_to_city"
+        self.description = "Relocate to Britain for more options"
+        self._start_pos = (ss.x, ss.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        from anima.action.movement import go_to
+
+        ss = ctx.perception.self_state
+
+        # If already near Britain, just try selling there
+        dist_to_target = max(
+            abs(self._TARGET_X - ss.x), abs(self._TARGET_Y - ss.y),
+        )
+        if dist_to_target <= 30:
+            return ProcedureResult(
+                success=True,
+                message=f"Already near {self._TARGET_NAME}",
+            )
+
+        # Walk toward Britain — long distance, use go_to with a
+        # waypoint ~100 tiles toward the target to make progress
+        # without exhausting the pathfinder's step budget.
+        dx = self._TARGET_X - ss.x
+        dy = self._TARGET_Y - ss.y
+        # Normalize to ~100 tile step
+        magnitude = max(abs(dx), abs(dy), 1)
+        step = min(100, magnitude)
+        wx = ss.x + int(dx * step / magnitude)
+        wy = ss.y + int(dy * step / magnitude)
+
+        logger.info(
+            "relocate_to_city",
+            target=self._TARGET_NAME,
+            dist=dist_to_target,
+            waypoint=f"({wx},{wy})",
+        )
+
+        arrived = await go_to(ctx, wx, wy)
+
+        ss = ctx.perception.self_state
+        new_dist = max(
+            abs(self._TARGET_X - ss.x), abs(self._TARGET_Y - ss.y),
+        )
+        progress = dist_to_target - new_dist
+
+        if progress > 10:
+            return ProcedureResult(
+                success=True,
+                message=(
+                    f"Relocating to {self._TARGET_NAME}: "
+                    f"moved {progress} tiles ({new_dist} remaining)"
+                ),
+            )
+
+        if not arrived:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Could not make progress toward {self._TARGET_NAME}",
+            )
+
+        return ProcedureResult(
+            success=True,
+            message=f"Moving toward {self._TARGET_NAME} ({new_dist} tiles remaining)",
         )
 
 
