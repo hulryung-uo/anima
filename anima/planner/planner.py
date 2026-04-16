@@ -618,7 +618,21 @@ class Planner:
                     return _PickUpAndSmelt(ground_ore, ss)
 
         # --- COLLECTING → CRAFTING_TRIP or COLLECTING → MINING ---
+        # Before exiting COLLECTING, also check for untracked ground ore
+        # (dropped before this expedition cycle started, e.g. from a
+        # previous session or before agent restart). If any exists nearby,
+        # stay in COLLECTING so _PickUpAndSmelt's Path B fallback can
+        # pick it up — otherwise the agent mines MORE ore while piles of
+        # earlier ore rot on the ground un-smelted.
         if expedition.phase == Phase.COLLECTING and not expedition.piles:
+            ground_ore = self._find_ground_ore(ctx, ss)
+            ground_ore_total = sum(it.amount for it in ground_ore) if ground_ore else 0
+            if ground_ore and ground_ore_total >= 2:
+                _intent(
+                    f"수거 중, 바닥에 미수거 광석 {ground_ore_total}개 → 계속 수거"
+                )
+                return _PickUpAndSmelt(ground_ore, ss)
+
             weight_ratio = (ss.weight / ss.weight_max) if ss.weight_max > 0 else 0.0
             if expedition.should_leave_mine(
                 ingot_count=ingot_count,
