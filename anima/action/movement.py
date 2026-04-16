@@ -403,7 +403,7 @@ async def wander_action(ctx: BrainContext) -> Status:
 
     sz = ctx.perception.self_state.z
 
-    for direction in (0, 2, 4, 6):  # N, E, S, W only
+    for direction in range(8):  # All 8 directions including diagonals
         dx, dy = DIRECTION_DELTAS[direction]
         nx, ny = sx + dx, sy + dy
 
@@ -412,6 +412,14 @@ async def wander_action(ctx: BrainContext) -> Status:
             can_walk, _ = tile.walkable_z(sz)
             if not can_walk:
                 continue
+            # Diagonal corner-cutting check
+            if dx != 0 and dy != 0:
+                t1 = ctx.map_reader.get_tile(sx + dx, sy)
+                t2 = ctx.map_reader.get_tile(sx, sy + dy)
+                ok1, _ = t1.walkable_z(sz)
+                ok2, _ = t2.walkable_z(sz)
+                if not (ok1 and ok2):
+                    continue
 
         if ctx.walker.is_tile_denied(nx, ny):
             continue

@@ -116,7 +116,7 @@ class TestFindPath:
     def test_diagonal(self) -> None:
         m = MockMapReader()
         path = find_path(m, 0, 0, 3, 3)
-        assert len(path) == 6  # 4-directional: 3 east + 3 south
+        assert len(path) == 3  # 8-directional: 3 diagonal SE moves
         assert path[-1] == (3, 3)
 
     def test_obstacle_avoidance(self) -> None:
@@ -160,6 +160,17 @@ class TestFindPath:
         assert path[-1] == (5, 2)
         for x, y in path:
             assert (x, y) not in m.blocked
+
+    def test_diagonal_blocked_by_corner(self) -> None:
+        """Diagonal moves blocked when a perpendicular tile is impassable."""
+        m = MockMapReader()
+        # Block the east tile so NE diagonal from (0,0) is not allowed
+        m.block(1, 0)
+        path = find_path(m, 0, 0, 1, -1)  # NE target
+        assert len(path) > 0
+        assert path[-1] == (1, -1)
+        # Path must avoid direct NE (corner-cutting); goes around instead
+        assert (1, 0) not in path
 
     def test_denied_tiles_avoided(self) -> None:
         m = MockMapReader()

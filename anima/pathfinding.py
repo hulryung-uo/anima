@@ -47,7 +47,7 @@ def direction_to(fx: int, fy: int, tx: int, ty: int) -> int:
 
 
 def _octile_distance(x1: int, y1: int, x2: int, y2: int) -> float:
-    # Manhattan distance — 4-directional movement only
+    # Manhattan distance — admissible for 8-dir with diagonal cost=2, cardinal cost=1
     return abs(x2 - x1) + abs(y2 - y1)
 
 
@@ -174,12 +174,29 @@ def _astar_core(
         if len(closed) > max_steps:
             return []
 
-        for direction in (0, 2, 4, 6):  # N, E, S, W only — no diagonals
+        for direction in range(8):  # All 8 directions (ClassicUO reference)
             dx, dy = DIRECTION_DELTAS[direction]
             nx, ny = cx + dx, cy + dy
 
             if (nx, ny) in closed:
                 continue
+
+            # Diagonal corner-cutting check: both perpendicular tiles must
+            # be walkable, otherwise the server will deny the diagonal move.
+            is_diagonal = (dx != 0 and dy != 0)
+            if is_diagonal:
+                side1_ok, _ = _is_walkable(
+                    map_reader, cx + dx, cy, denied_tiles,
+                    current_z, z_at if current_z is not None else None, cx, cy,
+                    doors_passable=doors_passable, door_tiles=door_tiles,
+                )
+                side2_ok, _ = _is_walkable(
+                    map_reader, cx, cy + dy, denied_tiles,
+                    current_z, z_at if current_z is not None else None, cx, cy,
+                    doors_passable=doors_passable, door_tiles=door_tiles,
+                )
+                if not (side1_ok and side2_ok):
+                    continue
 
             can_walk, new_z = _is_walkable(
                 map_reader, nx, ny, denied_tiles, current_z, z_at if current_z is not None else None, cx, cy,
@@ -188,7 +205,7 @@ def _astar_core(
             if not can_walk:
                 continue
 
-            move_cost = 1.0
+            move_cost = 2.0 if is_diagonal else 1.0
             tentative_g = g_score[(cx, cy)] + move_cost
 
             if tentative_g < g_score.get((nx, ny), float("inf")):
