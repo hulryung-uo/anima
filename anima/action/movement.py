@@ -172,6 +172,57 @@ async def go_to(
                         path = mid_path
                         continue
 
+                # Known-waypoint fallback: try nearby navigable locations
+                # as intermediate targets.  These are outdoor positions
+                # that are more likely reachable than arbitrary midpoints.
+                # Phase 1: waypoints toward the target (progress + escape).
+                # Phase 2: any nearby waypoint (pure escape — changing
+                # position may unblock re-pathfinding from the new spot).
+                if remaining > 10:
+                    try:
+                        from anima.world_knowledge import nearest_locations
+                        wp_found = False
+                        waypoints = nearest_locations(sx, sy, count=10)
+                        for phase in (1, 2):
+                            if wp_found:
+                                break
+                            for loc, loc_dist in waypoints:
+                                if loc_dist < 5 or loc_dist > 60:
+                                    continue
+                                if phase == 1:
+                                    loc_to_target = max(
+                                        abs(target_x - loc.x),
+                                        abs(target_y - loc.y),
+                                    )
+                                    if loc_to_target >= remaining:
+                                        continue
+                                wp_path = find_path(
+                                    ctx.map_reader, sx, sy,
+                                    loc.nav_x, loc.nav_y,
+                                    max_steps=search_steps,
+                                    denied_tiles=permanent_denied,
+                                    current_z=ss.z,
+                                    adjacent=True,
+                                    door_tiles=door_positions,
+                                )
+                                if wp_path:
+                                    logger.info(
+                                        "go_to_waypoint_fallback",
+                                        waypoint=loc.name,
+                                        pos=f"({sx},{sy})",
+                                        via=f"({loc.nav_x},{loc.nav_y})",
+                                        target=f"({target_x},{target_y})",
+                                        wp_len=len(wp_path),
+                                        phase=phase,
+                                    )
+                                    path = wp_path
+                                    wp_found = True
+                                    break
+                        if wp_found:
+                            continue
+                    except ImportError:
+                        pass
+
                 logger.info(
                     "go_to_no_path", pos=f"({sx},{sy},{ss.z})",
                     denied=len(denied),
@@ -757,27 +808,24 @@ async def _try_open_nearby_doors(ctx: BrainContext) -> int:
 def _calc_detour(
     sx: int, sy: int,
     target_x: int, target_y: int,
-) -> tuple[int, int] | None:
-    """Calculate a detour point perpendicular to the blocked direction.
+) -> list[tuple[int, int]]:
+    """Calculate detour points perpendicular to the blocked direction.
 
-    When the agent is stuck hitting a wall, this calculates a point
-    20 tiles perpendicular to the wall (away from the target axis).
-    The agent walks there first, then resumes toward the target.
+    When the agent is stuck hitting a wall, this returns points
+    20 tiles perpendicular to the wall (both sides).
+    The caller tries each until one yields a valid path.
     """
     # Direction from agent to target
     dx = target_x - sx
     dy = target_y - sy
 
-    # Perpendicular direction: rotate 90 degrees
-    # Try both sides, pick the one that doesn't go toward the target
     detour_dist = 20
     if abs(dx) >= abs(dy):
-        # Primarily east/west movement — detour north or south
-        # Pick north (negative y) first
-        return (sx, sy - detour_dist)
+        # Primarily east/west movement — detour north and south
+        return [(sx, sy - detour_dist), (sx, sy + detour_dist)]
     else:
-        # Primarily north/south — detour east or west
-        return (sx + detour_dist, sy)
+        # Primarily north/south — detour east and west
+        return [(sx + detour_dist, sy), (sx - detour_dist, sy)]
 
 
 def _get_door_positions(ctx: BrainContext) -> set[tuple[int, int]]:
