@@ -796,8 +796,8 @@ class Planner:
 
             # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
             # Progressive recovery:
-            #   Level 0: scavenge nearby + walk to town (3 attempts)
-            #   Level 1: drop junk + walk to town
+            #   Level 0: sell junk to vendor / scavenge nearby (3 attempts)
+            #   Level 1: walk to vendor area to sell junk / drop heavy junk
             #   Level 2: wander-explore (random walk scanning for items)
             #   Level 3: hunt monsters for gold
             #   Level 4: forum escalation, then reset cycle
@@ -809,6 +809,23 @@ class Planner:
             # Always count visits — this drives escalation even when
             # nothing is found (unlike the old scavenge-only counter).
             ctx.blackboard["_deadlock_attempt_count"] = _deadlock_attempts + 1
+
+            # --- Sell non-essential items for gold ---
+            # Agent may have junk items (clothing, books, weapons) that
+            # vendors will buy. Even a few gold can fund a pickaxe (~11g).
+            if self._has_sellable_junk(ctx, ss):
+                proc = _get_proc("sell_to_vendor")
+                if proc and await proc.can_start(ctx):
+                    _intent("교착 복구: 불필요 아이템 판매 → 금화 확보")
+                    return proc
+                # No vendor nearby → walk to vendor-rich area
+                if time.time() > self._move_fail_until:
+                    move = await self._roaming.move_to_location(
+                        ctx, "blacksmith", "weaponsmith", "provisioner", "tailor",
+                    )
+                    if move:
+                        _intent("교착 복구: 판매 위해 상점으로 이동")
+                        return move
 
             # After 3 attempts at current level, escalate to next.
             if _deadlock_attempts >= 3:
@@ -822,17 +839,17 @@ class Planner:
                     weight=f"{ss.weight}/{ss.weight_max}",
                 )
 
-                # Level 1: Drop junk + walk to town
+                # Level 1: Walk to vendor area to sell, or drop heavy junk
                 if _deadlock_level == 1:
                     if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.5:
                         _intent("교착 복구 Lv1: 불필요 아이템 버리기")
                         return _DropJunkItems(ss)
                     if time.time() > self._move_fail_until:
                         move = await self._roaming.move_to_location(
-                            ctx, "bank", "tavern", "inn", "blacksmith",
+                            ctx, "blacksmith", "weaponsmith", "provisioner", "tailor",
                         )
                         if move:
-                            _intent("교착 복구 Lv1: 마을로 이동하여 자원 탐색")
+                            _intent("교착 복구 Lv1: 상점 방문하여 아이템 판매")
                             return move
 
                 # Level 2: Wander-explore — random walk around town
@@ -1250,6 +1267,21 @@ class Planner:
                     and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 2):
                 result.append(it)
         return result
+
+    def _has_sellable_junk(self, ctx: AgentContext, ss) -> bool:
+        """True if backpack contains non-essential items that could be sold.
+
+        Used in deadlock recovery: the agent may have clothing, books,
+        weapons, etc. that vendors will buy for gold.
+        """
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return False
+        from anima.skills.trade.vendor import KEEP_GRAPHICS
+        return any(
+            it.container == backpack and it.graphic not in KEEP_GRAPHICS
+            for it in ctx.perception.world.items.values()
+        )
 
     def _find_huntable_target(self, ctx: AgentContext, ss):
         """Find a nearby monster the agent can attack for gold loot."""

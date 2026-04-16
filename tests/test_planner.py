@@ -452,6 +452,54 @@ class TestDeadlockRecovery:
         assert proc is None or proc.name != "pick_up_ore_and_smelt"
 
     @pytest.mark.asyncio
+    async def test_deadlock_sells_junk_when_vendor_nearby(self):
+        """True deadlock + junk items in backpack + vendor nearby → sell_to_vendor."""
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("sell_to_vendor"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0)
+        # Add a junk item (book graphic) — not in KEEP_GRAPHICS
+        BOOK_GRAPHIC = 0x0FF4
+        _add_item(ctx, 0xCC, BOOK_GRAPHIC)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "sell_to_vendor"
+
+    @pytest.mark.asyncio
+    async def test_deadlock_with_junk_walks_to_vendor(self):
+        """True deadlock + junk items + no vendor nearby → walk to vendor area."""
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("sell_to_vendor", can=False))
+        planner = Planner(reg)
+
+        # Position near Minoc so vendor locations are reachable
+        ctx = _make_ctx(gold=0, x=2500, y=500)
+        BOOK_GRAPHIC = 0x0FF4
+        _add_item(ctx, 0xCC, BOOK_GRAPHIC)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert "move_to" in proc.name
+
+    @pytest.mark.asyncio
+    async def test_deadlock_no_junk_skips_sell(self):
+        """True deadlock + empty backpack (only essential items) → no sell attempt."""
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("sell_to_vendor"))
+        planner = Planner(reg)
+
+        # Gold on ground so we can verify the agent scavenges instead
+        ctx = _make_ctx(gold=0)
+        _add_ground_item(ctx, 0xAA, GOLD, x=105, y=205)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        # Should scavenge ground gold, not sell
+        assert proc.name == "scavenge_ground_items"
+
+    @pytest.mark.asyncio
     async def test_resolve_deadlock_clears_state(self):
         """DeadlockResolver.resolve Strategy 5 resets failed destinations and idle ticks."""
         reg = ProcedureRegistry()
