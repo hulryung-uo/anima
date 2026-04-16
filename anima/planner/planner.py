@@ -197,20 +197,31 @@ class Planner:
 
                 if (self._health.is_looping()
                         and _time.time() > self._health_break_until):
-                    logger.warning(
-                        "planner_health_loop_detected",
-                        dominant=self._health.dominant_procedure(),
-                        snapshot=self._health.snapshot(),
-                    )
-                    # Pause selection for 60 seconds and clear per-tick
-                    # counters. Also reset _idle_ticks so _check_stuck()'s
-                    # escalation timer doesn't race the health break — the
-                    # break IS the recovery mechanism for this condition.
-                    self._health_break_until = _time.time() + 60.0
-                    self._health.reset()
-                    self.continuation_hint = None
-                    self._repeat_counter.clear()
-                    self._idle_ticks = 0
+                    # When the expedition is actively cycling (non-IDLE),
+                    # mono-procedure runs are expected: mine_ore dominates
+                    # in MINING, smelt_ore in COLLECTING, craft_blacksmith
+                    # in CRAFTING_TRIP. The expedition's own 10-min watchdog
+                    # detects actual stalls; the 60s health break would just
+                    # interrupt productive work. Suppress it.
+                    expedition = ctx.blackboard.get("expedition")
+                    if (expedition is not None
+                            and getattr(expedition.phase, "value", "idle") != "idle"):
+                        self._health.reset()
+                    else:
+                        logger.warning(
+                            "planner_health_loop_detected",
+                            dominant=self._health.dominant_procedure(),
+                            snapshot=self._health.snapshot(),
+                        )
+                        # Pause selection for 60 seconds and clear per-tick
+                        # counters. Also reset _idle_ticks so _check_stuck()'s
+                        # escalation timer doesn't race the health break —
+                        # the break IS the recovery mechanism for this condition.
+                        self._health_break_until = _time.time() + 60.0
+                        self._health.reset()
+                        self.continuation_hint = None
+                        self._repeat_counter.clear()
+                        self._idle_ticks = 0
 
                 # --- Stuck / deadlock detection ---
                 await self._check_stuck(ctx)
