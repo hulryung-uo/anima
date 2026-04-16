@@ -684,7 +684,9 @@ class Planner:
                         )
                         return proc
                     _intent(f"곡괭이 없음, 은행 {bal_amount}gp → 상점으로 이동")
-                    move = await self._roaming.move_to_location(ctx, "tinker")
+                    move = await self._roaming.move_to_location(
+                        ctx, "tinker", "provisioner", "miner",
+                    )
                     if move:
                         return move
                 else:
@@ -705,7 +707,7 @@ class Planner:
                         f"곡괭이 없음, 금화 {ss.gold}g → 은행/상점으로 이동"
                     )
                     move = await self._roaming.move_to_location(
-                        ctx, "bank", "tinker",
+                        ctx, "bank", "tinker", "provisioner", "miner",
                     )
                     if move:
                         return move
