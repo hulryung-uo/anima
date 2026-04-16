@@ -928,6 +928,9 @@ class Planner:
                         if move:
                             _intent("교착 복구 Lv4: 야외 이동 불가 → 마을로 이동")
                             return move
+                    # All named locations exhausted — desperate exploration
+                    _intent("교착 복구 Lv4: 탐색 실패 → 랜덤 방향 원거리 탐색")
+                    return _DesperateExploration(ss)
 
                 # Level 5+: Forum escalation, then reset cycle
                 if _deadlock_level >= 5:
@@ -983,8 +986,14 @@ class Planner:
                         _intent("교착 복구: 주변에 아이템 없음 → 마을로 이동")
                         return move
 
-            # All immediate paths exhausted — return None; attempt counter
-            # was already incremented so we'll escalate after 3 idle entries.
+            # All immediate paths exhausted at Level 3+ — try desperate
+            # exploration (random walk in new direction) before giving up.
+            if _deadlock_level >= 3:
+                _intent("교착 복구: 모든 경로 차단 → 랜덤 방향 탐색")
+                return _DesperateExploration(ss)
+
+            # Lower levels: return None; attempt counter was already
+            # incremented so we'll escalate after 3 idle entries.
             _intent("교착 상태: 복구 시도 중 → 다음 레벨로 에스컬레이션 대기")
             return None
 
@@ -1951,6 +1960,186 @@ class _HuntForGold:
         return ProcedureResult(
             success=True,
             message=f"Killed {self._target_name}, looted {gold_picked} gold piles",
+        )
+
+
+class _DesperateExploration:
+    """Deadlock recovery Lv4 fallback: random long-distance walk.
+
+    When all named locations, hunting, and relocation fail, the agent
+    is trapped in a loop of exhausted destinations.  This procedure
+    breaks the cycle by walking 30-50 tiles in a random compass
+    direction, scanning for vendor NPCs, huntable monsters, and ground
+    items at each stop.
+
+    Unlike _WanderAndScavenge (±5-15 tiles near town), this covers
+    fresh terrain the agent hasn't visited — potentially reaching
+    vendors or spawns outside the known location set.
+    """
+
+    EXPLORE_STEPS = 8
+    STEP_MIN = 30
+    STEP_MAX = 50
+    SCAN_RADIUS = 3  # tiles around each stop to check for ground items
+
+    # 8 compass directions as (dx, dy) unit vectors
+    _COMPASS = [
+        (0, -1),   # N
+        (1, -1),   # NE
+        (1, 0),    # E
+        (1, 1),    # SE
+        (0, 1),    # S
+        (-1, 1),   # SW
+        (-1, 0),   # W
+        (-1, -1),  # NW
+    ]
+
+    def __init__(self, ss) -> None:
+        self.name = "desperate_exploration"
+        self.description = "Random long-range exploration for opportunities"
+        self._start_pos = (ss.x, ss.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+        import random
+
+        from anima.action.movement import go_to
+        from anima.client.packets import build_drop_item, build_pick_up
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
+
+        found_vendor = False
+        found_monster = False
+        items_picked = 0
+        spots_visited = 0
+
+        # Shuffle compass directions so we don't always go the same way
+        directions = list(self._COMPASS)
+        random.shuffle(directions)
+
+        for step_idx in range(self.EXPLORE_STEPS):
+            ss = ctx.perception.self_state
+            # Pick direction: cycle through shuffled compass
+            dx, dy = directions[step_idx % len(directions)]
+            step_dist = random.randint(self.STEP_MIN, self.STEP_MAX)
+            target_x = ss.x + dx * step_dist
+            target_y = ss.y + dy * step_dist
+
+            logger.info(
+                "desperate_explore_step",
+                step=step_idx + 1,
+                direction=f"({dx},{dy})",
+                target=f"({target_x},{target_y})",
+                dist=step_dist,
+            )
+
+            await go_to(ctx, target_x, target_y)
+            spots_visited += 1
+
+            ss = ctx.perception.self_state
+
+            # --- Scan for vendor NPCs ---
+            from anima.skills.trade.vendor import HUMAN_BODIES, _is_vendor
+            for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
+                if m.serial == ss.serial:
+                    continue
+                if m.body not in HUMAN_BODIES:
+                    continue
+                if _is_vendor(m):
+                    found_vendor = True
+                    logger.info(
+                        "desperate_explore_found_vendor",
+                        name=m.name,
+                        pos=f"({m.x},{m.y})",
+                    )
+                    break
+
+            # --- Scan for huntable monsters ---
+            from anima.perception.enums import NotorietyFlag
+            ATTACKABLE = {
+                NotorietyFlag.ATTACKABLE,
+                NotorietyFlag.CRIMINAL,
+                NotorietyFlag.ENEMY,
+                NotorietyFlag.MURDERER,
+            }
+            HUMAN_BODY_IDS = {0x0190, 0x0191}
+            TOWN_PETS = {0x00C9, 0x00D9, 0x00EE}
+            for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
+                if m.serial == ss.serial:
+                    continue
+                if m.notoriety not in ATTACKABLE:
+                    continue
+                if m.body in HUMAN_BODY_IDS and m.notoriety == NotorietyFlag.ATTACKABLE:
+                    continue
+                if m.body in TOWN_PETS:
+                    continue
+                found_monster = True
+                logger.info(
+                    "desperate_explore_found_monster",
+                    name=m.name,
+                    body=f"0x{m.body:04X}",
+                    pos=f"({m.x},{m.y})",
+                )
+                break
+
+            # --- Pick up ground items ---
+            items = _WanderAndScavenge._scan_valuables(ctx, ss)
+            for item in items[:3]:
+                if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
+                    break
+                dist = max(abs(item.x - ss.x), abs(item.y - ss.y))
+                if dist > 2:
+                    arrived = await go_to(ctx, item.x, item.y)
+                    if not arrived:
+                        continue
+                await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
+                await asyncio.sleep(0.3)
+                await ctx.conn.send_packet(
+                    build_drop_item(item.serial, container=backpack)
+                )
+                await asyncio.sleep(0.3)
+                items_picked += 1
+                logger.info(
+                    "desperate_explore_picked",
+                    serial=f"0x{item.serial:08X}",
+                    graphic=f"0x{item.graphic:04X}",
+                )
+
+            # Stop early if we found something actionable
+            if found_vendor or found_monster or items_picked >= 3:
+                break
+
+        parts = []
+        if found_vendor:
+            parts.append("vendor spotted")
+        if found_monster:
+            parts.append("monster spotted")
+        if items_picked:
+            parts.append(f"{items_picked} items picked up")
+
+        if parts:
+            return ProcedureResult(
+                success=True,
+                message=(
+                    f"Explored {spots_visited} spots: "
+                    + ", ".join(parts)
+                ),
+            )
+
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.MISSING_RESOURCE,
+            message=f"Explored {spots_visited} spots in new directions, found nothing",
         )
 
 
