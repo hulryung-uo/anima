@@ -1031,14 +1031,17 @@ class Planner:
                 ctx.blackboard.pop("_make_tools_gave_up", None)
         else:
             ctx.blackboard["_had_no_mining_tool"] = True
+        mine_proc = _get_proc("mine_ore")
         if not _mine_exhausted:
-            proc = _get_proc("mine_ore")
-            if proc and await proc.can_start(ctx):
+            if mine_proc and await mine_proc.can_start(ctx):
                 _intent("광산 근처, 곡괭이 보유 → 채광 시작")
-                return proc
+                return mine_proc
 
             # --- Priority 7b: Near mine but not close enough → walk to ore ---
-            if has_mining_tool and time.time() > self._move_fail_until:
+            # Only navigate toward mineable tiles when mine_ore is actually
+            # available — if it was excluded by strategy/goals/skip_bb,
+            # walking there creates a pointless movement loop.
+            if mine_proc is not None and has_mining_tool and time.time() > self._move_fail_until:
                 from anima.skills.gathering.mine import (
                     SEARCH_RADIUS as _MINE_SEARCH_R,
                     _find_mineable_tile,
@@ -1069,7 +1072,10 @@ class Planner:
             self.continuation_hint = None
 
         # --- Priority 9: Move to mine ---
-        if not _mine_exhausted and time.time() > self._move_fail_until:
+        # Skip mine navigation when mine_ore is excluded (strategy/goals) —
+        # otherwise the agent ping-pongs between mine locations with nothing
+        # to do there.
+        if mine_proc is not None and not _mine_exhausted and time.time() > self._move_fail_until:
             _intent("할 일 없음 → 광산으로 이동")
             move_proc = await self._roaming.try_move_to_activity(ctx)
             if move_proc:
