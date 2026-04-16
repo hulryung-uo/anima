@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, AsyncMock
 import pytest
 
 from anima.procedures.buy_from_vendor import (
+    TOOL_MIN_STOCK,
     _needed_tool_graphics,
     _TOOL_PRIORITIES,
     _ALL_TOOL_GRAPHICS,
@@ -29,7 +30,11 @@ SHOVEL = 0x0F39
 
 
 def _mock_ctx(*backpack_graphics):
-    """Create a mock AgentContext with items in backpack."""
+    """Create a mock AgentContext with items in backpack.
+
+    Pass a graphic multiple times to simulate having N of that tool,
+    e.g. _mock_ctx(PICKAXE, PICKAXE, PICKAXE) = 3 pickaxes.
+    """
     ctx = MagicMock()
     ctx.perception.self_state.equipment = {0x15: 0x101}
     items = {}
@@ -38,6 +43,14 @@ def _mock_ctx(*backpack_graphics):
         items[i + 1] = item
     ctx.perception.world.items = items
     return ctx
+
+
+def _fully_stocked(*tool_graphics):
+    """Return args that give TOOL_MIN_STOCK copies of each graphic."""
+    result = []
+    for gfx in tool_graphics:
+        result.extend([gfx] * TOOL_MIN_STOCK)
+    return result
 
 
 # --- _needed_tool_graphics tests ---
@@ -49,25 +62,32 @@ class TestNeededToolGraphics:
         # Should return all 4 tool categories
         assert len(needed) == 4
 
-    def test_has_tongs_only(self):
+    def test_has_one_tongs_still_needs_restock(self):
+        """One tongs is below TOOL_MIN_STOCK → still needed."""
         ctx = _mock_ctx(TONGS)
         needed = _needed_tool_graphics(ctx)
-        # Tongs present → 3 missing categories
+        # All 4 categories needed (tongs count=1 < TOOL_MIN_STOCK)
+        assert len(needed) == 4
+
+    def test_fully_stocked_tongs_not_needed(self):
+        """TOOL_MIN_STOCK tongs → tongs category not in needed list."""
+        ctx = _mock_ctx(*_fully_stocked(TONGS))
+        needed = _needed_tool_graphics(ctx)
+        # 3 categories still needed (tinker/pickaxe/shovel)
         assert len(needed) == 3
-        # Tongs graphics should NOT be in the needed list
         tongs_gfx = {0x0FBB, 0x0FBC}
         assert tongs_gfx not in needed
 
-    def test_has_everything(self):
-        ctx = _mock_ctx(TONGS, TINKER_TOOLS, PICKAXE, SHOVEL)
+    def test_has_everything_fully_stocked(self):
+        ctx = _mock_ctx(*_fully_stocked(TONGS, TINKER_TOOLS, PICKAXE, SHOVEL))
         needed = _needed_tool_graphics(ctx)
         assert needed == []
 
     def test_priority_order(self):
         """Tongs should be first when missing."""
-        ctx = _mock_ctx(PICKAXE)  # has pickaxe, missing tongs+tinker+shovel
+        ctx = _mock_ctx(PICKAXE)  # has 1 pickaxe, missing tongs+tinker+shovel
         needed = _needed_tool_graphics(ctx)
-        # First entry should be tongs graphics
+        # First entry should be tongs graphics (highest priority missing)
         assert {0x0FBB, 0x0FBC} == needed[0]
 
 

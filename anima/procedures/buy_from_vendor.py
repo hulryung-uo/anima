@@ -52,14 +52,34 @@ _ALL_TOOL_GRAPHICS: set[int] = set()
 for _, gfx in _TOOL_PRIORITIES:
     _ALL_TOOL_GRAPHICS |= gfx
 
+# Always buy enough to reach this count. Prevents the agent from
+# running out mid-expedition and having to interrupt mining for a
+# vendor trip after every single tool wears out.
+TOOL_MIN_STOCK = 3
+
 
 def _needed_tool_graphics(ctx: AgentContext) -> list[set[int]]:
-    """Return tool graphic sets the agent is missing, in priority order."""
+    """Return tool graphic sets the agent needs to restock, in priority order.
+
+    A tool category is "needed" when the backpack has fewer than
+    TOOL_MIN_STOCK of that type.
+    """
     needed: list[set[int]] = []
     for _name, graphics in _TOOL_PRIORITIES:
-        if not find_in_backpack(ctx, graphics):
+        count = len(find_in_backpack(ctx, graphics))
+        if count < TOOL_MIN_STOCK:
             needed.append(graphics)
     return needed
+
+
+def _tool_restock_qty(ctx: AgentContext, graphic: int) -> int:
+    """How many of this specific graphic to buy to reach TOOL_MIN_STOCK."""
+    # Count all tools sharing the same category (e.g., pickaxe has 2 graphics)
+    for _name, graphics in _TOOL_PRIORITIES:
+        if graphic in graphics:
+            count = len(find_in_backpack(ctx, graphics))
+            return max(1, TOOL_MIN_STOCK - count)
+    return 1
 
 
 class BuyFromVendor(Procedure):
@@ -167,7 +187,7 @@ class BuyFromVendor(Procedure):
             if target_item:
                 break
 
-        # Fallback: buy any affordable tool (even if we already have one)
+        # Fallback: restock any tool below TOOL_MIN_STOCK
         if not target_item:
             for item in buy_list:
                 if item.serial in active_bl:
@@ -195,18 +215,28 @@ class BuyFromVendor(Procedure):
             )
 
         target_name = target_item.name or f"0x{target_item.graphic:04X}"
+
+        # Buy enough to reach TOOL_MIN_STOCK, capped by what we can afford.
+        buy_qty = _tool_restock_qty(ctx, target_item.graphic)
+        total_cost = target_item.price * buy_qty
+        if total_cost > ss.gold and buy_qty > 1:
+            buy_qty = max(1, ss.gold // target_item.price)
+            total_cost = target_item.price * buy_qty
+
         logger.info(
             "buy_sending",
             vendor=vendor_name,
             item=target_name,
             graphic=f"0x{target_item.graphic:04X}",
             price=target_item.price,
+            qty=buy_qty,
+            total_cost=total_cost,
             gold=gold_before,
         )
 
         await ctx.conn.send_packet(build_buy_items(
             ss.vendor_serial,
-            [(target_item.serial, 1)],
+            [(target_item.serial, buy_qty)],
         ))
 
         # --- Gold polling (up to 2s) ---
