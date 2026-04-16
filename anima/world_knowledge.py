@@ -94,7 +94,7 @@ MINOC_LOCATIONS: list[Location] = [
     Location("Minoc Town Hall", 2429, 528, "Minoc Town Hall."),
     Location("Minoc Statues", 2465, 522, "Town center statues."),
     # --- Forge (near mine) ---
-    Location("Minoc Mine Forge", 2569, 482, "Forge near the mine entrance."),
+    Location("Minoc Forge", 2569, 482, "Forge near the mine entrance."),
     # --- Mining areas ---
     Location("Minoc East Mine", 2553, 496, "The East Mines. Rich iron veins."),
     Location("Minoc Mining Camp", 2590, 532, "Mining camp east of town."),
