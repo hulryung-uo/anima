@@ -1676,13 +1676,20 @@ class _SeekResurrection:
 
     When the agent dies (HP=0), it becomes a ghost and cannot perform any
     action. The only recovery path is to find a healer NPC who can
-    resurrect the player. In UO, walking near a healer or double-clicking
-    one triggers resurrection.
+    resurrect the player.
+
+    In ServUO, healer NPCs detect ghosts via OnMovement — the ghost must
+    ENTER the healer's 4-tile detection range (crossing the boundary).
+    Double-clicking NPCs while dead is rejected by the server. So we walk
+    away from the healer and then walk back to trigger the detection.
     """
 
     MAX_HEALER_SEARCH_DIST = 18  # tiles to scan for healer NPCs
-    RESURRECT_WAIT_TIMEOUT = 20.0  # seconds to wait after interacting
+    RESURRECT_WAIT_TIMEOUT = 10.0  # seconds to wait after approaching
     RESURRECT_POLL_INTERVAL = 2.0
+    HEALER_DETECT_RANGE = 4  # ServUO OnMovement detection radius
+    WALK_AWAY_DIST = 6  # tiles to walk away before re-approaching
+    HUMAN_BODIES = {0x0190, 0x0191}  # male, female human body IDs
 
     def __init__(self) -> None:
         self.name = "seek_resurrection"
@@ -1696,7 +1703,6 @@ class _SeekResurrection:
 
         from anima.action.movement import go_to
         from anima.client.packets import (
-            build_double_click,
             build_opl_request,
             build_single_click,
         )
@@ -1774,12 +1780,24 @@ class _SeekResurrection:
                 success=True, message="Resurrected by proximity to healer"
             )
 
-        # Step 3: Find healer NPC at this location and interact
-        # Request names for nearby NPCs first
+        # Step 3: Request names for nearby NPCs and find healer by name
         ss = ctx.perception.self_state
-        for mob in ctx.perception.world.nearby_mobiles(
+        nearby = ctx.perception.world.nearby_mobiles(
             ss.x, ss.y, distance=self.MAX_HEALER_SEARCH_DIST
-        ):
+        )
+        human_npcs = [
+            m for m in nearby
+            if m.serial != ss.serial and m.body in self.HUMAN_BODIES
+        ]
+        logger.info(
+            "seek_resurrection_nearby_scan",
+            total_mobiles=len(nearby),
+            human_npcs=len(human_npcs),
+            bodies=[(hex(m.serial), m.body, m.name or "?") for m in nearby
+                    if m.serial != ss.serial][:10],
+        )
+
+        for mob in nearby:
             if not mob.name and mob.serial != ss.serial:
                 await ctx.conn.send_packet(build_opl_request(mob.serial))
                 await ctx.conn.send_packet(build_single_click(mob.serial))
@@ -1791,22 +1809,30 @@ class _SeekResurrection:
             if result:
                 return result
 
-        # Step 4: No named healer found — try double-clicking all nearby NPCs
-        # (healer names might not have loaded yet)
+        # Step 4: No named healer found — walk near each human-body NPC
+        # to trigger ServUO's OnMovement resurrection detection.
+        # (Double-clicking NPCs is rejected for ghosts.)
         ss = ctx.perception.self_state
-        for mob in ctx.perception.world.nearby_mobiles(
+        # Refresh human NPC list after name requests
+        nearby = ctx.perception.world.nearby_mobiles(
             ss.x, ss.y, distance=self.MAX_HEALER_SEARCH_DIST
-        ):
-            if mob.serial == ss.serial:
-                continue
-            await ctx.conn.send_packet(build_double_click(mob.serial))
-            await asyncio.sleep(2.0)
+        )
+        human_npcs = [
+            m for m in nearby
+            if m.serial != ss.serial and m.body in self.HUMAN_BODIES
+        ]
+        if not human_npcs:
+            logger.warning(
+                "seek_resurrection_no_human_npcs",
+                nearby_count=len(nearby),
+            )
+
+        for mob in human_npcs:
+            result = await self._interact_with_healer(ctx, mob.serial)
+            if result:
+                return result
             ss = ctx.perception.self_state
             if ss.is_alive:
-                logger.info(
-                    "seek_resurrection_success",
-                    healer_serial=hex(mob.serial),
-                )
                 return ProcedureResult(
                     success=True,
                     message=f"Resurrected by NPC 0x{mob.serial:08X}",
@@ -1815,21 +1841,70 @@ class _SeekResurrection:
         return ProcedureResult(
             success=False,
             reason=FailureReason.BLOCKED,
-            message=f"Reached {target_loc.name} but no healer responded",
+            message=f"Reached {target_loc.name} but no healer responded"
+                    f" (scanned {len(human_npcs)} human NPCs,"
+                    f" {len(nearby)} total mobiles)",
             next_suggestion="seek_resurrection",
         )
 
     async def _interact_with_healer(self, ctx, healer_serial: int) -> ProcedureResult | None:
-        """Double-click healer and wait for resurrection. Returns result or None."""
+        """Walk near healer NPC to trigger OnMovement resurrection detection.
+
+        ServUO healers detect ghosts via OnMovement: the ghost must cross
+        INTO the 4-tile detection range. If already within range, we walk
+        away first (6 tiles) then walk back. Double-clicking NPCs while
+        dead is rejected by the server.
+        """
         import asyncio
         import time
 
-        from anima.client.packets import build_double_click
+        from anima.action.movement import go_to
 
-        await ctx.conn.send_packet(build_double_click(healer_serial))
-        logger.info("seek_resurrection_interacting", serial=hex(healer_serial))
+        healer = ctx.perception.world.mobiles.get(healer_serial)
+        if not healer:
+            return None
 
-        # Poll for resurrection
+        ss = ctx.perception.self_state
+        dist = max(abs(healer.x - ss.x), abs(healer.y - ss.y))
+
+        logger.info(
+            "seek_resurrection_approach",
+            serial=hex(healer_serial),
+            healer_pos=f"({healer.x},{healer.y})",
+            dist=dist,
+        )
+
+        # If already within detection range, walk away first to reset trigger
+        if dist <= self.HEALER_DETECT_RANGE:
+            dx = ss.x - healer.x
+            dy = ss.y - healer.y
+            if dx == 0 and dy == 0:
+                dx = 1  # arbitrary direction
+            mag = max(abs(dx), abs(dy))
+            away_x = healer.x + dx * self.WALK_AWAY_DIST // mag
+            away_y = healer.y + dy * self.WALK_AWAY_DIST // mag
+            logger.info(
+                "seek_resurrection_walk_away",
+                away_target=f"({away_x},{away_y})",
+            )
+            await go_to(ctx, away_x, away_y)
+
+            ss = ctx.perception.self_state
+            if ss.is_alive:
+                return self._success_result("Resurrected while repositioning", ctx)
+
+        # Walk to within 2 tiles of the healer to cross the detection boundary
+        logger.info(
+            "seek_resurrection_walk_to_healer",
+            healer_pos=f"({healer.x},{healer.y})",
+        )
+        await go_to(ctx, healer.x, healer.y)
+
+        ss = ctx.perception.self_state
+        if ss.is_alive:
+            return self._success_result("Resurrected by healer NPC", ctx)
+
+        # Poll for resurrection gump
         deadline = time.monotonic() + self.RESURRECT_WAIT_TIMEOUT
         while time.monotonic() < deadline:
             await asyncio.sleep(self.RESURRECT_POLL_INTERVAL)
@@ -1838,8 +1913,6 @@ class _SeekResurrection:
             # Check for resurrection gump and accept it
             if ss.gumps:
                 for gump_id, gump in list(ss.gumps.items()):
-                    # Resurrection gumps typically have a single "accept" button
-                    # Try responding with button 1 (OK/Accept)
                     try:
                         from anima.client.packets import build_gump_response
                         await ctx.conn.send_packet(
@@ -1857,18 +1930,19 @@ class _SeekResurrection:
                         )
 
             if ss.is_alive:
-                logger.info("seek_resurrection_success")
-                if ctx.bus:
-                    ctx.bus.publish("action.end", {
-                        "message": "✓ Resurrected!",
-                        "importance": 3,
-                    })
-                return ProcedureResult(
-                    success=True,
-                    message="Resurrected by healer NPC",
-                )
+                return self._success_result("Resurrected by healer NPC", ctx)
 
         return None  # timeout — caller should try other options
+
+    @staticmethod
+    def _success_result(message: str, ctx) -> ProcedureResult:
+        logger.info("seek_resurrection_success", message=message)
+        if ctx.bus:
+            ctx.bus.publish("action.end", {
+                "message": "✓ Resurrected!",
+                "importance": 3,
+            })
+        return ProcedureResult(success=True, message=message)
 
     @staticmethod
     def _find_nearby_healer(ctx, ss):
