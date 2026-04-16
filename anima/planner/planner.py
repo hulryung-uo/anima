@@ -997,6 +997,21 @@ class Planner:
                 _intent(f"교착 복구: 바닥에 아이템 {len(ground_items)}개 발견 → 줍기")
                 return _ScavengeGroundItems(ground_items, ss)
 
+            # Loot nearby corpses — passive income that requires no
+            # combat skill or tools.  Guards, other players, and NPCs
+            # kill monsters whose corpses may contain gold and items.
+            corpses = [
+                it for it in ctx.perception.world.items.values()
+                if (it.container == 0
+                    and it.graphic == 0x2006
+                    and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 18
+                    and it.serial not in
+                    ctx.blackboard.get("_looted_corpses", set()))
+            ]
+            if corpses:
+                _intent(f"교착 복구: 시체 {len(corpses)}개 발견 → 루팅")
+                return _LootCorpses(ss)
+
             # Hunt nearby creatures for gold — at level 2+ include small
             # animals (rats drop 1-5gp, enough to bootstrap a pickaxe).
             if _deadlock_level >= 2:
@@ -1475,6 +1490,7 @@ class Planner:
         TOWN_PETS = {0x00C9, 0x00D9, 0x00EE}  # cat, dog, rat
 
         no_gold_bodies = ctx.blackboard.get("_hunt_no_gold_bodies", set())
+        unkillable_bodies = ctx.blackboard.get("_hunt_unkillable_bodies", set())
 
         # Skip targets we already failed to reach (behind walls, inside
         # buildings).  Entries expire after 5 minutes so the agent retries
@@ -1501,6 +1517,9 @@ class Planner:
                 continue
             # Skip creature types we've killed before that dropped no gold
             if m.body in no_gold_bodies:
+                continue
+            # Skip body types we repeatedly failed to kill (combat timeout)
+            if m.body in unkillable_bodies:
                 continue
             # Skip targets we failed to reach recently
             if m.serial in unreachable:
@@ -2080,9 +2099,10 @@ class _HuntForGold:
         from anima.action.movement import go_to
         from anima.client.packets import (
             build_attack,
-            build_double_click,
             build_drop_item,
+            build_equip_item,
             build_pick_up,
+            build_target_response,
             build_war_mode,
         )
 
@@ -2096,15 +2116,31 @@ class _HuntForGold:
                 message="Cannot fight while dead",
             )
 
+        # Cancel any stale targeting cursor left over from a previous
+        # action (e.g. double-clicking the dagger triggered "What do you
+        # want to use this item on?" instead of equipping).  An
+        # unanswered cursor blocks further server interaction.
+        if ss.pending_target is not None:
+            cursor_id = ss.pending_target.get("cursor_id", 0)
+            await ctx.conn.send_packet(build_target_response(
+                target_type=0, cursor_id=cursor_id,
+            ))
+            ss.pending_target = None
+            await asyncio.sleep(0.3)
+
         # Equip a weapon from backpack if not already wielding one.
-        # Double-clicking a weapon auto-equips it to the correct slot.
+        # Use the EquipItem packet (0x13) directly instead of
+        # double-click, because double-clicking bladed weapons (daggers)
+        # opens a targeting cursor instead of equipping.
         backpack = ss.equipment.get(0x15)
         has_weapon_equipped = ss.equipment.get(0x01) or ss.equipment.get(0x02)
         if not has_weapon_equipped and backpack:
             for it in ctx.perception.world.items.values():
                 if (it.container == backpack
                         and it.graphic in self._WEAPON_GRAPHICS):
-                    await ctx.conn.send_packet(build_double_click(it.serial))
+                    await ctx.conn.send_packet(
+                        build_equip_item(it.serial, 0x01, ss.serial)
+                    )
                     await asyncio.sleep(0.5)
                     logger.info("hunt_equipped_weapon",
                                 graphic=f"0x{it.graphic:04X}")
@@ -2205,6 +2241,28 @@ class _HuntForGold:
         await asyncio.sleep(0.3)
 
         if not target_killed:
+            # Track body types we repeatedly fail to kill (low combat
+            # skill, target too tough, etc.).  After 2 timeouts on the
+            # same body type, blacklist it so _find_huntable_target
+            # stops wasting 30s per attempt.
+            if self._target_body:
+                fail_counts: dict[int, int] = ctx.blackboard.setdefault(
+                    "_hunt_unkillable_counts", {},
+                )
+                fail_counts[self._target_body] = fail_counts.get(
+                    self._target_body, 0,
+                ) + 1
+                if fail_counts[self._target_body] >= 2:
+                    unkillable: set[int] = ctx.blackboard.setdefault(
+                        "_hunt_unkillable_bodies", set(),
+                    )
+                    unkillable.add(self._target_body)
+                    logger.warning(
+                        "hunt_unkillable_body",
+                        body=hex(self._target_body),
+                        name=self._target_name,
+                        fails=fail_counts[self._target_body],
+                    )
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
@@ -2245,6 +2303,172 @@ class _HuntForGold:
             success=True,
             message=f"Killed {self._target_name}, looted {gold_picked} gold piles",
         )
+
+
+class _LootCorpses:
+    """Deadlock recovery: open nearby corpses and loot gold/items.
+
+    In UO, dead creatures leave corpse containers on the ground
+    (graphic 0x2006).  Other players, guards, and NPCs frequently
+    kill monsters near town — their corpses may contain gold, weapons,
+    or other useful items.  This is a passive income source that
+    requires no combat skill or tools.
+
+    The procedure scans for corpses within walk range, double-clicks
+    each to open it (server sends 0x3C ContainerContent), then picks
+    up gold and valuable items from inside.
+    """
+
+    CORPSE_GRAPHIC = 0x2006
+    SCAN_RADIUS = 18  # tiles to search for corpses
+    MAX_CORPSES = 5   # don't loot more than this per run
+    GOLD_GRAPHIC = 0x0EED
+
+    def __init__(self, ss) -> None:
+        self.name = "loot_corpses"
+        self.description = "Loot nearby corpses for gold and items"
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+
+        from anima.action.movement import go_to
+        from anima.client.packets import (
+            build_double_click,
+            build_drop_item,
+            build_pick_up,
+        )
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
+
+        # Find corpse items on the ground
+        corpses = [
+            it for it in ctx.perception.world.items.values()
+            if (it.container == 0
+                and it.graphic == self.CORPSE_GRAPHIC
+                and max(abs(it.x - ss.x), abs(it.y - ss.y))
+                <= self.SCAN_RADIUS)
+        ]
+        if not corpses:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="No corpses nearby",
+            )
+
+        # Sort by distance
+        corpses.sort(
+            key=lambda c: abs(c.x - ss.x) + abs(c.y - ss.y),
+        )
+
+        # Skip corpses we already looted (by serial)
+        looted_set: set[int] = ctx.blackboard.setdefault(
+            "_looted_corpses", set(),
+        )
+
+        items_picked = 0
+        gold_picked = 0
+        corpses_opened = 0
+
+        for corpse in corpses[:self.MAX_CORPSES]:
+            if corpse.serial in looted_set:
+                continue
+
+            ss = ctx.perception.self_state
+
+            # Walk to corpse if not adjacent
+            dist = max(abs(corpse.x - ss.x), abs(corpse.y - ss.y))
+            if dist > 2:
+                arrived = await go_to(ctx, corpse.x, corpse.y)
+                if not arrived:
+                    continue
+
+            # Double-click corpse to open it (triggers 0x3C response)
+            await ctx.conn.send_packet(build_double_click(corpse.serial))
+            await asyncio.sleep(1.5)  # wait for server to send contents
+            corpses_opened += 1
+            looted_set.add(corpse.serial)
+
+            # Pick up gold and valuable items from inside the corpse
+            ss = ctx.perception.self_state
+            for it in list(ctx.perception.world.items.values()):
+                if it.container != corpse.serial:
+                    continue
+                # Always pick up gold
+                is_gold = it.graphic == self.GOLD_GRAPHIC
+                # Also pick up items vendors will buy
+                is_valuable = it.graphic in _loot_valuable_graphics()
+                if not (is_gold or is_valuable):
+                    continue
+                if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
+                    break
+                await ctx.conn.send_packet(
+                    build_pick_up(it.serial, it.amount),
+                )
+                await asyncio.sleep(0.3)
+                await ctx.conn.send_packet(
+                    build_drop_item(it.serial, container=backpack),
+                )
+                await asyncio.sleep(0.3)
+                items_picked += 1
+                if is_gold:
+                    gold_picked += it.amount
+                logger.info(
+                    "loot_corpse_picked",
+                    serial=f"0x{it.serial:08X}",
+                    graphic=f"0x{it.graphic:04X}",
+                    gold=is_gold,
+                )
+
+            if items_picked >= 10:
+                break
+
+        # Evict old entries from looted set to prevent unbounded growth
+        if len(looted_set) > 200:
+            # Keep only the most recent 100 entries (approx — sets
+            # aren't ordered, but this caps memory usage)
+            to_remove = list(looted_set)[:100]
+            for s in to_remove:
+                looted_set.discard(s)
+
+        if items_picked > 0:
+            return ProcedureResult(
+                success=True,
+                message=(
+                    f"Looted {corpses_opened} corpses: "
+                    f"{items_picked} items, {gold_picked} gold"
+                ),
+            )
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.MISSING_RESOURCE,
+            message=f"Opened {corpses_opened} corpses but found nothing useful",
+        )
+
+
+def _loot_valuable_graphics() -> set[int]:
+    """Graphics worth picking up from corpses during deadlock recovery."""
+    from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
+    from anima.procedures.vendor_knowledge import ITEM_VENDOR_MAP
+    from anima.skills.crafting.smelt import INGOT_GRAPHICS
+    from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
+    from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
+
+    SHOVEL_GRAPHICS = {0x0F39}
+    return (
+        ORE_GRAPHICS | INGOT_GRAPHICS | PICKAXE_GRAPHICS
+        | SHOVEL_GRAPHICS | TINKER_TOOLS_GRAPHICS | TONGS_GRAPHICS
+        | set(ITEM_VENDOR_MAP.keys())
+    )
 
 
 class _DesperateExploration:
@@ -2388,6 +2612,48 @@ class _DesperateExploration:
                     pos=f"({m.x},{m.y})",
                 )
                 break
+
+            # --- Loot nearby corpses ---
+            CORPSE_GRAPHIC = 0x2006
+            looted_set: set[int] = ctx.blackboard.setdefault(
+                "_looted_corpses", set(),
+            )
+            for it in list(ctx.perception.world.items.values()):
+                if (it.container == 0
+                        and it.graphic == CORPSE_GRAPHIC
+                        and it.serial not in looted_set
+                        and max(abs(it.x - ss.x), abs(it.y - ss.y)) <= 3):
+                    cdist = max(abs(it.x - ss.x), abs(it.y - ss.y))
+                    if cdist > 2:
+                        arrived = await go_to(ctx, it.x, it.y)
+                        if not arrived:
+                            continue
+                    from anima.client.packets import build_double_click
+                    await ctx.conn.send_packet(build_double_click(it.serial))
+                    await asyncio.sleep(1.5)
+                    looted_set.add(it.serial)
+                    # Pick up gold from inside the corpse
+                    for ci in list(ctx.perception.world.items.values()):
+                        if ci.container != it.serial:
+                            continue
+                        if ci.graphic not in (
+                            0x0EED, *_loot_valuable_graphics(),
+                        ):
+                            continue
+                        await ctx.conn.send_packet(
+                            build_pick_up(ci.serial, ci.amount),
+                        )
+                        await asyncio.sleep(0.3)
+                        await ctx.conn.send_packet(
+                            build_drop_item(ci.serial, container=backpack),
+                        )
+                        await asyncio.sleep(0.3)
+                        items_picked += 1
+                        logger.info(
+                            "desperate_explore_looted_corpse",
+                            serial=f"0x{ci.serial:08X}",
+                            graphic=f"0x{ci.graphic:04X}",
+                        )
 
             # --- Pick up ground items ---
             items = _WanderAndScavenge._scan_valuables(ctx, ss)
