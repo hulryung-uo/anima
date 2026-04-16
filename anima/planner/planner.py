@@ -413,6 +413,17 @@ class Planner:
             return self.registry.get(name)
 
         ss = ctx.perception.self_state
+
+        # --- Priority 0: Death recovery (ghost state) ---
+        # If the agent is dead (HP=0), nothing else can work — every action
+        # returns "I am dead and cannot do that". Walk to a healer NPC.
+        if not ss.is_alive:
+            ctx.blackboard["planner_intent"] = (
+                f"사망 상태 (HP {ss.hits}/{ss.hits_max}) → 힐러 NPC 찾아 부활 시도"
+            )
+            logger.info("planner_dead_seeking_resurrection", hp=f"{ss.hits}/{ss.hits_max}")
+            return _SeekResurrection()
+
         backpack = ss.equipment.get(0x15)
 
         if not backpack:
@@ -1525,6 +1536,14 @@ class _HuntForGold:
 
         ss = ctx.perception.self_state
 
+        # Bail immediately if dead — can't fight as a ghost
+        if not ss.is_alive:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message="Cannot fight while dead",
+            )
+
         # Walk toward target if not adjacent
         dist = max(abs(self._target_pos[0] - ss.x),
                     abs(self._target_pos[1] - ss.y))
@@ -1650,3 +1669,218 @@ class _HuntForGold:
             success=True,
             message=f"Killed {self._target_name}, looted {gold_picked} gold piles",
         )
+
+
+class _SeekResurrection:
+    """Priority 0 recovery: walk to a healer NPC and get resurrected.
+
+    When the agent dies (HP=0), it becomes a ghost and cannot perform any
+    action. The only recovery path is to find a healer NPC who can
+    resurrect the player. In UO, walking near a healer or double-clicking
+    one triggers resurrection.
+    """
+
+    MAX_HEALER_SEARCH_DIST = 18  # tiles to scan for healer NPCs
+    RESURRECT_WAIT_TIMEOUT = 20.0  # seconds to wait after interacting
+    RESURRECT_POLL_INTERVAL = 2.0
+
+    def __init__(self) -> None:
+        self.name = "seek_resurrection"
+        self.description = "Walk to healer NPC for resurrection"
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+
+        from anima.action.movement import go_to
+        from anima.client.packets import (
+            build_double_click,
+            build_opl_request,
+            build_single_click,
+        )
+        from anima.world_knowledge import ALL_LOCATIONS
+
+        ss = ctx.perception.self_state
+
+        # Already alive — nothing to do (race between selection and execution)
+        if ss.is_alive:
+            return ProcedureResult(success=True, message="Already alive")
+
+        logger.info(
+            "seek_resurrection_start",
+            pos=f"({ss.x},{ss.y})",
+            hp=f"{ss.hits}/{ss.hits_max}",
+        )
+
+        # Step 1: Check if a healer NPC is already nearby
+        healer = self._find_nearby_healer(ctx, ss)
+        if healer:
+            logger.info("seek_resurrection_healer_nearby", name=healer.name)
+            result = await self._interact_with_healer(ctx, healer.serial)
+            if result:
+                return result
+
+        # Step 2: Walk to nearest healer location
+        healer_locations = [
+            loc for loc in ALL_LOCATIONS
+            if "healer" in loc.name.lower()
+        ]
+        if not healer_locations:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="No healer locations known",
+            )
+
+        # Sort by distance
+        healer_locations.sort(
+            key=lambda loc: max(abs(loc.nav_x - ss.x), abs(loc.nav_y - ss.y))
+        )
+        target_loc = healer_locations[0]
+        dist = max(abs(target_loc.nav_x - ss.x), abs(target_loc.nav_y - ss.y))
+
+        logger.info(
+            "seek_resurrection_walking",
+            target=target_loc.name,
+            dist=dist,
+        )
+        if ctx.bus:
+            ctx.bus.publish("action.start", {
+                "message": f"☠ Dead — walking to {target_loc.name} ({dist} tiles)",
+                "importance": 3,
+            })
+
+        arrived = await go_to(ctx, target_loc.nav_x, target_loc.nav_y)
+        if not arrived:
+            # Even partial progress is useful — we're closer to the healer
+            ss = ctx.perception.self_state
+            if ss.is_alive:
+                return ProcedureResult(
+                    success=True, message="Resurrected during travel"
+                )
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Could not reach {target_loc.name}",
+            )
+
+        # Check if we got resurrected just by arriving (some servers auto-res)
+        ss = ctx.perception.self_state
+        if ss.is_alive:
+            logger.info("seek_resurrection_auto_res")
+            return ProcedureResult(
+                success=True, message="Resurrected by proximity to healer"
+            )
+
+        # Step 3: Find healer NPC at this location and interact
+        # Request names for nearby NPCs first
+        ss = ctx.perception.self_state
+        for mob in ctx.perception.world.nearby_mobiles(
+            ss.x, ss.y, distance=self.MAX_HEALER_SEARCH_DIST
+        ):
+            if not mob.name and mob.serial != ss.serial:
+                await ctx.conn.send_packet(build_opl_request(mob.serial))
+                await ctx.conn.send_packet(build_single_click(mob.serial))
+        await asyncio.sleep(1.0)
+
+        healer = self._find_nearby_healer(ctx, ss)
+        if healer:
+            result = await self._interact_with_healer(ctx, healer.serial)
+            if result:
+                return result
+
+        # Step 4: No named healer found — try double-clicking all nearby NPCs
+        # (healer names might not have loaded yet)
+        ss = ctx.perception.self_state
+        for mob in ctx.perception.world.nearby_mobiles(
+            ss.x, ss.y, distance=self.MAX_HEALER_SEARCH_DIST
+        ):
+            if mob.serial == ss.serial:
+                continue
+            await ctx.conn.send_packet(build_double_click(mob.serial))
+            await asyncio.sleep(2.0)
+            ss = ctx.perception.self_state
+            if ss.is_alive:
+                logger.info(
+                    "seek_resurrection_success",
+                    healer_serial=hex(mob.serial),
+                )
+                return ProcedureResult(
+                    success=True,
+                    message=f"Resurrected by NPC 0x{mob.serial:08X}",
+                )
+
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.BLOCKED,
+            message=f"Reached {target_loc.name} but no healer responded",
+            next_suggestion="seek_resurrection",
+        )
+
+    async def _interact_with_healer(self, ctx, healer_serial: int) -> ProcedureResult | None:
+        """Double-click healer and wait for resurrection. Returns result or None."""
+        import asyncio
+        import time
+
+        from anima.client.packets import build_double_click
+
+        await ctx.conn.send_packet(build_double_click(healer_serial))
+        logger.info("seek_resurrection_interacting", serial=hex(healer_serial))
+
+        # Poll for resurrection
+        deadline = time.monotonic() + self.RESURRECT_WAIT_TIMEOUT
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self.RESURRECT_POLL_INTERVAL)
+            ss = ctx.perception.self_state
+
+            # Check for resurrection gump and accept it
+            if ss.gumps:
+                for gump_id, gump in list(ss.gumps.items()):
+                    # Resurrection gumps typically have a single "accept" button
+                    # Try responding with button 1 (OK/Accept)
+                    try:
+                        from anima.client.packets import build_gump_response
+                        await ctx.conn.send_packet(
+                            build_gump_response(gump.serial, gump_id, 1)
+                        )
+                        logger.info(
+                            "seek_resurrection_gump_response",
+                            gump_id=hex(gump_id),
+                        )
+                        ss.gumps.pop(gump_id, None)
+                        await asyncio.sleep(2.0)
+                    except Exception as e:
+                        logger.warning(
+                            "seek_resurrection_gump_error", error=str(e)
+                        )
+
+            if ss.is_alive:
+                logger.info("seek_resurrection_success")
+                if ctx.bus:
+                    ctx.bus.publish("action.end", {
+                        "message": "✓ Resurrected!",
+                        "importance": 3,
+                    })
+                return ProcedureResult(
+                    success=True,
+                    message="Resurrected by healer NPC",
+                )
+
+        return None  # timeout — caller should try other options
+
+    @staticmethod
+    def _find_nearby_healer(ctx, ss):
+        """Find a healer NPC within search distance."""
+        HEALER_NAMES = {"healer", "wandering healer", "resurrection"}
+        for mob in ctx.perception.world.nearby_mobiles(
+            ss.x, ss.y, distance=_SeekResurrection.MAX_HEALER_SEARCH_DIST
+        ):
+            if mob.serial == ss.serial:
+                continue
+            if mob.name:
+                name_lower = mob.name.lower().strip()
+                if any(h in name_lower for h in HEALER_NAMES):
+                    return mob
+        return None

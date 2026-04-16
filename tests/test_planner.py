@@ -282,6 +282,71 @@ def _add_ground_item(ctx, serial, graphic, x, y, amount=1, hue=0):
 GOLD = 0x0EED
 
 
+class TestDeathRecovery:
+    """Test Priority 0: dead agent → seek resurrection."""
+
+    @pytest.mark.asyncio
+    async def test_dead_agent_seeks_resurrection(self):
+        """HP=0 (dead) → planner selects seek_resurrection, ignoring all else."""
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("heal_self"))
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(hits=0, hits_max=100)
+        ctx.perception.self_state.is_alive = False
+        _add_item(ctx, 1, PICKAXE)  # has tools — would normally mine
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "seek_resurrection"
+
+    @pytest.mark.asyncio
+    async def test_alive_agent_does_not_seek_resurrection(self):
+        """HP > 0 → normal procedure selection, not seek_resurrection."""
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("mine_ore"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(hits=50, hits_max=100)
+        _add_item(ctx, 1, PICKAXE)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name != "seek_resurrection"
+
+    @pytest.mark.asyncio
+    async def test_dead_agent_sets_intent(self):
+        """Dead agent sets planner_intent indicating death recovery."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(hits=0, hits_max=112)
+        ctx.perception.self_state.is_alive = False
+
+        await planner.select_procedure(ctx)
+        intent = ctx.blackboard.get("planner_intent", "")
+        assert "사망" in intent or "부활" in intent
+
+    @pytest.mark.asyncio
+    async def test_hunt_for_gold_bails_when_dead(self):
+        """_HuntForGold.run returns failure immediately if agent is dead."""
+        from anima.planner.planner import _HuntForGold
+
+        ctx = _make_ctx(hits=0, hits_max=100)
+        ctx.perception.self_state.is_alive = False
+
+        target = MagicMock(
+            serial=0x1234, name="a rat", x=100, y=200, body=0x00EE,
+        )
+        proc = _HuntForGold(target, ctx.perception.self_state)
+        result = await proc.run(ctx)
+
+        assert result.success is False
+        assert result.reason == FailureReason.BLOCKED
+        assert "dead" in result.message.lower()
+
+
 class TestDeadlockRecovery:
     """Test deadlock recovery: no tools, no gold, no materials → scavenge."""
 
