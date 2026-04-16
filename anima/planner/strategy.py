@@ -181,12 +181,24 @@ class StrategySelector:
             return True  # always viable; default
         if name == STRATEGY_FILL_COFFERS:
             return True  # broad enough to be always plausible
-        if name == STRATEGY_UPGRADE_TOOLS:
-            return True  # tool replacement always reasonable
-
         ss = ctx.perception.self_state
         backpack = ss.equipment.get(0x15) if hasattr(ss.equipment, "get") else None
         items = list(ctx.perception.world.items.values())
+
+        if name == STRATEGY_UPGRADE_TOOLS:
+            # Upgrading requires gold to buy (≥10gp) OR ingots to craft (≥4).
+            # Without either, this strategy excludes mine_ore but provides no
+            # alternative — stranding the agent in an idle loop.
+            if ss.gold >= 10:
+                return True
+            from anima.skills.crafting.smelt import INGOT_GRAPHICS
+            ingot_count = sum(
+                getattr(it, "amount", 1)
+                for it in items
+                if getattr(it, "container", 0) == backpack
+                and getattr(it, "graphic", 0) in INGOT_GRAPHICS
+            )
+            return ingot_count >= 4
 
         if name == STRATEGY_SELL_INVENTORY:
             # Need at least one *directly* sellable thing in backpack.
