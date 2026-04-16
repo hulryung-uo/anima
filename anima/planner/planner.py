@@ -316,14 +316,21 @@ class Planner:
                 details=result.details,
             )
 
-        # Track failed move destinations to prevent retry loops
-        if result and not result.success and isinstance(proc, _MoveToProcedure):
-            import time
-            self._failed_destinations[(proc._x, proc._y)] = time.time()
-            ctx.blackboard["planner_intent"] = (
-                f"이동 실패: {proc.description} ({proc._x},{proc._y}) — "
-                f"{result.message or '경로 없음'}"
-            )
+        # Track move outcomes in location stats so the scoring
+        # system learns which destinations are reachable.
+        if result and isinstance(proc, _MoveToProcedure):
+            loc_name = proc.name.removeprefix("move_to_")
+            if result.success:
+                self._roaming._location_stats.record_visit(loc_name, success=True)
+            else:
+                self._roaming._location_stats.record_visit(loc_name, success=False)
+                self._roaming._location_stats.record_failure(loc_name)
+                import time
+                self._failed_destinations[(proc._x, proc._y)] = time.time()
+                ctx.blackboard["planner_intent"] = (
+                    f"이동 실패: {proc.description} ({proc._x},{proc._y}) — "
+                    f"{result.message or '경로 없음'}"
+                )
 
         # Log and publish result
         if result:

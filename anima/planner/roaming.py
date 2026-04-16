@@ -213,7 +213,6 @@ class RoamingHelper:
                 "message": f"→ Moving to {best.name} (dist {best_dist})",
                 "importance": 2,
             })
-        self._location_stats.record_visit(best.name, success=True)
         return _MoveToProcedure(best.name, best.nav_x, best.nav_y)
 
     def mark_nearby_mine_exhausted(self, ctx: "AgentContext", ss) -> None:
@@ -313,5 +312,4 @@ class RoamingHelper:
                 "message": f"⛏ Heading to {target.name} (dist {best_dist})",
                 "importance": 2,
             })
-        self._location_stats.record_visit(target.name, success=True)
         return _MoveToProcedure(target.name, target.nav_x, target.nav_y)

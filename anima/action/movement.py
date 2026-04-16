@@ -415,9 +415,8 @@ async def go_to(
                     continue
 
                 # No doors found — try a detour
-                detour_target = _calc_detour(sx, sy, target_x, target_y)
-                if detour_target:
-                    dx2, dy2 = detour_target
+                detour_targets = _calc_detour(sx, sy, target_x, target_y)
+                for dx2, dy2 in detour_targets:
                     logger.info("go_to_detour", target=f"({dx2},{dy2})")
                     detour_path = find_path(
                         ctx.map_reader, sx, sy, dx2, dy2,
@@ -429,7 +428,9 @@ async def go_to(
                     if detour_path:
                         path = detour_path
                         consecutive_denials_without_progress = 0
-                        continue
+                        break
+                if path:
+                    continue
 
             path = []  # force recalculation with expanded denied set
 
