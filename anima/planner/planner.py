@@ -506,7 +506,9 @@ class Planner:
         SHOVEL_GRAPHICS = {0x0F39}
 
         # --- Inventory snapshot ---
-        has_mining_tool = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS | SHOVEL_GRAPHICS))
+        mining_tools = find_in_backpack(ctx, PICKAXE_GRAPHICS | SHOVEL_GRAPHICS)
+        has_mining_tool = bool(mining_tools)
+        mining_tool_count = len(mining_tools)
         has_tinker_tools = bool(find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS))
         from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
         has_tongs = bool(find_in_backpack(ctx, TONGS_GRAPHICS))
@@ -863,6 +865,20 @@ class Planner:
         # Made it past Priority 4 (have mining tools) → reset deadlock state
         ctx.blackboard.pop("_deadlock_recovery_level", None)
         ctx.blackboard.pop("_deadlock_attempt_count", None)
+
+        # --- Priority 4.5: Tool restock (non-blocking) ---
+        # Agent has at least 1 tool (passed Priority 4) but fewer than
+        # TOOL_MIN_STOCK. Buy more if a vendor is reachable right now;
+        # otherwise fall through and keep mining — this is opportunistic,
+        # not a hard block.
+        from anima.procedures.buy_from_vendor import TOOL_MIN_STOCK
+        if mining_tool_count < TOOL_MIN_STOCK and ss.gold >= 10:
+            proc = _get_proc("buy_from_vendor")
+            if proc and await proc.can_start(ctx):
+                _intent(
+                    f"도구 보충 ({mining_tool_count}/{TOOL_MIN_STOCK}) → 상점 구매"
+                )
+                return proc
 
         # --- Priority 5: Batch craft — accumulate ingots first ---
         # Gated by phase to avoid crafting mid-collection tour, but allowed
