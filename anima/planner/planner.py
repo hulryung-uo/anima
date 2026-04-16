@@ -1090,6 +1090,21 @@ class Planner:
                     # exhausted so Priority 9 picks a different one.
                     self._roaming.mark_nearby_mine_exhausted(ctx, ss)
 
+        # --- Priority 7c: Mining blocked → smelt available ore ---
+        # When mining is blocked (depleted banks, voluntary cooldown, or
+        # exhaustion guard), use the downtime to smelt any accumulated ore
+        # rather than sitting idle for 2+ minutes.
+        if ore_count > 0:
+            proc = _get_proc("smelt_ore")
+            if proc and await proc.can_start(ctx):
+                _intent(f"채광 불가, 광석 {ore_count}개 → 대기 중 제련")
+                return proc
+            if smeltable_ore >= 2:
+                move = await self._roaming.move_to_location(ctx, "forge", "blacksmith")
+                if move:
+                    _intent(f"채광 불가, 광석 {smeltable_ore}개 → 용광로로 이동")
+                    return move
+
         # --- Priority 8: Continuation hint ---
         if self.continuation_hint:
             proc = _get_proc(self.continuation_hint)

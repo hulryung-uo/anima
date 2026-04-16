@@ -189,11 +189,13 @@ class StrategySelector:
         items = list(ctx.perception.world.items.values())
 
         if name == STRATEGY_SELL_INVENTORY:
-            # Need at least one sellable thing in backpack.
-            from anima.skills.gathering.mine import ORE_GRAPHICS
+            # Need at least one *directly* sellable thing in backpack.
+            # Raw ore requires processing (smelt → craft → sell) which is
+            # the grind_mining pipeline — counting it as sellable strands
+            # the agent when mine_ore is excluded by this strategy.
             from anima.skills.crafting.smelt import INGOT_GRAPHICS
             from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
-            sellable_graphics = ORE_GRAPHICS | INGOT_GRAPHICS | CRAFTED_ITEM_GRAPHICS
+            sellable_graphics = INGOT_GRAPHICS | CRAFTED_ITEM_GRAPHICS
             return any(
                 getattr(it, "container", 0) == backpack
                 and getattr(it, "graphic", 0) in sellable_graphics
