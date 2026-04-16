@@ -1690,6 +1690,7 @@ class _SeekResurrection:
     HEALER_DETECT_RANGE = 4  # ServUO OnMovement detection radius
     WALK_AWAY_DIST = 6  # tiles to walk away before re-approaching
     HUMAN_BODIES = {0x0190, 0x0191}  # male, female human body IDs
+    HEALER_FAIL_COOLDOWN = 300.0  # 5 min cooldown before retrying a failed location
 
     def __init__(self) -> None:
         self.name = "seek_resurrection"
@@ -1728,7 +1729,9 @@ class _SeekResurrection:
             if result:
                 return result
 
-        # Step 2: Walk to nearest healer location
+        # Step 2: Walk to nearest healer location (skip recently-failed ones)
+        import time as _t
+
         healer_locations = [
             loc for loc in ALL_LOCATIONS
             if "healer" in loc.name.lower()
@@ -1740,11 +1743,32 @@ class _SeekResurrection:
                 message="No healer locations known",
             )
 
-        # Sort by distance
-        healer_locations.sort(
+        # Filter out locations that failed recently
+        failed_healers: dict[str, float] = ctx.blackboard.get(
+            "_failed_healer_locations", {}
+        )
+        now = _t.time()
+        available = [
+            loc for loc in healer_locations
+            if now - failed_healers.get(loc.name, 0) > self.HEALER_FAIL_COOLDOWN
+        ]
+        if not available:
+            # All locations failed recently — pick the one with the oldest
+            # failure so we don't deadlock on the filter itself
+            healer_locations.sort(
+                key=lambda loc: failed_healers.get(loc.name, 0)
+            )
+            available = [healer_locations[0]]
+            logger.info(
+                "seek_resurrection_all_failed_retrying_oldest",
+                target=available[0].name,
+            )
+
+        # Sort available by distance
+        available.sort(
             key=lambda loc: max(abs(loc.nav_x - ss.x), abs(loc.nav_y - ss.y))
         )
-        target_loc = healer_locations[0]
+        target_loc = available[0]
         dist = max(abs(target_loc.nav_x - ss.x), abs(target_loc.nav_y - ss.y))
 
         logger.info(
@@ -1838,12 +1862,40 @@ class _SeekResurrection:
                     message=f"Resurrected by NPC 0x{mob.serial:08X}",
                 )
 
+        # Step 5: Speech fallback — say "help" near NPCs.
+        # Some server configurations respond to ghost speech.
+        ss = ctx.perception.self_state
+        if not ss.is_alive:
+            try:
+                from anima.client.packets import build_unicode_speech
+                await ctx.conn.send_packet(build_unicode_speech("help"))
+                logger.info("seek_resurrection_speech_help")
+                await asyncio.sleep(3.0)
+                ss = ctx.perception.self_state
+                if ss.is_alive:
+                    return self._success_result(
+                        "Resurrected after saying 'help'", ctx,
+                    )
+            except Exception as e:
+                logger.warning("seek_resurrection_speech_error", error=str(e))
+
+        # Record this location as failed so next attempt tries a different one
+        failed_locs = ctx.blackboard.setdefault("_failed_healer_locations", {})
+        failed_locs[target_loc.name] = _t.time()
+        logger.info(
+            "seek_resurrection_location_failed",
+            location=target_loc.name,
+            failed_count=len(failed_locs),
+            known_locations=len(healer_locations),
+        )
+
         return ProcedureResult(
             success=False,
             reason=FailureReason.BLOCKED,
             message=f"Reached {target_loc.name} but no healer responded"
                     f" (scanned {len(human_npcs)} human NPCs,"
-                    f" {len(nearby)} total mobiles)",
+                    f" {len(nearby)} total mobiles)"
+                    f" — will try different location next",
             next_suggestion="seek_resurrection",
         )
 
@@ -1937,6 +1989,8 @@ class _SeekResurrection:
     @staticmethod
     def _success_result(message: str, ctx) -> ProcedureResult:
         logger.info("seek_resurrection_success", message=message)
+        # Clear failed-location tracking so future deaths start fresh
+        ctx.blackboard.pop("_failed_healer_locations", None)
         if ctx.bus:
             ctx.bus.publish("action.end", {
                 "message": "✓ Resurrected!",
