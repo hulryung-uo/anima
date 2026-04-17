@@ -127,11 +127,20 @@ class BuyFromVendor(Procedure):
         # Request buy menu via context menu
         ok = await _request_context_menu_entry(ctx, vendor, _CLILOC_VENDOR_BUY)
         if not ok:
-            logger.warning("buy_no_menu", vendor=vendor_name)
+            # Vendor's context menu lacks the Buy entry (e.g. guildmistresses
+            # whose title looks like a vendor but who only teach skills).
+            # Mark refused so the planner stops picking the same NPC every
+            # tick — matches the sell_no_menu path in sell_to_vendor.
+            _mark_refused(ctx, vendor.serial)
+            logger.warning(
+                "buy_no_menu",
+                vendor=vendor_name,
+                reason="context menu did not have Buy option",
+            )
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
-                message=f"{vendor_name} did not respond to buy request",
+                message=f"{vendor_name} has no Buy option — marked refused",
             )
 
         # Wait for buy list

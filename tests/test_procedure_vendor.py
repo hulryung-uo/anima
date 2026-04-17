@@ -71,6 +71,31 @@ class TestBuyFromVendor:
         assert not result.success
         assert result.reason == FailureReason.WRONG_LOCATION
 
+    @pytest.mark.asyncio
+    async def test_execute_no_buy_menu_marks_refused(self):
+        """Vendor without a Buy context menu entry (e.g. miner guildmistress)
+        must be marked refused so the planner stops retrying every tick."""
+        proc = BuyFromVendor()
+        ctx = _make_ctx()
+        vendor = MagicMock()
+        vendor.serial = 0x5C1
+        vendor.name = " Ambar the miner guildmistress"
+        vendor.x = 2460
+        vendor.y = 487
+        with patch(
+            "anima.procedures.buy_from_vendor._find_vendor", return_value=vendor,
+        ), patch(
+            "anima.procedures.buy_from_vendor._request_context_menu_entry",
+            AsyncMock(return_value=False),
+        ), patch(
+            "anima.procedures.buy_from_vendor._mark_refused",
+        ) as mark_refused:
+            result = await proc.execute(ctx)
+
+        assert not result.success
+        assert result.reason == FailureReason.BLOCKED
+        mark_refused.assert_called_once_with(ctx, 0x5C1)
+
 
 class TestSellToVendor:
     @pytest.mark.asyncio
