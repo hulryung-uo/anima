@@ -262,3 +262,88 @@ class TestRetention:
         )
         removed = await agg.trim_events(cutoff_ts=100.0)
         assert removed == 0
+
+
+class TestTickLoop:
+    @pytest.mark.asyncio
+    async def test_run_once_builds_hourly_for_previous_hour(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        import time as _t
+
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        events_file.write_text("")
+
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        # Pretend the current time is exactly at some hour boundary + 5s
+        now = 1_700_000_000.0  # well into the future
+        # Align to hour
+        aligned = now - (now % 3600)
+        await agg.run_once(now=aligned + 5.0)
+        # Should have produced one hourly row for [aligned-3600, aligned]
+        lines = [l for l in hourly_file.read_text().splitlines() if l.strip()]
+        assert len(lines) == 1
+        row = json.loads(lines[0])
+        # Hour iso should be one hour before `aligned`
+        import datetime as _dt
+        expected_hour = _dt.datetime.fromtimestamp(
+            aligned - 3600, tz=_dt.timezone.utc
+        ).isoformat()
+        assert row["hour"].startswith(expected_hour[:13])
+
+    @pytest.mark.asyncio
+    async def test_run_once_noop_within_same_hour(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        events_file.write_text("")
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        now = 1_700_000_005.0
+        await agg.run_once(now=now)
+        await agg.run_once(now=now + 30)
+        # Should only produce one hourly row even with two ticks in the same hour
+        lines = [l for l in hourly_file.read_text().splitlines() if l.strip()]
+        assert len(lines) == 1
+
+    @pytest.mark.asyncio
+    async def test_backfill_missing_hours(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        events_file.write_text("")
+        # Seed one old hourly row, three hours ago
+        base = 1_700_000_000.0 - (1_700_000_000.0 % 3600)
+        three_hours_ago_iso = "2023-11-14T19:00:00+00:00"  # arbitrary past hour
+        hourly_file.write_text(
+            json.dumps({
+                "hour": three_hours_ago_iso,
+                "uptime_s": 3600, "procedures": {},
+                "cycles_completed": 0, "phase_transitions": {},
+                "gold": {"earned": 0, "spent": 0, "delta": 0},
+                "deaths": 0, "stuck_events": 0, "skills": {},
+            }) + "\n"
+        )
+
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        now = base + 5.0
+        # Should backfill at most 3 hours plus the current boundary hour
+        n = await agg.run_once(now=now)
+        assert n >= 1

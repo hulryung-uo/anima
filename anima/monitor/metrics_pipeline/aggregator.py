@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -173,6 +174,63 @@ class MetricsAggregator:
         return row
 
     # ------------------------------------------------------------------
+    # Scheduling / tick loop
+    # ------------------------------------------------------------------
+
+    _MAX_BACKFILL_HOURS = 6
+
+    async def run_once(self, *, now: float | None = None) -> int:
+        """Fire any rollups whose boundaries have passed since the last run.
+
+        Returns the number of hourly rows written in this call (including
+        backfills).
+        """
+        if now is None:
+            now = time.time()
+
+        # Align `now` down to the current hour boundary
+        current_hour_start = now - (now % 3600)
+
+        last_iso = _last_hourly_iso(self.hourly_file)
+        if last_iso:
+            # next_start is the beginning of the first hour NOT yet written
+            next_start = _parse_hour_iso(last_iso) + 3600
+        else:
+            # No prior hourly rows — backfill from one hour ago
+            next_start = current_hour_start - 3600
+
+        written = 0
+        attempted = 0
+        while next_start + 3600 <= current_hour_start and attempted < self._MAX_BACKFILL_HOURS:
+            await self.build_hourly(
+                window_start=next_start, window_end=next_start + 3600,
+            )
+            written += 1
+            next_start += 3600
+            attempted += 1
+
+        # Daily rollup once per UTC midnight
+        yesterday = (
+            datetime.fromtimestamp(now - 86400, tz=timezone.utc).date().isoformat()
+        )
+        if _should_build_daily(self.daily_file, yesterday):
+            await self.build_daily(date_iso=yesterday)
+            cutoff = now - 30 * 86400  # 30-day retention
+            await self.trim_events(cutoff_ts=cutoff)
+
+        return written
+
+    async def run_forever(self) -> None:
+        """Background task — call run_once() every 60s."""
+        import asyncio
+        while True:
+            try:
+                await self.run_once()
+            except Exception as e:
+                logger.error("metrics_run_once_failed", error=str(e))
+            await asyncio.sleep(60)
+
+    # ------------------------------------------------------------------
     # Retention trim
     # ------------------------------------------------------------------
 
@@ -311,3 +369,43 @@ def _append_jsonl(path: Path, row: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _last_hourly_iso(path: Path) -> str | None:
+    """Return the ``hour`` field of the last valid line in path, or None."""
+    if not path.exists():
+        return None
+    last = None
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            last = json.loads(line).get("hour")
+        except Exception:
+            continue
+    return last
+
+
+def _parse_hour_iso(iso: str) -> float:
+    """Parse an ISO-8601 hour string to a UTC epoch float. Returns 0.0 on error."""
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _should_build_daily(daily_file: Path, date_iso: str) -> bool:
+    """Return True if date_iso is not already present in daily_file."""
+    if not daily_file.exists():
+        return True
+    for line in daily_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            if json.loads(line).get("date") == date_iso:
+                return False  # already built
+        except Exception:
+            continue
+    return True
