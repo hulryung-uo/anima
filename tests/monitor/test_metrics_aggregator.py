@@ -149,3 +149,116 @@ class TestHourlyRollup:
         )
         row = await agg.build_hourly(window_start=1000.0, window_end=3600.0)
         assert row["gold"]["earned"] == 30
+
+
+class TestDailyRollup:
+    @pytest.mark.asyncio
+    async def test_sums_hourly_rows_for_a_date(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        # Write two pre-existing hourly rows for 2026-04-17
+        hourly_rows = [
+            {
+                "hour": "2026-04-17T00:00:00+00:00",
+                "uptime_s": 3600,
+                "procedures": {"mine_ore": {"ok": 10, "fail": 2, "avg_ms": 3500}},
+                "cycles_completed": 1,
+                "phase_transitions": {},
+                "gold": {"earned": 50, "spent": 20, "delta": 30},
+                "deaths": 0,
+                "stuck_events": 1,
+                "skills": {"7": {"from": 63.0, "to": 63.2}},
+            },
+            {
+                "hour": "2026-04-17T01:00:00+00:00",
+                "uptime_s": 3600,
+                "procedures": {
+                    "mine_ore": {"ok": 8, "fail": 0, "avg_ms": 3400},
+                    "smelt_ore": {"ok": 3, "fail": 1, "avg_ms": 2000},
+                },
+                "cycles_completed": 2,
+                "phase_transitions": {},
+                "gold": {"earned": 80, "spent": 10, "delta": 70},
+                "deaths": 1,
+                "stuck_events": 0,
+                "skills": {"7": {"from": 63.2, "to": 63.5}},
+            },
+        ]
+        hourly_file.write_text("\n".join(json.dumps(r) for r in hourly_rows) + "\n")
+
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        row = await agg.build_daily(date_iso="2026-04-17")
+
+        assert row["date"] == "2026-04-17"
+        assert row["cycles_total"] == 3
+        assert row["gold_earned"] == 130
+        assert row["gold_spent"] == 30
+        assert row["net_gold"] == 100
+        assert row["deaths"] == 1
+        assert row["stuck_events"] == 1
+        # 21 ok / 3 fail → success_rate 0.875
+        assert row["procedure_success_rate"] == pytest.approx(0.875, rel=0.01)
+        # Top failures: mine_ore 2, smelt_ore 1
+        assert row["top_failures"][0] == ["mine_ore", 2]
+        assert row["skills_gained"]["7"] == pytest.approx(0.5, rel=0.01)
+
+    @pytest.mark.asyncio
+    async def test_missing_hourly_flags_hourly_missing(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        hourly_file.write_text("")  # empty
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        row = await agg.build_daily(date_iso="2026-04-17")
+        assert row["hourly_missing"] is True
+        assert row["cycles_total"] == 0
+
+
+class TestRetention:
+    @pytest.mark.asyncio
+    async def test_trim_removes_events_older_than_cutoff(
+        self, events_file, tmp_path,
+    ):
+        _write_events(events_file, [
+            {"ts": 100.0, "type": "gold_delta", "amount": 1},
+            {"ts": 200.0, "type": "gold_delta", "amount": 2},
+            {"ts": 300.0, "type": "gold_delta", "amount": 3},
+        ])
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=tmp_path / "h.jsonl",
+            daily_file=tmp_path / "d.jsonl",
+            db_path=tmp_path / "t.db",
+        )
+        removed = await agg.trim_events(cutoff_ts=250.0)
+        assert removed == 2
+        remaining = [
+            json.loads(l) for l in events_file.read_text().splitlines() if l.strip()
+        ]
+        assert len(remaining) == 1
+        assert remaining[0]["ts"] == 300.0
+
+    @pytest.mark.asyncio
+    async def test_trim_noop_when_nothing_to_remove(self, events_file, tmp_path):
+        _write_events(events_file, [{"ts": 500.0, "type": "x"}])
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=tmp_path / "h.jsonl",
+            daily_file=tmp_path / "d.jsonl",
+            db_path=tmp_path / "t.db",
+        )
+        removed = await agg.trim_events(cutoff_ts=100.0)
+        assert removed == 0
