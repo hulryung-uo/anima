@@ -26,3 +26,7 @@ data/backpack_cache.json
 data/forum_last_post.txt
 data/fixing.json
 .worktrees/
+data/metrics_events.jsonl
+data/metrics_hourly.jsonl
+data/metrics_daily.jsonl
+data/metrics_alerts.jsonl

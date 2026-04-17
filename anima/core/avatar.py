@@ -7,6 +7,8 @@ Subscribers observe Avatar through the EventBus.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -257,6 +259,69 @@ class Avatar:
         avatar._metrics_collector = metrics_collector
         avatar._log_sub = log_sub
         avatar._metrics_sub = metrics_sub
+
+        # --- Metrics pipeline (Tasks 1-7) ---
+        from anima.monitor.metrics_pipeline.collector import MetricsCollector as _PipelineCollector
+        from anima.monitor.metrics_pipeline.aggregator import MetricsAggregator
+        from anima.monitor.metrics_pipeline.alerts import MetricsAlertDetector
+
+        _data_dir = Path(__file__).parent.parent.parent / "data"
+        _metrics_db = _data_dir / "anima.db"
+        _metrics_events_file = _data_dir / "metrics_events.jsonl"
+
+        _pipeline_collector = _PipelineCollector(events_file=_metrics_events_file)
+        _pipeline_collector.attach_bus(avatar.bus)
+        avatar._metrics_pipeline_collector = _pipeline_collector
+
+        _metrics_aggregator = MetricsAggregator(
+            events_file=_metrics_events_file,
+            hourly_file=_data_dir / "metrics_hourly.jsonl",
+            daily_file=_data_dir / "metrics_daily.jsonl",
+            db_path=_metrics_db,
+            bus=avatar.bus,
+        )
+        avatar._metrics_aggregator = _metrics_aggregator
+
+        _metrics_alerts = MetricsAlertDetector(
+            alerts_file=_data_dir / "metrics_alerts.jsonl",
+            bus=avatar.bus,
+        )
+        avatar._metrics_alerts = _metrics_alerts
+        avatar.bus.subscribe(
+            "metrics.hourly_complete",
+            lambda _t, data: _metrics_alerts.check(data.get("row", data)),
+        )
+
+        # Periodic state diff (every 5 s) and aggregator run_forever()
+        _state_file = _data_dir / "state.json"
+
+        async def _state_diff_loop() -> None:
+            _prev: dict | None = None
+            while True:
+                try:
+                    if _state_file.exists():
+                        _curr = json.loads(_state_file.read_text())
+                        _pipeline_collector._diff_state(_prev, _curr)
+                        _prev = _curr
+                except Exception as _e:
+                    logger.warning("metrics_state_poll_failed", error=str(_e))
+                await asyncio.sleep(5)
+
+        async def _action_log_poll_loop() -> None:
+            while True:
+                try:
+                    await _pipeline_collector.poll_action_logs(db_path=_metrics_db)
+                except Exception as _e:
+                    logger.warning("metrics_action_log_poll_failed", error=str(_e))
+                await asyncio.sleep(30)
+
+        asyncio.create_task(_state_diff_loop(), name="metrics_state_loop")
+        asyncio.create_task(_action_log_poll_loop(), name="metrics_action_log_loop")
+        asyncio.create_task(
+            _metrics_aggregator.run_forever(), name="metrics_aggregator_loop",
+        )
+        logger.info("metrics_pipeline_started")
+
         return avatar
 
     def build_context(self) -> AgentContext:

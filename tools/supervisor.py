@@ -88,6 +88,8 @@ _NOTABLE_TOPICS = {
     "planner.stopped",
     "planner.death",
     "planner.critical_hp",
+    "metrics.hourly_complete",
+    "metrics.alert",
 }
 
 
@@ -326,6 +328,22 @@ def auto_recover(proc: subprocess.Popen, reason: str, extra_args: list[str]) -> 
     _alert(f"AUTO-RECOVER: {reason}")
 
     stop_agent(proc)
+
+    # Record supervisor-side auto-recover as a metric event so the
+    # agent's pipeline sees stuck_events regardless of whether the
+    # new agent instance has started yet.
+    try:
+        events_file = ROOT / "data" / "metrics_events.jsonl"
+        events_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(events_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "type": "stuck_event",
+                "reason": reason,
+                "source": "supervisor",
+            }) + "\n")
+    except Exception:
+        pass
 
     # Log the recovery
     _log_improvement("auto_recover", reason, success=True, code_changed=False)
