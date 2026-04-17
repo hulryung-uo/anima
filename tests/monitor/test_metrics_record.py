@@ -26,7 +26,7 @@ def test_record_appends_multiple_events(tmp_path: Path):
     record("death", events_file=events_file, pos=[2553, 496], hp_before=12)
     lines = events_file.read_text().splitlines()
     assert len(lines) == 3
-    types = [json.loads(l)["type"] for l in lines]
+    types = [json.loads(line)["type"] for line in lines]
     assert types == ["gold_delta", "gold_delta", "death"]
 
 

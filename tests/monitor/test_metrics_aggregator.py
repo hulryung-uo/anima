@@ -125,7 +125,7 @@ class TestHourlyRollup:
         await agg.build_hourly(window_start=3600.0, window_end=7200.0)
         lines = hourly_file.read_text().splitlines()
         assert len(lines) == 2
-        rows = [json.loads(l) for l in lines]
+        rows = [json.loads(line) for line in lines]
         # Second row window differs from first
         assert rows[0]["hour"] != rows[1]["hour"]
 
@@ -246,7 +246,7 @@ class TestRetention:
         removed = await agg.trim_events(cutoff_ts=250.0)
         assert removed == 2
         remaining = [
-            json.loads(l) for l in events_file.read_text().splitlines() if l.strip()
+            json.loads(line) for line in events_file.read_text().splitlines() if line.strip()
         ]
         assert len(remaining) == 1
         assert remaining[0]["ts"] == 300.0
@@ -269,8 +269,6 @@ class TestTickLoop:
     async def test_run_once_builds_hourly_for_previous_hour(
         self, events_file, hourly_file, daily_file, tmp_path,
     ):
-        import time as _t
-
         db = tmp_path / "t.db"
         await _make_db(db)
         events_file.write_text("")
@@ -287,7 +285,7 @@ class TestTickLoop:
         aligned = now - (now % 3600)
         await agg.run_once(now=aligned + 5.0)
         # Should have produced one hourly row for [aligned-3600, aligned]
-        lines = [l for l in hourly_file.read_text().splitlines() if l.strip()]
+        lines = [line for line in hourly_file.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         row = json.loads(lines[0])
         # Hour iso should be one hour before `aligned`
@@ -314,7 +312,7 @@ class TestTickLoop:
         await agg.run_once(now=now)
         await agg.run_once(now=now + 30)
         # Should only produce one hourly row even with two ticks in the same hour
-        lines = [l for l in hourly_file.read_text().splitlines() if l.strip()]
+        lines = [line for line in hourly_file.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
 
     @pytest.mark.asyncio

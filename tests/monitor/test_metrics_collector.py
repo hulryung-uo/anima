@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,7 +17,7 @@ def events_file(tmp_path: Path) -> Path:
 def _read(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [json.loads(l) for l in path.read_text().splitlines()]
+    return [json.loads(line) for line in path.read_text().splitlines()]
 
 
 def _make_state(**status_overrides) -> dict:

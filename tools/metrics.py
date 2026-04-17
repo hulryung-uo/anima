@@ -26,9 +26,16 @@ def _path(env_key: str, default_name: str) -> Path:
     return Path(os.environ.get(env_key) or (ROOT / "data" / default_name))
 
 
-HOURLY_FILE = lambda: _path("ANIMA_METRICS_HOURLY", "metrics_hourly.jsonl")
-DAILY_FILE = lambda: _path("ANIMA_METRICS_DAILY", "metrics_daily.jsonl")
-EVENTS_FILE = lambda: _path("ANIMA_METRICS_EVENTS", "metrics_events.jsonl")
+def HOURLY_FILE() -> Path:
+    return _path("ANIMA_METRICS_HOURLY", "metrics_hourly.jsonl")
+
+
+def DAILY_FILE() -> Path:
+    return _path("ANIMA_METRICS_DAILY", "metrics_daily.jsonl")
+
+
+def EVENTS_FILE() -> Path:
+    return _path("ANIMA_METRICS_EVENTS", "metrics_events.jsonl")
 
 
 def _read_jsonl(path: Path) -> list[dict]:
