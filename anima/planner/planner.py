@@ -1498,39 +1498,61 @@ class Planner:
                 result.append(it)
         return result
 
-    def _has_sellable_junk(self, ctx: AgentContext, ss) -> bool:
-        """True if backpack contains non-essential items that could be sold.
+    def _sellable_graphics(self, ctx: AgentContext, ss) -> set[int]:
+        """Graphics in backpack the agent can sell to a vendor.
 
-        Used in deadlock recovery: the agent may have clothing, books,
-        weapons, etc. that vendors will buy for gold.
+        Includes non-KEEP items (clothing, books, weapons) plus surplus
+        crafting tools (count ≥ 2 of a given graphic) — sell_to_vendor's
+        keep-at-least-1 logic protects one serial per tool group, so
+        duplicates are safe to offload for gold.  Crucial when the agent
+        deadlocks carrying e.g. 4 tinker's tools + 2 tongs: without this,
+        the planner only sees dagger/book/candle as sellable and ignores
+        the real liquidation opportunity.
         """
         backpack = ss.equipment.get(0x15)
         if not backpack:
-            return False
+            return set()
         from anima.skills.trade.vendor import KEEP_GRAPHICS
-        return any(
-            it.container == backpack and it.graphic not in KEEP_GRAPHICS
-            for it in ctx.perception.world.items.values()
+        from anima.skills.crafting.tinker import (
+            TINKER_TOOLS_GRAPHICS as _TINKER_GFX,
+            PICKAXE_GRAPHICS as _PICK_GFX,
+            HATCHET_GRAPHICS as _HATCH_GFX,
+            SAW_GRAPHICS as _SAW_GFX,
         )
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
+
+        pack_items = [
+            it for it in ctx.perception.world.items.values()
+            if it.container == backpack
+        ]
+        graphics: set[int] = {
+            it.graphic for it in pack_items if it.graphic not in KEEP_GRAPHICS
+        }
+
+        for group in (_TONGS_GFX, _TINKER_GFX, _PICK_GFX, _HATCH_GFX, _SAW_GFX):
+            group_items = [it for it in pack_items if it.graphic in group]
+            if len(group_items) >= 2:
+                graphics.update(it.graphic for it in group_items)
+        return graphics
+
+    def _has_sellable_junk(self, ctx: AgentContext, ss) -> bool:
+        """True if backpack contains items a vendor would buy.
+
+        Used in deadlock recovery.  See :meth:`_sellable_graphics` for
+        what counts (non-KEEP items + surplus duplicate tools).
+        """
+        return bool(self._sellable_graphics(ctx, ss))
 
     def _sellable_vendor_keywords(self, ctx: AgentContext, ss) -> list[str]:
-        """Return location keywords for vendors that buy the agent's junk items.
+        """Return location keywords for vendors that buy the agent's items.
 
         Uses ITEM_VENDOR_MAP to map actual backpack items → vendor types,
         so the agent walks to the RIGHT vendor (e.g. "arms" for daggers,
-        "tailor" for clothing) instead of generic shop keywords.
+        "tailor" for clothing, "tinker" for surplus tinker's tools).
         """
         from anima.procedures.vendor_knowledge import get_vendor_keywords_for_items
-        from anima.skills.trade.vendor import KEEP_GRAPHICS
 
-        backpack = ss.equipment.get(0x15)
-        if not backpack:
-            return ["blacksmith", "arms", "provisioner", "tailor"]
-        sellable_graphics = {
-            it.graphic
-            for it in ctx.perception.world.items.values()
-            if it.container == backpack and it.graphic not in KEEP_GRAPHICS
-        }
+        sellable_graphics = self._sellable_graphics(ctx, ss)
         if not sellable_graphics:
             return ["blacksmith", "arms", "provisioner", "tailor"]
         return get_vendor_keywords_for_items(sellable_graphics)

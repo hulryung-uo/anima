@@ -51,20 +51,47 @@ class SellToVendor(Procedure):
 
     @staticmethod
     def _desired_vendor_types(ctx: AgentContext, keep: set[int]) -> set[str] | None:
-        """Vendor types that buy our sellable items, or None for any vendor."""
+        """Vendor types that buy our sellable items, or None for any vendor.
+
+        Also routes for surplus crafting tools (count ≥ 2 per graphic):
+        the keep-at-least-1 logic below lets us sell duplicates even
+        though they're in KEEP_GRAPHICS, so the vendor we walk to must
+        accept them (e.g. a tinker for extra tinker's tools).
+        """
         from anima.procedures.vendor_knowledge import ITEM_VENDOR_MAP
+        from anima.skills.crafting.tinker import (
+            TINKER_TOOLS_GRAPHICS as _TINKER_GFX,
+            PICKAXE_GRAPHICS as _PICK_GFX,
+            HATCHET_GRAPHICS as _HATCH_GFX,
+            SAW_GRAPHICS as _SAW_GFX,
+        )
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
 
         ss = ctx.perception.self_state
         backpack = ss.equipment.get(0x15)
         if not backpack:
             return None
 
+        pack_items = [
+            it for it in ctx.perception.world.items.values()
+            if it.container == backpack
+        ]
+
         types: set[str] = set()
-        for it in ctx.perception.world.items.values():
-            if it.container == backpack and it.graphic not in keep:
+        for it in pack_items:
+            if it.graphic not in keep:
                 vt = ITEM_VENDOR_MAP.get(it.graphic)
                 if vt:
                     types.update(vt)
+
+        for group in (_TONGS_GFX, _TINKER_GFX, _PICK_GFX, _HATCH_GFX, _SAW_GFX):
+            group_items = [it for it in pack_items if it.graphic in group]
+            if len(group_items) >= 2:
+                for it in group_items:
+                    vt = ITEM_VENDOR_MAP.get(it.graphic)
+                    if vt:
+                        types.update(vt)
+
         return types or None
 
     async def can_start(self, ctx: AgentContext) -> bool:

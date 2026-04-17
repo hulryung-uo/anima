@@ -86,6 +86,19 @@ _BOOKS = [0x0FEF, 0x0FF0, 0x0FF1, 0x0FF2, 0x0FF3, 0x0FF4, 0x0FBD, 0x0FBE]
 for g in _BOOKS:
     ITEM_VENDOR_MAP[g] = ["mage", "provisioner"]
 
+# Crafting tools — normally in KEEP_GRAPHICS, but surplus (count ≥ 2) is
+# sellable via sell_to_vendor's "keep-at-least-1" logic.  Mapping them
+# here lets the planner pick the correct vendor type for a bulk sell
+# (e.g. tinker's tools → tinker guildmistress) instead of falling back
+# to "blacksmith" and getting refused.
+_TINKER_TOOLS = [0x1EB8, 0x1EBC]
+for g in _TINKER_TOOLS:
+    ITEM_VENDOR_MAP[g] = ["tinker", "blacksmith"]
+
+_TONGS = [0x0FBB, 0x0FBC]
+for g in _TONGS:
+    ITEM_VENDOR_MAP[g] = ["blacksmith", "tinker"]
+
 
 def get_vendor_keywords_for_items(item_graphics: set[int]) -> list[str]:
     """Given a set of item graphics, return vendor keywords to search for."""
