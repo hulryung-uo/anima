@@ -160,6 +160,16 @@ class RoamingHelper:
         """
         from anima.world_knowledge import ALL_LOCATIONS
 
+        # Respect the 30s move-failure cooldown. Previously only some call
+        # sites checked _move_fail_until; ungated priorities (e.g. Priority 4c
+        # buy-tools at planner.py:751,773) looped on failed pathfinding every
+        # ~5s, preventing _idle_ticks from growing and blocking the deadlock
+        # resolver from ever firing Strategy 5 (which is what clears the
+        # cooldown intentionally). Centralising the gate here makes all paths
+        # idle during the cooldown so the designed escalation can run.
+        if _time.time() < self._planner._move_fail_until:
+            return None
+
         ss = ctx.perception.self_state
 
         # Mark locations we're already standing at as temporarily failed.
