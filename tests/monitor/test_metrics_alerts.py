@@ -88,3 +88,4 @@ class TestAlertRules:
         assert len(lines) == 1
         obj = json.loads(lines[0])
         assert obj["rule"] == "death"
+        assert "ts" in obj and isinstance(obj["ts"], float)

@@ -35,7 +35,9 @@ class MetricsAlertDetector:
         self._cycles_history: deque[int] = deque(
             maxlen=self.REGRESSION_BASELINE_HOURS + self.REGRESSION_CONSECUTIVE_HOURS
         )
-        self._success_history: deque[float] = deque(maxlen=4)
+        self._success_history: deque[float] = deque(
+            maxlen=self.SUCCESS_RATE_CONSECUTIVE_HOURS + 2,
+        )
 
     def check(self, hourly_row: dict) -> list[dict]:
         fired: list[dict] = []
