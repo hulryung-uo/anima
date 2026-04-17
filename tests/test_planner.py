@@ -115,6 +115,33 @@ class TestGameplayLoop:
         assert proc.name == "smelt_ore"
 
     @pytest.mark.asyncio
+    async def test_orphan_unsmeltable_ore_does_not_block_make_tools(self):
+        """Stale 1-amount iron ore in `_small_iron_ore_serials` must not trap
+        Priority 4a in a forge-bound loop when ingots/tinker tools are ready
+        to craft a pickaxe.
+        """
+        from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("smelt_ore", can=False))  # no forge in mock
+        reg.register(StubProcedure("make_tools"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0)
+        # Tinker kit + 21 iron ingots — make_tools.can_start() should pass.
+        _add_item(ctx, 1, next(iter(TINKER_TOOLS_GRAPHICS)))
+        _add_item(ctx, 2, INGOT, amount=21)
+        # Orphan 1-amount iron ore that smelt previously gave up on.
+        _add_item(ctx, 99, ORE, amount=1)
+        ctx.blackboard["_small_iron_ore_serials"] = {99}
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "make_tools", (
+            f"expected fall-through to make_tools, got {proc.name}"
+        )
+
+    @pytest.mark.asyncio
     async def test_has_ingots_no_tongs_no_gold_sells_raw(self):
         """No tongs + no gold + many ingots → sell raw as last resort to fund tongs."""
         from anima.planner.expedition import Phase

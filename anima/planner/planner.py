@@ -688,14 +688,21 @@ class Planner:
 
         # --- Priority 4: No mining tools → get them ---
         if not has_mining_tool:
-            # 4a: Has ore → smelt first
-            if ore_count > 0:
+            # 4a: Has SMELTABLE ore → smelt first.
+            # `ore_count` includes ore stacks the smelt step has already given
+            # up on (unsmelable hue, or 1-amount iron with no merge partner).
+            # Gating on raw ore_count traps the planner in a forge-bound loop
+            # because smelt_ore.can_start filters those same serials → never
+            # advances to make_tools/sell paths.
+            if smeltable_ore > 0:
                 proc = _get_proc("smelt_ore")
                 if proc and await proc.can_start(ctx):
                     _intent("곡괭이 없음, 광석 보유 → 제련부터")
                     return proc
                 _intent("곡괭이 없음, 광석 보유, 용광로 없음 → 용광로로 이동")
-                return await self._roaming.move_to_location(ctx, "forge", "blacksmith")
+                move = await self._roaming.move_to_location(ctx, "forge", "blacksmith")
+                if move:
+                    return move
 
             # 4b: Has tinker tools + ingots → try craft tools
             #     Skip if Tinkering gave up (skill too low)
