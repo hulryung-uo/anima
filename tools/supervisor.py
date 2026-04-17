@@ -88,6 +88,8 @@ _NOTABLE_TOPICS = {
     "planner.stopped",
     "planner.death",
     "planner.critical_hp",
+    "metrics.hourly_complete",
+    "metrics.alert",
 }
 
 
