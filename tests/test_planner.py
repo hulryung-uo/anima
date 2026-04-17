@@ -527,6 +527,38 @@ class TestDeadlockRecovery:
         assert proc.name == "scavenge_ground_items"
 
     @pytest.mark.asyncio
+    async def test_deadlock_post_forum_relocate_jumps_to_level4(self):
+        """_post_forum_relocate flag near stranded pos → _RelocateToCity."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2456, y=453)
+        ctx.blackboard["_post_forum_relocate"] = True
+        ctx.blackboard["_forum_stranded_pos"] = (2450, 450)
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "relocate_to_city"
+        # Flag should still be set (we haven't moved far yet)
+        assert ctx.blackboard.get("_post_forum_relocate") is True
+
+    @pytest.mark.asyncio
+    async def test_deadlock_post_forum_relocate_clears_when_far(self):
+        """_post_forum_relocate flag clears once agent has moved >60 tiles."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Agent has moved 100 tiles east of the stranded position
+        ctx = _make_ctx(gold=0, x=2550, y=453)
+        ctx.blackboard["_post_forum_relocate"] = True
+        ctx.blackboard["_forum_stranded_pos"] = (2450, 450)
+
+        await planner.select_procedure(ctx)
+        # Flag should be cleared — normal level-0 recovery resumes
+        assert "_post_forum_relocate" not in ctx.blackboard
+        assert "_forum_stranded_pos" not in ctx.blackboard
+
+    @pytest.mark.asyncio
     async def test_resolve_deadlock_clears_state(self):
         """DeadlockResolver.resolve Strategy 5 resets failed destinations and idle ticks."""
         reg = ProcedureRegistry()

@@ -846,6 +846,34 @@ class Planner:
             _deadlock_attempts = ctx.blackboard.get("_deadlock_attempt_count", 0)
             _deadlock_level = ctx.blackboard.get("_deadlock_recovery_level", 0)
 
+            # Post-forum memory: escalate_to_forum sets _post_forum_relocate
+            # and records the stranded position when the 5-min help wait
+            # produced no gold or tool.  Without this, the full-reset inside
+            # escalate_to_forum drops us back to Level 0 here and the same
+            # Level 0→6 cycle replays in the same city indefinitely.  Jump
+            # straight to Level 4 (relocate) to escape the dead-end area.
+            _stranded_pos = ctx.blackboard.get("_forum_stranded_pos")
+            if ctx.blackboard.get("_post_forum_relocate") and _stranded_pos:
+                dist_from_stranded = max(
+                    abs(ss.x - _stranded_pos[0]),
+                    abs(ss.y - _stranded_pos[1]),
+                )
+                # Clear once we've moved far enough that a normal recovery
+                # has a reasonable chance — the Britain waypoint is ~1000
+                # tiles from Minoc so 60 tiles is well into new terrain.
+                if dist_from_stranded > 60:
+                    ctx.blackboard.pop("_post_forum_relocate", None)
+                    ctx.blackboard.pop("_forum_stranded_pos", None)
+                    logger.info(
+                        "planner_post_forum_relocate_cleared",
+                        moved=dist_from_stranded,
+                    )
+                else:
+                    _intent(
+                        "교착 복구: 포럼 요청 후 도움 없음 → 다른 도시로 이동"
+                    )
+                    return _RelocateToCity(ss)
+
             # Gold-progress anti-escalation: if the agent is earning gold
             # (e.g. from killing rats), reset the attempt counter so it
             # stays at the current level and keeps hunting instead of

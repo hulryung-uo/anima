@@ -227,6 +227,8 @@ class DeadlockResolver:
                 logger.info("planner_help_received", gold=ss.gold)
                 ctx.blackboard["planner_intent"] = f"Gold received ({ss.gold}gp) — resuming"
                 self._planner._idle_ticks = 0
+                ctx.blackboard.pop("_post_forum_relocate", None)
+                ctx.blackboard.pop("_forum_stranded_pos", None)
                 return
             try:
                 from anima.actions.inventory import find_in_backpack
@@ -235,9 +237,24 @@ class DeadlockResolver:
                     logger.info("planner_help_received_tool")
                     ctx.blackboard["planner_intent"] = "Pickaxe received — resuming"
                     self._planner._idle_ticks = 0
+                    ctx.blackboard.pop("_post_forum_relocate", None)
+                    ctx.blackboard.pop("_forum_stranded_pos", None)
                     return
             except Exception:
                 pass
+
+        # After 5 min wait with no help, force relocation on the next
+        # deadlock entry.  Without this, the full-reset below drops the
+        # agent back to Level 0 in the same stranded position and the
+        # exact same Level 0→6 cycle replays forever.  The flag and
+        # recorded position survive full_reset (not in the pop list).
+        ss = ctx.perception.self_state
+        ctx.blackboard["_post_forum_relocate"] = True
+        ctx.blackboard["_forum_stranded_pos"] = (ss.x, ss.y)
+        logger.warning(
+            "planner_post_forum_relocate_armed",
+            pos=f"({ss.x},{ss.y})",
+        )
 
         # After 5 min wait, reset and try again
         self._planner._idle_ticks = 0
