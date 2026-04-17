@@ -289,7 +289,7 @@ class Avatar:
         avatar._metrics_alerts = _metrics_alerts
         avatar.bus.subscribe(
             "metrics.hourly_complete",
-            lambda _t, row: _metrics_alerts.check(row),
+            lambda _t, data: _metrics_alerts.check(data.get("row", data)),
         )
 
         # Periodic state diff (every 5 s) and aggregator run_forever()
@@ -310,7 +310,7 @@ class Avatar:
         async def _action_log_poll_loop() -> None:
             while True:
                 try:
-                    await _pipeline_collector.poll_action_logs()
+                    await _pipeline_collector.poll_action_logs(db_path=_metrics_db)
                 except Exception as _e:
                     logger.warning("metrics_action_log_poll_failed", error=str(_e))
                 await asyncio.sleep(30)

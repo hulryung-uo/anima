@@ -7,6 +7,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from anima.core.bus import EventBus
 from anima.monitor.metrics_pipeline import record
 from anima.monitor.metrics_pipeline.aggregator import MetricsAggregator
 from anima.monitor.metrics_pipeline.alerts import MetricsAlertDetector
@@ -76,3 +77,52 @@ async def test_end_to_end(tmp_path: Path):
     fired = det.check(hourly_row)
     assert any(a["rule"] == "death" for a in fired)
     assert alerts.exists()
+
+
+@pytest.mark.asyncio
+async def test_alert_fires_through_bus_wrapper(tmp_path: Path):
+    """Regression test: alert detector must unwrap bus payload (not see the
+    {'message', 'row', ...} wrapper and evaluate rules against it)."""
+    events = tmp_path / "events.jsonl"
+    hourly = tmp_path / "hourly.jsonl"
+    daily = tmp_path / "daily.jsonl"
+    alerts = tmp_path / "alerts.jsonl"
+    db = tmp_path / "anima.db"
+
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("""
+            CREATE TABLE action_logs (
+                timestamp REAL, agent TEXT, procedure TEXT,
+                location_x INTEGER, location_y INTEGER,
+                result TEXT, message TEXT, duration_ms REAL, details TEXT
+            )
+        """)
+        await conn.commit()
+
+    bus = EventBus()
+    agg = MetricsAggregator(
+        events_file=events, hourly_file=hourly, daily_file=daily,
+        db_path=db, bus=bus,
+    )
+    det = MetricsAlertDetector(alerts_file=alerts, bus=bus)
+
+    # Wire the subscription exactly like avatar.py does
+    bus.subscribe(
+        "metrics.hourly_complete",
+        lambda _t, data: det.check(data.get("row", data)),
+    )
+
+    # Emit a death event into the events file, then align its timestamp to
+    # fall inside the aggregation window [0, 3600).
+    record("death", events_file=events, pos=[0, 0], hp_before=10)
+    raw = json.loads(events.read_text())
+    raw["ts"] = 100.0
+    events.write_text(json.dumps(raw) + "\n")
+
+    # Aggregator publishes via bus → subscriber unwraps → detector fires
+    await agg.build_hourly(window_start=0.0, window_end=3600.0)
+
+    # The alert detector should have persisted a death alert
+    lines = alerts.read_text().splitlines() if alerts.exists() else []
+    assert any(json.loads(line)["rule"] == "death" for line in lines), \
+        f"death alert should fire through bus wrapper; got alerts file: {lines!r}"
