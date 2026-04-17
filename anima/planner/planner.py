@@ -935,10 +935,17 @@ class Planner:
                 # Fresh state for the new level so higher-level strategies
                 # aren't blocked by stale entries from previous levels.
                 self._failed_destinations.clear()
-                # Clear refused vendors — a vendor that refused at Level 0
-                # (wrong type) shouldn't block Level 1 from retrying after
-                # the agent walks to a different vendor.
-                ctx.blackboard.pop("refused_vendors", None)
+                # Clear refused vendors ONLY when escalating into Level 1
+                # (drop_junk_items). Level 0→1 drops non-keep items, which
+                # changes the backpack's item_vendor_map and therefore the
+                # vendor_types a previously-refused vendor was matched on.
+                # For Level 1→2+ transitions, inventory does not change, so
+                # clearing would just re-select the same wrong-type vendor
+                # before its 300s cooldown expires (observed loop: Veda the
+                # provisioner rejects weapons → marked refused → escalation
+                # clears the mark → same vendor re-selected 43s later).
+                if _deadlock_level == 1:
+                    ctx.blackboard.pop("refused_vendors", None)
                 # Reset vendor rotation index for the new level
                 ctx.blackboard.pop("_deadlock_vendor_idx", None)
                 logger.warning(

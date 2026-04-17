@@ -97,14 +97,28 @@ class DeadlockResolver:
             self._planner._idle_ticks = 0
             return
 
-        # Strategy 3: Clear refused vendors
+        # Strategy 3: Clear stale refused vendors only.
+        # A rejection is a fact about the vendor's buy list + our current
+        # inventory — not a transient error. Don't wipe recent rejections
+        # (they correctly prevent re-selecting the same wrong-type vendor).
+        # Only clear entries older than 60s, giving the 300s per-vendor
+        # cooldown room to work while still breaking true long stalls.
         refused = ctx.blackboard.get("refused_vendors", {})
         if refused:
-            refused.clear()
-            logger.info("planner_cleared_refused_vendors")
-            ctx.blackboard["planner_intent"] = "거부된 벤더 초기화 → 재시도"
-            self._planner._idle_ticks = 0
-            return
+            stale = [s for s, ts in refused.items() if now - ts > 60.0]
+            for s in stale:
+                refused.pop(s, None)
+            if stale:
+                logger.info(
+                    "planner_cleared_refused_vendors",
+                    cleared=len(stale),
+                    kept=len(refused),
+                )
+                ctx.blackboard["planner_intent"] = (
+                    f"거부된 벤더 {len(stale)}개 초기화 → 재시도"
+                )
+                self._planner._idle_ticks = 0
+                return
 
         # Strategy 4: Clear skipped procedures
         skip = ctx.blackboard.get("_skip_procedures", set())
