@@ -58,13 +58,14 @@ def _rows_for_today(hourly: list[dict]) -> list[dict]:
 def _parse_window(text: str) -> tuple[float, float]:
     """Parse a window string like '24h' or '7d' into (start_ts, end_ts)."""
     now = time.time()
-    if text.endswith("h"):
-        hours = int(text[:-1])
-        return now - hours * 3600, now
-    if text.endswith("d"):
-        days = int(text[:-1])
-        return now - days * 86400, now
-    raise SystemExit(f"Invalid window: {text}")
+    try:
+        if text.endswith("h"):
+            return now - int(text[:-1]) * 3600, now
+        if text.endswith("d"):
+            return now - int(text[:-1]) * 86400, now
+    except ValueError:
+        pass
+    raise SystemExit(f"Invalid window: {text!r}")
 
 
 def cmd_today(args) -> int:
