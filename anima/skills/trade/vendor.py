@@ -631,29 +631,38 @@ _VENDOR_TITLES = {
     "herbalist", "alchemist", "baker", "butcher", "cobbler",
     "furtrader", "tanner", "mage", "scribe", "shipwright",
     "innkeeper", "barkeep", "cook", "farmer", "fisherman",
+    "miner",
     "vendor", "merchant", "shopkeeper",
 }
 
-# NPCs with these titles look like vendors but don't sell items
+# Guildmaster/guildmistress titles — only exclude when their name has
+# NO vendor-type keyword. A "miner guildmistress" or "tinker guildmistress"
+# IS the shop vendor inside the guild building on this shard; a plain
+# "warrior guildmaster" only teaches skills.
 _NON_VENDOR_TITLES = {
     "guildmaster", "guildmistress", "guild master", "guild mistress",
 }
 
 
 def _is_vendor(mob: MobileInfo) -> bool:
-    """Check if a mobile is a vendor by name or OPL properties."""
+    """Check if a mobile is a vendor by name or OPL properties.
+
+    Vendor-titled guildmasters (e.g. "miner guildmistress") are treated
+    as vendors — on this shard they run the shop attached to their guild.
+    Pure guildmasters with no vendor keyword (e.g. "warrior guildmaster")
+    only teach skills and are excluded.
+    """
     name_lower = (mob.name or "").lower()
-    # Exclude guildmasters — they don't sell items
-    if any(t in name_lower for t in _NON_VENDOR_TITLES):
-        return False
     if any(t in name_lower for t in _VENDOR_TITLES):
         return True
+    if any(t in name_lower for t in _NON_VENDOR_TITLES):
+        return False
     for prop in (mob.properties or []):
         prop_lower = prop.lower()
-        if any(t in prop_lower for t in _NON_VENDOR_TITLES):
-            return False
         if any(t in prop_lower for t in _VENDOR_TITLES):
             return True
+        if any(t in prop_lower for t in _NON_VENDOR_TITLES):
+            return False
     return False
 
 
