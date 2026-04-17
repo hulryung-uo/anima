@@ -1217,6 +1217,8 @@ class Planner:
                 if ctx.bus is not None:
                     try:
                         ctx.bus.publish("expedition.cycle_complete", {
+                            "cycles": expedition.cycles_completed,
+                            "duration_s": duration,
                             "message": f"✓ 원정 사이클 {expedition.cycles_completed}회 완료 ({duration:.0f}s)",
                             "importance": 3,
                         })

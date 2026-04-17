@@ -25,6 +25,7 @@ class MetricsCollector:
         self.events_file = events_file
         self._last_state: dict | None = None
         self._was_dead: bool = False  # tracks hp==0 edge
+        self._action_log_checkpoint: float = 0.0
 
     def _emit(self, event_type: str, **payload: Any) -> None:
         record(event_type, events_file=self.events_file, **payload)
@@ -102,8 +103,6 @@ class MetricsCollector:
 
     # --- action_logs polling ---
 
-    _action_log_checkpoint: float = 0.0
-
     async def poll_action_logs(
         self, *, db_path: Path | None = None, since: float | None = None,
     ) -> int:
@@ -114,8 +113,7 @@ class MetricsCollector:
         import aiosqlite
 
         if db_path is None:
-            from pathlib import Path as _Path
-            db_path = _Path("data/anima.db")
+            db_path = Path("data/anima.db")
         cutoff = since if since is not None else self._action_log_checkpoint
 
         count = 0
