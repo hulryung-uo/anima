@@ -67,6 +67,80 @@ class MetricsCollector:
                     **{"from": prev_val, "to": curr_val},
                 )
 
+    # --- Bus subscriptions ---
+
+    def attach_bus(self, bus) -> None:
+        """Subscribe to agent events; call once after construction."""
+        bus.subscribe("expedition.cycle_complete", self._on_cycle)
+        bus.subscribe("expedition.phase", self._on_phase)
+        bus.subscribe("planner.death", self._on_death_event)
+        bus.subscribe("supervisor.auto_recover", self._on_auto_recover)
+
+    def _on_cycle(self, _topic: str, data: dict) -> None:
+        self._emit(
+            "cycle_complete",
+            cycles_completed=data.get("cycles", 0),
+            duration_s=data.get("duration_s", 0.0),
+        )
+
+    def _on_phase(self, _topic: str, data: dict) -> None:
+        self._emit(
+            "phase_transition",
+            from_=data.get("from_"),
+            to=data.get("to"),
+        )
+
+    def _on_death_event(self, _topic: str, data: dict) -> None:
+        self._emit(
+            "death",
+            source="bus",
+            message=(data.get("message") or "")[:60],
+        )
+
+    def _on_auto_recover(self, _topic: str, data: dict) -> None:
+        self._emit("stuck_event", reason=data.get("reason", ""))
+
+    # --- action_logs polling ---
+
+    _action_log_checkpoint: float = 0.0
+
+    async def poll_action_logs(
+        self, *, db_path: Path | None = None, since: float | None = None,
+    ) -> int:
+        """Emit procedure_end events for rows newer than last checkpoint.
+
+        Returns the number of new events emitted.
+        """
+        import aiosqlite
+
+        if db_path is None:
+            from pathlib import Path as _Path
+            db_path = _Path("data/anima.db")
+        cutoff = since if since is not None else self._action_log_checkpoint
+
+        count = 0
+        max_seen = cutoff
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                "SELECT timestamp, procedure, result, duration_ms "
+                "FROM action_logs WHERE timestamp > ? ORDER BY timestamp",
+                (cutoff,),
+            )
+            async for ts, proc, result, dur in cursor:
+                self._emit(
+                    "procedure_end",
+                    proc=proc,
+                    success=(result == "success"),
+                    duration_ms=float(dur or 0.0),
+                    result=result,
+                )
+                count += 1
+                if ts > max_seen:
+                    max_seen = ts
+
+        self._action_log_checkpoint = max_seen
+        return count
+
 
 def _status(snapshot: dict) -> dict:
     return snapshot.get("status") or {}
