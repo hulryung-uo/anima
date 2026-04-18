@@ -32,3 +32,4 @@ data/metrics_daily.jsonl
 data/metrics_alerts.jsonl
 data/supervisor_alert.flag
 data/trajectories/
+data/intents/

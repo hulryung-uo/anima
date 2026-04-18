@@ -45,6 +45,27 @@ to `--listen`). The proxy will forward to the real server.
 - `--out PATH` — JSONL output. Defaults to
   `data/trajectories/demo-<timestamp>.jsonl`.
 
+## Intent labels via in-game chat
+
+Type a line beginning with the configured prefix (default `//`) in ClassicUO.
+The proxy detects it, **drops the packet** so the server never sees it (and
+other players can't either), and records the label in a separate JSONL:
+
+```
+// mining bootstrap
+// sell to vendor
+// end cycle
+```
+
+Labels are written to `data/intents/intents-<timestamp>.jsonl`:
+
+```json
+{"schema":"uo_proxy.intent.v1","ts":1776582345.1,"session_id":"...","label":"mining bootstrap","source":"chat"}
+```
+
+Disable with `--intent-prefix ""`. Change prefix with e.g.
+`--intent-prefix ";;"`.
+
 ## Output schema
 
 Each line is one packet event:

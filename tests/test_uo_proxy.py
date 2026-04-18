@@ -10,6 +10,12 @@ from pathlib import Path
 import pytest
 
 from uo_proxy.framing import FrameError, frame_one, iter_packets
+from uo_proxy.intent import (
+    IntentEvent,
+    IntentLogger,
+    build_plain_unicode_speech,
+    extract_intent_from_speech,
+)
 from uo_proxy.logger import ProxyLogger
 from uo_proxy.rewrite import (
     parse_server_redirect,
@@ -141,6 +147,80 @@ class TestProxyLogger:
         assert logger.dropped > 0
 
 
+# ------------------------------------------------------------------ intent
+
+
+class TestIntentExtraction:
+    def test_prefix_hit_unicode_speech(self):
+        pkt = build_plain_unicode_speech("//mining bootstrap")
+        label, drop = extract_intent_from_speech(pkt, prefix="//")
+        assert drop is True
+        assert label == "mining bootstrap"
+
+    def test_prefix_miss_unicode_speech(self):
+        pkt = build_plain_unicode_speech("hello world")
+        label, drop = extract_intent_from_speech(pkt, prefix="//")
+        assert (label, drop) == (None, False)
+
+    def test_prefix_hit_korean_text(self):
+        pkt = build_plain_unicode_speech("//광석 채굴 시작")
+        label, drop = extract_intent_from_speech(pkt, prefix="//")
+        assert drop is True
+        assert label == "광석 채굴 시작"
+
+    def test_empty_prefix_only_drops_without_label(self):
+        pkt = build_plain_unicode_speech("// ")
+        label, drop = extract_intent_from_speech(pkt, prefix="//")
+        assert drop is True
+        assert label is None
+
+    def test_non_speech_packet_passes_through(self):
+        # 0x22 ConfirmWalk — totally unrelated
+        pkt = bytes([0x22, 0x01, 0x00])
+        label, drop = extract_intent_from_speech(pkt, prefix="//")
+        assert (label, drop) == (None, False)
+
+    def test_custom_prefix(self):
+        pkt = build_plain_unicode_speech(";;mine")
+        label, drop = extract_intent_from_speech(pkt, prefix=";;")
+        assert drop is True and label == "mine"
+
+    def test_ascii_speech_0x03(self):
+        # Build a minimal 0x03 packet: [ID][len:u16][type][hue:u16][font:u16][text\0]
+        text = b"//sell to vendor\x00"
+        body = bytes([0]) + b"\x00" * 4 + text  # type, hue, font all zero
+        total = 3 + len(body)
+        pkt = bytes([0x03]) + struct.pack(">H", total) + body
+        label, drop = extract_intent_from_speech(pkt, prefix="//")
+        assert drop is True
+        assert label == "sell to vendor"
+
+
+class TestIntentLogger:
+    def test_record_writes_jsonl(self, tmp_path: Path):
+        out = tmp_path / "intents.jsonl"
+        log = IntentLogger(out)
+        log.record(IntentEvent(
+            ts=1234567890.0, session_id="sess1",
+            label="mining bootstrap", source="chat",
+        ))
+        lines = out.read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["schema"] == "uo_proxy.intent.v1"
+        assert entry["label"] == "mining bootstrap"
+        assert entry["source"] == "chat"
+
+    def test_record_preserves_unicode(self, tmp_path: Path):
+        out = tmp_path / "intents.jsonl"
+        log = IntentLogger(out)
+        log.record(IntentEvent(
+            ts=0.0, session_id="s", label="광석", source="chat",
+        ))
+        entry = json.loads(out.read_text().strip())
+        assert entry["label"] == "광석"
+
+
 # ------------------------------------------------------------------ integration
 
 
@@ -249,3 +329,86 @@ class TestProxyIntegration:
         redirect_events = [e for e in events if e["pid"] == "0x8C"]
         assert redirect_events
         assert redirect_events[0]["note"] and "redirect" in redirect_events[0]["note"]
+
+    @pytest.mark.asyncio
+    async def test_chat_prefix_is_dropped_and_intent_logged(self, tmp_path: Path):
+        """Client chat line starting with '//' is captured as intent and
+        NOT forwarded to the upstream server."""
+        from uo_proxy.proxy import ProxyConfig, Session
+
+        received_by_upstream: list[bytes] = []
+
+        async def upstream_handler(r: asyncio.StreamReader, w: asyncio.StreamWriter):
+            try:
+                while True:
+                    data = await r.read(4096)
+                    if not data:
+                        return
+                    received_by_upstream.append(data)
+            except Exception:
+                return
+
+        upstream = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
+        up_port = upstream.sockets[0].getsockname()[1]
+
+        out = tmp_path / "session.jsonl"
+        intent_out = tmp_path / "intents.jsonl"
+        logger = ProxyLogger(out)
+        intent_logger = IntentLogger(intent_out)
+        config = ProxyConfig(
+            listen_host="127.0.0.1", listen_port=0,
+            upstream_host="127.0.0.1", upstream_port=up_port,
+            intent_prefix="//",
+        )
+        await logger.start()
+
+        async def handle(r, w):
+            sess = Session(config, logger, intent_logger=intent_logger)
+            await sess.run(r, w)
+
+        proxy_server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        proxy_port = proxy_server.sockets[0].getsockname()[1]
+
+        # Send seed, a 0x91 GameLogin to switch to game phase (just to
+        # exercise a realistic path), then an intent chat line.
+        cr, cw = await asyncio.open_connection("127.0.0.1", proxy_port)
+        cw.write(bytes([0xEF]) + b"\x00" * 20)                  # seed
+        cw.write(bytes([0x91]) + b"\x00" * 64)                  # game login (65 bytes)
+        intent_pkt = build_plain_unicode_speech("//mining bootstrap")
+        cw.write(intent_pkt)
+        # Also a non-intent speech line that SHOULD be forwarded
+        normal_pkt = build_plain_unicode_speech("hi there")
+        cw.write(normal_pkt)
+        await cw.drain()
+        await asyncio.sleep(0.2)
+
+        cw.close()
+        try:
+            await asyncio.wait_for(cw.wait_closed(), timeout=1.0)
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+
+        await logger.stop()
+        proxy_server.close()
+        upstream.close()
+        try:
+            await asyncio.wait_for(proxy_server.wait_closed(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(upstream.wait_closed(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+
+        # Upstream received seed + 0x91 + normal_pkt, but NOT intent_pkt.
+        up_bytes = b"".join(received_by_upstream)
+        assert normal_pkt in up_bytes
+        assert intent_pkt not in up_bytes
+
+        # Intent logger captured the label.
+        intent_lines = intent_out.read_text().strip().splitlines()
+        assert len(intent_lines) == 1
+        entry = json.loads(intent_lines[0])
+        assert entry["label"] == "mining bootstrap"
+        assert entry["source"] == "chat"

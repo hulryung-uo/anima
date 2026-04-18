@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from anima.client.codec import huffman_decompress_one
 
 from .framing import FrameError, frame_one
+from .intent import DEFAULT_PREFIX, IntentEvent, IntentLogger, extract_intent_from_speech
 from .logger import ProxyLogger
 from .rewrite import parse_server_redirect, rewrite_server_redirect
 
@@ -30,6 +31,8 @@ class ProxyConfig:
     # IP/port to advertise to the client in 0x8C rewrites. None=same as listen.
     advertised_host: str | None = None
     advertised_port: int | None = None
+    # Chat-prefix intent labelling. `intent_prefix=""` disables the feature.
+    intent_prefix: str = DEFAULT_PREFIX
 
 
 class Session:
@@ -43,9 +46,15 @@ class Session:
         3. Forward in both directions concurrently until either side closes.
     """
 
-    def __init__(self, config: ProxyConfig, logger: ProxyLogger) -> None:
+    def __init__(
+        self,
+        config: ProxyConfig,
+        logger: ProxyLogger,
+        intent_logger: IntentLogger | None = None,
+    ) -> None:
         self.config = config
         self.logger = logger
+        self.intent_logger = intent_logger
         self.session_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
         self.phase: str = "login"   # "login" or "game"
         self._closed = False
@@ -104,6 +113,28 @@ class Session:
                 if pid == 0x91:
                     # Game login — subsequent S→C traffic will be Huffman.
                     self.phase = "game"
+
+                # Intent prefix hook (chat starting with e.g. "//" is a private
+                # label — drop it and log separately).
+                if self.config.intent_prefix and pid in (0x03, 0xAD):
+                    label, drop = extract_intent_from_speech(
+                        packet, self.config.intent_prefix,
+                    )
+                    if drop:
+                        if label and self.intent_logger is not None:
+                            self.intent_logger.record(IntentEvent(
+                                ts=time.time(),
+                                session_id=self.session_id,
+                                label=label,
+                                source="chat",
+                            ))
+                        note = (
+                            f"intent_dropped label={label!r}"
+                            if label else "intent_prefix_empty_dropped"
+                        )
+                        self._log("C->S", pid, packet, note=note)
+                        continue  # do NOT forward to server
+
                 up_writer.write(packet)
                 await up_writer.drain()
                 self._log("C->S", pid, packet)
@@ -278,14 +309,18 @@ class Session:
                     pass
 
 
-async def serve(config: ProxyConfig, logger: ProxyLogger) -> None:
+async def serve(
+    config: ProxyConfig,
+    logger: ProxyLogger,
+    intent_logger: IntentLogger | None = None,
+) -> None:
     """Run the proxy until cancelled."""
     await logger.start()
 
     async def handle(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        session = Session(config, logger)
+        session = Session(config, logger, intent_logger=intent_logger)
         try:
             await session.run(reader, writer)
         except Exception as e:
