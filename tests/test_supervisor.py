@@ -212,6 +212,7 @@ class TestDegradationDetection:
                 f.write(json.dumps(self._entry("restart_only")) + "\n")
         monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
         monkeypatch.setattr(supervisor, "ALERT_FLAG", flag)
+        monkeypatch.setattr(supervisor, "_alert", lambda *_a, **_k: None)
 
         triggered = supervisor._check_degradation()
         assert triggered is True
