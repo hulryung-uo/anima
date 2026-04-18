@@ -741,6 +741,12 @@ def _check_degradation() -> bool:
     """
     streak = _count_unproductive_streak()
     if streak < UNPRODUCTIVE_STREAK_THRESHOLD:
+        try:
+            ALERT_FLAG.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
         return False
     try:
         ALERT_FLAG.parent.mkdir(parents=True, exist_ok=True)

@@ -252,6 +252,38 @@ class TestDegradationDetection:
         assert supervisor._check_degradation() is False
         assert not flag.exists()
 
+    def test_stale_flag_cleared_when_streak_resets(self, tmp_path, monkeypatch):
+        """Once a code_fix resets the streak below threshold, a previously
+        written alert flag must be removed so operators don't see a
+        false-degraded state."""
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        flag = tmp_path / "supervisor_alert.flag"
+        flag.write_text(json.dumps({"streak": 6, "threshold": 5}))
+        with open(log, "w") as f:
+            for _ in range(2):
+                f.write(json.dumps(self._entry("restart_only")) + "\n")
+            f.write(json.dumps(self._entry("code_fix")) + "\n")
+            f.write(json.dumps(self._entry("restart_only")) + "\n")
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "ALERT_FLAG", flag)
+
+        assert supervisor._check_degradation() is False
+        assert not flag.exists()
+
+    def test_missing_flag_below_threshold_is_noop(self, tmp_path, monkeypatch):
+        """Clearing logic must not raise when the flag doesn't exist."""
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        flag = tmp_path / "supervisor_alert.flag"
+        with open(log, "w") as f:
+            f.write(json.dumps(self._entry("restart_only")) + "\n")
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "ALERT_FLAG", flag)
+
+        assert supervisor._check_degradation() is False
+        assert not flag.exists()
+
 
 class TestClaudeWatchdog:
     def test_wall_clock_timeout_kills_process_group(self, tmp_path, monkeypatch):
