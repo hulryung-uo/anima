@@ -393,6 +393,55 @@ class TestDeathRecovery:
         assert "사망" in intent or "부활" in intent
 
     @pytest.mark.asyncio
+    async def test_seek_resurrection_accepts_pending_gump_before_walking(self):
+        """Pending Resurrection gump is answered before any walk attempt.
+
+        ServUO keeps the player Frozen until the res gump is answered, so
+        walking first just spams denied packets forever.
+        """
+        from anima.perception.gump import GumpButton, GumpData, GumpText
+        from anima.planner.planner import _SeekResurrection
+
+        ctx = _make_ctx(hits=0, hits_max=112)
+        ctx.perception.self_state.is_alive = False
+        ctx.perception.self_state.serial = 0x01
+
+        # Build a res gump mirroring what ServUO sends:
+        # button_id=0 at (235,230) = CANCEL, button_id=1 at (100,230) = CONTINUE
+        gump = GumpData(
+            serial=0x8860,
+            gump_id=0x11D4AFEF,
+            x=0, y=0, layout="",
+            text_lines=["Resurrection", "CANCEL", "CONTINUE"],
+        )
+        gump.buttons = [
+            GumpButton(x=235, y=230, normal_id=0, pressed_id=0,
+                       button_type=1, param=0, button_id=0),
+            GumpButton(x=100, y=230, normal_id=0, pressed_id=0,
+                       button_type=1, param=0, button_id=1),
+        ]
+        gump.texts = [
+            GumpText(x=235, y=230, hue=0, text_id=1),  # CANCEL
+            GumpText(x=100, y=230, hue=0, text_id=2),  # CONTINUE
+        ]
+        ctx.perception.self_state.gumps = {gump.gump_id: gump}
+
+        proc = _SeekResurrection()
+        # Stay dead so the procedure returns BLOCKED after the gump response —
+        # we only care that the gump was answered first with the CONTINUE id.
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=False)):
+            await proc.run(ctx)
+
+        sent = ctx.conn.send_packet.call_args_list
+        # The very first packet must be the gump response with button_id=1
+        assert sent, "no packet was sent"
+        first_payload = sent[0].args[0]
+        # 0xB1 GumpResponse: [id][len:u16][serial:u32][gump_id:u32][button_id:u32]...
+        assert first_payload[0] == 0xB1, f"first packet was 0x{first_payload[0]:02X}"
+        button_id = int.from_bytes(first_payload[11:15], "big")
+        assert button_id == 1, f"expected CONTINUE button_id=1, got {button_id}"
+
+    @pytest.mark.asyncio
     async def test_hunt_for_gold_bails_when_dead(self):
         """_HuntForGold.run returns failure immediately if agent is dead."""
         from anima.planner.planner import _HuntForGold

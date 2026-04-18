@@ -3571,6 +3571,7 @@ class _SeekResurrection:
 
         from anima.action.movement import go_to
         from anima.client.packets import (
+            build_gump_response,
             build_opl_request,
             build_single_click,
         )
@@ -3587,6 +3588,33 @@ class _SeekResurrection:
             pos=f"({ss.x},{ss.y})",
             hp=f"{ss.hits}/{ss.hits_max}",
         )
+
+        # Step 0: Accept any pending Resurrection gump BEFORE walking.
+        # ServUO keeps the player Frozen until a resurrection gump is
+        # answered. If we try to walk first, every packet gets rejected
+        # with cliloc 500111 ("You are frozen and cannot move") and we
+        # never reach the poll-for-gump code deeper in the procedure.
+        for gump_id, gump in list(ss.gumps.items()):
+            cont_btn = gump.find_button_near_text("CONTINUE")
+            if cont_btn is None:
+                cont_btn = gump.find_button_near_text("OK")
+            if cont_btn is None:
+                continue
+            logger.info(
+                "seek_resurrection_gump_accept",
+                gump_id=hex(gump_id),
+                button_id=cont_btn.button_id,
+            )
+            await ctx.conn.send_packet(
+                build_gump_response(gump.serial, gump_id, cont_btn.button_id)
+            )
+            ss.gumps.pop(gump_id, None)
+            await asyncio.sleep(2.0)
+            ss = ctx.perception.self_state
+            if ss.is_alive:
+                return self._success_result(
+                    "Resurrected via gump response", ctx
+                )
 
         # Step 1: Check if a healer NPC is already nearby
         healer = self._find_nearby_healer(ctx, ss)
@@ -3834,12 +3862,17 @@ class _SeekResurrection:
                 for gump_id, gump in list(ss.gumps.items()):
                     try:
                         from anima.client.packets import build_gump_response
+                        cont_btn = gump.find_button_near_text("CONTINUE")
+                        if cont_btn is None:
+                            cont_btn = gump.find_button_near_text("OK")
+                        button_id = cont_btn.button_id if cont_btn else 1
                         await ctx.conn.send_packet(
-                            build_gump_response(gump.serial, gump_id, 1)
+                            build_gump_response(gump.serial, gump_id, button_id)
                         )
                         logger.info(
                             "seek_resurrection_gump_response",
                             gump_id=hex(gump_id),
+                            button_id=button_id,
                         )
                         ss.gumps.pop(gump_id, None)
                         await asyncio.sleep(2.0)

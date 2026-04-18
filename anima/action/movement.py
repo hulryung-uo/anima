@@ -65,6 +65,7 @@ async def go_to(
     _opened_door_positions: set[tuple[int, int]] = set()  # positions where opened doors moved TO
     _mobile_waits: dict[tuple[int, int], int] = {}  # tiles waited on due to NPC blocking
     consecutive_denials_without_progress = 0
+    consecutive_turn_failures = 0  # server kept rejecting our turn (e.g. Frozen)
     last_progress_pos: tuple[int, int] = (ss.x, ss.y)
 
     while steps_taken < max_steps and ctx.conn.connected:
@@ -303,6 +304,24 @@ async def go_to(
             # Wait for turn confirm before sending move
             await asyncio.sleep(step_delay + 0.05)
             await asyncio.sleep(0)  # yield to process confirm
+
+            # Detect persistent turn rejection (e.g. server Frozen=true).
+            # Turn packets don't set _pending_step_tile, so denials don't
+            # mark any tile and steps_taken never advances — without this
+            # check the outer while-loop runs forever.
+            if (ss.direction & 0x07) == direction:
+                consecutive_turn_failures = 0
+            else:
+                consecutive_turn_failures += 1
+                if consecutive_turn_failures >= 5:
+                    logger.info(
+                        "go_to_turn_stuck",
+                        pos=f"({ss.x},{ss.y})",
+                        target_dir=dir_name,
+                        current_dir=_DIR_NAMES.get(ss.direction & 0x07, "?"),
+                        failures=consecutive_turn_failures,
+                    )
+                    return False
             # Don't count turn as a step
             continue
 
