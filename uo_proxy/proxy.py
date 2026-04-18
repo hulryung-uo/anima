@@ -131,7 +131,42 @@ class Session:
         buf = bytearray()
         try:
             while not self._closed:
-                packet = await self._read_plaintext_packet(client_reader, buf)
+                # Ensure we have data to parse; read more if buffer is empty
+                # or the current head isn't framable yet.
+                while True:
+                    if not buf:
+                        chunk = await client_reader.read(4096)
+                        if not chunk:
+                            raise ConnectionError("peer closed")
+                        buf.extend(chunk)
+                    try:
+                        result = frame_one(bytes(buf))
+                    except FrameError:
+                        # Unknown packet id at buf[0]. The UO wire is robust —
+                        # don't tear down the connection. Forward that one
+                        # byte verbatim to the server and log it, then retry.
+                        # Our PACKET_LENGTHS may be incomplete; resync happens
+                        # naturally once a known packet id lines up.
+                        unknown_pid = buf[0]
+                        up_writer.write(bytes([unknown_pid]))
+                        await up_writer.drain()
+                        self._log(
+                            "C->S", unknown_pid, bytes([unknown_pid]),
+                            note=f"unknown_pid_fwd 0x{unknown_pid:02X}",
+                        )
+                        del buf[:1]
+                        continue
+                    if result is None:
+                        # Need more bytes for the current packet
+                        chunk = await client_reader.read(4096)
+                        if not chunk:
+                            raise ConnectionError("peer closed")
+                        buf.extend(chunk)
+                        continue
+                    packet, consumed = result
+                    del buf[:consumed]
+                    break
+
                 pid = packet[0]
                 if pid == 0x91:
                     # Game login — subsequent S→C traffic will be Huffman.
@@ -161,7 +196,7 @@ class Session:
                 up_writer.write(packet)
                 await up_writer.drain()
                 self._log("C->S", pid, packet)
-        except (ConnectionError, asyncio.IncompleteReadError, FrameError) as e:
+        except (ConnectionError, asyncio.IncompleteReadError) as e:
             self._log("C->S", 0, b"", note=f"closed:{type(e).__name__}")
         finally:
             await self._safe_close(up_writer)
@@ -191,7 +226,21 @@ class Session:
                     plaintext_buf.extend(chunk)
 
                     while True:
-                        result = frame_one(bytes(plaintext_buf))
+                        try:
+                            result = frame_one(bytes(plaintext_buf))
+                        except FrameError:
+                            # Unknown server packet id — pass through one byte
+                            # and let subsequent bytes resync. Forward keeps
+                            # the client's view of the stream intact.
+                            unknown_pid = plaintext_buf[0]
+                            client_writer.write(bytes([unknown_pid]))
+                            await client_writer.drain()
+                            self._log(
+                                "S->C", unknown_pid, bytes([unknown_pid]),
+                                note=f"unknown_pid_fwd 0x{unknown_pid:02X}",
+                            )
+                            del plaintext_buf[:1]
+                            continue
                         if result is None:
                             break
                         packet, consumed = result
