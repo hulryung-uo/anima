@@ -389,7 +389,20 @@ def _detect_constraints() -> dict[str, str]:
     weight = status.get("weight", 0)
     weight_max = status.get("weight_max", 1)
 
-    if gold < 10:
+    # Bank gold counts for buying — vendor purchases debit the bank, not
+    # the backpack — so a fresh non-trivial balance means the agent is
+    # NOT truly broke and the planner's buy-tools path can still fire.
+    bal = status.get("bank_balance") or {}
+    bank_amount = bal.get("amount")
+    bank_ts = bal.get("ts", 0)
+    PICKAXE_COST = 10
+    bank_can_buy = (
+        bank_amount is not None
+        and (time.time() - bank_ts) < 600
+        and bank_amount >= PICKAXE_COST
+    )
+
+    if gold < 10 and not bank_can_buy:
         constraints["no_gold"] = f"Gold={gold} — cannot buy tools or materials"
     if weight > weight_max * 0.9:
         constraints["overweight"] = f"Weight {weight}/{weight_max} — cannot carry more"
@@ -407,7 +420,9 @@ def _detect_constraints() -> dict[str, str]:
     if not any("tong" in n for n in inv_names):
         constraints["no_tongs"] = "No tongs — cannot craft blacksmith items"
 
-    # True deadlock check
+    # True deadlock check — `no_gold` above already accounts for bank
+    # balance, so reaching this branch with no_gold set means both the
+    # backpack AND the bank are empty (or the balance cache is stale).
     if (constraints.get("no_gold") and constraints.get("no_mining_tool")
             and not any("ingot" in n for n in inv_names)
             and not any("ore" in n for n in inv_names)):

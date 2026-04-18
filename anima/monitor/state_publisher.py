@@ -313,6 +313,14 @@ class StatePublisher:
         )[:8]:
             qv[name] = {"q": round(q, 1), "visits": v}
 
+        bal_cache = self._bb.get("bank_balance") or {}
+        bank_balance = None
+        if bal_cache.get("amount") is not None:
+            bank_balance = {
+                "amount": int(bal_cache["amount"]),
+                "ts": float(bal_cache.get("ts", 0)),
+            }
+
         snapshot = {
             "ts": time.time(),
             "status": {
@@ -324,6 +332,7 @@ class StatePublisher:
                 "int": ss.intelligence,
                 "x": ss.x, "y": ss.y, "z": ss.z,
                 "gold": ss.gold,
+                "bank_balance": bank_balance,
                 "weight": ss.weight, "weight_max": ss.weight_max,
                 "goal": goal.get("description", "")[:50] if goal else "",
                 "move_target": list(move_target) if move_target else None,
