@@ -128,74 +128,69 @@ class Session:
         await up_writer.drain()
         self._log("C->S", seed[0], seed, note=note)
 
-        buf = bytearray()
+        # Wire-first design: forward every incoming chunk to the upstream
+        # immediately so a desynced parser never stalls the game. Framing
+        # runs in parallel on a best-effort basis for logging/intent
+        # capture. If PACKET_LENGTHS is missing an id, the parser may
+        # produce phantom packets in the log — but the server-facing
+        # byte stream is always byte-identical to what the client sent.
+        parse_buf = bytearray()
         try:
             while not self._closed:
-                # Ensure we have data to parse; read more if buffer is empty
-                # or the current head isn't framable yet.
-                while True:
-                    if not buf:
-                        chunk = await client_reader.read(4096)
-                        if not chunk:
-                            raise ConnectionError("peer closed")
-                        buf.extend(chunk)
+                chunk = await client_reader.read(4096)
+                if not chunk:
+                    raise ConnectionError("peer closed")
+
+                # 1. Forward raw bytes — never block on the parser.
+                up_writer.write(chunk)
+                await up_writer.drain()
+
+                # 2. Best-effort framing for logging & intent capture.
+                parse_buf.extend(chunk)
+                while parse_buf:
                     try:
-                        result = frame_one(bytes(buf))
+                        result = frame_one(bytes(parse_buf))
                     except FrameError:
-                        # Unknown packet id at buf[0]. The UO wire is robust —
-                        # don't tear down the connection. Forward that one
-                        # byte verbatim to the server and log it, then retry.
-                        # Our PACKET_LENGTHS may be incomplete; resync happens
-                        # naturally once a known packet id lines up.
-                        unknown_pid = buf[0]
-                        up_writer.write(bytes([unknown_pid]))
-                        await up_writer.drain()
+                        # Unknown id in the log parser only — skip 1 byte.
+                        byte = parse_buf[0]
                         self._log(
-                            "C->S", unknown_pid, bytes([unknown_pid]),
-                            note=f"unknown_pid_fwd 0x{unknown_pid:02X}",
+                            "C->S", byte, bytes([byte]),
+                            note=f"unknown_pid_log 0x{byte:02X}",
                         )
-                        del buf[:1]
+                        del parse_buf[:1]
                         continue
                     if result is None:
-                        # Need more bytes for the current packet
-                        chunk = await client_reader.read(4096)
-                        if not chunk:
-                            raise ConnectionError("peer closed")
-                        buf.extend(chunk)
-                        continue
+                        break  # incomplete — wait for next chunk
                     packet, consumed = result
-                    del buf[:consumed]
-                    break
+                    del parse_buf[:consumed]
 
-                pid = packet[0]
-                if pid == 0x91:
-                    # Game login — subsequent S→C traffic will be Huffman.
-                    self.phase = "game"
+                    pid = packet[0]
+                    if pid == 0x91:
+                        self.phase = "game"
 
-                # Intent prefix hook (chat starting with e.g. "//" is a private
-                # label — drop it and log separately).
-                if self.config.intent_prefix and pid in (0x03, 0xAD):
-                    label, drop = extract_intent_from_speech(
-                        packet, self.config.intent_prefix,
-                    )
-                    if drop:
-                        if label and self.intent_logger is not None:
+                    # Intent capture. The packet is already on the wire, so
+                    # we cannot drop it — we only note that the chat line
+                    # encoded a label. The user's chat will be visible to
+                    # nearby players; live with that trade-off until we have
+                    # a more resilient framer.
+                    if self.config.intent_prefix and pid in (0x03, 0xAD):
+                        label, hit = extract_intent_from_speech(
+                            packet, self.config.intent_prefix,
+                        )
+                        if hit and label and self.intent_logger is not None:
                             self.intent_logger.record(IntentEvent(
                                 ts=time.time(),
                                 session_id=self.session_id,
                                 label=label,
                                 source="chat",
                             ))
-                        note = (
-                            f"intent_dropped label={label!r}"
-                            if label else "intent_prefix_empty_dropped"
-                        )
-                        self._log("C->S", pid, packet, note=note)
-                        continue  # do NOT forward to server
+                            self._log(
+                                "C->S", pid, packet,
+                                note=f"intent_captured label={label!r}",
+                            )
+                            continue
 
-                up_writer.write(packet)
-                await up_writer.drain()
-                self._log("C->S", pid, packet)
+                    self._log("C->S", pid, packet)
         except (ConnectionError, asyncio.IncompleteReadError) as e:
             self._log("C->S", 0, b"", note=f"closed:{type(e).__name__}")
         finally:

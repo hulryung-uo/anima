@@ -403,9 +403,9 @@ class TestProxyIntegration:
 
         events = [json.loads(line) for line in out.read_text().splitlines()]
         notes = [e.get("note") for e in events]
-        # 0xFE byte should have been forwarded as "unknown_pid_fwd", not
-        # raised a FrameError that closed the session.
-        assert any(n and "unknown_pid_fwd 0xFE" in n for n in notes)
+        # 0xFE byte should have been logged as "unknown_pid_log" on the
+        # parser side, not raised a FrameError that closed the session.
+        assert any(n and "unknown_pid_log 0xFE" in n for n in notes)
         # 0x73 ping still logged normally afterwards
         assert any(
             e["pid"] == "0x73" and e["direction"] == "C->S" for e in events
@@ -487,9 +487,11 @@ class TestProxyIntegration:
         assert any(e["pid"] == "0x91" and e["phase"] == "game" for e in events)
 
     @pytest.mark.asyncio
-    async def test_chat_prefix_is_dropped_and_intent_logged(self, tmp_path: Path):
-        """Client chat line starting with '//' is captured as intent and
-        NOT forwarded to the upstream server."""
+    async def test_chat_prefix_is_captured_as_intent(self, tmp_path: Path):
+        """Client chat line starting with '//' is captured as an intent
+        label. The wire-first design forwards the packet unchanged so
+        forwarding never stalls; the user's chat is still visible to other
+        players until a more resilient framer is implemented."""
         from uo_proxy.proxy import ProxyConfig, Session
 
         received_by_upstream: list[bytes] = []
@@ -557,10 +559,11 @@ class TestProxyIntegration:
         except asyncio.TimeoutError:
             pass
 
-        # Upstream received seed + 0x91 + normal_pkt, but NOT intent_pkt.
+        # Upstream receives both packets — wire-first forwarding means we
+        # no longer drop the intent packet. (The label is still captured.)
         up_bytes = b"".join(received_by_upstream)
         assert normal_pkt in up_bytes
-        assert intent_pkt not in up_bytes
+        assert intent_pkt in up_bytes
 
         # Intent logger captured the label.
         intent_lines = intent_out.read_text().strip().splitlines()
