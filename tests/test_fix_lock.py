@@ -79,3 +79,30 @@ class TestFixLock:
             assert ok is False
         # Outer lock still held
         assert is_fix_locked("X") is True
+
+
+class TestPidLiveness:
+    def test_lock_ignored_when_pid_dead(self, tmp_lock, monkeypatch):
+        """A lock owned by a dead PID is treated as stale even if fresh."""
+        from tools.fix_lock import acquire_fix_lock, is_fix_locked
+        tmp_lock.write_text(json.dumps({
+            "problem": "X", "pid": 999999, "sha": "abc",
+            "started": time.time(),
+        }))
+        monkeypatch.setattr("tools.fix_lock._pid_alive", lambda p: False)
+        assert is_fix_locked("X") is False
+        assert acquire_fix_lock("X", pid=1, sha="abc") is True
+
+    def test_lock_honored_when_pid_alive(self, tmp_lock, monkeypatch):
+        from tools.fix_lock import acquire_fix_lock, is_fix_locked
+        tmp_lock.write_text(json.dumps({
+            "problem": "X", "pid": 42, "sha": "abc",
+            "started": time.time(),
+        }))
+        monkeypatch.setattr("tools.fix_lock._pid_alive", lambda p: True)
+        assert is_fix_locked("X") is True
+        assert acquire_fix_lock("X", pid=1, sha="abc") is False
+
+    def test_max_lock_age_lowered(self):
+        from tools.fix_lock import MAX_LOCK_AGE
+        assert MAX_LOCK_AGE <= 1200

@@ -23,7 +23,7 @@ ROOT = Path(__file__).parent.parent
 LOCK_FILE = ROOT / "data" / "fixing.json"
 
 # Lock is considered stale after this many seconds (covers crashed sessions)
-MAX_LOCK_AGE = 1800  # 30 minutes
+MAX_LOCK_AGE = 1200  # 20 minutes
 
 
 def _read_lock() -> dict | None:
@@ -47,22 +47,43 @@ def _current_sha() -> str:
         return ""
 
 
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness check for a PID on POSIX.
+
+    Uses kill(pid, 0): returns True if the signal could be delivered,
+    False if the process doesn't exist. Treats EPERM (different owner)
+    as alive to avoid false negatives. On error, returns True so we err
+    on the side of honoring the lock.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return True
+
+
 def is_fix_locked(problem: str) -> bool:
     """True if another session is actively fixing the given problem.
 
-    Returns False if the lock file is missing, malformed, or stale (older
-    than MAX_LOCK_AGE).  SHA-based invalidation is handled by
-    acquire_fix_lock so that is_fix_locked can be used for simple presence
-    checks without needing a current SHA.
+    Returns False if the lock file is missing, malformed, stale by age,
+    or owned by a dead PID.
     """
     data = _read_lock()
     if not data:
         return False
     if data.get("problem") != problem:
         return False
-    # Stale by age?
     started = data.get("started", 0)
     if time.time() - started > MAX_LOCK_AGE:
+        return False
+    pid = data.get("pid", 0)
+    if pid and not _pid_alive(pid):
         return False
     return True
 
@@ -70,25 +91,27 @@ def is_fix_locked(problem: str) -> bool:
 def acquire_fix_lock(problem: str, pid: int, sha: str) -> bool:
     """Try to acquire the fix lock for `problem`. Returns False on conflict.
 
-    A lock held for the same problem is treated as stale (and therefore
-    acquirable) if the stored SHA differs from the incoming SHA — this
-    signals that a commit has been made since the lock was created, meaning
-    the problem was likely already fixed.
+    A lock held for the same problem is treated as stale if any of:
+      - age > MAX_LOCK_AGE
+      - stored PID is not alive (process crashed/orphaned)
+      - stored SHA differs from incoming SHA (commit moved on)
     """
     data = _read_lock()
     if data and data.get("problem") == problem:
-        # Check age
         started = data.get("started", 0)
         if time.time() - started <= MAX_LOCK_AGE:
-            # Check SHA: if locked SHA matches incoming SHA, it's a conflict.
-            # If they differ, the commit moved on — allow re-acquisition.
-            locked_sha = data.get("sha", "")
-            if locked_sha and sha and locked_sha == sha:
-                return False
-            elif not locked_sha or not sha:
-                # No SHA info available — treat as conflict to be safe.
-                return False
-            # SHAs differ → lock is stale due to new commit, fall through.
+            locked_pid = data.get("pid", 0)
+            if locked_pid and not _pid_alive(locked_pid):
+                # Process gone — allow re-acquisition.
+                pass
+            else:
+                locked_sha = data.get("sha", "")
+                if locked_sha and sha and locked_sha == sha:
+                    return False
+                elif not locked_sha or not sha:
+                    # No SHA info available — treat as conflict to be safe.
+                    return False
+                # SHAs differ → lock is stale due to new commit, fall through.
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     LOCK_FILE.write_text(json.dumps({
         "problem": problem,
