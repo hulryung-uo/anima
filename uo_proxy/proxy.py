@@ -17,9 +17,13 @@ from .intent import DEFAULT_PREFIX, IntentEvent, IntentLogger, extract_intent_fr
 from .logger import ProxyLogger
 from .rewrite import parse_server_redirect, rewrite_server_redirect
 
-# Client sends a 21-byte Seed (0xEF) before any framed packet. Treat it as
-# a prelude we forward as-is.
-_SEED_LEN = 21
+# Client sends a seed before any framed packet.
+#   - Phase 1 (login) with client ≥ 6.0.5.0: 21-byte extended seed (0xEF header).
+#   - Phase 2 (game) reconnect often uses a raw 4-byte seed instead — the auth
+#     key from the 0x8C relay. ClassicUO is observed doing this against
+#     uo.hulryung.com. We peek byte 0 to decide.
+_SEED_EXT_LEN = 21
+_SEED_RAW_LEN = 4
 
 
 @dataclass
@@ -96,14 +100,33 @@ class Session:
     ) -> None:
         """C→S is always plaintext. We parse framed packets and forward
         the exact bytes we read so that no re-serialization happens."""
-        # 1. Seed (21 bytes fixed, always 0xEF in practice)
+        # 1. Seed — 21 bytes if it starts with 0xEF (extended seed), else
+        #    4 bytes (raw seed, typical of phase-2 reconnect).
         try:
-            seed = await client_reader.readexactly(_SEED_LEN)
+            first = await client_reader.readexactly(1)
         except asyncio.IncompleteReadError:
             return
+        if first[0] == 0xEF:
+            try:
+                rest = await client_reader.readexactly(_SEED_EXT_LEN - 1)
+            except asyncio.IncompleteReadError:
+                return
+            seed = first + rest
+            note = "seed_ext"
+        else:
+            try:
+                rest = await client_reader.readexactly(_SEED_RAW_LEN - 1)
+            except asyncio.IncompleteReadError:
+                return
+            seed = first + rest
+            note = "seed_raw4"
+            # Raw 4-byte seed signals a phase-2 reconnect on every shard we've
+            # observed. Mark the session as game-mode so S→C switches to the
+            # Huffman path before the server's first response arrives.
+            self.phase = "game"
         up_writer.write(seed)
         await up_writer.drain()
-        self._log("C->S", seed[0] if seed else 0, seed, note="seed")
+        self._log("C->S", seed[0], seed, note=note)
 
         buf = bytearray()
         try:

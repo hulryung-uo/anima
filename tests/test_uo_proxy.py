@@ -331,6 +331,81 @@ class TestProxyIntegration:
         assert redirect_events[0]["note"] and "redirect" in redirect_events[0]["note"]
 
     @pytest.mark.asyncio
+    async def test_phase2_raw_4byte_seed_is_forwarded_correctly(self, tmp_path: Path):
+        """When client opens a new connection and sends a 4-byte raw seed
+        (phase-2 reconnect pattern used by ClassicUO), the proxy must read
+        only 4 bytes, switch to game mode, and then forward the following
+        0x91 GameLogin intact."""
+        from uo_proxy.proxy import ProxyConfig, Session
+
+        up_received: list[bytes] = []
+
+        async def upstream_handler(r: asyncio.StreamReader, w: asyncio.StreamWriter):
+            try:
+                while True:
+                    data = await r.read(4096)
+                    if not data:
+                        return
+                    up_received.append(data)
+            except Exception:
+                return
+
+        upstream = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
+        up_port = upstream.sockets[0].getsockname()[1]
+
+        out = tmp_path / "session.jsonl"
+        logger = ProxyLogger(out)
+        await logger.start()
+        config = ProxyConfig(
+            listen_host="127.0.0.1", listen_port=0,
+            upstream_host="127.0.0.1", upstream_port=up_port,
+            intent_prefix="",
+        )
+
+        async def handle(r, w):
+            sess = Session(config, logger)
+            await sess.run(r, w)
+
+        proxy_server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        proxy_port = proxy_server.sockets[0].getsockname()[1]
+
+        # Client sends 4-byte raw seed + full 65-byte 0x91 GameLogin.
+        raw_seed = bytes([0x9C, 0x69, 0xB5, 0x8C])  # example auth_key
+        game_login = bytes([0x91]) + b"\x00" * 64
+        cr, cw = await asyncio.open_connection("127.0.0.1", proxy_port)
+        cw.write(raw_seed + game_login)
+        await cw.drain()
+        await asyncio.sleep(0.2)
+
+        cw.close()
+        try:
+            await asyncio.wait_for(cw.wait_closed(), timeout=1.0)
+        except Exception:
+            pass
+        await asyncio.sleep(0.2)
+        await logger.stop()
+        proxy_server.close()
+        upstream.close()
+        try:
+            await asyncio.wait_for(proxy_server.wait_closed(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(upstream.wait_closed(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+
+        up_bytes = b"".join(up_received)
+        # Upstream must receive seed + full 65 bytes, in order, no truncation.
+        assert up_bytes.startswith(raw_seed + game_login)
+
+        events = [json.loads(line) for line in out.read_text().splitlines()]
+        kinds = [(e["direction"], e["pid"], e.get("note")) for e in events]
+        # Seed logged as raw4, followed by 0x91 in game phase.
+        assert any(k[2] == "seed_raw4" for k in kinds)
+        assert any(e["pid"] == "0x91" and e["phase"] == "game" for e in events)
+
+    @pytest.mark.asyncio
     async def test_chat_prefix_is_dropped_and_intent_logged(self, tmp_path: Path):
         """Client chat line starting with '//' is captured as intent and
         NOT forwarded to the upstream server."""
