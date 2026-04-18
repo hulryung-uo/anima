@@ -1115,6 +1115,24 @@ class Planner:
                         _intent("교착 복구: 금화 보유 → 도구 상점으로 이동")
                         return move
 
+            # --- Opportunistic NPC begging (Lv0 only) ---
+            # Zero-precondition gold source: UO's Begging skill (ID 6)
+            # yields 1-5gp per successful attempt on an NPC.  With a
+            # pickaxe costing ~15gp, a few successful begs bootstrap out
+            # of the deadlock without combat capability, tools, or other
+            # players being online — covering the gap between Lv0
+            # sell-junk (requires sellable inventory) and the Lv2-5
+            # ladder (requires combat or relocation progress).  Gated on
+            # Lv0 so it doesn't monopolize the ladder; the per-serial
+            # cooldown in _find_beg_npc prevents re-begging the same NPC.
+            if _deadlock_level == 0 and ss.gold < 10:
+                _beg_target = self._find_beg_npc(ctx, ss)
+                if _beg_target is not None:
+                    _intent(
+                        f"교착 복구 Lv0: {_beg_target.name or 'NPC'}에게 구걸 시도"
+                    )
+                    return _BegNpcForCoin(ss, _beg_target)
+
             # --- Opportunistic wood-chopping (any level) ---
             # Alternate resource path when ore is blocked: a hatchet in
             # backpack + any tree in view yields logs the agent can later
@@ -1997,6 +2015,39 @@ class Planner:
 
         return candidates[0][0]
 
+    def _find_beg_npc(self, ctx: AgentContext, ss):
+        """Find the nearest human NPC eligible for the Begging skill.
+
+        Returns the closest visible mobile with a human body that has not
+        been begged from in the last _BegNpcForCoin.COOLDOWN_S seconds.
+        Used by the deadlock ladder's Lv0 zero-precondition gold path.
+        """
+        from anima.skills.trade.vendor import HUMAN_BODIES
+
+        begged = ctx.blackboard.get("_begged_npcs", {})
+        cooldown = _BegNpcForCoin.COOLDOWN_S
+        now = _time.time()
+
+        best = None
+        best_dist = 999
+        for m in ctx.perception.world.nearby_mobiles(
+            ss.x, ss.y, distance=10,
+        ):
+            if m.serial == ss.serial:
+                continue
+            if m.body not in HUMAN_BODIES:
+                continue
+            last = begged.get(m.serial, 0.0)
+            if now - last < cooldown:
+                continue
+            dist = max(abs(m.x - ss.x), abs(m.y - ss.y))
+            # Skip targets already on top of us — still fine to beg, but
+            # prefer slightly-away NPCs so movement doesn't short-circuit
+            if dist < best_dist:
+                best = m
+                best_dist = dist
+        return best
+
     def _has_hatchet(self, ctx: AgentContext, ss) -> bool:
         """True if the agent has a hatchet in backpack or equipped."""
         from anima.skills.gathering.lumber import HATCHET_GRAPHICS
@@ -2323,6 +2374,113 @@ class _BegAtBank:
             success=False,
             reason=FailureReason.MISSING_RESOURCE,
             message="Begged at bank but no one helped",
+        )
+
+
+class _BegNpcForCoin:
+    """Deadlock recovery Lv0: use UO Begging skill on a nearby NPC.
+
+    UO's Begging skill (ID 6) is a zero-precondition bootstrap gold
+    source: send UseSkill(6), target an NPC, and the server awards 1-5gp
+    on success (or nothing + karma loss on failure).  Unlike the other
+    beg/yell procedures, this doesn't require other players to be online
+    — NPCs are always around.  Intended to fund a ~15gp pickaxe within
+    a handful of attempts so the agent can exit the true-deadlock state
+    without needing combat capability, sellable inventory, or relocation.
+
+    Per-target cooldown lives in ``ctx.blackboard["_begged_npcs"]`` and
+    is stamped by this procedure before the skill fires — regardless of
+    outcome we avoid re-begging the same NPC during its recharge window.
+    """
+
+    SKILL_ID = 6
+    COOLDOWN_S = 30.0
+    APPROACH_DIST = 3
+
+    def __init__(self, ss, target) -> None:
+        self.name = "beg_npc_for_coin"
+        self.description = "Use Begging skill on a nearby NPC"
+        self._start_pos = (ss.x, ss.y)
+        self._target = target
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+
+        from anima.action.movement import go_to
+        from anima.actions.target import target_object, wait_for_target
+        from anima.client.packets import build_use_skill
+
+        ss = ctx.perception.self_state
+        target = self._target
+        start_gold = ss.gold
+
+        dist = max(abs(target.x - ss.x), abs(target.y - ss.y))
+        if dist > self.APPROACH_DIST:
+            await go_to(ctx, target.x, target.y)
+            ss = ctx.perception.self_state
+            dist = max(abs(target.x - ss.x), abs(target.y - ss.y))
+            if dist > self.APPROACH_DIST + 1:
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.BLOCKED,
+                    message=f"Could not approach {target.name or 'NPC'}",
+                )
+
+        # Stamp cooldown up front so a hang/timeout doesn't re-elect the
+        # same NPC next tick.
+        begged = ctx.blackboard.setdefault("_begged_npcs", {})
+        begged[target.serial] = _time.time()
+
+        ss.pending_target = None
+        try:
+            await ctx.conn.send_packet(build_use_skill(self.SKILL_ID))
+        except Exception as e:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"UseSkill(Begging) failed: {e}",
+            )
+
+        cursor = await wait_for_target(ctx, timeout=3.0)
+        if not cursor.success:
+            logger.info(
+                "beg_npc_no_cursor",
+                npc=target.name or f"0x{target.serial:08X}",
+            )
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message="Begging skill — no target cursor",
+            )
+
+        cursor_id = cursor.data.get("cursor_id", 0) if cursor.data else 0
+        await target_object(ctx, cursor_id, target.serial)
+
+        # Wait briefly for the server to award gold or refuse.
+        for _ in range(6):  # 6 × 0.5s = 3s
+            await asyncio.sleep(0.5)
+            ss = ctx.perception.self_state
+            if ss.gold > start_gold:
+                gained = ss.gold - start_gold
+                logger.info(
+                    "beg_npc_received_gold",
+                    npc=target.name or f"0x{target.serial:08X}",
+                    gained=gained,
+                )
+                return ProcedureResult(
+                    success=True,
+                    message=(
+                        f"Begged {gained}gp from {target.name or 'NPC'}"
+                    ),
+                )
+
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.MISSING_RESOURCE,
+            message=f"{target.name or 'NPC'} refused to give coin",
         )
 
 

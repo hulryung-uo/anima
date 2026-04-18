@@ -1628,6 +1628,83 @@ class TestCraftingTripPhase:
         assert planner._expedition.phase == Phase.MINING
 
 
+class TestBegNpcForCoin:
+    """Deadlock Lv0 pre-ladder: beg nearby NPC via UO Begging skill."""
+
+    @pytest.mark.asyncio
+    async def test_beg_npc_selected_when_gold_zero_and_npc_nearby(self):
+        """Lv0 deadlock + gold=0 + visible human NPC → _BegNpcForCoin proc."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # True-deadlock state: no gold, no pickaxe, no weapon worth hunting.
+        ctx = _make_ctx(gold=0, x=2461, y=451)
+        ctx.map_reader = None  # skip A* in _find_visible_vendor_npc
+        # Human-body NPC (male=0x0190), within 10 tiles, not recently begged.
+        npc = MagicMock(
+            serial=0x77777, name="Yale the tinker",
+            x=2463, y=452, body=0x0190,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[npc])
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        # Block outbound moves so the selector reaches the pre-ladder hook.
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "beg_npc_for_coin"
+
+    @pytest.mark.asyncio
+    async def test_beg_npc_skipped_when_recently_begged(self):
+        """Same NPC within cooldown window → begging path does NOT fire."""
+        from anima.planner.planner import _BegNpcForCoin
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2461, y=451)
+        ctx.map_reader = None
+        npc = MagicMock(
+            serial=0x77777, name="Yale the tinker",
+            x=2463, y=452, body=0x0190,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[npc])
+        # Seed cooldown: this NPC was begged from one second ago.
+        ctx.blackboard["_begged_npcs"] = {
+            npc.serial: time.time() - 1.0,
+        }
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        # Should not re-beg the same NPC — some other (or no) path taken.
+        assert proc is None or proc.name != "beg_npc_for_coin"
+        # Cooldown window covers the current attempt.
+        assert _BegNpcForCoin.COOLDOWN_S > 1.0
+
+    @pytest.mark.asyncio
+    async def test_beg_npc_skipped_when_gold_already_positive(self):
+        """Once gold ≥ 10, buy-tools hatch wins — begging path must not fire."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=50, x=2461, y=451)
+        ctx.map_reader = None
+        npc = MagicMock(
+            serial=0x77777, name="Yale the tinker",
+            x=2463, y=452, body=0x0190,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[npc])
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is None or proc.name != "beg_npc_for_coin"
+
+
 class TestExpeditionWatchdog:
     @pytest.mark.asyncio
     async def test_stuck_phase_resets_to_idle(self):
