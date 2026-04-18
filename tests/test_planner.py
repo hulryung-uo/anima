@@ -442,6 +442,53 @@ class TestDeathRecovery:
         assert button_id == 1, f"expected CONTINUE button_id=1, got {button_id}"
 
     @pytest.mark.asyncio
+    async def test_seek_resurrection_dismisses_gump_without_button_label(self):
+        """Res gump whose CONTINUE/OK label didn't resolve still gets dismissed.
+
+        If cliloc resolution fails or the gump uses an unusual layout
+        variant, ``find_button_near_text`` returns None.  The old
+        Step 0 silently skipped that gump and the ghost stayed frozen
+        behind an un-answered ResurrectGump.  The fallback recognises
+        res-gump signature text (e.g. "Resurrection" / "ghost") and
+        sends button_id=1 anyway.
+        """
+        from anima.perception.gump import GumpButton, GumpData
+        from anima.planner.planner import _SeekResurrection
+
+        ctx = _make_ctx(hits=0, hits_max=112)
+        ctx.perception.self_state.is_alive = False
+        ctx.perception.self_state.serial = 0x01
+
+        # Res gump with no resolved text for the CONTINUE label — only the
+        # body-text cliloc survived, which contains "Resurrection".
+        gump = GumpData(
+            serial=0x8860,
+            gump_id=0x11D4AFEF,
+            x=0, y=0, layout="",
+            text_lines=["<center>Resurrection</center>"],
+        )
+        gump.buttons = [
+            GumpButton(x=235, y=230, normal_id=0, pressed_id=0,
+                       button_type=1, param=0, button_id=0),
+            GumpButton(x=100, y=230, normal_id=0, pressed_id=0,
+                       button_type=1, param=0, button_id=1),
+        ]
+        # Deliberately no GumpText entries — the button-near-text lookup
+        # will return None, exercising the fallback.
+        ctx.perception.self_state.gumps = {gump.gump_id: gump}
+
+        proc = _SeekResurrection()
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=False)):
+            await proc.run(ctx)
+
+        sent = ctx.conn.send_packet.call_args_list
+        assert sent, "no packet was sent"
+        first_payload = sent[0].args[0]
+        assert first_payload[0] == 0xB1, f"first packet was 0x{first_payload[0]:02X}"
+        button_id = int.from_bytes(first_payload[11:15], "big")
+        assert button_id == 1, f"expected CONTINUE button_id=1, got {button_id}"
+
+    @pytest.mark.asyncio
     async def test_dead_escalates_after_repeated_seek_failures(self):
         """seek_resurrection fails N+ times → _DeathEscalate procedure returned."""
         from anima.planner.planner import _DeathEscalate

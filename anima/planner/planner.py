@@ -3635,30 +3635,15 @@ class _SeekResurrection:
 
         # Step 0: Accept any pending Resurrection gump BEFORE walking.
         # ServUO keeps the player Frozen until a resurrection gump is
-        # answered. If we try to walk first, every packet gets rejected
-        # with cliloc 500111 ("You are frozen and cannot move") and we
-        # never reach the poll-for-gump code deeper in the procedure.
-        for gump_id, gump in list(ss.gumps.items()):
-            cont_btn = gump.find_button_near_text("CONTINUE")
-            if cont_btn is None:
-                cont_btn = gump.find_button_near_text("OK")
-            if cont_btn is None:
-                continue
-            logger.info(
-                "seek_resurrection_gump_accept",
-                gump_id=hex(gump_id),
-                button_id=cont_btn.button_id,
+        # answered (PlayerMobile.Move refuses with cliloc 500111 while
+        # HasGump(ResurrectGump) && !Alive).  If we try to walk first,
+        # every packet gets rejected and _interact_with_healer cannot
+        # execute its walk-away/walk-back detection trigger.
+        if await self._dismiss_pending_res_gumps(ctx):
+            return self._success_result(
+                "Resurrected via gump response", ctx
             )
-            await ctx.conn.send_packet(
-                build_gump_response(gump.serial, gump_id, cont_btn.button_id)
-            )
-            ss.gumps.pop(gump_id, None)
-            await asyncio.sleep(2.0)
-            ss = ctx.perception.self_state
-            if ss.is_alive:
-                return self._success_result(
-                    "Resurrected via gump response", ctx
-                )
+        ss = ctx.perception.self_state
 
         # Step 1: Check if a healer NPC is already nearby
         healer = self._find_nearby_healer(ctx, ss)
@@ -3875,6 +3860,9 @@ class _SeekResurrection:
 
         # If already within detection range, walk away first to reset trigger
         if dist <= self.HEALER_DETECT_RANGE:
+            # Pending res gump from an earlier pass would Freeze this walk
+            if await self._dismiss_pending_res_gumps(ctx):
+                return self._success_result("Resurrected while repositioning", ctx)
             dx = ss.x - healer.x
             dy = ss.y - healer.y
             if dx == 0 and dy == 0:
@@ -3892,7 +3880,11 @@ class _SeekResurrection:
             if ss.is_alive:
                 return self._success_result("Resurrected while repositioning", ctx)
 
-        # Walk to within 2 tiles of the healer to cross the detection boundary
+        # Walk to within 2 tiles of the healer to cross the detection boundary.
+        # Re-dismiss any gump that arrived during the walk_away so the approach
+        # isn't blocked by "You are frozen and cannot move."
+        if await self._dismiss_pending_res_gumps(ctx):
+            return self._success_result("Resurrected while repositioning", ctx)
         logger.info(
             "seek_resurrection_walk_to_healer",
             healer_pos=f"({healer.x},{healer.y})",
@@ -3937,6 +3929,63 @@ class _SeekResurrection:
                 return self._success_result("Resurrected by healer NPC", ctx)
 
         return None  # timeout — caller should try other options
+
+    async def _dismiss_pending_res_gumps(self, ctx) -> bool:
+        """Answer any pending Resurrection gump so the ghost can move again.
+
+        ServUO's PlayerMobile.Move refuses every walk packet with
+        cliloc 500111 ("You are frozen and cannot move") while a
+        ResurrectGump is open on a dead player.  Button-id 1 is the
+        CONTINUE choice on both the standard and the priced
+        ResurrectGump.  If text-matching fails (cliloc mis-resolved or
+        unusual layout), fall back to button_id=1 for res-looking
+        gumps so we don't deadlock behind a parseable-but-unmatched
+        gump.
+
+        Returns True if the response resulted in the player being
+        alive (so the caller can short-circuit with a success result).
+        """
+        import asyncio
+
+        from anima.client.packets import build_gump_response
+
+        ss = ctx.perception.self_state
+        for gump_id, gump in list(ss.gumps.items()):
+            cont_btn = gump.find_button_near_text("CONTINUE")
+            if cont_btn is None:
+                cont_btn = gump.find_button_near_text("OK")
+            button_id: int | None = cont_btn.button_id if cont_btn else None
+            if button_id is None:
+                # Fallback: look for res-gump signature in the text lines
+                joined = " ".join(gump.text_lines).lower()
+                looks_like_res = (
+                    "resurrect" in joined or "ghost" in joined
+                )
+                reply_btns = gump.reply_buttons()
+                if looks_like_res and reply_btns:
+                    button_id = 1  # ServUO ResurrectGump CONTINUE
+                else:
+                    logger.warning(
+                        "seek_resurrection_gump_skip",
+                        gump_id=hex(gump_id),
+                        button_ids=[b.button_id for b in gump.buttons],
+                        text_lines=gump.text_lines[:8],
+                    )
+                    continue
+            logger.info(
+                "seek_resurrection_gump_accept",
+                gump_id=hex(gump_id),
+                button_id=button_id,
+            )
+            await ctx.conn.send_packet(
+                build_gump_response(gump.serial, gump_id, button_id)
+            )
+            ss.gumps.pop(gump_id, None)
+            await asyncio.sleep(2.0)
+            ss = ctx.perception.self_state
+            if ss.is_alive:
+                return True
+        return False
 
     @staticmethod
     def _success_result(message: str, ctx) -> ProcedureResult:
