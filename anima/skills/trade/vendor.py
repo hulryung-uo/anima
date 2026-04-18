@@ -627,7 +627,8 @@ HUMAN_BODIES = {0x0190, 0x0191}  # male, female
 # NPC title keywords that indicate a vendor who buys/sells
 _VENDOR_TITLES = {
     "carpenter", "provisioner", "blacksmith", "tinker",
-    "weaponsmith", "armorer", "bowyer", "tailor", "jeweler",
+    "weaponsmith", "armorer", "armourer", "bowyer", "tailor",
+    "jeweler", "jeweller",
     "herbalist", "alchemist", "baker", "butcher", "cobbler",
     "furtrader", "tanner", "mage", "scribe", "shipwright",
     "innkeeper", "barkeep", "cook", "farmer", "fisherman",

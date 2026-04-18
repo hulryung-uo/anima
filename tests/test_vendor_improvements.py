@@ -158,3 +158,27 @@ class TestGoldPolling:
         ss.gold = 100
         result = await _wait_for_gold_change(ss, 100, timeout=0.5)
         assert result is False
+
+
+class TestIsVendorBritishSpellings:
+    """_is_vendor must accept British-spelled NPC titles (armourer, jeweller)."""
+
+    def _mob(self, name: str):
+        from anima.perception.world_state import MobileInfo
+        return MobileInfo(serial=1, name=name)
+
+    def test_recognizes_british_armourer(self):
+        from anima.skills.trade.vendor import _is_vendor
+        assert _is_vendor(self._mob("Autumn the armourer")) is True
+
+    def test_recognizes_us_armorer(self):
+        from anima.skills.trade.vendor import _is_vendor
+        assert _is_vendor(self._mob("Dax the armorer")) is True
+
+    def test_recognizes_british_jeweller(self):
+        from anima.skills.trade.vendor import _is_vendor
+        assert _is_vendor(self._mob("Rika the jeweller")) is True
+
+    def test_recognizes_us_jeweler(self):
+        from anima.skills.trade.vendor import _is_vendor
+        assert _is_vendor(self._mob("Rika the jeweler")) is True
