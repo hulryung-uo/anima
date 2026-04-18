@@ -1144,6 +1144,112 @@ class TestDeadlockRecovery:
         # so a previously-wrong-type vendor can be re-evaluated.
         assert "refused_vendors" not in ctx.blackboard
 
+    @pytest.mark.asyncio
+    async def test_buy_disabled_no_ingots_falls_through_to_recovery(self):
+        """Bank empty + no ingots/ore must NOT standstill; must reach 4f.
+
+        Previously the planner returned None with "user must intervene"
+        when _buy_disabled_until was set and the agent had no ingots or
+        ore. That short-circuited every Priority 4f recovery path (hunt,
+        scavenge, relocate, yell, forum) for 10 minutes. A true deadlock
+        is exactly when recovery is most needed, so fall-through wins.
+        """
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Position near Minoc with a dagger + a huntable rat nearby so
+        # 4f's opportunistic close-range hunt fires once fall-through works.
+        from anima.perception.enums import NotorietyFlag
+
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        ctx.map_reader = None
+        _add_item(ctx, 0xDD, 0x0F51)  # dagger
+        rat = MagicMock(
+            serial=0x9999, name="a rat",
+            x=2506, y=553, body=0x00EE,
+            notoriety=NotorietyFlag.ATTACKABLE,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[rat])
+
+        # Buy disabled (bank known empty) + no ingots/ore — the state the
+        # old standstill was targeting.
+        ctx.blackboard["_buy_disabled_until"] = time.time() + 600
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None, (
+            "buy_disabled + no ingots/ore must fall through to 4f, not stop"
+        )
+        # The 4f opportunistic hunt should pick up the rat.
+        assert proc.name == "hunt_for_gold"
+
+    @pytest.mark.asyncio
+    async def test_buy_blind_walk_count_caps_at_three(self):
+        """Unknown bank balance + no banker/vendor reachable must cap the
+        blind walk loop so 4f deadlock recovery eventually runs.
+
+        Without the cap, the agent forever ping-pongs between Minoc Bank,
+        Tinker, Provisioner, and Miners Guild locations because
+        check_bank_balance only fires when a banker is within 12 tiles
+        (which only happens *at* the bank), and buy_from_vendor only
+        fires when a vendor is in range — neither condition holds during
+        transit.
+        """
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("check_bank_balance", can=False))
+        reg.register(StubProcedure("buy_from_vendor", can=False))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2500, y=500)
+
+        # First three calls must return a move_to procedure (normal 4c walk).
+        for i in range(3):
+            proc = await planner.select_procedure(ctx)
+            assert proc is not None, f"attempt {i}: expected blind walk"
+            assert "move_to" in proc.name, (
+                f"attempt {i}: expected move_to, got {proc.name}"
+            )
+        assert ctx.blackboard["_buy_blind_walk_count"] == 3
+
+        # Fourth call: counter exhausted — 4c must NOT return another walk
+        # to the same vendor keywords.  Without nearby deadlock-recovery
+        # assets, the planner falls through to 4f and either returns a
+        # recovery procedure or None (4f's "nothing to do" path).
+        # Either outcome is acceptable; what matters is that the blind
+        # walk loop does not repeat.
+        proc = await planner.select_procedure(ctx)
+        if proc is not None and "move_to" in proc.name:
+            # If a move is returned it must be a recovery walk (e.g.
+            # Lv3 beg-at-bank), not the same blind-walk target list —
+            # counter stays pinned so the fall-through path continues.
+            assert ctx.blackboard["_buy_blind_walk_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_blind_walk_counter_resets_on_fresh_balance(self):
+        """A fresh bank_balance cache resets the blind-walk counter.
+
+        Without a reset, the agent is permanently locked out of Priority
+        4c after one bad stretch even once the bank is refilled and
+        check_bank_balance re-caches the new amount.
+        """
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("buy_from_vendor"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2500, y=500)
+        # Simulate a stale cycle where the counter reached the cap.
+        ctx.blackboard["_buy_blind_walk_count"] = 3
+        # Fresh, sufficient balance — 4c's "known sufficient" branch must
+        # both return buy_from_vendor AND clear the counter.
+        ctx.blackboard["bank_balance"] = {
+            "amount": 500,
+            "ts": time.time(),
+        }
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "buy_from_vendor"
+        assert ctx.blackboard["_buy_blind_walk_count"] == 0
+
 
 class TestExpeditionWiring:
     @pytest.mark.asyncio

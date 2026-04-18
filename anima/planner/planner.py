@@ -787,11 +787,13 @@ class Planner:
                 if bal_fresh and bal_amount < PICKAXE_COST:
                     # Known insufficient → skip buy, block for 10 min
                     ctx.blackboard["_buy_disabled_until"] = time.time() + 600
+                    ctx.blackboard["_buy_blind_walk_count"] = 0
                     _intent(
                         f"은행 잔액 {bal_amount}gp 부족 → 구매 건너뛰고 다른 경로 시도"
                     )
                     # Fall through to 4d/4e/4f below
                 elif bal_fresh:
+                    ctx.blackboard["_buy_blind_walk_count"] = 0
                     # Known sufficient → buy
                     proc = _get_proc("buy_from_vendor")
                     if proc and await proc.can_start(ctx):
@@ -809,24 +811,49 @@ class Planner:
                     # Unknown balance. Prefer reading it from a banker.
                     cbb = _get_proc("check_bank_balance")
                     if cbb and await cbb.can_start(ctx):
+                        ctx.blackboard["_buy_blind_walk_count"] = 0
                         _intent("곡괭이 없음 → 은행 잔액 먼저 확인")
                         return cbb
                     # No banker reachable right now → blind buy attempt;
                     # buy_from_vendor self-disables on failure.
                     proc = _get_proc("buy_from_vendor")
                     if proc and await proc.can_start(ctx):
+                        ctx.blackboard["_buy_blind_walk_count"] = 0
                         _intent(
                             f"곡괭이 없음, 금화 {ss.gold}g (은행 미확인) → 상점에서 구매"
                         )
                         return proc
-                    _intent(
-                        f"곡괭이 없음, 금화 {ss.gold}g → 은행/상점으로 이동"
+                    # Cap the blind walk-to-bank/vendor loop: with an empty
+                    # bank, check_bank_balance never fires (banker out of
+                    # 12-tile range until we arrive) and buy_from_vendor
+                    # never fires (no vendor in range either), so the agent
+                    # ping-pongs between vendor locations forever without
+                    # ever reaching Priority 4f deadlock recovery.  After a
+                    # few cycles, skip the move and fall through so hunt/
+                    # scavenge/relocate paths get a chance to run.
+                    _blind_walks = ctx.blackboard.get(
+                        "_buy_blind_walk_count", 0,
                     )
-                    move = await self._roaming.move_to_location(
-                        ctx, "bank", "tinker", "provisioner", "miner",
-                    )
-                    if move:
-                        return move
+                    if _blind_walks < 3:
+                        ctx.blackboard["_buy_blind_walk_count"] = (
+                            _blind_walks + 1
+                        )
+                        _intent(
+                            f"곡괭이 없음, 금화 {ss.gold}g → 은행/상점으로 이동"
+                        )
+                        move = await self._roaming.move_to_location(
+                            ctx, "bank", "tinker", "provisioner", "miner",
+                        )
+                        if move:
+                            return move
+                    else:
+                        logger.info(
+                            "planner_buy_blind_walks_exhausted",
+                            count=_blind_walks,
+                            pos=f"({ss.x},{ss.y})",
+                        )
+                        # Leave the counter set — it resets only when the
+                        # balance cache goes fresh (see Priority 4c head).
 
             # 4d: Has ingots + tongs → craft weapons to sell for gold to buy tools
             #     Skip when material cooldown is active (iron forcing failed)
@@ -852,31 +879,21 @@ class Planner:
                 if move:
                     return move
 
-            # NEW STOP: explicit standstill when no recovery path exists.
-            # If buy was just disabled (bank gold likely empty) AND we have
-            # no ingots to make_tools / craft / sell, then deadlock recovery
-            # (random walk, scavenge, monster hunt) is futile — the agent
-            # would need user intervention (drop ingots, refill bank) to
-            # progress. Surface the standstill on stdio and yield this tick
-            # so the loop visibility is maintained without burning cycles.
+            # When buy is disabled (bank empty) AND we have no ingots/ore,
+            # the standard crafting and resale paths are all closed.  Fall
+            # through to Priority 4f deadlock recovery instead of stopping
+            # — the recovery ladder (hunt rats with a dagger, scavenge
+            # ground items, relocate to a different city, yell for help,
+            # forum escalation) has several concrete options that do not
+            # require user intervention.  The supervisor still has the
+            # deadlock alert for cases where operator action truly is
+            # needed; the planner's job here is to keep trying.
             buy_disabled = time.time() < ctx.blackboard.get("_buy_disabled_until", 0)
             if buy_disabled and ingot_count == 0 and ore_count == 0:
-                _intent(
-                    "정지: 도구 없음, 잉갓 없음, 구매 불가 — 사용자 개입 필요"
+                logger.info(
+                    "planner_fallthrough_to_deadlock_recovery",
+                    reason="no tool, no ingots, buy disabled",
                 )
-                logger.warning(
-                    "planner_no_progress_path",
-                    reason="no tool, no ingots, buy disabled — user must intervene",
-                )
-                if ctx.bus is not None:
-                    try:
-                        ctx.bus.publish("planner.stopped", {
-                            "message": "✗ 정지: 도구 없음, 잉갓 없음, 구매 불가",
-                            "importance": 3,
-                        })
-                    except Exception:
-                        pass
-                return None
 
             # 4f: TRUE DEADLOCK — no tools, no gold, no ore, no ingots
             # Progressive recovery:
