@@ -106,3 +106,39 @@ class TestPidLiveness:
     def test_max_lock_age_lowered(self):
         from tools.fix_lock import MAX_LOCK_AGE
         assert MAX_LOCK_AGE <= 1200
+
+
+class TestSweepStaleLock:
+    def test_sweep_removes_dead_pid_lock(self, tmp_lock, monkeypatch):
+        from tools.fix_lock import sweep_stale_lock
+        tmp_lock.write_text(json.dumps({
+            "problem": "X", "pid": 999999, "sha": "abc",
+            "started": time.time(),
+        }))
+        monkeypatch.setattr("tools.fix_lock._pid_alive", lambda p: False)
+        removed = sweep_stale_lock()
+        assert removed is True
+        assert not tmp_lock.exists()
+
+    def test_sweep_removes_age_stale_lock(self, tmp_lock):
+        from tools.fix_lock import sweep_stale_lock, MAX_LOCK_AGE
+        tmp_lock.write_text(json.dumps({
+            "problem": "X", "pid": 1, "sha": "abc",
+            "started": time.time() - MAX_LOCK_AGE - 10,
+        }))
+        assert sweep_stale_lock() is True
+        assert not tmp_lock.exists()
+
+    def test_sweep_keeps_fresh_alive_lock(self, tmp_lock, monkeypatch):
+        from tools.fix_lock import sweep_stale_lock
+        tmp_lock.write_text(json.dumps({
+            "problem": "X", "pid": 42, "sha": "abc",
+            "started": time.time(),
+        }))
+        monkeypatch.setattr("tools.fix_lock._pid_alive", lambda p: True)
+        assert sweep_stale_lock() is False
+        assert tmp_lock.exists()
+
+    def test_sweep_missing_lock_returns_false(self, tmp_lock):
+        from tools.fix_lock import sweep_stale_lock
+        assert sweep_stale_lock() is False

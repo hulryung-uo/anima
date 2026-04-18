@@ -859,6 +859,14 @@ def main() -> None:
     parser.add_argument("--agent-args", nargs="*", default=[], help="Extra args for agent")
     args = parser.parse_args()
 
+    # Clear any stale lock from a previous crashed session before we start.
+    try:
+        from fix_lock import sweep_stale_lock
+        if sweep_stale_lock():
+            _alert("Swept stale fix lock at startup")
+    except Exception as e:
+        _debug(f"Lock sweep error: {e}")
+
     use_claude = not args.no_claude
     mode = "Level 1-3" if use_claude else "Level 1 only"
     _alert(f"Starting ({mode}, interval={args.interval}s); debug log → {SUPERVISOR_LOG}")

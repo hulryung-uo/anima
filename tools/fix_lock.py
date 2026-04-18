@@ -130,6 +130,29 @@ def release_fix_lock() -> None:
         pass
 
 
+def sweep_stale_lock() -> bool:
+    """Remove the lock file if it's stale (age or dead PID).
+
+    Called by the supervisor on startup so that a crashed session's lock
+    can't block a freshly-started supervisor. Returns True if a stale
+    lock was removed.
+    """
+    data = _read_lock()
+    if not data:
+        return False
+    started = data.get("started", 0)
+    pid = data.get("pid", 0)
+    stale_age = time.time() - started > MAX_LOCK_AGE
+    stale_pid = bool(pid) and not _pid_alive(pid)
+    if stale_age or stale_pid:
+        try:
+            LOCK_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return True
+    return False
+
+
 class FixLock:
     """Context manager for acquire/release.
 
