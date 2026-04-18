@@ -1097,6 +1097,8 @@ class Planner:
                 # agent returns to the normal Lv0 ladder on the next deadlock.
                 ctx.blackboard.pop("_deadlock_cycles_completed", None)
                 ctx.blackboard.pop("_deadlock_last_cycle_pos", None)
+                # Begging evidently worked — let it try again next time.
+                ctx.blackboard.pop("_beg_consecutive_fails", None)
             ctx.blackboard["_deadlock_last_gold"] = ss.gold
 
             # Always count visits — this drives escalation even when
@@ -1143,7 +1145,16 @@ class Planner:
             # ladder (requires combat or relocation progress).  Gated on
             # Lv0 so it doesn't monopolize the ladder; the per-serial
             # cooldown in _find_beg_npc prevents re-begging the same NPC.
-            if _deadlock_level == 0 and ss.gold < 10:
+            # The consecutive-fails cap stops the re-target loop once the
+            # agent's Karma/Begging level means no local NPC will ever
+            # give coin — without this, two visible refusers keep firing
+            # on their 30s cooldowns and Lv0 never escalates to Lv1.
+            _beg_fails = ctx.blackboard.get("_beg_consecutive_fails", 0)
+            if (
+                _deadlock_level == 0
+                and ss.gold < 10
+                and _beg_fails < _BegNpcForCoin.MAX_CONSECUTIVE_FAILS
+            ):
                 _beg_target = self._find_beg_npc(ctx, ss)
                 if _beg_target is not None:
                     _intent(
@@ -1360,6 +1371,10 @@ class Planner:
                         ctx.blackboard.get("_deadlock_cycles_completed", 0) + 1
                     )
                     ctx.blackboard.pop("_deadlock_first_pos", None)
+                    # Fresh cycle — re-enable begging.  If the relocate
+                    # at Lv4 moved us to a new town, different NPCs are in
+                    # range and might actually give coin.
+                    ctx.blackboard.pop("_beg_consecutive_fails", None)
                     _intent("교착 상태 Lv7: 포럼에 도움 요청")
                     await self._deadlock.escalate_to_forum(ctx)
                     return None
@@ -1472,6 +1487,7 @@ class Planner:
         ctx.blackboard.pop("_deadlock_first_pos", None)
         ctx.blackboard.pop("_deadlock_cycles_completed", None)
         ctx.blackboard.pop("_deadlock_last_cycle_pos", None)
+        ctx.blackboard.pop("_beg_consecutive_fails", None)
 
         # --- Priority 4.5: Tool restock (non-blocking) ---
         # Agent has at least 1 tool (passed Priority 4) but fewer than
@@ -2414,6 +2430,11 @@ class _BegNpcForCoin:
     SKILL_ID = 6
     COOLDOWN_S = 30.0
     APPROACH_DIST = 3
+    # After this many consecutive procedure-level failures (no cursor,
+    # refusal, blocked approach), the planner stops electing beg and lets
+    # the deadlock ladder escalate past Lv0.  Cleared on successful begs
+    # and on any gold progress (see `deadlock_gold_progress` branch).
+    MAX_CONSECUTIVE_FAILS = 3
 
     def __init__(self, ss, target) -> None:
         self.name = "beg_npc_for_coin"
@@ -2435,16 +2456,23 @@ class _BegNpcForCoin:
         target = self._target
         start_gold = ss.gold
 
+        def _record_failure(reason: FailureReason, message: str) -> ProcedureResult:
+            ctx.blackboard["_beg_consecutive_fails"] = (
+                ctx.blackboard.get("_beg_consecutive_fails", 0) + 1
+            )
+            return ProcedureResult(
+                success=False, reason=reason, message=message,
+            )
+
         dist = max(abs(target.x - ss.x), abs(target.y - ss.y))
         if dist > self.APPROACH_DIST:
             await go_to(ctx, target.x, target.y)
             ss = ctx.perception.self_state
             dist = max(abs(target.x - ss.x), abs(target.y - ss.y))
             if dist > self.APPROACH_DIST + 1:
-                return ProcedureResult(
-                    success=False,
-                    reason=FailureReason.BLOCKED,
-                    message=f"Could not approach {target.name or 'NPC'}",
+                return _record_failure(
+                    FailureReason.BLOCKED,
+                    f"Could not approach {target.name or 'NPC'}",
                 )
 
         # Stamp cooldown up front so a hang/timeout doesn't re-elect the
@@ -2456,10 +2484,9 @@ class _BegNpcForCoin:
         try:
             await ctx.conn.send_packet(build_use_skill(self.SKILL_ID))
         except Exception as e:
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message=f"UseSkill(Begging) failed: {e}",
+            return _record_failure(
+                FailureReason.BLOCKED,
+                f"UseSkill(Begging) failed: {e}",
             )
 
         cursor = await wait_for_target(ctx, timeout=3.0)
@@ -2468,10 +2495,9 @@ class _BegNpcForCoin:
                 "beg_npc_no_cursor",
                 npc=target.name or f"0x{target.serial:08X}",
             )
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message="Begging skill — no target cursor",
+            return _record_failure(
+                FailureReason.BLOCKED,
+                "Begging skill — no target cursor",
             )
 
         cursor_id = cursor.data.get("cursor_id", 0) if cursor.data else 0
@@ -2488,6 +2514,7 @@ class _BegNpcForCoin:
                     npc=target.name or f"0x{target.serial:08X}",
                     gained=gained,
                 )
+                ctx.blackboard["_beg_consecutive_fails"] = 0
                 return ProcedureResult(
                     success=True,
                     message=(
@@ -2495,10 +2522,9 @@ class _BegNpcForCoin:
                     ),
                 )
 
-        return ProcedureResult(
-            success=False,
-            reason=FailureReason.MISSING_RESOURCE,
-            message=f"{target.name or 'NPC'} refused to give coin",
+        return _record_failure(
+            FailureReason.MISSING_RESOURCE,
+            f"{target.name or 'NPC'} refused to give coin",
         )
 
 

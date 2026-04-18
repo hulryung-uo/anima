@@ -1841,6 +1841,68 @@ class TestBegNpcForCoin:
         proc = await planner.select_procedure(ctx)
         assert proc is None or proc.name != "beg_npc_for_coin"
 
+    @pytest.mark.asyncio
+    async def test_beg_npc_skipped_after_consecutive_fails(self):
+        """After MAX_CONSECUTIVE_FAILS refusals, Lv0 stops re-electing beg.
+
+        Observed deadlock: two visible human NPCs refuse persistently (low
+        Karma / skill) and their 30s cooldowns recycle forever, monopolising
+        Lv0 and preventing the ladder from escalating to Lv1+.  The
+        consecutive-fail cap unblocks escalation.
+        """
+        from anima.planner.planner import _BegNpcForCoin
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2461, y=451)
+        ctx.map_reader = None
+        npc = MagicMock(
+            serial=0x77777, name="Mirielle",
+            x=2463, y=452, body=0x0190,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[npc])
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        # Simulate N prior refusals → next tick must pick a non-beg proc.
+        ctx.blackboard["_beg_consecutive_fails"] = (
+            _BegNpcForCoin.MAX_CONSECUTIVE_FAILS
+        )
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is None or proc.name != "beg_npc_for_coin"
+
+    @pytest.mark.asyncio
+    async def test_beg_run_increments_fail_counter_on_refusal(self):
+        """_BegNpcForCoin.run bumps _beg_consecutive_fails on refusal."""
+        from anima.planner.planner import _BegNpcForCoin
+
+        ctx = _make_ctx(gold=0, x=2461, y=451)
+        target = MagicMock(
+            serial=0x77777, name="Mirielle",
+            x=2461, y=451, body=0x0190,
+        )
+        ctx.blackboard["_beg_consecutive_fails"] = 1
+
+        proc = _BegNpcForCoin(ctx.perception.self_state, target)
+
+        async def _fake_send(pkt):
+            return None
+
+        ctx.conn.send_packet = _fake_send
+
+        # Force the wait_for_target helper to report "no cursor"; the
+        # earliest failure branch is enough to prove the counter bumps.
+        with patch(
+            "anima.actions.target.wait_for_target",
+            new=AsyncMock(return_value=MagicMock(success=False, data=None)),
+        ):
+            result = await proc.run(ctx)
+
+        assert not result.success
+        assert ctx.blackboard["_beg_consecutive_fails"] == 2
+
 
 class TestExpeditionWatchdog:
     @pytest.mark.asyncio
