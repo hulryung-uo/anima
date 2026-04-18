@@ -217,6 +217,43 @@ class TestGameplayLoop:
         assert proc is not None
         assert "move_to" in proc.name
 
+    @pytest.mark.asyncio
+    async def test_zero_in_hand_gold_with_fresh_bank_balance_buys(self):
+        """Gold=0 in hand but bank has money → should still try buy path.
+
+        Vendor purchases deduct from BANK gold, not backpack, so in-hand gold=0
+        should not block the buy branch. This guards against regressions where
+        the agent wrongly declares deadlock while the bank is funded.
+        """
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("buy_from_vendor"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(x=2500, y=500, gold=0)  # empty pockets, near Minoc
+        # Prime bank_balance cache with fresh, sufficient amount
+        ctx.blackboard["bank_balance"] = {
+            "amount": 500,
+            "ts": time.time(),
+        }
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None, "should not bail to None when bank has money"
+        assert proc.name == "buy_from_vendor"
+
+    @pytest.mark.asyncio
+    async def test_zero_in_hand_gold_stale_bank_checks_balance(self):
+        """Gold=0, no bank cache → should pick check_bank_balance, not give up."""
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("check_bank_balance"))
+        reg.register(StubProcedure("buy_from_vendor", can=False))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(x=2500, y=500, gold=0)  # empty pockets
+        # No bank_balance cache — planner must verify before deciding
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "check_bank_balance"
+
 
 class TestPlannerTick:
     @pytest.mark.asyncio

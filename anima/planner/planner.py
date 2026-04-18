@@ -688,6 +688,30 @@ class Planner:
 
         # --- Priority 4: No mining tools → get them ---
         if not has_mining_tool:
+            # Post-forum relocate has absolute priority inside P4: if the
+            # agent already asked for help in this city and nothing came,
+            # don't let the buy/craft branches drag it back — leave town.
+            # (Mirror clear-when-far logic so a relocating agent resumes
+            # normal recovery once it reaches a fresh area.)
+            _pf_stranded = ctx.blackboard.get("_forum_stranded_pos")
+            if ctx.blackboard.get("_post_forum_relocate") and _pf_stranded:
+                dist_from_stranded = max(
+                    abs(ss.x - _pf_stranded[0]),
+                    abs(ss.y - _pf_stranded[1]),
+                )
+                if dist_from_stranded > 60:
+                    ctx.blackboard.pop("_post_forum_relocate", None)
+                    ctx.blackboard.pop("_forum_stranded_pos", None)
+                    logger.info(
+                        "planner_post_forum_relocate_cleared",
+                        moved=dist_from_stranded,
+                    )
+                else:
+                    _intent(
+                        "교착 복구: 포럼 요청 후 도움 없음 → 다른 도시로 이동"
+                    )
+                    return _RelocateToCity(ss)
+
             # 4a: Has SMELTABLE ore → smelt first.
             # `ore_count` includes ore stacks the smelt step has already given
             # up on (unsmelable hue, or 1-amount iron with no merge partner).
@@ -715,14 +739,15 @@ class Planner:
 
             # 4c: Buy tools from a tinker (pickaxe costs ~11 gold).
             # This server deducts vendor purchases from BANK GOLD, not
-            # backpack. We cache the last reading in `bank_balance`:
+            # backpack — so ss.gold==0 is NOT a blocker. We cache the last
+            # reading in `bank_balance`:
             #   - fresh + sufficient → proceed to buy_from_vendor
             #   - fresh + insufficient → disable buy, fall through
             #   - stale/missing + banker nearby → check_bank_balance first
             #   - stale/missing + no banker → blind try (old behavior);
             #     buy_from_vendor will self-disable on failure.
             buy_disabled_until = ctx.blackboard.get("_buy_disabled_until", 0)
-            if ss.gold >= 10 and time.time() >= buy_disabled_until:
+            if time.time() >= buy_disabled_until:
                 PICKAXE_COST = 11
                 bal_cache = ctx.blackboard.get("bank_balance") or {}
                 bal_amount = bal_cache.get("amount")
