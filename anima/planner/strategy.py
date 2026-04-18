@@ -6,6 +6,7 @@ session. The planner filters procedure selection to match.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -74,8 +75,11 @@ class StrategySelector:
     """Holds the current session strategy and refreshes it periodically.
 
     The planner calls `maybe_refresh()` every tick. Every `interval_s`
-    seconds, this triggers an LLM call (non-blocking for the planner —
-    the call is awaited but the tick loop continues once it returns).
+    seconds, this spawns a background task that asks the LLM for a new
+    strategy. The planner loop never awaits the LLM call — `maybe_refresh`
+    returns immediately after spawning so a slow model (e.g. cold-start
+    on a remote 235B Qwen) cannot stall procedure selection or trigger
+    a connection-silence timeout.
     """
 
     DEFAULT_STRATEGY = STRATEGY_GRIND_MINING
@@ -91,6 +95,8 @@ class StrategySelector:
         # Strategy filtering is only applied after the first successful LLM
         # decision. Before that, the planner operates without restrictions.
         self._active: bool = False
+        # Single-flight guard: at most one refresh task in flight.
+        self._refresh_task: asyncio.Task | None = None
 
     @property
     def current(self) -> StrategyDecision:
@@ -101,10 +107,29 @@ class StrategySelector:
         return now - self._last_refresh >= self.interval_s
 
     async def maybe_refresh(self, ctx: "AgentContext") -> bool:
-        """Refresh the strategy if the interval has elapsed.
+        """Spawn a background strategy-refresh task if eligible.
 
-        Returns True if a refresh happened (whether or not the strategy
-        actually changed).
+        Returns True if a refresh task was spawned this call. Returns
+        False if the interval has not elapsed or another refresh is
+        already in flight. The actual LLM call runs concurrently on
+        `self._refresh_task`; await it directly if the caller needs the
+        result (tests do this).
+
+        The interval gate (`_last_refresh`) is bumped immediately on
+        spawn so the planner does not re-spawn every tick while the LLM
+        is still working — and so a hung/failing LLM does not turn into
+        a tight retry loop.
+        """
+        if not self.should_refresh():
+            return False
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return False
+        self._last_refresh = time.time()
+        self._refresh_task = asyncio.create_task(self._do_refresh(ctx))
+        return True
+
+    async def _do_refresh(self, ctx: "AgentContext") -> None:
+        """Run the LLM strategy decision and apply the result.
 
         Strategy changes are suppressed while the expedition is in the
         middle of an active COLLECTING or CRAFTING_TRIP cycle — the LLM
@@ -113,9 +138,6 @@ class StrategySelector:
         stranded the in-progress batch. Only re-evaluate at natural
         boundaries: IDLE or MINING phase.
         """
-        if not self.should_refresh():
-            return False
-
         expedition = ctx.blackboard.get("expedition") if hasattr(ctx, "blackboard") else None
         if expedition is not None:
             phase_val = getattr(getattr(expedition, "phase", None), "value", None)
@@ -125,25 +147,22 @@ class StrategySelector:
                     phase=phase_val,
                     current=self._current.name,
                 )
-                return False
+                return
+
         llm = getattr(ctx, "llm", None)
         if llm is None:
-            # No LLM configured — stay on default
-            self._last_refresh = time.time()
-            return False
+            return
         try:
             new_decision = await self._ask_llm(ctx, llm)
         except Exception as e:
             logger.warning("strategy_llm_failed", error=str(e))
-            self._last_refresh = time.time()
-            return False
+            return
         if new_decision.name not in ALL_STRATEGIES:
             logger.warning(
                 "strategy_llm_unknown_response",
                 returned=new_decision.name,
             )
-            self._last_refresh = time.time()
-            return False
+            return
 
         # Sanity-check the LLM choice against actual state. The model
         # sometimes picks "sell_inventory" with an empty backpack or
@@ -164,7 +183,6 @@ class StrategySelector:
 
         previous = self._current.name
         self._current = new_decision
-        self._last_refresh = time.time()
         self._active = True
         if previous != new_decision.name:
             logger.info(
@@ -173,7 +191,6 @@ class StrategySelector:
                 to=new_decision.name,
                 reasoning=new_decision.reasoning[:100],
             )
-        return True
 
     def _is_strategy_viable(self, ctx: "AgentContext", name: str) -> bool:
         """Reject strategies whose preconditions are obviously not met."""
