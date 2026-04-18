@@ -231,3 +231,24 @@ class TestDegradationDetection:
 
         assert supervisor._check_degradation() is False
         assert not flag.exists()
+
+
+class TestClaudeWatchdog:
+    def test_wall_clock_timeout_kills_process_group(self, tmp_path, monkeypatch):
+        """If claude hangs past timeout+grace, the supervisor kills the pgid."""
+        import sys
+        import time as _time
+        from tools import supervisor
+
+        monkeypatch.setattr(supervisor, "CLAUDE_LOG", tmp_path / "claude.log")
+        # Replace `claude` with a python subprocess that sleeps forever
+        hang_cmd = [sys.executable, "-c", "import time; time.sleep(600)"]
+        monkeypatch.setattr(supervisor, "_CLAUDE_CMD", hang_cmd)
+
+        t0 = _time.time()
+        success, output = supervisor.call_claude_with_prompt("diag", timeout=2)
+        elapsed = _time.time() - t0
+
+        assert success is False
+        assert elapsed < 10, f"watchdog took too long: {elapsed:.1f}s"
+        assert "timed out" in output.lower() or "killed" in output.lower()

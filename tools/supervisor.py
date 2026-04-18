@@ -503,47 +503,102 @@ planner decisions, and constraint analysis.
 
 
 
+_CLAUDE_CMD: list[str] = ["claude", "-p"]
+_WATCHDOG_GRACE_SECONDS = 30  # extra time after subprocess timeout before SIGKILL
+
+
 def call_claude_with_prompt(prompt: str, timeout: int = 300) -> tuple[bool, str]:
-    """Call Claude Code CLI with a prompt. Returns (success, output)."""
+    """Call Claude Code CLI with a prompt. Returns (success, output).
+
+    Uses a background watchdog that issues SIGKILL to the whole process
+    group if the subprocess is still alive `timeout + _WATCHDOG_GRACE_SECONDS`
+    after launch. This covers cases where subprocess.run's timeout fails to
+    reap a blocked child or its descendants.
+    """
+    import threading
     try:
-        result = subprocess.run(
-            ["claude", "-p", prompt],
+        CLAUDE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    cmd = list(_CLAUDE_CMD) + [prompt]
+    try:
+        proc = subprocess.Popen(
+            cmd,
             cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            start_new_session=True,  # new pgid so we can killpg
+            text=True,
         )
-        output = result.stdout or ""
-        if result.stderr:
-            output += "\n--- stderr ---\n" + result.stderr
-
-        # Log to claude_code.log
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(CLAUDE_LOG, "a") as f:
-            f.write(f"\n{'='*72}\n[{ts}]\n{'='*72}\n")
-            f.write(output[:2000])
-            f.write("\n")
-
-        return result.returncode == 0, output
-    except subprocess.TimeoutExpired as e:
-        partial: str = ""
-        if e.stdout:
-            partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else str(e.stdout)
-        if e.stderr:
-            stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
-            partial = partial + "\n--- stderr ---\n" + stderr_text
-
-        # Log partial output — Claude may have committed before timeout
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(CLAUDE_LOG, "a") as f:
-            f.write(f"\n{'='*72}\n[{ts}] TIMED OUT after {timeout}s\n{'='*72}\n")
-            f.write((partial or "(no output captured)")[:2000])
-            f.write("\n")
-
-        return False, f"Claude Code timed out after {timeout}s\n{partial[:500]}"
     except FileNotFoundError:
         return False, "Claude Code CLI not found"
+
+    killed = {"by_watchdog": False}
+
+    def _watchdog() -> None:
+        if proc.poll() is None:
+            killed["by_watchdog"] = True
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    t = threading.Timer(timeout + _WATCHDOG_GRACE_SECONDS, _watchdog)
+    t.daemon = True
+    t.start()
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except Exception:
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                pass
+            stdout, stderr = proc.communicate()
+    finally:
+        t.cancel()
+
+    output = stdout or ""
+    if stderr:
+        output += "\n--- stderr ---\n" + stderr
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(CLAUDE_LOG, "a") as f:
+            suffix = ""
+            if timed_out:
+                suffix = f" TIMED OUT after {timeout}s"
+            if killed["by_watchdog"]:
+                suffix += " WATCHDOG_KILLED"
+            f.write(f"\n{'='*72}\n[{ts}]{suffix}\n{'='*72}\n")
+            f.write((output or "(no output captured)")[:2000])
+            f.write("\n")
+    except Exception:
+        pass
+
+    if timed_out:
+        note = f"Claude Code timed out after {timeout}s"
+        if killed["by_watchdog"]:
+            note += " (watchdog killed process group)"
+        return False, f"{note}\n{output[:500]}"
+    if killed["by_watchdog"]:
+        return False, f"Watchdog killed Claude Code\n{output[:500]}"
+
+    return proc.returncode == 0, output
 
 
 # ---------------------------------------------------------------------------
