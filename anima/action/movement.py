@@ -894,10 +894,16 @@ def _find_closed_door_at(
     y: int,
     exclude_positions: set[tuple[int, int]] | None = None,
 ) -> int | None:
-    """Find a closed door world item at or adjacent to (x, y).
+    """Find a closed door world item AT exactly (x, y).
 
     Returns serial or None. Only returns doors that are impassable (closed).
     Skips positions in exclude_positions (already-opened doors).
+
+    Exact match (not adjacency): door logic must only fire when the path
+    actually steps onto the door tile. A loose adjacency check causes the
+    agent to try opening a door from a non-cardinal position when the door
+    merely neighbors the path — the server silently ignores the use, and
+    the agent loops indefinitely.
     """
     if ctx.map_reader is None:
         return None
@@ -906,7 +912,7 @@ def _find_closed_door_at(
     for it in ctx.perception.world.items.values():
         if it.container != 0:
             continue
-        if abs(it.x - x) <= 1 and abs(it.y - y) <= 1:
+        if it.x == x and it.y == y:
             # Skip positions where we know an opened door moved to
             if exclude_positions and (it.x, it.y) in exclude_positions:
                 continue

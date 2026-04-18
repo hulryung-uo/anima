@@ -202,3 +202,51 @@ class TestGoToInterrupt:
         # Already at target (within 1 tile) → should succeed
         result = await go_to(ctx, 100, 101, interrupt_check=None)
         assert result is True
+
+
+class TestFindClosedDoorAt:
+    """Regression tests: door logic must only fire when path actually crosses
+    the door tile, not when a door is merely adjacent to the path tile.
+
+    Real-world bug (2026-04-18): agent at (2524,547) tried to walk east to
+    (2525,547). A door existed at (2525,548) — Chebyshev-1 adjacent to the
+    path tile but NOT on the path. The old loose adjacency match triggered
+    door traversal from a diagonal position; the server silently ignored
+    the double-click and the agent looped forever.
+    """
+
+    def _make_ctx(self, door_x: int, door_y: int):
+        from anima.perception.world_state import ItemInfo, WorldState
+
+        ctx = MagicMock()
+        ctx.perception.world = WorldState()
+        door = ItemInfo(serial=0x40000CCE, x=door_x, y=door_y, graphic=0x06AE, container=0)
+        ctx.perception.world.items[door.serial] = door
+
+        from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
+        ctx.map_reader._get_item_flags.return_value = FLAG_DOOR | FLAG_IMPASSABLE
+        return ctx
+
+    def test_returns_serial_when_path_tile_is_door_tile(self):
+        from anima.action.movement import _find_closed_door_at
+
+        ctx = self._make_ctx(door_x=2525, door_y=548)
+        # Path tile == door position → must return door serial
+        assert _find_closed_door_at(ctx, 2525, 548) == 0x40000CCE
+
+    def test_returns_none_when_door_only_adjacent_to_path_tile(self):
+        from anima.action.movement import _find_closed_door_at
+
+        ctx = self._make_ctx(door_x=2525, door_y=548)
+        # Path tile (2525,547) is NORTH of door (2525,548) — door is adjacent,
+        # but path does not cross it. Door logic must NOT fire here, otherwise
+        # the agent will try to open a door from a non-cardinal position and
+        # loop endlessly when the server ignores it.
+        assert _find_closed_door_at(ctx, 2525, 547) is None
+
+    def test_returns_none_when_door_diagonal_to_path_tile(self):
+        from anima.action.movement import _find_closed_door_at
+
+        ctx = self._make_ctx(door_x=2525, door_y=548)
+        # Diagonal neighbor (2524, 547) — also must not match.
+        assert _find_closed_door_at(ctx, 2524, 547) is None
