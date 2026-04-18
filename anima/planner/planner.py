@@ -1694,6 +1694,18 @@ class Planner:
         for s in expired:
             del unreachable[s]
 
+        # Body-type unreachability: when distinct mobiles of the same body
+        # have been unreachable repeatedly (e.g. cats that flee faster than
+        # the agent can chase), skip the whole body type so deadlock recovery
+        # escalates instead of burning ticks on another cat of the same kind.
+        # Entries expire after 5 minutes so the agent retries in new terrain.
+        unreachable_bodies: dict[int, float] = ctx.blackboard.get(
+            "_hunt_unreachable_bodies", {},
+        )
+        expired_bodies = [b for b, t in unreachable_bodies.items() if now - t > 300]
+        for b in expired_bodies:
+            del unreachable_bodies[b]
+
         candidates = []
         for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
             if m.serial == ss.serial:
@@ -1711,6 +1723,9 @@ class Planner:
                 continue
             # Skip body types we repeatedly failed to kill (combat timeout)
             if m.body in unkillable_bodies:
+                continue
+            # Skip body types we repeatedly failed to reach (pathfinding dead-end)
+            if m.body in unreachable_bodies:
                 continue
             # Skip targets we failed to reach recently
             if m.serial in unreachable:
@@ -2530,6 +2545,30 @@ class _HuntForGold:
                 import time as _t
                 unreachable = ctx.blackboard.setdefault("_hunt_unreachable", {})
                 unreachable[self._target_serial] = _t.time()
+                # After 2 distinct serials of the same body have been
+                # unreachable, blacklist the body type so future selection
+                # picks a different species (e.g. cat → rat/dog).  Without
+                # this, fast-fleeing prey like cats keep respawning near the
+                # agent, each fresh serial passes the per-serial filter, and
+                # the opportunistic hunt never escalates.
+                if self._target_body:
+                    fails: dict[int, set[int]] = ctx.blackboard.setdefault(
+                        "_hunt_unreachable_serials_by_body", {},
+                    )
+                    fails.setdefault(
+                        self._target_body, set(),
+                    ).add(self._target_serial)
+                    if len(fails[self._target_body]) >= 2:
+                        ub: dict[int, float] = ctx.blackboard.setdefault(
+                            "_hunt_unreachable_bodies", {},
+                        )
+                        ub[self._target_body] = _t.time()
+                        logger.warning(
+                            "hunt_unreachable_body",
+                            body=hex(self._target_body),
+                            name=self._target_name,
+                            fails=len(fails[self._target_body]),
+                        )
                 logger.info(
                     "hunt_target_unreachable",
                     serial=f"0x{self._target_serial:08X}",

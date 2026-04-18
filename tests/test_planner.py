@@ -410,6 +410,99 @@ class TestDeathRecovery:
         assert result.reason == FailureReason.BLOCKED
         assert "dead" in result.message.lower()
 
+    @pytest.mark.asyncio
+    async def test_hunt_blacklists_body_after_two_unreachable_failures(self):
+        """Two distinct serials of the same body unreachable → body blacklisted."""
+        from anima.planner.planner import _HuntForGold
+
+        ctx = _make_ctx()
+        ctx.perception.self_state.is_alive = True
+        ctx.perception.self_state.pending_target = None
+        ctx.perception.self_state.serial = 0x01
+
+        # First cat: go_to fails → per-serial blacklist, body count = 1
+        target1 = MagicMock(
+            serial=0xCAA1, name="a cat", x=110, y=210, body=0x00C9,
+        )
+        proc1 = _HuntForGold(target1, ctx.perception.self_state)
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=False)):
+            result1 = await proc1.run(ctx)
+        assert result1.success is False
+        assert "cannot reach" in result1.message.lower()
+        # Body not yet blacklisted (only 1 failure)
+        assert 0x00C9 not in ctx.blackboard.get("_hunt_unreachable_bodies", {})
+        # Second cat with different serial: go_to fails → body blacklisted
+        target2 = MagicMock(
+            serial=0xCAA2, name="a cat", x=108, y=208, body=0x00C9,
+        )
+        proc2 = _HuntForGold(target2, ctx.perception.self_state)
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=False)):
+            result2 = await proc2.run(ctx)
+        assert result2.success is False
+        assert 0x00C9 in ctx.blackboard.get("_hunt_unreachable_bodies", {})
+
+    @pytest.mark.asyncio
+    async def test_find_huntable_skips_body_in_unreachable_blacklist(self):
+        """_find_huntable_target skips all mobiles whose body is blacklisted."""
+        from anima.perception.enums import NotorietyFlag
+        from anima.perception.world_state import MobileInfo, WorldState
+        from anima.planner.planner import Planner
+        from anima.procedures.base import ProcedureRegistry
+
+        planner = Planner(ProcedureRegistry())
+        ctx = _make_ctx()
+        ctx.perception.self_state.serial = 0x01
+        ctx.map_reader = None  # skip pathfinding reachability check
+
+        world = WorldState()
+        ctx.perception.world = world
+        # Two cats (blacklisted body) and one rat (not blacklisted)
+        for serial, body, x in [
+            (0xCAA1, 0x00C9, 102),  # cat
+            (0xCAA2, 0x00C9, 103),  # cat
+            (0xDEAD01, 0x00EE, 104),  # rat
+        ]:
+            m = MobileInfo(serial=serial, body=body, x=x, y=200, z=0)
+            m.notoriety = NotorietyFlag.ATTACKABLE
+            world.mobiles[serial] = m
+
+        ctx.blackboard["_hunt_unreachable_bodies"] = {0x00C9: time.time()}
+
+        target = planner._find_huntable_target(
+            ctx, ctx.perception.self_state, include_small_animals=True,
+        )
+        assert target is not None
+        assert target.body == 0x00EE  # rat, not cat
+
+    @pytest.mark.asyncio
+    async def test_find_huntable_expires_stale_body_blacklist(self):
+        """Body blacklist entries older than 300s expire so stale entries don't persist."""
+        from anima.perception.enums import NotorietyFlag
+        from anima.perception.world_state import MobileInfo, WorldState
+        from anima.planner.planner import Planner
+        from anima.procedures.base import ProcedureRegistry
+
+        planner = Planner(ProcedureRegistry())
+        ctx = _make_ctx()
+        ctx.perception.self_state.serial = 0x01
+        ctx.map_reader = None
+
+        world = WorldState()
+        ctx.perception.world = world
+        cat = MobileInfo(serial=0xCAA1, body=0x00C9, x=101, y=200, z=0)
+        cat.notoriety = NotorietyFlag.ATTACKABLE
+        world.mobiles[cat.serial] = cat
+
+        # Stale entry (601s ago) should be lazily cleaned
+        ctx.blackboard["_hunt_unreachable_bodies"] = {0x00C9: time.time() - 601}
+
+        target = planner._find_huntable_target(
+            ctx, ctx.perception.self_state, include_small_animals=True,
+        )
+        assert target is not None
+        assert target.body == 0x00C9
+        assert 0x00C9 not in ctx.blackboard["_hunt_unreachable_bodies"]
+
 
 class TestDeadlockRecovery:
     """Test deadlock recovery: no tools, no gold, no materials → scavenge."""
