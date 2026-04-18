@@ -105,7 +105,18 @@ async def _request_context_menu_entry(
     await ctx.conn.send_packet(build_context_menu_request(vendor.serial))
 
     if not await _wait_for_context_menu(ctx):
-        logger.warning("context_menu_timeout", vendor=vendor.name)
+        dist = max(abs(vendor.x - ss.x), abs(vendor.y - ss.y))
+        logger.warning(
+            "context_menu_timeout",
+            vendor=vendor.name,
+            vendor_serial=f"0x{vendor.serial:08X}",
+            vendor_pos=f"({vendor.x},{vendor.y})",
+            player_pos=f"({ss.x},{ss.y})",
+            distance=dist,
+            vendor_dead=vendor.is_dead,
+            opl_loaded=bool(vendor.properties),
+            cliloc=cliloc,
+        )
         return False
 
     # Find the entry with matching cliloc
