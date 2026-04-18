@@ -655,6 +655,48 @@ class TestDeadlockRecovery:
         assert proc is not None
         assert proc.name == "wander_and_scavenge"
 
+    @pytest.mark.asyncio
+    async def test_deadlock_lv6_yells_for_help(self):
+        """Lv5 escalation → Lv6 = stationary _YellForHelp (not forum yet)."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        # Force Lv5 with 3 attempts pending so the next tick escalates to Lv6.
+        ctx.blackboard["_deadlock_recovery_level"] = 5
+        ctx.blackboard["_deadlock_attempt_count"] = 3
+        # Block all move_to_location paths so 4c's vendor-walk and every
+        # other move-based fallback return None, letting the flow fall
+        # through to the 4f deadlock block.
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "yell_for_help"
+        assert ctx.blackboard["_deadlock_recovery_level"] == 6
+
+    @pytest.mark.asyncio
+    async def test_deadlock_lv7_escalates_to_forum(self):
+        """Lv6 escalation → Lv7 = forum (pushed from prior Lv6)."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        ctx.blackboard["_deadlock_recovery_level"] = 6
+        ctx.blackboard["_deadlock_attempt_count"] = 3
+        planner._move_fail_until = time.time() + 300
+
+        # escalate_to_forum is async and posts/waits — patch it out.
+        with patch.object(
+            planner._deadlock, "escalate_to_forum", new=AsyncMock()
+        ) as mock_esc:
+            proc = await planner.select_procedure(ctx)
+
+        assert proc is None
+        mock_esc.assert_awaited_once()
+        # Level resets to 0 after forum escalation.
+        assert ctx.blackboard["_deadlock_recovery_level"] == 0
+
     def test_has_usable_weapon_detects_dagger_in_backpack(self):
         """_has_usable_weapon returns True for a dagger in the backpack."""
         reg = ProcedureRegistry()

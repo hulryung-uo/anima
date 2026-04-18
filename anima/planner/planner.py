@@ -1076,10 +1076,21 @@ class Planner:
                     _intent("교착 복구 Lv5: 탐색 실패 → 랜덤 방향 원거리 탐색")
                     return _DesperateExploration(ss)
 
-                # Level 6+: Forum escalation, then reset cycle
-                if _deadlock_level >= 6:
+                # Level 6: Stationary yell for help — no pathfinding,
+                # so it survives the common failure mode where every
+                # named destination is in `_failed_destinations` and
+                # every move returns blocked.  Runs before the forum
+                # escalation so we try one more in-game visibility pass
+                # (the only strategy that empirically succeeded in the
+                # observed deadlock) before the 5-minute silent wait.
+                elif _deadlock_level == 6:
+                    _intent("교착 복구 Lv6: 제자리에서 도움 외치기")
+                    return _YellForHelp(ss)
+
+                # Level 7+: Forum escalation, then reset cycle
+                if _deadlock_level >= 7:
                     ctx.blackboard["_deadlock_recovery_level"] = 0
-                    _intent("교착 상태 Lv6: 포럼에 도움 요청")
+                    _intent("교착 상태 Lv7: 포럼에 도움 요청")
                     await self._deadlock.escalate_to_forum(ctx)
                     return None
 
@@ -1999,6 +2010,147 @@ class _BegAtBank:
             success=False,
             reason=FailureReason.MISSING_RESOURCE,
             message="Begged at bank but no one helped",
+        )
+
+
+class _YellForHelp:
+    """Deadlock recovery Lv6: stationary sustained shouts for help.
+
+    When all movement-based recoveries (wander, relocate, hunt) have
+    failed — often because every named destination is in
+    ``_failed_destinations`` and pathfinding produces no route — the
+    agent is effectively pinned in place.  Walking to another beg spot
+    isn't possible and forum escalation costs a 5-minute silent wait.
+
+    This procedure fills that gap: stand still, shout in Unicode every
+    ~12 seconds for ~75 seconds, and pick up anything a passing player
+    drops within immediate reach.  No pathfinding, no named destinations
+    — so it can't be blocked by stale destination blocklists.  The
+    observed success case (`beg_at_bank`) already proves the agent can
+    receive items from nearby players when it makes itself visible; this
+    is the same primitive, stripped of the walk-toward-humans step that
+    the blocked pathfinder keeps tripping over.
+    """
+
+    WAIT_TICKS = 25       # 25 × 3s = 75s total
+    TICK_DELAY = 3.0
+    SHOUT_EVERY = 4       # shout every 4 ticks ≈ 12s
+    SCAN_RADIUS = 2       # pick up items within 2 tiles (immediate reach)
+
+    _SHOUTS = (
+        "Help! I am stranded with no tools and no coin.",
+        "A pickaxe or a handful of gold would save me — I'll repay in ingots.",
+        "Please, any kind soul — I cannot leave this spot.",
+    )
+
+    def __init__(self, ss) -> None:
+        self.name = "yell_for_help"
+        self.description = "Stationary shouting for help (no pathfinding)"
+        self._start_pos = (ss.x, ss.y)
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+
+        from anima.client.packets import (
+            build_drop_item,
+            build_pick_up,
+            build_unicode_speech,
+        )
+
+        ss = ctx.perception.self_state
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no backpack",
+            )
+
+        logger.info(
+            "yell_for_help_start",
+            pos=f"({ss.x},{ss.y})",
+            duration_s=int(self.WAIT_TICKS * self.TICK_DELAY),
+        )
+
+        items_picked = 0
+        gold_received = False
+        shout_idx = 0
+
+        for tick in range(self.WAIT_TICKS):
+            if tick % self.SHOUT_EVERY == 0:
+                try:
+                    await ctx.conn.send_packet(
+                        build_unicode_speech(
+                            self._SHOUTS[shout_idx % len(self._SHOUTS)]
+                        )
+                    )
+                    shout_idx += 1
+                except Exception:
+                    pass
+
+            await asyncio.sleep(self.TICK_DELAY)
+
+            ss = ctx.perception.self_state
+
+            if ss.gold >= 10:
+                gold_received = True
+                logger.info("yell_received_gold", gold=ss.gold)
+                break
+
+            from anima.actions.inventory import find_in_backpack
+            from anima.skills.gathering.mine import PICKAXE_GRAPHICS
+            if find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}):
+                logger.info("yell_received_tool")
+                return ProcedureResult(
+                    success=True,
+                    message="Received a mining tool while yelling for help",
+                )
+
+            for it in ctx.perception.world.items.values():
+                if (it.container == 0
+                        and max(abs(it.x - ss.x), abs(it.y - ss.y))
+                        <= self.SCAN_RADIUS):
+                    if ss.weight_max > 0 and ss.weight > ss.weight_max - 50:
+                        break
+                    try:
+                        await ctx.conn.send_packet(
+                            build_pick_up(it.serial, it.amount)
+                        )
+                        await asyncio.sleep(0.3)
+                        await ctx.conn.send_packet(
+                            build_drop_item(it.serial, container=backpack)
+                        )
+                        await asyncio.sleep(0.3)
+                        items_picked += 1
+                        logger.info(
+                            "yell_picked_item",
+                            serial=f"0x{it.serial:08X}",
+                            graphic=f"0x{it.graphic:04X}",
+                        )
+                    except Exception:
+                        continue
+
+            if items_picked >= 3:
+                break
+
+        if gold_received or items_picked > 0:
+            parts = []
+            if gold_received:
+                parts.append(f"received {ss.gold}gp")
+            if items_picked:
+                parts.append(f"picked up {items_picked} items")
+            return ProcedureResult(
+                success=True,
+                message=f"Yelled for help: {', '.join(parts)}",
+            )
+
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.MISSING_RESOURCE,
+            message="Yelled for help but no one answered",
         )
 
 
