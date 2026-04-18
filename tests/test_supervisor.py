@@ -203,6 +203,25 @@ class TestDegradationDetection:
         monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
         assert supervisor._count_unproductive_streak() == 1
 
+    def test_legacy_entry_with_code_changed_counts_as_fix(
+        self, tmp_path, monkeypatch,
+    ):
+        """Pre-outcome-field entries with code_changed=True should stop the streak."""
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        legacy_fix = {
+            "ts": "2026-04-17 00:00:00", "action": "full_analysis",
+            "reason": "x", "success": True, "code_changed": True,
+            "commit": "abc", "output_preview": "",
+        }  # no `outcome` field
+        with open(log, "w") as f:
+            for _ in range(3):
+                f.write(json.dumps(self._entry("restart_only")) + "\n")
+            f.write(json.dumps(legacy_fix) + "\n")
+            f.write(json.dumps(self._entry("restart_only")) + "\n")
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        assert supervisor._count_unproductive_streak() == 1
+
     def test_degradation_threshold_triggers_alert_file(self, tmp_path, monkeypatch):
         from tools import supervisor
         log = tmp_path / "improvements.jsonl"

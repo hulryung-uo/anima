@@ -707,8 +707,9 @@ def _count_unproductive_streak() -> int:
     """Return the count of trailing entries with outcome != 'code_fix'.
 
     Reads improvements.jsonl newest-first and stops at the first code_fix.
-    Unknown entries (no outcome field, older logs) are treated as 'failed'
-    so legacy data doesn't mask current degradation.
+    Entries without the `outcome` field (written before the field existed)
+    fall back to `code_changed=True` as the code_fix signal so legacy
+    history doesn't inflate the streak.
     """
     if not IMPROVEMENTS_LOG.exists():
         return 0
@@ -722,8 +723,10 @@ def _count_unproductive_streak() -> int:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        outcome = entry.get("outcome", "failed")
+        outcome = entry.get("outcome")
         if outcome == "code_fix":
+            break
+        if outcome is None and entry.get("code_changed") is True:
             break
         streak += 1
     return streak
