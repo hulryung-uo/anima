@@ -899,6 +899,42 @@ class Planner:
                     )
                     return _RelocateToCity(ss)
 
+            # --- Stuck-in-place shortcut to Lv6 (_YellForHelp) ---
+            # When every named-destination A* dies (observed pattern:
+            # 3×`move_to_<vendor>→blocked` + 3×`hunt_for_gold→blocked`
+            # with small drift in position), the agent is in a local
+            # pathfinding trap: every Lv2-Lv5 strategy depends on A* and
+            # will keep failing the same way.  Only Lv6 (_YellForHelp) is
+            # stationary-no-pathfinding.  Detect the trap via drift from
+            # the first entry of the current recovery cycle and jump
+            # straight to Lv6 once we've had a few chances at lower
+            # levels.  Gated on Lv≥2 because Lv0-1 (sell/drop junk) does
+            # not depend on pathfinding, so the counter escalation there
+            # is already the right path.
+            _first_pos = ctx.blackboard.get("_deadlock_first_pos")
+            if _first_pos is None:
+                ctx.blackboard["_deadlock_first_pos"] = (ss.x, ss.y)
+            elif 2 <= _deadlock_level < 6 and _deadlock_attempts >= 3:
+                drift = max(
+                    abs(ss.x - _first_pos[0]),
+                    abs(ss.y - _first_pos[1]),
+                )
+                if drift <= 8:
+                    logger.warning(
+                        "planner_deadlock_stuck_shortcircuit",
+                        level=_deadlock_level,
+                        attempts=_deadlock_attempts,
+                        drift=drift,
+                        pos=f"({ss.x},{ss.y})",
+                    )
+                    ctx.blackboard["_deadlock_recovery_level"] = 6
+                    ctx.blackboard["_deadlock_attempt_count"] = 0
+                    _intent(
+                        "교착 복구: 경로 전면 차단 감지 → "
+                        "Lv6 외치기로 단축 에스컬레이션"
+                    )
+                    return _YellForHelp(ss)
+
             # Gold-progress anti-escalation: if the agent is earning gold
             # (e.g. from killing rats), reset the attempt counter so it
             # stays at the current level and keeps hunting instead of
@@ -1135,6 +1171,7 @@ class Planner:
                 # Level 7+: Forum escalation, then reset cycle
                 if _deadlock_level >= 7:
                     ctx.blackboard["_deadlock_recovery_level"] = 0
+                    ctx.blackboard.pop("_deadlock_first_pos", None)
                     _intent("교착 상태 Lv7: 포럼에 도움 요청")
                     await self._deadlock.escalate_to_forum(ctx)
                     return None
@@ -1244,6 +1281,7 @@ class Planner:
         # Made it past Priority 4 (have mining tools) → reset deadlock state
         ctx.blackboard.pop("_deadlock_recovery_level", None)
         ctx.blackboard.pop("_deadlock_attempt_count", None)
+        ctx.blackboard.pop("_deadlock_first_pos", None)
 
         # --- Priority 4.5: Tool restock (non-blocking) ---
         # Agent has at least 1 tool (passed Priority 4) but fewer than

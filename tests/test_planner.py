@@ -830,6 +830,66 @@ class TestDeadlockRecovery:
         assert ctx.blackboard["_deadlock_recovery_level"] == 6
 
     @pytest.mark.asyncio
+    async def test_deadlock_stuck_in_place_shortcircuits_to_lv6(self):
+        """Low-level deadlock + no position drift across entries → jump to Lv6 yell.
+
+        Simulates the observed "pathfinding trap" where every named move
+        fails with `blocked` and the agent's position stays fixed, so the
+        ladder's Lv2-Lv5 strategies would all re-fail the same way.
+        """
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Agent at Minoc.  Pretend the current recovery cycle started here
+        # (same coordinates as _first_pos ⇒ drift = 0).
+        ctx = _make_ctx(gold=0, x=2456, y=453)
+        ctx.blackboard["_deadlock_recovery_level"] = 2
+        ctx.blackboard["_deadlock_attempt_count"] = 3
+        ctx.blackboard["_deadlock_first_pos"] = (2456, 453)
+        # Block outbound walk procedures so the ladder would otherwise
+        # crawl through Lv2→Lv3→…→Lv6.
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "yell_for_help"
+        assert ctx.blackboard["_deadlock_recovery_level"] == 6
+        assert ctx.blackboard["_deadlock_attempt_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_deadlock_stuck_shortcircuit_respects_drift(self):
+        """Agent has moved far enough from _first_pos → short-circuit must NOT fire."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Current pos 20 tiles east of _first_pos ⇒ drift > 8 ⇒ no shortcut.
+        ctx = _make_ctx(gold=0, x=2476, y=453)
+        ctx.blackboard["_deadlock_recovery_level"] = 2
+        ctx.blackboard["_deadlock_attempt_count"] = 3
+        ctx.blackboard["_deadlock_first_pos"] = (2456, 453)
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        # Whatever was selected, it must not be yell_for_help (that path is
+        # reserved for the stuck-in-place case).
+        assert proc is None or proc.name != "yell_for_help"
+        # Level must not have been forced to 6 by the short-circuit.
+        assert ctx.blackboard.get("_deadlock_recovery_level") != 6
+
+    @pytest.mark.asyncio
+    async def test_deadlock_first_pos_seeded_on_first_entry(self):
+        """First deadlock entry records _first_pos for later drift checks."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2456, y=453)
+
+        with patch("anima.world_knowledge.ALL_LOCATIONS", []):
+            await planner.select_procedure(ctx)
+
+        assert ctx.blackboard.get("_deadlock_first_pos") == (2456, 453)
+
+    @pytest.mark.asyncio
     async def test_deadlock_lv7_escalates_to_forum(self):
         """Lv6 escalation → Lv7 = forum (pushed from prior Lv6)."""
         reg = ProcedureRegistry()
