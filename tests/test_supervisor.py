@@ -119,3 +119,56 @@ class TestWriteSupervisorHints:
         data = json.loads(hints_file.read_text())
         assert "mine_ore" in data["skip_procedures"]
         assert "craft_blacksmith" in data["skip_procedures"]
+
+
+class TestLogImprovementOutcome:
+    def test_auto_recover_writes_restart_only_outcome(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "get_git_head", lambda: "abc1234")
+
+        supervisor._log_improvement(
+            "auto_recover", "stuck loop", success=True, code_changed=False,
+        )
+        entry = json.loads(log.read_text().strip())
+        assert entry["outcome"] == "restart_only"
+        assert entry["code_changed"] is False
+
+    def test_targeted_fix_with_commit_writes_code_fix_outcome(
+        self, tmp_path, monkeypatch,
+    ):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "get_git_head", lambda: "abc1234")
+
+        supervisor._log_improvement(
+            "targeted_fix:mine_ore", "bad", success=True, code_changed=True,
+        )
+        entry = json.loads(log.read_text().strip())
+        assert entry["outcome"] == "code_fix"
+
+    def test_failed_claude_writes_failed_outcome(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "get_git_head", lambda: "abc1234")
+
+        supervisor._log_improvement(
+            "targeted_fix:x", "bad", success=False, code_changed=False,
+        )
+        entry = json.loads(log.read_text().strip())
+        assert entry["outcome"] == "failed"
+
+    def test_skip_writes_skipped_outcome(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "get_git_head", lambda: "abc1234")
+
+        supervisor._log_improvement(
+            "skip:craft_blacksmith", "give up", success=False, code_changed=False,
+        )
+        entry = json.loads(log.read_text().strip())
+        assert entry["outcome"] == "skipped"

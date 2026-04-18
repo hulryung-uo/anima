@@ -577,6 +577,23 @@ def run_full_analysis(minutes: int) -> tuple[list[dict], str | None]:
 # Improvement log
 # ---------------------------------------------------------------------------
 
+def _derive_outcome(action: str, code_changed: bool) -> str:
+    """Honest outcome label, distinct from the back-compat `success` field.
+
+    - code_fix     : Claude committed a fix
+    - restart_only : auto_recover that only restarted the agent
+    - skipped      : supervisor gave up on a fix_key
+    - failed       : Claude ran but failed, or timeout hit
+    """
+    if code_changed:
+        return "code_fix"
+    if action.startswith("skip:"):
+        return "skipped"
+    if action == "auto_recover":
+        return "restart_only"
+    return "failed"
+
+
 def _log_improvement(action: str, reason: str, success: bool,
                      code_changed: bool, output_preview: str = "") -> None:
     IMPROVEMENTS_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -584,7 +601,8 @@ def _log_improvement(action: str, reason: str, success: bool,
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "action": action,
         "reason": reason,
-        "success": success,
+        "success": success,  # kept for backward-compat readers
+        "outcome": _derive_outcome(action, code_changed),
         "code_changed": code_changed,
         "commit": get_git_head()[:8],
         "output_preview": output_preview[:300],
