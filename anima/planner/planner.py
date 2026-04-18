@@ -947,6 +947,29 @@ class Planner:
                         _intent("교착 복구: 금화 보유 → 도구 상점으로 이동")
                         return move
 
+            # --- Opportunistic close-range hunt (any level) ---
+            # Easy prey (rat/cat) standing within a few tiles is the
+            # shortest path to gold — a dagger-armed agent typically earns
+            # 1-5gp per kill in classic UO, enough to bootstrap a pickaxe
+            # purchase after one or two kills.  Firing this before the
+            # sell/walk logic short-circuits the minutes-long Lv4 relocate
+            # walk whenever the deadlock has prey in immediate view.
+            if self._has_usable_weapon(ctx, ss):
+                _close_prey = self._find_huntable_target(
+                    ctx, ss, include_small_animals=True,
+                )
+                if _close_prey is not None:
+                    _prey_dist = max(
+                        abs(_close_prey.x - ss.x),
+                        abs(_close_prey.y - ss.y),
+                    )
+                    if _prey_dist <= 5:
+                        _intent(
+                            f"교착 복구: 근거리 {_close_prey.name or '사냥감'}"
+                            f" 발견 → 즉시 사냥"
+                        )
+                        return _HuntForGold(_close_prey, ss)
+
             # --- Sell non-essential items for gold (Level 0 only) ---
             # Agent may have junk items (clothing, books, weapons) that
             # vendors will buy. Even a few gold can fund a pickaxe (~11g).

@@ -656,6 +656,67 @@ class TestDeadlockRecovery:
         assert proc.name == "wander_and_scavenge"
 
     @pytest.mark.asyncio
+    async def test_deadlock_opportunistic_hunt_of_close_prey(self):
+        """Deadlock + dagger + rat within 5 tiles → hunt immediately, bypass ladder."""
+        from anima.perception.enums import NotorietyFlag
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Position near Minoc so 4c's move-to-vendor branch can match, but
+        # force it to return None by blocking move_to_location with a cooldown.
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        ctx.map_reader = None  # skip pathfinding reachability filter
+        # Dagger (0x0F51) in backpack — satisfies _has_usable_weapon
+        _add_item(ctx, 0xDD, 0x0F51)
+
+        # Rat 2 tiles away — well within the 5-tile opportunistic range
+        rat = MagicMock(
+            serial=0x9999, name="a rat",
+            x=2506, y=553, body=0x00EE,
+            notoriety=NotorietyFlag.ATTACKABLE,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[rat])
+
+        # Force Lv4 state — normally would return _RelocateToCity, but the
+        # opportunistic hunt must win when prey is in immediate view.
+        ctx.blackboard["_deadlock_recovery_level"] = 4
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        planner._move_fail_until = time.time() + 300
+
+        with patch("anima.world_knowledge.ALL_LOCATIONS", []):
+            proc = await planner.select_procedure(ctx)
+
+        assert proc is not None
+        assert proc.name == "hunt_for_gold"
+
+    @pytest.mark.asyncio
+    async def test_deadlock_distant_prey_does_not_short_circuit(self):
+        """Rat >5 tiles away must not trigger the opportunistic hunt."""
+        from anima.perception.enums import NotorietyFlag
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        ctx.map_reader = None
+        _add_item(ctx, 0xDD, 0x0F51)
+
+        far_rat = MagicMock(
+            serial=0x9999, name="a rat",
+            x=2520, y=560, body=0x00EE,
+            notoriety=NotorietyFlag.ATTACKABLE,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[far_rat])
+
+        ctx.blackboard["_deadlock_recovery_level"] = 2
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+
+        proc = await planner.select_procedure(ctx)
+        # Should fall through to Lv2 wilderness-seek or other paths — NOT hunt
+        assert proc is None or proc.name != "hunt_for_gold"
+
+    @pytest.mark.asyncio
     async def test_deadlock_lv6_yells_for_help(self):
         """Lv5 escalation → Lv6 = stationary _YellForHelp (not forum yet)."""
         reg = ProcedureRegistry()
