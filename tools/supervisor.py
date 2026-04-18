@@ -51,6 +51,35 @@ IMPROVEMENTS_LOG = ROOT / "data" / "improvements.jsonl"
 HINTS_FILE = ROOT / "data" / "supervisor_hints.json"
 ALERT_FLAG = ROOT / "data" / "supervisor_alert.flag"
 UNPRODUCTIVE_STREAK_THRESHOLD = 5
+SINGLETON_LOCK_FILE = ROOT / "data" / "supervisor.lock"
+_singleton_lock_fh = None  # module-level to prevent GC closing the fd
+
+
+def acquire_singleton_lock(lock_path: Path = SINGLETON_LOCK_FILE) -> bool:
+    """Acquire an exclusive advisory lock so only one supervisor runs at a time.
+
+    Returns True if the lock was acquired (caller should proceed) or False if
+    another supervisor already holds it (caller should exit). The underlying
+    file handle is kept in a module-level global so the lock is held for the
+    remainder of the process lifetime.
+    """
+    import fcntl
+
+    global _singleton_lock_fh
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "w")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        fh.close()
+        return False
+    try:
+        fh.write(f"{os.getpid()}\n")
+        fh.flush()
+    except Exception:
+        pass
+    _singleton_lock_fh = fh
+    return True
 
 # Output split:
 # - Status updates (agent intent / pos / weight / gold / procedure) go to stdio.
@@ -867,6 +896,16 @@ def main() -> None:
     parser.add_argument("--no-claude", action="store_true", help="Level 1 only — no Claude Code")
     parser.add_argument("--agent-args", nargs="*", default=[], help="Extra args for agent")
     args = parser.parse_args()
+
+    # Refuse to start if another supervisor is already running — otherwise
+    # two instances fight over the same agent, state.json, and improvement
+    # log, causing paired AUTO-RECOVER cycles and a no-progress spiral.
+    if not acquire_singleton_lock():
+        _alert(
+            f"Another supervisor is already running "
+            f"(lock held: {SINGLETON_LOCK_FILE}). Exiting."
+        )
+        sys.exit(0)
 
     # Clear any stale lock from a previous crashed session before we start.
     try:

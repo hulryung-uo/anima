@@ -304,3 +304,44 @@ class TestClaudeWatchdog:
         assert success is False
         assert elapsed < 10, f"watchdog took too long: {elapsed:.1f}s"
         assert "timed out" in output.lower() or "killed" in output.lower()
+
+
+class TestSingletonLock:
+    def test_first_caller_acquires(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        monkeypatch.setattr(supervisor, "_singleton_lock_fh", None)
+        lock = tmp_path / "supervisor.lock"
+        assert supervisor.acquire_singleton_lock(lock) is True
+        assert lock.exists()
+        # Release for other tests
+        fh = supervisor._singleton_lock_fh
+        if fh is not None:
+            fh.close()
+        monkeypatch.setattr(supervisor, "_singleton_lock_fh", None)
+
+    def test_second_caller_denied_while_first_holds(self, tmp_path, monkeypatch):
+        """An in-process second acquire must fail — the OS honors the advisory
+        lock only across processes, so simulate via a subprocess."""
+        import subprocess
+        import sys
+        lock = tmp_path / "supervisor.lock"
+        # Hold the lock in a child process that sleeps.
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import fcntl, sys, time; "
+             f"fh=open(r'{lock}','w'); "
+             "fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB); "
+             "sys.stdout.write('locked\\n'); sys.stdout.flush(); "
+             "time.sleep(5)"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            # Wait for the child to acquire the lock.
+            assert holder.stdout is not None
+            assert holder.stdout.readline().strip() == "locked"
+            from tools import supervisor
+            monkeypatch.setattr(supervisor, "_singleton_lock_fh", None)
+            assert supervisor.acquire_singleton_lock(lock) is False
+        finally:
+            holder.terminate()
+            holder.wait(timeout=3)
