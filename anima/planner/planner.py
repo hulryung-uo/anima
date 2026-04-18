@@ -947,6 +947,28 @@ class Planner:
                         _intent("교착 복구: 금화 보유 → 도구 상점으로 이동")
                         return move
 
+            # --- Opportunistic wood-chopping (any level) ---
+            # Alternate resource path when ore is blocked: a hatchet in
+            # backpack + any tree in view yields logs the agent can later
+            # sell to a provisioner or smith for a pickaxe.  Option 5 from
+            # the deadlock playbook — "try a different resource".  Hatchets
+            # are picked up by scavenging (see deadlock.find_ground_valuables),
+            # so this path activates as soon as one is acquired.
+            if self._has_hatchet(ctx, ss):
+                proc = _get_proc("chop_wood")
+                if proc and await proc.can_start(ctx):
+                    _intent("교착 복구: 손도끼 + 나무 발견 → 벌목으로 자원 확보")
+                    return proc
+                # Have a hatchet but no tree in sight — walk toward a
+                # forested area before retrying.
+                if time.time() > self._move_fail_until:
+                    move = await self._roaming.move_to_location(
+                        ctx, "forest", "woods", "lumber", "camp",
+                    )
+                    if move:
+                        _intent("교착 복구: 손도끼 보유 → 숲으로 이동")
+                        return move
+
             # --- Opportunistic close-range hunt (any level) ---
             # Easy prey (rat/cat) standing within a few tiles is the
             # shortest path to gold — a dagger-armed agent typically earns
@@ -1767,6 +1789,24 @@ class Planner:
             return None  # none reachable
 
         return candidates[0][0]
+
+    def _has_hatchet(self, ctx: AgentContext, ss) -> bool:
+        """True if the agent has a hatchet in backpack or equipped."""
+        from anima.skills.gathering.lumber import HATCHET_GRAPHICS
+
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return False
+        for slot in (0x01, 0x02):
+            wep = ss.equipment.get(slot)
+            if wep:
+                it = ctx.perception.world.items.get(wep)
+                if it and it.graphic in HATCHET_GRAPHICS:
+                    return True
+        for it in ctx.perception.world.items.values():
+            if it.container == backpack and it.graphic in HATCHET_GRAPHICS:
+                return True
+        return False
 
     def _has_usable_weapon(self, ctx: AgentContext, ss) -> bool:
         """True if the agent carries/wears a weapon `_HuntForGold` can equip.

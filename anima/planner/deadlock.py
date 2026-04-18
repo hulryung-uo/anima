@@ -325,6 +325,7 @@ Write ONLY the post body, nothing else."""
         and crafted items within pickup range.
         """
         from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
+        from anima.skills.gathering.lumber import HATCHET_GRAPHICS, LOG_GRAPHICS
         from anima.skills.crafting.smelt import INGOT_GRAPHICS
         from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
         from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
@@ -337,6 +338,8 @@ Write ONLY the post body, nothing else."""
             | INGOT_GRAPHICS
             | PICKAXE_GRAPHICS
             | SHOVEL_GRAPHICS
+            | HATCHET_GRAPHICS
+            | LOG_GRAPHICS
             | TINKER_TOOLS_GRAPHICS
             | TONGS_GRAPHICS
             | {GOLD_GRAPHIC}
