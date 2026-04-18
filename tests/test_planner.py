@@ -810,6 +810,72 @@ class TestDeadlockRecovery:
         assert proc is None or proc.name != "hunt_for_gold"
 
     @pytest.mark.asyncio
+    async def test_deadlock_lv0_medium_range_hunt_after_sell_attempt(self):
+        """Lv0 + weapon + prey 6-18 tiles + attempts≥1 → hunt instead of sell cycle.
+
+        Covers the true-deadlock case where vendor-sell keeps failing (vendor
+        refuses clothes/book) and the agent has a dagger with a reachable rat
+        at medium range.  The opportunistic-hunt branch should prefer hunting
+        over continuing the sell→walk→refusal cycle.
+        """
+        from anima.perception.enums import NotorietyFlag
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2524, y=547)
+        ctx.map_reader = None  # skip A* reachability filter in test
+        # Dagger in backpack — usable weapon
+        _add_item(ctx, 0xDD, 0x0F51)
+
+        rat = MagicMock(
+            serial=0x9999, name="a rat",
+            x=2534, y=547, body=0x00EE,  # 10 tiles east — beyond 5
+            notoriety=NotorietyFlag.ATTACKABLE,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[rat])
+
+        # Lv0 + 1 attempt already logged (first sell try failed)
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 1
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "hunt_for_gold"
+
+    @pytest.mark.asyncio
+    async def test_deadlock_lv0_first_attempt_still_tries_sell(self):
+        """Lv0 + weapon + medium-range prey + attempts=0 → sell path (not hunt).
+
+        The first sell attempt must still run; hunt-bypass only kicks in
+        after one failed sell cycle so legitimate vendor interactions get
+        a chance.
+        """
+        from anima.perception.enums import NotorietyFlag
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2524, y=547)
+        ctx.map_reader = None
+        _add_item(ctx, 0xDD, 0x0F51)
+
+        rat = MagicMock(
+            serial=0x9999, name="a rat",
+            x=2534, y=547, body=0x00EE,
+            notoriety=NotorietyFlag.ATTACKABLE,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[rat])
+
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+
+        proc = await planner.select_procedure(ctx)
+        # On first attempt, hunt_for_gold should NOT fire for medium-range prey
+        assert proc is None or proc.name != "hunt_for_gold"
+
+    @pytest.mark.asyncio
     async def test_deadlock_lv6_yells_for_help(self):
         """Lv5 escalation → Lv6 = stationary _YellForHelp (not forum yet)."""
         reg = ProcedureRegistry()

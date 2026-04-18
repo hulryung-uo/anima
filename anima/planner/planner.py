@@ -1027,6 +1027,20 @@ class Planner:
                             f" 발견 → 즉시 사냥"
                         )
                         return _HuntForGold(_close_prey, ss)
+                    # Lv0 medium-range hunt: after the first vendor-sell
+                    # attempt fails, prefer hunting any visible reachable
+                    # prey over continuing the sell→walk→refusal cycle.
+                    # _find_huntable_target has already A*-verified the
+                    # target, and a rat kill (1-5gp) bootstraps a pickaxe
+                    # purchase — a shorter path out of the deadlock than
+                    # rotating through 5+ escalation levels.
+                    if _deadlock_level == 0 and _deadlock_attempts >= 1:
+                        _intent(
+                            f"교착 복구 Lv0: 원거리 "
+                            f"{_close_prey.name or '사냥감'}"
+                            f" ({_prey_dist}타일) → 판매 대신 사냥"
+                        )
+                        return _HuntForGold(_close_prey, ss)
 
             # --- Sell non-essential items for gold (Level 0 only) ---
             # Agent may have junk items (clothing, books, weapons) that
