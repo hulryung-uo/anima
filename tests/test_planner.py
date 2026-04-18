@@ -577,6 +577,63 @@ class TestDeadlockRecovery:
         assert planner._idle_ticks == 0
         assert len(planner._failed_destinations) == 0
 
+    @pytest.mark.asyncio
+    async def test_deadlock_lv2_with_weapon_seeks_wilderness(self):
+        """Lv2 + dagger in backpack + no visible hunt target → move to mine/camp."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Position near Minoc so wilderness keywords match real locations
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        # Dagger — in _HuntForGold._WEAPON_GRAPHICS
+        _add_item(ctx, 0xDD, 0x0F51)
+        # Force Lv2 state without running escalation ladder
+        ctx.blackboard["_deadlock_recovery_level"] = 2
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        # _roaming.move_to_location returns a _MoveToProcedure with
+        # name like "move_to_<location>" — not the town-wander fallback.
+        assert proc.name != "wander_and_scavenge"
+        assert "move_to" in proc.name
+
+    @pytest.mark.asyncio
+    async def test_deadlock_lv2_without_weapon_falls_back_to_wander(self):
+        """Lv2 without any weapon → still wanders (safer than walking to spawns unarmed)."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Backpack has only non-weapon junk (a book) — no dagger/pickaxe/etc.
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        # Empty the clothing graphics from equipment map — pure unarmed state.
+        # _make_ctx only wires 0x15 (backpack) so equipment has no weapon slot.
+        # Block move_to_location so Lv3+ wilderness-move logic doesn't mask the
+        # Lv2 branch; here we just assert wander fallback when unarmed.
+        ctx.blackboard["_deadlock_recovery_level"] = 2
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        planner._move_fail_until = time.time() + 300  # block all move_to calls
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "wander_and_scavenge"
+
+    def test_has_usable_weapon_detects_dagger_in_backpack(self):
+        """_has_usable_weapon returns True for a dagger in the backpack."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        ctx = _make_ctx()
+        _add_item(ctx, 0xDD, 0x0F51)  # dagger
+        assert planner._has_usable_weapon(ctx, ctx.perception.self_state)
+
+    def test_has_usable_weapon_false_when_only_junk(self):
+        """_has_usable_weapon returns False when only non-weapon junk is carried."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        ctx = _make_ctx()
+        _add_item(ctx, 0xCC, 0x0FF4)  # book, not a weapon
+        assert not planner._has_usable_weapon(ctx, ctx.perception.self_state)
+
 
 class TestExpeditionWiring:
     @pytest.mark.asyncio

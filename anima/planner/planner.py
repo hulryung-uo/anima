@@ -1129,6 +1129,25 @@ class Planner:
                 _intent("교착 복구: 모든 경로 차단 → 랜덤 방향 탐색")
                 return _DesperateExploration(ss)
 
+            # Level 2 with a weapon: before random-wandering the town yet
+            # again, walk toward a wilderness spawn area (mine/camp) so
+            # `_find_huntable_target` has something to bite on next tick.
+            # Town wandering rarely surfaces gold-dropping creatures; a
+            # dagger-armed agent's best bootstrap is rats/mongbats at the
+            # mine edges.  Gated on _has_usable_weapon so unarmed agents
+            # still fall through to the safer town-wander path below.
+            if (
+                _deadlock_level == 2
+                and self._has_usable_weapon(ctx, ss)
+                and time.time() > self._move_fail_until
+            ):
+                move = await self._roaming.move_to_location(
+                    ctx, "mine", "mining", "camp",
+                )
+                if move:
+                    _intent("교착 복구 Lv2: 무기 보유 → 야외 사냥터로 이동")
+                    return move
+
             # Levels 2-3: hunting returned None (all targets unreachable
             # or blacklisted) and movement is blocked.  Don't just return
             # None and waste 3 attempts — wander to discover new terrain.
@@ -1689,6 +1708,29 @@ class Planner:
             return None  # none reachable
 
         return candidates[0][0]
+
+    def _has_usable_weapon(self, ctx: AgentContext, ss) -> bool:
+        """True if the agent carries/wears a weapon `_HuntForGold` can equip.
+
+        Used by the Lv2 wilderness-seek branch — walking to a hunt-area
+        is only useful if we can actually fight what we find there.
+        """
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return False
+        weapons = _HuntForGold._WEAPON_GRAPHICS
+        # Already wielding something? any equipped weapon (slots 1/2) counts.
+        for slot in (0x01, 0x02):
+            wep = ss.equipment.get(slot)
+            if wep:
+                for it in ctx.perception.world.items.values():
+                    if it.serial == wep and it.graphic in weapons:
+                        return True
+        # Otherwise scan backpack contents
+        for it in ctx.perception.world.items.values():
+            if it.container == backpack and it.graphic in weapons:
+                return True
+        return False
 
 
 class _DropJunkItems:
