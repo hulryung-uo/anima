@@ -989,6 +989,7 @@ class TestDeadlockRecovery:
         ctx = _make_ctx(gold=0, x=2504, y=552)
         ctx.blackboard["_deadlock_recovery_level"] = 6
         ctx.blackboard["_deadlock_attempt_count"] = 3
+        ctx.blackboard["_deadlock_first_pos"] = (2504, 552)
         planner._move_fail_until = time.time() + 300
 
         # escalate_to_forum is async and posts/waits — patch it out.
@@ -1001,6 +1002,68 @@ class TestDeadlockRecovery:
         mock_esc.assert_awaited_once()
         # Level resets to 0 after forum escalation.
         assert ctx.blackboard["_deadlock_recovery_level"] == 0
+        # Cross-cycle memory: cycle counter is incremented and the starting
+        # position is preserved so the next deadlock can fast-forward.
+        assert ctx.blackboard["_deadlock_cycles_completed"] == 1
+        assert ctx.blackboard["_deadlock_last_cycle_pos"] == (2504, 552)
+        # _first_pos is cleared so the stuck-shortcircuit restarts fresh.
+        assert "_deadlock_first_pos" not in ctx.blackboard
+
+    @pytest.mark.asyncio
+    async def test_deadlock_cycle_repeat_jumps_to_relocate(self):
+        """After 1 full Lv0-Lv7 cycle in the same area → skip to Lv4."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # Starting fresh at Lv0 but a previous cycle completed nearby.
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        ctx.blackboard["_deadlock_cycles_completed"] = 1
+        ctx.blackboard["_deadlock_last_cycle_pos"] = (2500, 550)
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "relocate_to_city"
+        assert ctx.blackboard["_deadlock_recovery_level"] == 4
+        assert ctx.blackboard["_deadlock_attempt_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_deadlock_cycle_repeat_yells_when_relocate_blocked(self):
+        """Cycle repeat + relocate has been failing → yell instead of relocate."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2504, y=552)
+        ctx.blackboard["_deadlock_cycles_completed"] = 2
+        ctx.blackboard["_deadlock_last_cycle_pos"] = (2500, 550)
+        # Relocate has already failed 5 times — Britain is unreachable.
+        planner._repeat_counter["relocate_to_city"] = 5
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "yell_for_help"
+        assert ctx.blackboard["_deadlock_recovery_level"] == 6
+        # Repeat counter reset so a future Lv4 attempt gets a fresh budget.
+        assert planner._repeat_counter["relocate_to_city"] == 0
+
+    @pytest.mark.asyncio
+    async def test_deadlock_cycle_repeat_respects_drift(self):
+        """Agent has moved far from last cycle pos → no fast-forward."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        # 100 tiles from last cycle pos ⇒ drift > 40 ⇒ normal ladder.
+        ctx = _make_ctx(gold=0, x=2600, y=552)
+        ctx.blackboard["_deadlock_cycles_completed"] = 1
+        ctx.blackboard["_deadlock_last_cycle_pos"] = (2500, 550)
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        # Must NOT jump straight to relocate_to_city.
+        assert proc is None or proc.name != "relocate_to_city"
+        # Level must not have been force-set to 4 by the shortcut.
+        assert ctx.blackboard.get("_deadlock_recovery_level", 0) != 4
 
     def test_has_usable_weapon_detects_dagger_in_backpack(self):
         """_has_usable_weapon returns True for a dagger in the backpack."""

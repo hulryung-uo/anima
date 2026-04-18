@@ -898,6 +898,63 @@ class Planner:
             _deadlock_attempts = ctx.blackboard.get("_deadlock_attempt_count", 0)
             _deadlock_level = ctx.blackboard.get("_deadlock_recovery_level", 0)
 
+            # Cross-cycle fast-forward.  The Lv0-Lv7 ladder resets to Lv0
+            # after the forum escalation at level 7, so a truly dead city
+            # re-walks Lv0-Lv3 (sell/drop/wander/beg) each cycle before
+            # reaching Lv4 (_RelocateToCity) — the only strategy that
+            # actually moves the agent to different terrain.  When the full
+            # ladder has already completed at least once in the current
+            # area, jump straight to Lv4 (or Lv6 _YellForHelp if relocate
+            # has been blocked) instead of repeating the slow climb.
+            _cycles = ctx.blackboard.get("_deadlock_cycles_completed", 0)
+            _last_cycle_pos = ctx.blackboard.get("_deadlock_last_cycle_pos")
+            if (
+                _cycles >= 1
+                and _deadlock_level == 0
+                and _last_cycle_pos is not None
+            ):
+                _cycle_drift = max(
+                    abs(ss.x - _last_cycle_pos[0]),
+                    abs(ss.y - _last_cycle_pos[1]),
+                )
+                # 40 tiles ≈ one city block; further than that and the
+                # low-level strategies may still find fresh vendors/loot.
+                if _cycle_drift <= 40:
+                    _relocate_fails = self._repeat_counter.get(
+                        "relocate_to_city", 0,
+                    )
+                    if _relocate_fails >= 5:
+                        # Relocate has been failing — the city isn't just
+                        # dead, it's pathfinding-trapped.  Fall back to
+                        # stationary yelling (no A*).
+                        self._repeat_counter["relocate_to_city"] = 0
+                        ctx.blackboard["_deadlock_recovery_level"] = 6
+                        ctx.blackboard["_deadlock_attempt_count"] = 0
+                        logger.warning(
+                            "planner_deadlock_cycle_repeat_yell",
+                            cycles=_cycles,
+                            drift=_cycle_drift,
+                            pos=f"({ss.x},{ss.y})",
+                        )
+                        _intent(
+                            f"교착 복구: Lv0-Lv7 {_cycles}회 완주 + "
+                            "이동 차단 → 제자리 외치기"
+                        )
+                        return _YellForHelp(ss)
+                    ctx.blackboard["_deadlock_recovery_level"] = 4
+                    ctx.blackboard["_deadlock_attempt_count"] = 0
+                    logger.warning(
+                        "planner_deadlock_cycle_repeat_relocate",
+                        cycles=_cycles,
+                        drift=_cycle_drift,
+                        last_pos=_last_cycle_pos,
+                    )
+                    _intent(
+                        f"교착 복구: Lv0-Lv7 {_cycles}회 완주 → "
+                        "Lv4 단축 (다른 도시로 이동)"
+                    )
+                    return _RelocateToCity(ss)
+
             # Post-forum memory: escalate_to_forum sets _post_forum_relocate
             # and records the stranded position when the 5-min help wait
             # produced no gold or tool.  Without this, the full-reset inside
@@ -1001,6 +1058,10 @@ class Planner:
                 )
                 _deadlock_attempts = 0
                 ctx.blackboard["_deadlock_attempt_count"] = 0
+                # Real progress — clear the cross-cycle fast-forward so the
+                # agent returns to the normal Lv0 ladder on the next deadlock.
+                ctx.blackboard.pop("_deadlock_cycles_completed", None)
+                ctx.blackboard.pop("_deadlock_last_cycle_pos", None)
             ctx.blackboard["_deadlock_last_gold"] = ss.gold
 
             # Always count visits — this drives escalation even when
@@ -1237,6 +1298,14 @@ class Planner:
                 # Level 7+: Forum escalation, then reset cycle
                 if _deadlock_level >= 7:
                     ctx.blackboard["_deadlock_recovery_level"] = 0
+                    # Remember where this cycle burned itself out so the
+                    # next entry can short-circuit to Lv4 if we're still
+                    # sitting in the same dead area.
+                    if _first_pos is not None:
+                        ctx.blackboard["_deadlock_last_cycle_pos"] = _first_pos
+                    ctx.blackboard["_deadlock_cycles_completed"] = (
+                        ctx.blackboard.get("_deadlock_cycles_completed", 0) + 1
+                    )
                     ctx.blackboard.pop("_deadlock_first_pos", None)
                     _intent("교착 상태 Lv7: 포럼에 도움 요청")
                     await self._deadlock.escalate_to_forum(ctx)
@@ -1348,6 +1417,8 @@ class Planner:
         ctx.blackboard.pop("_deadlock_recovery_level", None)
         ctx.blackboard.pop("_deadlock_attempt_count", None)
         ctx.blackboard.pop("_deadlock_first_pos", None)
+        ctx.blackboard.pop("_deadlock_cycles_completed", None)
+        ctx.blackboard.pop("_deadlock_last_cycle_pos", None)
 
         # --- Priority 4.5: Tool restock (non-blocking) ---
         # Agent has at least 1 tool (passed Priority 4) but fewer than
