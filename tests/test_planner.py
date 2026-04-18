@@ -673,6 +673,31 @@ class TestDeadlockRecovery:
         assert ctx.blackboard.get("_post_forum_relocate") is True
 
     @pytest.mark.asyncio
+    async def test_deadlock_post_forum_relocate_abandons_after_repeated_fails(self):
+        """After 5+ relocate_to_city failures, abandon relocation and fall
+        back to yell_for_help (no-A* strategy).  Covers the real-world
+        infinite loop where Britain is unreachable from the stranded pos."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2456, y=453)
+        ctx.blackboard["_post_forum_relocate"] = True
+        ctx.blackboard["_forum_stranded_pos"] = (2450, 450)
+        # Seed the repeat counter as if relocate has already failed 5x
+        planner._repeat_counter["relocate_to_city"] = 5
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "yell_for_help"
+        # Flags are cleared so the normal deadlock ladder resumes
+        assert "_post_forum_relocate" not in ctx.blackboard
+        assert "_forum_stranded_pos" not in ctx.blackboard
+        # Counter reset so a future Lv4 relocate gets a fresh 5-strike budget
+        assert planner._repeat_counter["relocate_to_city"] == 0
+        # Level jumped to 6 so next tick stays on non-A* strategies
+        assert ctx.blackboard["_deadlock_recovery_level"] == 6
+
+    @pytest.mark.asyncio
     async def test_deadlock_post_forum_relocate_clears_when_far(self):
         """_post_forum_relocate flag clears once agent has moved >60 tiles."""
         reg = ProcedureRegistry()

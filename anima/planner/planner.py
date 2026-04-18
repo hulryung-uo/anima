@@ -707,6 +707,33 @@ class Planner:
                         moved=dist_from_stranded,
                     )
                 else:
+                    # Abandon the post-forum relocate when relocate_to_city
+                    # itself keeps failing: Britain is unreachable from the
+                    # current position (long-distance A* exhausting its
+                    # step budget, terrain trap, etc.), so looping on the
+                    # same waypoint just burns ticks.  Fall back to
+                    # _YellForHelp — the only recovery that does not depend
+                    # on pathfinding — and let the deadlock ladder resume
+                    # from Lv6 on the next tick.
+                    _relocate_fails = self._repeat_counter.get(
+                        "relocate_to_city", 0,
+                    )
+                    if _relocate_fails >= 5:
+                        ctx.blackboard.pop("_post_forum_relocate", None)
+                        ctx.blackboard.pop("_forum_stranded_pos", None)
+                        self._repeat_counter["relocate_to_city"] = 0
+                        ctx.blackboard["_deadlock_recovery_level"] = 6
+                        ctx.blackboard["_deadlock_attempt_count"] = 0
+                        logger.warning(
+                            "planner_post_forum_relocate_abandoned",
+                            fails=_relocate_fails,
+                            pos=f"({ss.x},{ss.y})",
+                        )
+                        _intent(
+                            "교착 복구: 다른 도시 이동 경로 차단됨 → "
+                            "제자리 외치기로 전환"
+                        )
+                        return _YellForHelp(ss)
                     _intent(
                         "교착 복구: 포럼 요청 후 도움 없음 → 다른 도시로 이동"
                     )
@@ -894,6 +921,33 @@ class Planner:
                         moved=dist_from_stranded,
                     )
                 else:
+                    # Abandon the post-forum relocate when relocate_to_city
+                    # itself keeps failing: Britain is unreachable from the
+                    # current position (long-distance A* exhausting its
+                    # step budget, terrain trap, etc.), so looping on the
+                    # same waypoint just burns ticks.  Fall back to
+                    # _YellForHelp — the only recovery that does not depend
+                    # on pathfinding — and let the deadlock ladder resume
+                    # from Lv6 on the next tick.
+                    _relocate_fails = self._repeat_counter.get(
+                        "relocate_to_city", 0,
+                    )
+                    if _relocate_fails >= 5:
+                        ctx.blackboard.pop("_post_forum_relocate", None)
+                        ctx.blackboard.pop("_forum_stranded_pos", None)
+                        self._repeat_counter["relocate_to_city"] = 0
+                        ctx.blackboard["_deadlock_recovery_level"] = 6
+                        ctx.blackboard["_deadlock_attempt_count"] = 0
+                        logger.warning(
+                            "planner_post_forum_relocate_abandoned",
+                            fails=_relocate_fails,
+                            pos=f"({ss.x},{ss.y})",
+                        )
+                        _intent(
+                            "교착 복구: 다른 도시 이동 경로 차단됨 → "
+                            "제자리 외치기로 전환"
+                        )
+                        return _YellForHelp(ss)
                     _intent(
                         "교착 복구: 포럼 요청 후 도움 없음 → 다른 도시로 이동"
                     )
