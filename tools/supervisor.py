@@ -49,6 +49,8 @@ DB_FILE = ROOT / "data" / "anima.db"
 CLAUDE_LOG = ROOT / "data" / "claude_code.log"
 IMPROVEMENTS_LOG = ROOT / "data" / "improvements.jsonl"
 HINTS_FILE = ROOT / "data" / "supervisor_hints.json"
+ALERT_FLAG = ROOT / "data" / "supervisor_alert.flag"
+UNPRODUCTIVE_STREAK_THRESHOLD = 5
 
 # Output split:
 # - Status updates (agent intent / pos / weight / gold / procedure) go to stdio.
@@ -646,6 +648,59 @@ def _load_fix_attempts() -> dict[str, int]:
     return {k: v for k, v in attempts.items() if v > 0}
 
 
+def _count_unproductive_streak() -> int:
+    """Return the count of trailing entries with outcome != 'code_fix'.
+
+    Reads improvements.jsonl newest-first and stops at the first code_fix.
+    Unknown entries (no outcome field, older logs) are treated as 'failed'
+    so legacy data doesn't mask current degradation.
+    """
+    if not IMPROVEMENTS_LOG.exists():
+        return 0
+    streak = 0
+    try:
+        lines = IMPROVEMENTS_LOG.read_text().splitlines()
+    except Exception:
+        return 0
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        outcome = entry.get("outcome", "failed")
+        if outcome == "code_fix":
+            break
+        streak += 1
+    return streak
+
+
+def _check_degradation() -> bool:
+    """Emit an alert if the unproductive streak crosses the threshold.
+
+    Writes data/supervisor_alert.flag and logs to stdio. Safe to call
+    repeatedly — overwrites the flag with the latest streak count.
+    Returns True if an alert was emitted this call.
+    """
+    streak = _count_unproductive_streak()
+    if streak < UNPRODUCTIVE_STREAK_THRESHOLD:
+        return False
+    try:
+        ALERT_FLAG.parent.mkdir(parents=True, exist_ok=True)
+        ALERT_FLAG.write_text(json.dumps({
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "streak": streak,
+            "threshold": UNPRODUCTIVE_STREAK_THRESHOLD,
+            "message": "Self-improvement loop not producing code fixes",
+        }, indent=2))
+    except Exception:
+        pass
+    _alert(
+        f"⚠ DEGRADATION: {streak} consecutive recoveries without a code fix "
+        f"(flag → {ALERT_FLAG})"
+    )
+    return True
+
+
 def _get_timeout(attempt: int) -> int:
     """Progressive timeout: 300s -> 450s -> 600s."""
     timeouts = [400, 600, 900]
@@ -830,6 +885,7 @@ def main() -> None:
                         consecutive_recoveries += 1
                         agent_proc = auto_recover(agent_proc, problem, args.agent_args)
                         last_analysis = now
+                        _check_degradation()
                         continue
                     else:
                         _alert(f"⚠ Too many restarts ({len(restarts_this_hour)}/hr), skipping")
@@ -915,6 +971,7 @@ def main() -> None:
                             else:
                                 _debug(f"Claude failed for {proc_name}")
                                 fix_attempts[fix_key] = attempts + 1
+                            _check_degradation()
                             agent_proc = start_agent(args.agent_args)
                             last_analysis = time.time()
                             continue
@@ -945,6 +1002,7 @@ def main() -> None:
                         _log_improvement("full_analysis", severe[0]["name"],
                                          success=True, code_changed=code_changed,
                                          output_preview=output[:500])
+                        _check_degradation()
                         agent_proc = start_agent(args.agent_args)
                         last_analysis = time.time()
             else:

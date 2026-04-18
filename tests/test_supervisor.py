@@ -172,3 +172,62 @@ class TestLogImprovementOutcome:
         )
         entry = json.loads(log.read_text().strip())
         assert entry["outcome"] == "skipped"
+
+
+class TestDegradationDetection:
+    def _entry(self, outcome: str) -> dict:
+        return {
+            "ts": "2026-04-18 00:00:00", "action": "auto_recover",
+            "reason": "x", "success": True, "outcome": outcome,
+            "code_changed": outcome == "code_fix", "commit": "abc",
+            "output_preview": "",
+        }
+
+    def test_streak_counts_restart_only_entries(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        with open(log, "w") as f:
+            for _ in range(4):
+                f.write(json.dumps(self._entry("restart_only")) + "\n")
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        assert supervisor._count_unproductive_streak() == 4
+
+    def test_streak_resets_on_code_fix(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        with open(log, "w") as f:
+            for _ in range(3):
+                f.write(json.dumps(self._entry("restart_only")) + "\n")
+            f.write(json.dumps(self._entry("code_fix")) + "\n")
+            f.write(json.dumps(self._entry("restart_only")) + "\n")
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        assert supervisor._count_unproductive_streak() == 1
+
+    def test_degradation_threshold_triggers_alert_file(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        flag = tmp_path / "supervisor_alert.flag"
+        with open(log, "w") as f:
+            for _ in range(5):
+                f.write(json.dumps(self._entry("restart_only")) + "\n")
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "ALERT_FLAG", flag)
+
+        triggered = supervisor._check_degradation()
+        assert triggered is True
+        assert flag.exists()
+        data = json.loads(flag.read_text())
+        assert data["streak"] == 5
+
+    def test_no_alert_below_threshold(self, tmp_path, monkeypatch):
+        from tools import supervisor
+        log = tmp_path / "improvements.jsonl"
+        flag = tmp_path / "supervisor_alert.flag"
+        with open(log, "w") as f:
+            for _ in range(4):
+                f.write(json.dumps(self._entry("restart_only")) + "\n")
+        monkeypatch.setattr(supervisor, "IMPROVEMENTS_LOG", log)
+        monkeypatch.setattr(supervisor, "ALERT_FLAG", flag)
+
+        assert supervisor._check_degradation() is False
+        assert not flag.exists()
