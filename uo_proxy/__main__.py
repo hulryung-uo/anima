@@ -1,0 +1,87 @@
+"""CLI entry: `uv run python -m uo_proxy --upstream host:port [...]`."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from .logger import ProxyLogger
+from .proxy import ProxyConfig, serve
+
+
+def _parse_hostport(s: str, default_port: int) -> tuple[str, int]:
+    if ":" in s:
+        host, port = s.rsplit(":", 1)
+        return host, int(port)
+    return s, default_port
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(
+        prog="uo_proxy",
+        description="UO MITM proxy — capture ClassicUO ↔ server traffic to JSONL.",
+    )
+    p.add_argument(
+        "--upstream",
+        required=True,
+        help="Real UO server host[:port], e.g. 'login.example.com:2593'",
+    )
+    p.add_argument(
+        "--listen",
+        default="127.0.0.1:2593",
+        help="Local bind address (default 127.0.0.1:2593)",
+    )
+    p.add_argument(
+        "--advertise",
+        default=None,
+        help="Host[:port] to advertise in 0x8C rewrites (default = --listen)",
+    )
+    p.add_argument(
+        "--out",
+        default=None,
+        help="JSONL output path (default data/trajectories/demo-<timestamp>.jsonl)",
+    )
+    args = p.parse_args()
+
+    upstream_host, upstream_port = _parse_hostport(args.upstream, 2593)
+    listen_host, listen_port = _parse_hostport(args.listen, 2593)
+    if args.advertise:
+        adv_host, adv_port = _parse_hostport(args.advertise, listen_port)
+    else:
+        adv_host, adv_port = listen_host, listen_port
+
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_path = Path("data/trajectories") / f"demo-{ts}.jsonl"
+
+    config = ProxyConfig(
+        listen_host=listen_host,
+        listen_port=listen_port,
+        upstream_host=upstream_host,
+        upstream_port=upstream_port,
+        advertised_host=adv_host,
+        advertised_port=adv_port,
+    )
+    logger = ProxyLogger(out_path)
+
+    print(
+        f"[uo_proxy] listen={listen_host}:{listen_port}  "
+        f"upstream={upstream_host}:{upstream_port}  "
+        f"advertise={adv_host}:{adv_port}  "
+        f"log={out_path}",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        asyncio.run(serve(config, logger))
+    except KeyboardInterrupt:
+        print("[uo_proxy] shutting down", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

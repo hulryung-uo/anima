@@ -1,0 +1,251 @@
+"""Tests for uo_proxy: framing, rewrite, logger."""
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import json
+import struct
+from pathlib import Path
+
+import pytest
+
+from uo_proxy.framing import FrameError, frame_one, iter_packets
+from uo_proxy.logger import ProxyLogger
+from uo_proxy.rewrite import (
+    parse_server_redirect,
+    rewrite_server_redirect,
+)
+
+# ------------------------------------------------------------------ framing
+
+
+class TestFraming:
+    def test_fixed_length_packet(self):
+        # 0x22 = ConfirmWalk, 3 bytes fixed
+        packet = bytes([0x22, 0x01, 0x00])
+        result = frame_one(packet)
+        assert result == (packet, 3)
+
+    def test_incomplete_fixed(self):
+        assert frame_one(bytes([0x22, 0x01])) is None
+
+    def test_variable_length_packet(self):
+        # 0x03 = ASCII speech, variable
+        payload = b"hello\x00"
+        total = 3 + len(payload)  # id + len + payload
+        packet = bytes([0x03]) + struct.pack(">H", total) + payload
+        assert frame_one(packet) == (packet, total)
+
+    def test_incomplete_variable_header(self):
+        assert frame_one(bytes([0x03, 0x00])) is None
+
+    def test_incomplete_variable_body(self):
+        total = 20
+        buf = bytes([0x03]) + struct.pack(">H", total) + b"AB"
+        assert frame_one(buf) is None
+
+    def test_unknown_packet_raises(self):
+        with pytest.raises(FrameError):
+            frame_one(bytes([0xFE, 0, 0]))
+
+    def test_iter_packets_consumes_in_place(self):
+        a = bytes([0x22, 0x01, 0x00])
+        b = bytes([0x22, 0x02, 0x00])
+        buf = bytearray(a + b + b"\x22")  # trailing partial
+        out = list(iter_packets(buf))
+        assert out == [a, b]
+        assert bytes(buf) == b"\x22"
+
+
+# ------------------------------------------------------------------ rewrite
+
+
+class TestRewrite:
+    def _make(self, ip: str = "10.0.0.1", port: int = 2593, auth: int = 0xDEADBEEF) -> bytes:
+        return (
+            bytes([0x8C])
+            + ipaddress.IPv4Address(ip).packed
+            + struct.pack(">H", port)
+            + struct.pack(">I", auth)
+        )
+
+    def test_parse_roundtrip(self):
+        pkt = self._make("192.168.1.50", 7777, 0xCAFEBABE)
+        assert parse_server_redirect(pkt) == ("192.168.1.50", 7777, 0xCAFEBABE)
+
+    def test_rewrite_preserves_port_and_auth(self):
+        pkt = self._make("10.0.0.1", 2593, 0xDEADBEEF)
+        out = rewrite_server_redirect(pkt, new_ip="127.0.0.1")
+        ip, port, auth = parse_server_redirect(out)
+        assert ip == "127.0.0.1"
+        assert port == 2593
+        assert auth == 0xDEADBEEF
+
+    def test_rewrite_changes_port(self):
+        pkt = self._make("10.0.0.1", 2593, 0xDEADBEEF)
+        out = rewrite_server_redirect(pkt, new_ip="127.0.0.1", new_port=2594)
+        ip, port, auth = parse_server_redirect(out)
+        assert (ip, port, auth) == ("127.0.0.1", 2594, 0xDEADBEEF)
+
+    def test_rewrite_rejects_wrong_packet(self):
+        with pytest.raises(ValueError):
+            rewrite_server_redirect(bytes([0x22, 0, 0]))
+
+
+# ------------------------------------------------------------------ logger
+
+
+class TestProxyLogger:
+    @pytest.mark.asyncio
+    async def test_writes_events_to_jsonl(self, tmp_path: Path):
+        out = tmp_path / "demo.jsonl"
+        logger = ProxyLogger(out)
+        await logger.start()
+        try:
+            logger.record(
+                session_id="sess1", direction="C->S", pid=0x02,
+                payload=b"\x02\x01\x02\x03\x04\x05\x06", phase="game",
+                note=None,
+            )
+            logger.record(
+                session_id="sess1", direction="S->C", pid=0x22,
+                payload=b"\x22\x01\x00", phase="game",
+                note="confirm_walk",
+            )
+            # Give the flusher a moment
+            await asyncio.sleep(0.7)
+        finally:
+            await logger.stop()
+
+        lines = out.read_text().strip().splitlines()
+        assert len(lines) == 2
+        e1 = json.loads(lines[0])
+        assert e1["schema"] == "uo_proxy.packet.v1"
+        assert e1["direction"] == "C->S"
+        assert e1["pid"] == "0x02"
+        assert e1["size"] == 7
+        assert "hex" in e1
+        e2 = json.loads(lines[1])
+        assert e2["note"] == "confirm_walk"
+
+    @pytest.mark.asyncio
+    async def test_dropped_counter_when_queue_full(self, tmp_path: Path):
+        out = tmp_path / "demo.jsonl"
+        logger = ProxyLogger(out, queue_size=2)
+        # Don't start the flusher — queue fills.
+        for _ in range(10):
+            logger.record(
+                session_id="x", direction="C->S", pid=0x02,
+                payload=b"\x02", phase="login", note=None,
+            )
+        assert logger.dropped > 0
+
+
+# ------------------------------------------------------------------ integration
+
+
+class TestProxyIntegration:
+    @pytest.mark.asyncio
+    async def test_login_phase_rewrites_redirect_and_logs(self, tmp_path: Path):
+        """End-to-end: mock upstream replies with 0x8C, proxy rewrites IP,
+        client sees rewritten packet, logger captures both directions."""
+        from uo_proxy.proxy import ProxyConfig
+
+        # 1. Mock upstream server: sends one 0x8C redirect to any connector.
+        orig_redirect = (
+            bytes([0x8C])
+            + ipaddress.IPv4Address("8.8.8.8").packed
+            + struct.pack(">H", 2594)
+            + struct.pack(">I", 0xDEADBEEF)
+        )
+        received_from_client: list[bytes] = []
+
+        async def upstream_handler(r: asyncio.StreamReader, w: asyncio.StreamWriter):
+            # Expect seed (21 bytes) then one framed packet
+            seed = await r.readexactly(21)
+            received_from_client.append(seed)
+            # read first framed packet (0x80 AccountLogin, 62 bytes)
+            pkt = await r.readexactly(62)
+            received_from_client.append(pkt)
+            # send redirect
+            w.write(orig_redirect)
+            await w.drain()
+            await asyncio.sleep(0.05)
+            w.close()
+
+        upstream = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
+        up_port = upstream.sockets[0].getsockname()[1]
+
+        # 2. Start proxy pointing at mock upstream.
+        out = tmp_path / "session.jsonl"
+        logger = ProxyLogger(out)
+        config = ProxyConfig(
+            listen_host="127.0.0.1", listen_port=0,
+            upstream_host="127.0.0.1", upstream_port=up_port,
+            advertised_host="127.0.0.1", advertised_port=9999,
+        )
+        await logger.start()
+
+        async def handle(r, w):
+            from uo_proxy.proxy import Session
+            sess = Session(config, logger)
+            await sess.run(r, w)
+
+        proxy_server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        proxy_port = proxy_server.sockets[0].getsockname()[1]
+
+        # 3. Act as ClassicUO: connect, send seed + 0x80, read redirect.
+        client_r, client_w = await asyncio.open_connection("127.0.0.1", proxy_port)
+        seed = bytes([0xEF]) + b"\x00" * 20
+        client_w.write(seed)
+        # 0x80 AccountLogin: 62 bytes fixed — any 62 bytes work for this test.
+        login = bytes([0x80]) + b"\x00" * 61
+        client_w.write(login)
+        await client_w.drain()
+
+        rewritten = await asyncio.wait_for(
+            client_r.readexactly(11), timeout=2.0,
+        )
+
+        # 4. Assertions: proxy forwarded bytes + rewrote redirect.
+        assert received_from_client[0] == seed
+        assert received_from_client[1] == login
+        assert rewritten[0] == 0x8C
+        ip = str(ipaddress.IPv4Address(rewritten[1:5]))
+        port = struct.unpack(">H", rewritten[5:7])[0]
+        auth = struct.unpack(">I", rewritten[7:11])[0]
+        assert ip == "127.0.0.1"
+        assert port == 9999
+        assert auth == 0xDEADBEEF
+
+        client_w.close()
+        try:
+            await asyncio.wait_for(client_w.wait_closed(), timeout=1.0)
+        except Exception:
+            pass
+
+        # Give session cleanup a moment
+        await asyncio.sleep(0.2)
+
+        # 5. Logger saw seed, login, and redirect entries.
+        await logger.stop()
+        proxy_server.close()
+        upstream.close()
+        try:
+            await asyncio.wait_for(proxy_server.wait_closed(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(upstream.wait_closed(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+
+        lines = out.read_text().strip().splitlines()
+        events = [json.loads(line) for line in lines]
+        dirs = [(e["direction"], e["pid"]) for e in events]
+        assert ("C->S", "0xEF") in dirs        # seed
+        assert ("C->S", "0x80") in dirs        # login
+        # redirect is logged with a 'redirect' note
+        redirect_events = [e for e in events if e["pid"] == "0x8C"]
+        assert redirect_events
+        assert redirect_events[0]["note"] and "redirect" in redirect_events[0]["note"]
