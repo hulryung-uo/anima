@@ -18,14 +18,13 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.actions.inventory import find_in_backpack
+from anima.actions.inventory import count_items, find_in_backpack
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.trade.vendor import (
     _CLILOC_VENDOR_BUY,
     _mark_refused,
     _request_context_menu_entry,
     _find_vendor,
-    _wait_for_gold_change,
 )
 
 if TYPE_CHECKING:
@@ -56,6 +55,51 @@ for _, gfx in _TOOL_PRIORITIES:
 # running out mid-expedition and having to interrupt mining for a
 # vendor trip after every single tool wears out.
 TOOL_MIN_STOCK = 3
+
+# Freshness window for the bank_balance cache written by
+# check_bank_balance. Matches the planner's 10-minute window at
+# `anima/planner/planner.py` Priority 4c.
+_BANK_CACHE_TTL = 600.0
+
+# Minimum funds (backpack + bank) required before we try to buy.
+# Matches the cheapest tool price (pickaxe ~11gp) with a small margin.
+_MIN_PURCHASE_FUNDS = 10
+
+
+def _fresh_bank_amount(ctx: "AgentContext") -> int:
+    """Return bank gold from the cache if fresh, else 0.
+
+    The bank_balance cache is populated by the check_bank_balance
+    procedure (ctx.blackboard["bank_balance"] = {"amount", "ts"}).
+    """
+    bal_cache = ctx.blackboard.get("bank_balance") or {}
+    amount = bal_cache.get("amount")
+    ts = bal_cache.get("ts", 0)
+    if amount is None:
+        return 0
+    if time.time() - ts > _BANK_CACHE_TTL:
+        return 0
+    return amount
+
+
+def _available_funds(ctx: "AgentContext") -> int:
+    """Backpack gold + fresh bank gold.
+
+    Vendor purchases on this shard deduct from bank when the backpack
+    is insufficient, so the total available is what governs which
+    tools are affordable — not backpack alone.
+    """
+    return ctx.perception.self_state.gold + _fresh_bank_amount(ctx)
+
+
+def _has_purchase_funds(ctx: "AgentContext") -> bool:
+    """True if combined backpack + fresh bank balance >= _MIN_PURCHASE_FUNDS.
+
+    An empty backpack alone does not block the buy because the shard
+    falls back to bank gold; only "both empty" is a true blocker.
+    """
+    return _available_funds(ctx) >= _MIN_PURCHASE_FUNDS
+
 
 
 def _needed_tool_graphics(ctx: AgentContext) -> list[set[int]]:
@@ -90,7 +134,7 @@ class BuyFromVendor(Procedure):
 
     async def can_start(self, ctx: AgentContext) -> bool:
         ss = ctx.perception.self_state
-        if ss.gold < 10:
+        if not _has_purchase_funds(ctx):
             return False
         if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.9:
             return False
@@ -110,11 +154,16 @@ class BuyFromVendor(Procedure):
 
         vendor_name = vendor.name or "vendor"
 
-        if ss.gold < 10:
+        if not _has_purchase_funds(ctx):
+            bal_cache = ctx.blackboard.get("bank_balance") or {}
+            bal_amount = bal_cache.get("amount")
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
-                message=f"not enough gold ({ss.gold}gp)",
+                message=(
+                    f"not enough gold (backpack={ss.gold}gp, "
+                    f"bank={bal_amount}gp)"
+                ),
             )
 
         logger.info(
@@ -183,6 +232,9 @@ class BuyFromVendor(Procedure):
         # --- Priority-based tool selection ---
         # 1) Try each missing-tool category in priority order.
         # 2) If nothing missing matches, try ANY affordable tool.
+        # Affordability is backpack + bank because the shard falls back
+        # to bank gold when the pouch can't cover the price.
+        budget = _available_funds(ctx)
         target_item = None
         needed = _needed_tool_graphics(ctx)
 
@@ -190,7 +242,7 @@ class BuyFromVendor(Procedure):
             for item in buy_list:
                 if item.serial in active_bl:
                     continue
-                if item.graphic in graphics_set and 0 < item.price <= ss.gold:
+                if item.graphic in graphics_set and 0 < item.price <= budget:
                     target_item = item
                     break
             if target_item:
@@ -201,7 +253,7 @@ class BuyFromVendor(Procedure):
             for item in buy_list:
                 if item.serial in active_bl:
                     continue
-                if item.graphic in _ALL_TOOL_GRAPHICS and 0 < item.price <= ss.gold:
+                if item.graphic in _ALL_TOOL_GRAPHICS and 0 < item.price <= budget:
                     target_item = item
                     break
 
@@ -210,6 +262,7 @@ class BuyFromVendor(Procedure):
                 "buy_no_tools_available",
                 vendor=vendor_name,
                 gold=ss.gold,
+                budget=budget,
                 needed=[n for g in needed for n in [f"0x{x:04X}" for x in g]],
                 blacklisted=len(active_bl),
             )
@@ -225,11 +278,11 @@ class BuyFromVendor(Procedure):
 
         target_name = target_item.name or f"0x{target_item.graphic:04X}"
 
-        # Buy enough to reach TOOL_MIN_STOCK, capped by what we can afford.
+        # Buy enough to reach TOOL_MIN_STOCK, capped by combined funds.
         buy_qty = _tool_restock_qty(ctx, target_item.graphic)
         total_cost = target_item.price * buy_qty
-        if total_cost > ss.gold and buy_qty > 1:
-            buy_qty = max(1, ss.gold // target_item.price)
+        if total_cost > budget and buy_qty > 1:
+            buy_qty = max(1, budget // target_item.price)
             total_cost = target_item.price * buy_qty
 
         logger.info(
@@ -243,16 +296,34 @@ class BuyFromVendor(Procedure):
             gold=gold_before,
         )
 
+        # Snapshot backpack count so we can detect success even when the
+        # server pays from bank (ss.gold unchanged) instead of the pouch.
+        target_graphic_set = {target_item.graphic}
+        qty_before = count_items(ctx, target_graphic_set)
+        bank_before = _fresh_bank_amount(ctx)
+
         await ctx.conn.send_packet(build_buy_items(
             ss.vendor_serial,
             [(target_item.serial, buy_qty)],
         ))
 
-        # --- Gold polling (up to 2s) ---
-        await _wait_for_gold_change(ss, gold_before, timeout=2.0)
+        # Poll up to 2s for either signal of success:
+        #   - backpack gold decreases (pouch payment)
+        #   - backpack item count increases (item delivered)
+        # Either suffices; the shard picks the payment path based on
+        # which pocket can cover the cost.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if ss.gold != gold_before:
+                break
+            if count_items(ctx, target_graphic_set) > qty_before:
+                break
+            await asyncio.sleep(0.2)
 
         gold_after = ss.gold
         gold_spent = max(0, gold_before - gold_after)
+        qty_after = count_items(ctx, target_graphic_set)
+        item_gained = qty_after > qty_before
 
         # Clear vendor state
         ss.vendor_buy_list = []
@@ -266,40 +337,54 @@ class BuyFromVendor(Procedure):
             gold_before=gold_before,
             gold_after=gold_after,
             gold_spent=gold_spent,
+            qty_before=qty_before,
+            qty_after=qty_after,
+            item_gained=item_gained,
         )
 
-        if gold_spent == 0:
+        if not item_gained and gold_spent == 0:
             logger.warning(
-                "buy_failed_gold_unchanged",
+                "buy_failed_no_delivery",
                 vendor=vendor_name,
                 item=target_name,
                 item_serial=target_item.serial,
                 price=target_item.price,
+                bank_before=bank_before,
             )
             # Blacklist this item serial for this vendor
             bl = ctx.blackboard.setdefault("_buy_failed_items", {})
             vendor_bl = bl.setdefault(vendor.serial, {})
             vendor_bl[target_item.serial] = time.monotonic()
             _mark_refused(ctx, vendor.serial)
-            # Disable buy attempts for 10 min: this server deducts gold from
-            # the bank, not the backpack, so a "gold unchanged" failure on
-            # an in-stock affordable item almost always means the bank is
-            # empty. Repeating buy attempts in this state burns time and
-            # never works. Planner falls through to make_tools or stop.
+            # Disable buy attempts for 10 min ONLY when we believed we had
+            # funds but nothing came back. If the bank cache said zero
+            # (bank_before == 0) and backpack was empty too, can_start
+            # would have blocked us — reaching here with item_gained=False
+            # means our funds belief was wrong, so cooling off avoids a
+            # tight retry loop while the cache refreshes.
             ctx.blackboard["_buy_disabled_until"] = time.time() + 600
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
                 message=f"Buy {target_name} from {vendor_name} failed — "
-                        f"bank gold likely empty ({gold_before}gp backpack, "
-                        f"buy disabled 10min)",
+                        f"no item delivered (backpack {gold_before}gp, "
+                        f"bank cache {bank_before}gp, buy disabled 10min)",
             )
 
         # Success — clear blacklist for this vendor
         bl = ctx.blackboard.get("_buy_failed_items", {})
         bl.pop(vendor.serial, None)
+        # Invalidate bank cache if payment likely came from bank so the
+        # next buy re-checks the real balance instead of over-spending.
+        if item_gained and gold_spent == 0 and bank_before > 0:
+            bal_cache = ctx.blackboard.get("bank_balance")
+            if bal_cache:
+                bal_cache["amount"] = max(
+                    0, bal_cache.get("amount", 0) - target_item.price * buy_qty,
+                )
+        pay_note = f"{gold_spent}gp" if gold_spent > 0 else "bank"
         return ProcedureResult(
             success=True,
-            message=f"Bought {target_name} from {vendor_name} for {gold_spent}gp",
+            message=f"Bought {target_name} from {vendor_name} for {pay_note}",
             gold_changed=-gold_spent,
         )

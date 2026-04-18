@@ -24,7 +24,9 @@ def _make_ctx():
     ctx.perception.self_state.vendor_sell_list = None
     ctx.perception.self_state.context_menu = []
     ctx.perception.self_state.context_menu_serial = 0
+    ctx.perception.self_state.equipment = {}
     ctx.perception.world.items = {}
+    ctx.blackboard = {}
     ctx.conn.send_packet = AsyncMock()
     ctx.bus = None
     ctx.memory_db = None
@@ -42,6 +44,41 @@ class TestBuyFromVendor:
         with patch("anima.procedures.buy_from_vendor._find_vendor", return_value=MagicMock()):
             result = await proc.can_start(ctx)
         assert not result
+
+    @pytest.mark.asyncio
+    async def test_empty_pouch_fresh_bank_allows_buy(self):
+        """Backpack=0 with a fresh bank balance ≥ 10 must still start.
+
+        Regression guard: the shard pays vendor purchases from bank gold
+        when the pouch can't cover, so an empty pouch alone is not a
+        blocker. Previously can_start gated on ss.gold < 10 and
+        short-circuited this path — the agent got pinned in deadlock
+        recovery with 25k in the bank.
+        """
+        import time
+        proc = BuyFromVendor()
+        ctx = _make_ctx()
+        ctx.perception.self_state.gold = 0
+        ctx.blackboard["bank_balance"] = {"amount": 500, "ts": time.time()}
+        with patch(
+            "anima.procedures.buy_from_vendor._find_vendor",
+            return_value=MagicMock(),
+        ):
+            assert await proc.can_start(ctx)
+
+    @pytest.mark.asyncio
+    async def test_empty_pouch_stale_bank_rejects(self):
+        """Backpack=0 with only a stale bank reading must NOT start."""
+        import time
+        proc = BuyFromVendor()
+        ctx = _make_ctx()
+        ctx.perception.self_state.gold = 0
+        ctx.blackboard["bank_balance"] = {"amount": 500, "ts": time.time() - 3600}
+        with patch(
+            "anima.procedures.buy_from_vendor._find_vendor",
+            return_value=MagicMock(),
+        ):
+            assert not await proc.can_start(ctx)
 
     @pytest.mark.asyncio
     async def test_no_vendor(self):
