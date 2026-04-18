@@ -65,6 +65,27 @@ class TestWorldState:
         assert len(nearby) == 1
         assert nearby[0].serial == 1
 
+    def test_mobile_name_persists_across_remove_and_recreate(self):
+        # NPCs leave view via 0x1D Delete and re-enter via 0x78 MobileIncoming
+        # when the agent walks away and comes back. Names/properties must
+        # survive — they drive _is_vendor / _is_refused matching, and
+        # re-requesting OPL races the planner's synchronous can_start checks.
+        ws = WorldState()
+        serial = 0x000008C2
+        mob = ws.get_or_create_mobile(serial)
+        mob.name = "Veda the provisioner"
+        mob.properties = ["Veda the provisioner", "Minoc Provisioner"]
+        ws.opl_names[serial] = mob.name
+        ws.opl_properties[serial] = list(mob.properties)
+
+        ws.remove(serial)
+        assert serial not in ws.mobiles
+        assert ws.opl_names.get(serial) == "Veda the provisioner"
+
+        mob2 = ws.get_or_create_mobile(serial)
+        assert mob2.name == "Veda the provisioner"
+        assert mob2.properties == ["Veda the provisioner", "Minoc Provisioner"]
+
 
 # ---------------------------------------------------------------------------
 # SelfState

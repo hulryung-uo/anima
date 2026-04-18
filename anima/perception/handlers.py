@@ -814,6 +814,12 @@ def register_handlers(
             item.properties = properties
             if name and not item.name:
                 item.name = name
+        # Cache so a later 0x1D/0x78 round-trip for the same NPC doesn't
+        # blank out the name we just learned.
+        if name:
+            p.world.opl_names[serial] = name
+        if properties:
+            p.world.opl_properties[serial] = properties
 
     handler.register(0xD6, handle_mega_cliloc)
 

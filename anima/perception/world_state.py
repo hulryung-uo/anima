@@ -50,10 +50,24 @@ class WorldState:
         self.mobiles: dict[int, MobileInfo] = {}
         self.items: dict[int, ItemInfo] = {}
         self.opl_revisions: dict[int, int] = {}  # serial → revision hash
+        # OPL name/property cache that survives 0x1D Delete. When an NPC
+        # leaves view and re-enters, its MobileInfo is recreated blank by
+        # 0x78 MobileIncoming; without this cache the name would be "" until
+        # the next OPL round-trip completes, which races every synchronous
+        # vendor lookup (_is_vendor / _is_refused).
+        self.opl_names: dict[int, str] = {}
+        self.opl_properties: dict[int, list[str]] = {}
 
     def get_or_create_mobile(self, serial: int) -> MobileInfo:
         if serial not in self.mobiles:
-            self.mobiles[serial] = MobileInfo(serial=serial)
+            mob = MobileInfo(serial=serial)
+            cached_name = self.opl_names.get(serial)
+            if cached_name:
+                mob.name = cached_name
+            cached_props = self.opl_properties.get(serial)
+            if cached_props:
+                mob.properties = list(cached_props)
+            self.mobiles[serial] = mob
         return self.mobiles[serial]
 
     def get_or_create_item(self, serial: int) -> ItemInfo:
@@ -64,6 +78,8 @@ class WorldState:
     def remove(self, serial: int) -> None:
         self.mobiles.pop(serial, None)
         self.items.pop(serial, None)
+        # Intentionally keep opl_names/opl_properties — see
+        # get_or_create_mobile.
 
     def nearby_mobiles(self, x: int, y: int, distance: int = 18) -> list[MobileInfo]:
         result = []

@@ -143,6 +143,91 @@ def test_delete_mobile():
     assert any(e.type == GameEventType.MOBILE_REMOVED for e in events)
 
 
+def test_mobile_name_survives_delete_and_reincoming():
+    # Regression: agent walked between Minoc waypoints for 1h+ because
+    # provisioner NPCs re-entered view after a 0x1D Delete with blank
+    # names, making _find_vendor return None every tick. OPL-cached names
+    # must survive the delete/re-incoming cycle.
+    h, p, w = _make_stack()
+    serial = 0x000008C2
+
+    # Seed OPL cache as if handle_mega_cliloc had already run.
+    p.world.opl_names[serial] = "Veda the provisioner"
+    p.world.opl_properties[serial] = [
+        "Veda the provisioner",
+        "Minoc Provisioner",
+    ]
+
+    # Mobile was in view, then leaves.
+    p.world.get_or_create_mobile(serial)
+    del_buf = PacketWriter()
+    del_buf.write_u8(0x1D)
+    del_buf.write_u32(serial)
+    h.dispatch(0x1D, del_buf.to_bytes())
+    assert serial not in p.world.mobiles
+
+    # Mobile re-enters via 0x78 — blank payload for name on this packet.
+    in_buf = PacketWriter()
+    in_buf.write_u8(0x78)
+    in_buf.write_u16(0)
+    in_buf.write_u32(serial)
+    in_buf.write_u16(0x0190)
+    in_buf.write_u16(2524)
+    in_buf.write_u16(547)
+    in_buf.write_i8(0)
+    in_buf.write_u8(0)
+    in_buf.write_u16(0)
+    in_buf.write_u8(0)
+    in_buf.write_u8(1)
+    in_buf.write_u32(0)
+    data = bytearray(in_buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    h.dispatch(0x78, bytes(data))
+
+    mob = p.world.mobiles[serial]
+    assert mob.name == "Veda the provisioner"
+    assert "Minoc Provisioner" in mob.properties
+
+
+def test_mega_cliloc_populates_opl_cache():
+    # handle_mega_cliloc must write to the OPL cache so a subsequent
+    # 0x1D → 0x78 cycle restores the name.
+    h, p, w = _make_stack()
+    serial = 0x0000ABCD
+
+    # Pre-create mobile and manually inject properties by calling the
+    # handler with a minimal-but-valid 0xD6 payload is awkward; instead,
+    # use an already-real cliloc (1050045 "~1_NAME~" with arg) — but to
+    # keep the test hermetic we set properties via the mobile directly
+    # and then verify the cache write path by calling the handler with
+    # a handcrafted valid packet.
+    #
+    # Shortcut: exercise the cache write by calling handle_mega_cliloc
+    # with a packet whose first cliloc is plain args (no base_text).
+    buf = PacketWriter()
+    buf.write_u8(0xD6)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u16(0x0001)  # unknown
+    buf.write_u32(serial)
+    buf.write_u16(0x0000)  # unknown
+    buf.write_u32(0x12345678)  # list_id / hash
+    # Single entry: cliloc_num=1 (likely unknown → falls back to args),
+    # args = "Test Vendor"
+    buf.write_u32(1)
+    args = "Test Vendor"
+    raw_args = args.encode("utf-16-le")
+    buf.write_u16(len(raw_args))
+    for b in raw_args:
+        buf.write_u8(b)
+    buf.write_u32(0)  # terminator
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    h.dispatch(0xD6, bytes(data))
+
+    assert p.world.opl_names.get(serial) == "Test Vendor"
+    assert p.world.opl_properties.get(serial) == ["Test Vendor"]
+
+
 # ---------------------------------------------------------------------------
 # HP Update (0xA1)
 # ---------------------------------------------------------------------------
