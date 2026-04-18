@@ -993,6 +993,69 @@ class TestDeadlockRecovery:
         _add_item(ctx, 0xCC, 0x0FF4)  # book, not a weapon
         assert not planner._has_usable_weapon(ctx, ctx.perception.self_state)
 
+    @pytest.mark.asyncio
+    async def test_drop_junk_marks_undroppable_and_preserves_refused(self):
+        """Blessed items survive the drop packet; refused_vendors must persist.
+
+        Regression: server silently rejects drops of blessed/newbified
+        items with 0x27. Without verification, _DropJunkItems reported
+        success, the caller cleared refused_vendors, and the planner
+        re-selected the same wrong-type vendor next tick.
+        """
+        from anima.planner.planner import _DropJunkItems
+
+        ctx = _make_ctx(gold=0)
+        BOOK_GRAPHIC = 0x0FF4
+        _add_item(ctx, 0xCC, BOOK_GRAPHIC)
+
+        # Seed a refused vendor that must NOT be cleared by a no-op drop.
+        ctx.blackboard["refused_vendors"] = {0xABCD: time.monotonic()}
+
+        # Server rejection pattern: the drop packet returns, but the item
+        # remains in the backpack because it is blessed.
+        proc = _DropJunkItems(ctx.perception.self_state)
+        result = await proc.run(ctx)
+
+        assert result.success is False
+        assert 0xCC in ctx.blackboard["undroppable_serials"]
+        # Refused-vendor bookkeeping must survive — otherwise we'd loop
+        # back to the same wrong-type vendor with the same inventory.
+        assert 0xABCD in ctx.blackboard["refused_vendors"]
+
+        # Second attempt must skip the already-undroppable item rather
+        # than spam the server with the same rejected drop packet.
+        ctx.conn.send_packet.reset_mock()
+        result2 = await proc.run(ctx)
+        assert result2.success is False
+        assert result2.reason == FailureReason.MISSING_RESOURCE
+        ctx.conn.send_packet.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_drop_junk_success_clears_refused_vendors(self):
+        """A successful drop changes inventory → refused vendors may now accept."""
+        from anima.planner.planner import _DropJunkItems
+
+        ctx = _make_ctx(gold=0)
+        BOOK_GRAPHIC = 0x0FF4
+        _add_item(ctx, 0xCC, BOOK_GRAPHIC)
+
+        ctx.blackboard["refused_vendors"] = {0xABCD: time.monotonic()}
+
+        # Simulate the server accepting the drop by removing the item
+        # from the world after the packet is sent.
+        async def _fake_send(packet: bytes) -> None:
+            ctx.perception.world.items.pop(0xCC, None)
+
+        ctx.conn.send_packet = AsyncMock(side_effect=_fake_send)
+
+        proc = _DropJunkItems(ctx.perception.self_state)
+        result = await proc.run(ctx)
+
+        assert result.success is True
+        # Inventory genuinely changed → refused marks should be invalidated
+        # so a previously-wrong-type vendor can be re-evaluated.
+        assert "refused_vendors" not in ctx.blackboard
+
 
 class TestExpeditionWiring:
     @pytest.mark.asyncio

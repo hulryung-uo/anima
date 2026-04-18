@@ -1090,17 +1090,15 @@ class Planner:
                 # Fresh state for the new level so higher-level strategies
                 # aren't blocked by stale entries from previous levels.
                 self._failed_destinations.clear()
-                # Clear refused vendors ONLY when escalating into Level 1
-                # (drop_junk_items). Level 0→1 drops non-keep items, which
-                # changes the backpack's item_vendor_map and therefore the
-                # vendor_types a previously-refused vendor was matched on.
-                # For Level 1→2+ transitions, inventory does not change, so
-                # clearing would just re-select the same wrong-type vendor
-                # before its 300s cooldown expires (observed loop: Veda the
-                # provisioner rejects weapons → marked refused → escalation
-                # clears the mark → same vendor re-selected 43s later).
-                if _deadlock_level == 1:
-                    ctx.blackboard.pop("refused_vendors", None)
+                # NOTE: refused_vendors is NOT cleared here. Previously we
+                # cleared on Lv0→Lv1 assuming drop_junk_items changed
+                # inventory, so a refused vendor might now accept what
+                # remained. But blessed/newbified items silently fail to
+                # drop (server 0x27), so the inventory often did NOT
+                # change and the cleared refused vendor would reject us
+                # again → tight loop. _DropJunkItems now clears
+                # refused_vendors itself, but only when at least one drop
+                # actually took effect.
                 # Reset vendor rotation index for the new level
                 ctx.blackboard.pop("_deadlock_vendor_idx", None)
                 logger.warning(
@@ -1953,9 +1951,17 @@ class _DropJunkItems:
             | {GOLD_GRAPHIC, BANDAGE_GRAPHIC}
         )
 
+        # Blessed/newbified items silently reject server-side (0x27) — once
+        # a serial fails to drop, never try it again.
+        undroppable: set[int] = ctx.blackboard.setdefault(
+            "undroppable_serials", set(),
+        )
+
         droppable = [
             it for it in ctx.perception.world.items.values()
-            if it.container == backpack and it.graphic not in keep
+            if it.container == backpack
+            and it.graphic not in keep
+            and it.serial not in undroppable
         ]
 
         if not droppable:
@@ -1966,18 +1972,53 @@ class _DropJunkItems:
             )
 
         dropped = 0
+        undroppable_new: list[int] = []
+        world_items = ctx.perception.world.items
         for item in droppable[:10]:
             # Drop to ground at current position (container=0 → ground)
             await ctx.conn.send_packet(
                 build_drop_item(item.serial, x=ss.x, y=ss.y, z=ss.z)
             )
             await asyncio.sleep(0.4)
+            # Verify the server actually removed the item. Blessed items
+            # stay in backpack — server silently replies 0x27 (Reject Move
+            # Item). Without verification we'd report success and the
+            # Lv0→Lv1 escalation would clear refused_vendors expecting a
+            # changed inventory, trapping the agent in a sell-loop.
+            still_here = world_items.get(item.serial)
+            if still_here is not None and still_here.container == backpack:
+                undroppable.add(item.serial)
+                undroppable_new.append(item.serial)
+                logger.warning(
+                    "drop_junk_rejected",
+                    serial=f"0x{item.serial:08X}",
+                    graphic=f"0x{item.graphic:04X}",
+                    reason="item remained in backpack after drop — likely blessed",
+                )
+                continue
             dropped += 1
             logger.info(
                 "dropped_junk_item",
                 serial=f"0x{item.serial:08X}",
                 graphic=f"0x{item.graphic:04X}",
                 amount=item.amount,
+            )
+
+        # Inventory changed only when at least one drop actually took effect.
+        # The caller (Lv0→Lv1 escalation) uses this to decide whether to
+        # clear refused_vendors — clearing after a no-op drop would
+        # re-select the same wrong-type vendor in the next tick.
+        if dropped > 0:
+            ctx.blackboard.pop("refused_vendors", None)
+
+        if dropped == 0 and undroppable_new:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=(
+                    f"All {len(undroppable_new)} candidate items rejected "
+                    "by server (blessed/newbified)"
+                ),
             )
 
         return ProcedureResult(
