@@ -1950,6 +1950,104 @@ class TestBegNpcForCoin:
         assert not result.success
         assert ctx.blackboard["_beg_consecutive_fails"] == 2
 
+    @pytest.mark.asyncio
+    async def test_hunt_skipped_after_consecutive_fails(self):
+        """After MAX_CONSECUTIVE_FAILS hunt failures, the pre-ladder
+        opportunistic hunt hook must not re-elect _HuntForGold.
+
+        Observed deadlock: a dagger-armed agent can't actually kill town
+        animals (8× `Could not kill a rat/cat/woodpecker` in telemetry).
+        The opportunistic hunt at planner.py:1194-1222 keeps firing on
+        any visible prey, each attempt costs ~35s, and the ladder never
+        escalates because the return short-circuits before the
+        `_deadlock_attempts >= 3` check.  A consecutive-fail cap unblocks
+        escalation, mirroring `_BegNpcForCoin.MAX_CONSECUTIVE_FAILS`.
+        """
+        from anima.perception.enums import NotorietyFlag
+        from anima.planner.planner import _HuntForGold
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0, x=2461, y=451)
+        ctx.perception.self_state.serial = 0x01
+        ctx.map_reader = None  # skip A* reachability check
+
+        # Equip the agent with a dagger (in backpack) so
+        # _has_usable_weapon returns True.
+        _add_item(ctx, 0xDAD1, 0x0F51)  # dagger, backpack graphic in _WEAPON_GRAPHICS
+
+        # Close-range rat (2 tiles away) — would normally trigger the
+        # immediate-hunt branch at line 1203.
+        rat = MagicMock(
+            serial=0xDEAD01, name="a rat", body=0x00EE,
+            x=2462, y=451, notoriety=NotorietyFlag.ATTACKABLE,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[rat])
+
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        ctx.blackboard["_hunt_consecutive_fails"] = (
+            _HuntForGold.MAX_CONSECUTIVE_FAILS
+        )
+        # Block named-destination moves so the selector reaches the hunt hook.
+        planner._move_fail_until = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is None or proc.name != "hunt_for_gold", (
+            f"expected hunt to be skipped, got {proc.name if proc else None}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_hunt_run_increments_fail_counter_on_blocked(self):
+        """_HuntForGold.run bumps _hunt_consecutive_fails when the target
+        is unreachable ("Cannot reach") — same shape as _BegNpcForCoin."""
+        from anima.planner.planner import _HuntForGold
+
+        ctx = _make_ctx()
+        ctx.perception.self_state.is_alive = True
+        ctx.perception.self_state.pending_target = None
+        ctx.perception.self_state.serial = 0x01
+        ctx.blackboard["_hunt_consecutive_fails"] = 1
+
+        target = MagicMock(
+            serial=0xDEAD01, name="a rat", x=500, y=600, body=0x00EE,
+        )
+        proc = _HuntForGold(target, ctx.perception.self_state)
+
+        with patch(
+            "anima.action.movement.go_to",
+            new=AsyncMock(return_value=False),
+        ):
+            result = await proc.run(ctx)
+
+        assert not result.success
+        assert "cannot reach" in result.message.lower()
+        assert ctx.blackboard["_hunt_consecutive_fails"] == 2
+
+    @pytest.mark.asyncio
+    async def test_hunt_fail_counter_cleared_on_gold_progress(self):
+        """Gold progress in the deadlock block clears _hunt_consecutive_fails,
+        re-enabling the hunt hook on the next tick (parallel to the
+        existing _beg_consecutive_fails reset)."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=5, x=2461, y=451)  # gold > _deadlock_last_gold
+        ctx.map_reader = None
+        ctx.blackboard["_deadlock_recovery_level"] = 0
+        ctx.blackboard["_deadlock_attempt_count"] = 0
+        ctx.blackboard["_deadlock_last_gold"] = 0
+        ctx.blackboard["_hunt_consecutive_fails"] = 3
+        ctx.blackboard["_beg_consecutive_fails"] = 3
+        planner._move_fail_until = time.time() + 300
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[])
+
+        await planner.select_procedure(ctx)
+
+        assert "_hunt_consecutive_fails" not in ctx.blackboard
+        assert "_beg_consecutive_fails" not in ctx.blackboard
+
 
 class TestExpeditionWatchdog:
     @pytest.mark.asyncio

@@ -1099,6 +1099,10 @@ class Planner:
                 ctx.blackboard.pop("_deadlock_last_cycle_pos", None)
                 # Begging evidently worked — let it try again next time.
                 ctx.blackboard.pop("_beg_consecutive_fails", None)
+                # Same reasoning for hunting: fresh gold means the hunt
+                # loop is no longer monopolising Lv0, so re-arm the
+                # opportunistic close-range hunt hook.
+                ctx.blackboard.pop("_hunt_consecutive_fails", None)
             ctx.blackboard["_deadlock_last_gold"] = ss.gold
 
             # Always count visits — this drives escalation even when
@@ -1191,7 +1195,20 @@ class Planner:
             # purchase after one or two kills.  Firing this before the
             # sell/walk logic short-circuits the minutes-long Lv4 relocate
             # walk whenever the deadlock has prey in immediate view.
-            if self._has_usable_weapon(ctx, ss):
+            #
+            # The consecutive-fail cap is the escape valve: when the
+            # agent can't actually kill what it attacks (observed: 8×
+            # `Could not kill a rat/cat/woodpecker` with a starter
+            # dagger), this hook would otherwise re-fire every Lv0 tick
+            # and return a _HuntForGold procedure before the
+            # escalation check at line ~1265, pinning the ladder at Lv0
+            # forever.  Cap mirrors _BegNpcForCoin and is cleared on
+            # gold progress / Lv7 cycle reset / deadlock exit.
+            _hunt_fails = ctx.blackboard.get("_hunt_consecutive_fails", 0)
+            if (
+                self._has_usable_weapon(ctx, ss)
+                and _hunt_fails < _HuntForGold.MAX_CONSECUTIVE_FAILS
+            ):
                 _close_prey = self._find_huntable_target(
                     ctx, ss, include_small_animals=True,
                 )
@@ -1373,8 +1390,10 @@ class Planner:
                     ctx.blackboard.pop("_deadlock_first_pos", None)
                     # Fresh cycle — re-enable begging.  If the relocate
                     # at Lv4 moved us to a new town, different NPCs are in
-                    # range and might actually give coin.
+                    # range and might actually give coin.  Same argument
+                    # for hunting: a new town has fresh huntable spawns.
                     ctx.blackboard.pop("_beg_consecutive_fails", None)
+                    ctx.blackboard.pop("_hunt_consecutive_fails", None)
                     _intent("교착 상태 Lv7: 포럼에 도움 요청")
                     await self._deadlock.escalate_to_forum(ctx)
                     return None
@@ -1488,6 +1507,7 @@ class Planner:
         ctx.blackboard.pop("_deadlock_cycles_completed", None)
         ctx.blackboard.pop("_deadlock_last_cycle_pos", None)
         ctx.blackboard.pop("_beg_consecutive_fails", None)
+        ctx.blackboard.pop("_hunt_consecutive_fails", None)
 
         # --- Priority 4.5: Tool restock (non-blocking) ---
         # Agent has at least 1 tool (passed Priority 4) but fewer than
@@ -2891,6 +2911,12 @@ class _HuntForGold:
 
     COMBAT_TIMEOUT = 30.0
     COMBAT_TICK = 1.0
+    # After this many back-to-back procedure-level failures ("cannot reach"
+    # or "could not kill"), the pre-ladder opportunistic hunt hook in
+    # `_resolve_deadlock` stops re-electing _HuntForGold so the deadlock
+    # ladder can escalate past Lv0. Mirrors `_BegNpcForCoin`; cleared on
+    # successful kills and on any deadlock gold progress.
+    MAX_CONSECUTIVE_FAILS = 3
 
     def __init__(self, target, ss) -> None:
         self.name = "hunt_for_gold"
@@ -2932,6 +2958,19 @@ class _HuntForGold:
         )
 
         ss = ctx.perception.self_state
+
+        def _bump_and_return(
+            reason: FailureReason, message: str,
+        ) -> ProcedureResult:
+            # Only called for failure modes that burned real time on this
+            # target (unreachable, kill-timeout). "Dead" and "target is
+            # gone" are tracked elsewhere and not counted here.
+            ctx.blackboard["_hunt_consecutive_fails"] = (
+                ctx.blackboard.get("_hunt_consecutive_fails", 0) + 1
+            )
+            return ProcedureResult(
+                success=False, reason=reason, message=message,
+            )
 
         # Bail immediately if dead — can't fight as a ghost
         if not ss.is_alive:
@@ -3011,10 +3050,9 @@ class _HuntForGold:
                     serial=f"0x{self._target_serial:08X}",
                     name=self._target_name,
                 )
-                return ProcedureResult(
-                    success=False,
-                    reason=FailureReason.BLOCKED,
-                    message=f"Cannot reach {self._target_name}",
+                return _bump_and_return(
+                    FailureReason.BLOCKED,
+                    f"Cannot reach {self._target_name}",
                 )
 
         # Check target still exists
@@ -3112,10 +3150,9 @@ class _HuntForGold:
                         name=self._target_name,
                         fails=fail_counts[self._target_body],
                     )
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message=f"Could not kill {self._target_name}",
+            return _bump_and_return(
+                FailureReason.BLOCKED,
+                f"Could not kill {self._target_name}",
             )
 
         logger.info("hunt_killed", target=self._target_name)
@@ -3148,6 +3185,7 @@ class _HuntForGold:
             logger.info("hunt_no_gold_body", body=hex(self._target_body),
                         name=self._target_name)
 
+        ctx.blackboard["_hunt_consecutive_fails"] = 0
         return ProcedureResult(
             success=True,
             message=f"Killed {self._target_name}, looted {gold_picked} gold piles",
