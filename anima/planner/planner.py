@@ -418,6 +418,24 @@ class Planner:
         # If the agent is dead (HP=0), nothing else can work — every action
         # returns "I am dead and cannot do that". Walk to a healer NPC.
         if not ss.is_alive:
+            seek_fails = self._repeat_counter.get("seek_resurrection", 0)
+            DEATH_ESCALATE_THRESHOLD = 5
+            if seek_fails >= DEATH_ESCALATE_THRESHOLD:
+                # seek_resurrection is deadlocked: every healer location
+                # is either unreachable or unresponsive. Clear the counter
+                # and rotation state, then post a forum help request.
+                ctx.blackboard["planner_intent"] = (
+                    f"사망 복구 교착 ({seek_fails}회 실패) → "
+                    f"포럼 도움 요청 + 힐러 목록 초기화"
+                )
+                logger.warning(
+                    "planner_dead_escalating",
+                    seek_fails=seek_fails,
+                    pos=f"({ss.x},{ss.y})",
+                )
+                self._repeat_counter["seek_resurrection"] = 0
+                return _DeathEscalate(self._deadlock)
+
             ctx.blackboard["planner_intent"] = (
                 f"사망 상태 (HP {ss.hits}/{ss.hits_max}) → 힐러 NPC 찾아 부활 시도"
             )
@@ -3685,6 +3703,14 @@ class _SeekResurrection:
                 return ProcedureResult(
                     success=True, message="Resurrected during travel"
                 )
+            # Mark the unreachable location as failed so the next attempt
+            # rotates to a different healer.  Otherwise long-distance
+            # pathfinding (e.g. 1000+ tiles to Britain) keeps exhausting
+            # the step budget and we pick the same target every time.
+            failed_locs = ctx.blackboard.setdefault(
+                "_failed_healer_locations", {}
+            )
+            failed_locs[target_loc.name] = _t.time()
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
@@ -3912,3 +3938,78 @@ class _SeekResurrection:
                 if any(h in name_lower for h in HEALER_NAMES):
                     return mob
         return None
+
+
+class _DeathEscalate:
+    """Death-recovery deadlock break: ghost stuck, no healer reached.
+
+    Runs when ``seek_resurrection`` has failed N times in a row.  The
+    usual cause is that every named healer location is either
+    unreachable (long-distance pathfinding exhausts its step budget) or
+    reached but no live healer NPC responds — leaving the ghost pinned
+    with no way to re-enter the normal procedure ladder.
+
+    Recovery steps:
+      1. Clear ``_failed_healer_locations`` so the next
+         ``seek_resurrection`` starts with a fresh rotation.
+      2. Post a forum help request via :class:`DeadlockResolver`
+         (shouts in-game and posts to the tavern forum), which also
+         blocks for ~5 minutes giving the supervisor or other players
+         time to rescue the ghost.
+      3. Force a minimum 60s pause even when forum escalation is on
+         cooldown so the planner doesn't tight-loop through
+         seek_resurrection → _DeathEscalate → seek_resurrection.
+    """
+
+    MIN_PAUSE_S = 60.0
+
+    def __init__(self, deadlock) -> None:
+        self.name = "death_escalate"
+        self.description = (
+            "Forum escalation for ghost that cannot reach any healer"
+        )
+        self._deadlock = deadlock
+
+    async def can_start(self, ctx) -> bool:
+        return True
+
+    async def run(self, ctx) -> ProcedureResult:
+        import asyncio
+        import time as _t
+
+        ss = ctx.perception.self_state
+        logger.warning(
+            "death_escalate_start",
+            pos=f"({ss.x},{ss.y})",
+            hp=f"{ss.hits}/{ss.hits_max}",
+        )
+
+        # Fresh rotation for the next seek_resurrection attempt.
+        ctx.blackboard.pop("_failed_healer_locations", None)
+
+        t0 = _t.time()
+        try:
+            await self._deadlock.escalate_to_forum(ctx)
+        except Exception as e:
+            logger.warning("death_escalate_forum_error", error=str(e))
+
+        # Re-check alive state — someone may have resurrected us during
+        # the forum wait.
+        ss = ctx.perception.self_state
+        if ss.is_alive:
+            return ProcedureResult(
+                success=True,
+                message="Resurrected during forum help wait",
+            )
+
+        # Ensure we pause at least MIN_PAUSE_S to avoid tight-looping when
+        # the 30-min forum cooldown makes escalate_to_forum return early.
+        elapsed = _t.time() - t0
+        remaining = self.MIN_PAUSE_S - elapsed
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+        return ProcedureResult(
+            success=True,
+            message="Posted ghost help request; cleared healer rotation",
+        )

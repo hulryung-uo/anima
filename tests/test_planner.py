@@ -442,6 +442,94 @@ class TestDeathRecovery:
         assert button_id == 1, f"expected CONTINUE button_id=1, got {button_id}"
 
     @pytest.mark.asyncio
+    async def test_dead_escalates_after_repeated_seek_failures(self):
+        """seek_resurrection fails N+ times → _DeathEscalate procedure returned."""
+        from anima.planner.planner import _DeathEscalate
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        planner._repeat_counter["seek_resurrection"] = 5  # at threshold
+
+        ctx = _make_ctx(hits=0, hits_max=112)
+        ctx.perception.self_state.is_alive = False
+        ctx.blackboard["_failed_healer_locations"] = {"Britain Healer": 1.0}
+
+        proc = await planner.select_procedure(ctx)
+        assert isinstance(proc, _DeathEscalate), (
+            f"expected _DeathEscalate, got {type(proc).__name__}"
+        )
+        # Counter reset so the next cycle tries seek_resurrection again
+        assert planner._repeat_counter["seek_resurrection"] == 0
+        # Intent surfaces the escalation
+        assert "포럼" in ctx.blackboard["planner_intent"]
+
+    @pytest.mark.asyncio
+    async def test_dead_does_not_escalate_below_threshold(self):
+        """< N consecutive seek_resurrection fails → still seek_resurrection."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        planner._repeat_counter["seek_resurrection"] = 4  # below threshold
+
+        ctx = _make_ctx(hits=0, hits_max=112)
+        ctx.perception.self_state.is_alive = False
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None
+        assert proc.name == "seek_resurrection"
+
+    @pytest.mark.asyncio
+    async def test_death_escalate_runs_forum_and_clears_healer_list(self):
+        """_DeathEscalate.run: clears failed healer list, calls escalate_to_forum."""
+        from anima.planner.planner import _DeathEscalate
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+
+        ctx = _make_ctx(hits=0, hits_max=112)
+        ctx.perception.self_state.is_alive = False
+        ctx.blackboard["_failed_healer_locations"] = {
+            "Britain Healer": 1.0,
+            "Minoc Healer": 2.0,
+        }
+
+        proc = _DeathEscalate(planner._deadlock)
+        with patch.object(
+            planner._deadlock, "escalate_to_forum", new=AsyncMock(),
+        ) as mock_escalate, patch(
+            "asyncio.sleep", new=AsyncMock(),  # skip the min-pause wait
+        ):
+            result = await proc.run(ctx)
+
+        mock_escalate.assert_awaited_once()
+        assert result.success is True
+        assert "_failed_healer_locations" not in ctx.blackboard
+
+    @pytest.mark.asyncio
+    async def test_seek_resurrection_marks_unreachable_location_failed(self):
+        """go_to fails → healer location is added to _failed_healer_locations."""
+        from anima.planner.planner import _SeekResurrection
+
+        ctx = _make_ctx(hits=0, hits_max=112)
+        ctx.perception.self_state.is_alive = False
+        ctx.perception.self_state.serial = 0x01
+        ctx.perception.self_state.gumps = {}
+        # Put the agent near Minoc Healer so Minoc sorts first
+        ctx.perception.self_state.x = 2577
+        ctx.perception.self_state.y = 599
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[])
+        ctx.perception.world.mobiles = {}
+
+        proc = _SeekResurrection()
+        with patch("anima.action.movement.go_to", new=AsyncMock(return_value=False)):
+            result = await proc.run(ctx)
+
+        assert result.success is False
+        assert "Could not reach" in result.message
+        failed = ctx.blackboard.get("_failed_healer_locations", {})
+        # The nearest healer location was marked failed
+        assert failed, f"expected a failed location, got {failed!r}"
+
+    @pytest.mark.asyncio
     async def test_hunt_for_gold_bails_when_dead(self):
         """_HuntForGold.run returns failure immediately if agent is dead."""
         from anima.planner.planner import _HuntForGold
