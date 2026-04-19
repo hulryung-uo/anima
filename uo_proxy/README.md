@@ -45,26 +45,48 @@ to `--listen`). The proxy will forward to the real server.
 - `--out PATH` — JSONL output. Defaults to
   `data/trajectories/demo-<timestamp>.jsonl`.
 
-## Intent labels via in-game chat
+## Intent labels
 
-Type a line beginning with the configured prefix (default `//`) in ClassicUO.
-The proxy detects it, **drops the packet** so the server never sees it (and
-other players can't either), and records the label in a separate JSONL:
-
-```
-// mining bootstrap
-// sell to vendor
-// end cycle
-```
-
-Labels are written to `data/intents/intents-<timestamp>.jsonl`:
+Two ways to log intent labels during a session. Both write to the same
+`data/intents/intents-<timestamp>.jsonl`:
 
 ```json
-{"schema":"uo_proxy.intent.v1","ts":1776582345.1,"session_id":"...","label":"mining bootstrap","source":"chat"}
+{"schema":"uo_proxy.intent.v1","ts":...,"label":"mining bootstrap","source":"chat|file"}
 ```
 
-Disable with `--intent-prefix ""`. Change prefix with e.g.
-`--intent-prefix ";;"`.
+### 1. In-game chat prefix (source="chat")
+
+Type a chat line beginning with `//` (configurable via `--intent-prefix`).
+The proxy captures the label.
+
+**Caveat**: because the proxy no longer tears down a session on an unknown
+packet id, it also cannot reliably drop a speech packet before forwarding
+— your chat goes through to the server and other nearby players will see
+it. Fine when playing alone; annoying otherwise. Use the file channel
+below for full privacy.
+
+Disable with `--intent-prefix ""`.
+
+### 2. File watcher (source="file") — fully private
+
+The proxy polls `data/intents/input.txt` once a second and records every
+appended line as an intent. Use whichever shell convenience you like:
+
+```sh
+# from a terminal next to ClassicUO
+scripts/mark_intent.sh mining bootstrap
+scripts/mark_intent.sh "광석 → 은행"
+echo "sell to tinker" | scripts/mark_intent.sh -
+```
+
+Or bind `scripts/mark_intent_dialog.sh` to a macOS global hotkey (via
+Shortcuts / Raycast / Hammerspoon / BTT). It pops up a text-entry
+dialog; type label, Enter, focus returns to ClassicUO. The previous
+label becomes the default on the next invocation so repeats are 1
+keystroke.
+
+Configure the watched file with `--intent-watch <path>`. Pass `''` to
+disable: `--intent-watch ''`.
 
 ## Output schema
 

@@ -16,6 +16,7 @@ from uo_proxy.intent import (
     build_plain_unicode_speech,
     extract_intent_from_speech,
 )
+from uo_proxy.intent_watch import IntentWatcher
 from uo_proxy.logger import ProxyLogger
 from uo_proxy.rewrite import (
     parse_server_redirect,
@@ -219,6 +220,55 @@ class TestIntentLogger:
         ))
         entry = json.loads(out.read_text().strip())
         assert entry["label"] == "광석"
+
+
+class TestIntentWatcher:
+    @pytest.mark.asyncio
+    async def test_appended_lines_become_intent_events(self, tmp_path: Path):
+        input_file = tmp_path / "input.txt"
+        intents_out = tmp_path / "intents.jsonl"
+        intent_log = IntentLogger(intents_out)
+        watcher = IntentWatcher(
+            path=input_file, intent_logger=intent_log,
+            session_id="sess", poll_interval=0.05,
+        )
+        await watcher.start()
+        try:
+            # Pre-existing content written AFTER start shouldn't be missed.
+            with open(input_file, "a", encoding="utf-8") as f:
+                f.write("mining bootstrap\n")
+                f.write("# comment — should be skipped\n")
+                f.write("\n")
+                f.write("광석 채굴\n")
+            await asyncio.sleep(0.3)
+        finally:
+            await watcher.stop()
+
+        lines = intents_out.read_text().strip().splitlines()
+        entries = [json.loads(ln) for ln in lines]
+        labels = [e["label"] for e in entries]
+        assert labels == ["mining bootstrap", "광석 채굴"]
+        assert all(e["source"] == "file" for e in entries)
+
+    @pytest.mark.asyncio
+    async def test_skips_preexisting_content_on_start(self, tmp_path: Path):
+        input_file = tmp_path / "input.txt"
+        input_file.write_text("old line\n")
+        intents_out = tmp_path / "intents.jsonl"
+        intent_log = IntentLogger(intents_out)
+        watcher = IntentWatcher(
+            path=input_file, intent_logger=intent_log,
+            session_id="sess", poll_interval=0.05,
+        )
+        await watcher.start()
+        await asyncio.sleep(0.15)
+        with open(input_file, "a", encoding="utf-8") as f:
+            f.write("new line\n")
+        await asyncio.sleep(0.15)
+        await watcher.stop()
+
+        entries = [json.loads(ln) for ln in intents_out.read_text().splitlines()]
+        assert [e["label"] for e in entries] == ["new line"]
 
 
 # ------------------------------------------------------------------ integration

@@ -14,6 +14,7 @@ from anima.client.codec import huffman_decompress_one
 
 from .framing import FrameError, frame_one
 from .intent import DEFAULT_PREFIX, IntentEvent, IntentLogger, extract_intent_from_speech
+from .intent_watch import IntentWatcher
 from .logger import ProxyLogger
 from .rewrite import parse_server_redirect, rewrite_server_redirect
 
@@ -380,9 +381,25 @@ async def serve(
     config: ProxyConfig,
     logger: ProxyLogger,
     intent_logger: IntentLogger | None = None,
+    intent_watch_path: "str | None" = None,
 ) -> None:
-    """Run the proxy until cancelled."""
+    """Run the proxy until cancelled.
+
+    If `intent_watch_path` is set, a background watcher polls that file
+    and records any non-empty, non-comment line as an out-of-band intent
+    event — independent of the in-game chat capture path.
+    """
     await logger.start()
+
+    watcher: IntentWatcher | None = None
+    if intent_watch_path and intent_logger is not None:
+        from pathlib import Path
+        watcher = IntentWatcher(
+            path=Path(intent_watch_path),
+            intent_logger=intent_logger,
+            session_id=f"proxy-{int(time.time())}",
+        )
+        await watcher.start()
 
     async def handle(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -401,4 +418,6 @@ async def serve(
         async with server:
             await server.serve_forever()
     finally:
+        if watcher is not None:
+            await watcher.stop()
         await logger.stop()

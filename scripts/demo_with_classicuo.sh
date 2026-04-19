@@ -170,7 +170,11 @@ export PATH="$HOME/.dotnet:$PATH"
 CUO_PID=$!
 
 msg "ClassicUO pid=$CUO_PID  — Ctrl-C here to stop everything"
-msg "intent prefix: type lines starting with '$INTENT_PREFIX' in-game (e.g. '${INTENT_PREFIX}mining bootstrap')"
+msg ""
+msg "intent inputs:"
+msg "  (A) in-game chat: type '${INTENT_PREFIX}<label>'  (visible to nearby players)"
+msg "  (B) shell:        scripts/mark_intent.sh <label>  (private, recommended)"
+msg "  (C) macOS hotkey: bind scripts/mark_intent_dialog.sh to a shortcut"
 msg ""
 msg "tail proxy log:  tail -f $PROXY_LOG"
 msg "tail cuo log:    tail -f $CUO_LOG"

@@ -56,6 +56,12 @@ def main() -> None:
         help=f"Chat prefix for intent labels (default '{DEFAULT_PREFIX}'). "
              "Empty string disables chat-intent capture.",
     )
+    p.add_argument(
+        "--intent-watch",
+        default=None,
+        help="Path to a text file; any line appended becomes an intent "
+             "label (default data/intents/input.txt). Pass '' to disable.",
+    )
     args = p.parse_args()
 
     upstream_host, upstream_port = _parse_hostport(args.upstream, 2593)
@@ -74,6 +80,13 @@ def main() -> None:
         intent_path = Path(args.intent_out)
     else:
         intent_path = Path("data/intents") / f"intents-{ts}.jsonl"
+    # --intent-watch default: data/intents/input.txt unless explicitly "".
+    if args.intent_watch is None:
+        watch_path: str | None = str(Path("data/intents") / "input.txt")
+    elif args.intent_watch == "":
+        watch_path = None
+    else:
+        watch_path = args.intent_watch
 
     config = ProxyConfig(
         listen_host=listen_host,
@@ -93,12 +106,17 @@ def main() -> None:
         f"advertise={adv_host}:{adv_port}  "
         f"log={out_path}  "
         f"intent_log={intent_path if intent_logger else 'disabled'}  "
-        f"intent_prefix={args.intent_prefix!r}",
+        f"intent_prefix={args.intent_prefix!r}  "
+        f"intent_watch={watch_path or 'disabled'}",
         file=sys.stderr,
         flush=True,
     )
     try:
-        asyncio.run(serve(config, logger, intent_logger=intent_logger))
+        asyncio.run(serve(
+            config, logger,
+            intent_logger=intent_logger,
+            intent_watch_path=watch_path,
+        ))
     except KeyboardInterrupt:
         print("[uo_proxy] shutting down", file=sys.stderr)
 
