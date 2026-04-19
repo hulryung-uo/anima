@@ -46,8 +46,26 @@ ADVERTISE="${ADVERTISE:-$LISTEN}"
 # your shard handles `[` differently.
 INTENT_PREFIX="${INTENT_PREFIX:-[i }"
 
-CUO_USER="${CUO_USER:-admin}"
-CUO_PASS="${CUO_PASS:-1-210E170616545C40}"
+# Credentials: load from a git-ignored env file so the password never
+# enters the repo. `CREDS_FILE` can be overridden; defaults to
+# scripts/credentials.env. Start from the committed example:
+#   cp scripts/credentials.env.example scripts/credentials.env
+# Precedence: explicit shell env var > credentials.env > (no default).
+CREDS_FILE="${CREDS_FILE:-$ROOT/scripts/credentials.env}"
+__shell_cuo_user="${CUO_USER:-}"
+__shell_cuo_pass="${CUO_PASS:-}"
+if [[ -f "$CREDS_FILE" ]]; then
+    # shellcheck disable=SC1090
+    . "$CREDS_FILE"
+fi
+[[ -n "$__shell_cuo_user" ]] && CUO_USER="$__shell_cuo_user"
+[[ -n "$__shell_cuo_pass" ]] && CUO_PASS="$__shell_cuo_pass"
+
+if [[ -z "${CUO_USER:-}" || -z "${CUO_PASS:-}" ]]; then
+    echo "[demo] CUO_USER and CUO_PASS must be set (shell env or $CREDS_FILE)." >&2
+    echo "       cp scripts/credentials.env.example $CREDS_FILE   # then edit" >&2
+    exit 1
+fi
 
 TS="$(date +%Y%m%d-%H%M%S)"
 PROXY_LOG="/tmp/uo_proxy-$TS.log"
