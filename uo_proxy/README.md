@@ -56,14 +56,19 @@ Two ways to log intent labels during a session. Both write to the same
 
 ### 1. In-game chat prefix (source="chat")
 
-Type a chat line beginning with `//` (configurable via `--intent-prefix`).
-The proxy captures the label.
+Type a chat line beginning with `[i ` (configurable via `--intent-prefix`).
+Example: `[i mining bootstrap`. The proxy captures everything after the
+prefix as the label.
 
-**Caveat**: because the proxy no longer tears down a session on an unknown
-packet id, it also cannot reliably drop a speech packet before forwarding
-— your chat goes through to the server and other nearby players will see
-it. Fine when playing alone; annoying otherwise. Use the file channel
-below for full privacy.
+**Why `[i ` and not `//`:** ClassicUO's chat box intercepts the first `/`
+as a Party-tell mode switch, so the `//` never reaches the proxy. `[…`
+has no local meaning in ClassicUO, and most ServUO/RunUO-style shards
+reject unknown `[foo` as a command — so the server eats the line
+privately and other players don't see it.
+
+**Caveat**: the proxy no longer drops the speech packet (wire-first
+design), so behavior depends on the shard. If your shard broadcasts
+unknown `[` commands as public chat, switch to the file channel below.
 
 Disable with `--intent-prefix ""`.
 

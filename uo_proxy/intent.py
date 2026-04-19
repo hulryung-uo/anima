@@ -34,7 +34,14 @@ __all__ = [
     "extract_intent_from_speech",
 ]
 
-DEFAULT_PREFIX = "//"
+DEFAULT_PREFIX = "[i "
+# `[i ` was chosen over the more obvious `//` because ClassicUO's chat box
+# intercepts a leading `/` as a Party-tell mode switch — the speech packet
+# never actually reaches the proxy. `[…` is unreserved in ClassicUO's chat
+# handler and is typically treated by ServUO/RunUO-style shards as an
+# unknown command, so the server rejects it privately (other players don't
+# see the line). Trailing space makes `[i mining` parse cleanly; the
+# prefix-and-space must match for the drop/capture path.
 
 
 @dataclass

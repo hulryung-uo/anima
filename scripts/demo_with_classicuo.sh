@@ -24,7 +24,7 @@
 # Usage:
 #   ./scripts/demo_with_classicuo.sh                 # default server (uo.hulryung.com)
 #   UPSTREAM=other.server:2593 ./scripts/demo_with_classicuo.sh
-#   INTENT_PREFIX="//" CUO_USER=admin ./scripts/demo_with_classicuo.sh
+#   INTENT_PREFIX="[i " CUO_USER=admin ./scripts/demo_with_classicuo.sh
 
 set -u
 set -o pipefail
@@ -40,7 +40,11 @@ CLIENT_VERSION="${CLIENT_VERSION:-7.0.102.3}"
 UPSTREAM="${UPSTREAM:-uo.hulryung.com:2593}"
 LISTEN="${LISTEN:-127.0.0.1:2593}"
 ADVERTISE="${ADVERTISE:-$LISTEN}"
-INTENT_PREFIX="${INTENT_PREFIX:-//}"
+# Default prefix is "[i " — ClassicUO doesn't intercept `[`, and
+# ServUO/RunUO-style shards reject unknown `[foo` commands privately so
+# other players don't see the line. Override with INTENT_PREFIX=... if
+# your shard handles `[` differently.
+INTENT_PREFIX="${INTENT_PREFIX:-[i }"
 
 CUO_USER="${CUO_USER:-admin}"
 CUO_PASS="${CUO_PASS:-1-210E170616545C40}"
@@ -172,7 +176,7 @@ CUO_PID=$!
 msg "ClassicUO pid=$CUO_PID  — Ctrl-C here to stop everything"
 msg ""
 msg "intent inputs:"
-msg "  (A) in-game chat: type '${INTENT_PREFIX}<label>'  (visible to nearby players)"
+msg "  (A) in-game chat: type '${INTENT_PREFIX}<label>'  (server rejects, usually private)"
 msg "  (B) shell:        scripts/mark_intent.sh <label>  (private, recommended)"
 msg "  (C) macOS hotkey: bind scripts/mark_intent_dialog.sh to a shortcut"
 msg ""
