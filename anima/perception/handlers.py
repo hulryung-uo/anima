@@ -892,6 +892,12 @@ def register_handlers(
             if 0 <= t.text_id < len(gump.text_lines):
                 text = gump.text_lines[t.text_id][:40]
                 labels.append(f"({t.x},{t.y})={text}")
+        # Full per-button detail: (id, type, x, y). button_type=1 is a
+        # reply; 0 is a page switch. Critical for diagnosing gumps whose
+        # label/button mapping we're guessing at (e.g. ResurrectGump).
+        button_details = [
+            (b.button_id, b.button_type, b.x, b.y) for b in gump.buttons
+        ]
         logger.info(
             event_name,
             serial=f"0x{gump.serial:08X}",
@@ -899,6 +905,7 @@ def register_handlers(
             buttons=len(gump.buttons),
             labels=labels,
             button_ids=[b.button_id for b in gump.buttons],
+            button_details=button_details,
         )
 
     def handle_open_gump(packet_id: int, data: bytes) -> None:
