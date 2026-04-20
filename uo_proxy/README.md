@@ -93,6 +93,43 @@ keystroke.
 Configure the watched file with `--intent-watch <path>`. Pass `''` to
 disable: `--intent-watch ''`.
 
+### 3. Voice (whisper.cpp, offline)
+
+Hold-to-talk-ish: bind `scripts/mark_intent_voice.sh` to a hotkey. One
+press records 5 seconds from your mic, transcribes locally via
+`whisper-cpp` (Korean + English supported by the default multilingual
+model), and appends the transcript as an intent label.
+
+One-time setup (needs Homebrew):
+
+```sh
+scripts/install_voice_intent.sh
+```
+
+This installs `whisper-cpp` + `ffmpeg` and downloads `ggml-base.bin`
+(~142 MB) into `~/.whisper-models/`. Tuning:
+
+- `DURATION=8 scripts/mark_intent_voice.sh` — longer window
+- `WHISPER_LANG=ko` — force Korean (default `auto` detects)
+- Larger model: download `ggml-small.bin` (~466 MB) and set
+  `WHISPER_MODEL=~/.whisper-models/ggml-small.bin`
+
+### 4. Periodic prompt ("지금 뭐 하려고?")
+
+`scripts/ask_intent_loop.sh` runs in the background and, every
+`INTERVAL` seconds (default 300 = 5 min) of silence in the intent
+file, plays a chime + shows a macOS notification + kicks off a
+voice capture. `demo_with_classicuo.sh` launches it automatically
+when `ASK_INTERVAL` is non-zero:
+
+```sh
+ASK_INTERVAL=300 scripts/demo_with_classicuo.sh   # 5-min cadence
+ASK_INTERVAL=180 scripts/demo_with_classicuo.sh   # every 3 min
+```
+
+Any label you enter manually (chat / file / dialog / voice) resets
+the clock so the asker stays quiet when you're already narrating.
+
 ## Output schema
 
 Each line is one packet event:

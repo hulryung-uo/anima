@@ -75,6 +75,12 @@ INTENT_OUT="$ROOT/data/intents/intents-$TS.jsonl"
 
 PROXY_PID=""
 CUO_PID=""
+ASKER_PID=""
+
+# ASK_INTERVAL=0 disables the periodic voice prompt. Non-zero seconds
+# enables it (5 min = 300 is a reasonable default). The asker calls
+# scripts/mark_intent_voice.sh, which requires whisper-cpp + ffmpeg.
+ASK_INTERVAL="${ASK_INTERVAL:-0}"
 
 # ---------------------------------------------------------------------- helpers
 
@@ -85,6 +91,10 @@ err() { printf '\033[1;31m[demo]\033[0m %s\n' "$*" >&2; }
 cleanup() {
     local rc=$?
     msg "cleanup (exit=$rc)…"
+    if [[ -n "$ASKER_PID" ]] && kill -0 "$ASKER_PID" 2>/dev/null; then
+        msg "stopping asker (pid=$ASKER_PID)"
+        kill "$ASKER_PID" 2>/dev/null || true
+    fi
     if [[ -n "$CUO_PID" ]] && kill -0 "$CUO_PID" 2>/dev/null; then
         msg "stopping ClassicUO (pid=$CUO_PID)"
         kill "$CUO_PID" 2>/dev/null || true
@@ -197,6 +207,15 @@ msg "intent inputs:"
 msg "  (A) in-game chat: type '${INTENT_PREFIX}<label>'  (server rejects, usually private)"
 msg "  (B) shell:        scripts/mark_intent.sh <label>  (private, recommended)"
 msg "  (C) macOS hotkey: bind scripts/mark_intent_dialog.sh to a shortcut"
+msg "  (D) voice:        scripts/mark_intent_voice.sh  (needs whisper-cpp)"
+if [[ "$ASK_INTERVAL" -gt 0 ]]; then
+    msg "starting asker — will prompt for voice intent every ${ASK_INTERVAL}s of silence"
+    ( exec "$ROOT/scripts/ask_intent_loop.sh" ) \
+        </dev/null >>"$PROXY_LOG" 2>&1 &
+    ASKER_PID=$!
+else
+    msg "  (periodic asker disabled — set ASK_INTERVAL=300 to enable 5-min voice prompts)"
+fi
 msg ""
 msg "tail proxy log:  tail -f $PROXY_LOG"
 msg "tail cuo log:    tail -f $CUO_LOG"
