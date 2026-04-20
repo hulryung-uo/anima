@@ -488,9 +488,19 @@ def register_handlers(
     handler.register(0x2E, handle_equipment)
 
     def handle_container_content(packet_id: int, data: bytes) -> None:
-        """0x3C ContainerContent — items inside a container."""
+        """0x3C ContainerContent — items inside a container.
+
+        ServUO sends 0x3C as a complete refresh of a container's contents.
+        We must drop stale items that previously lived in this container
+        but aren't in the new payload — otherwise the vendor buy-list
+        correlation in 0x74 (which collects items by container_serial and
+        sorts by (x,y)) gets polluted by old serials, causing the picked
+        item's name/price to mismatch its graphic and the server to reply
+        "Thou hast bought nothing!"
+        """
         r = PacketReader(data[3:])  # variable: skip id + length
         count = r.read_u16()
+        new_items: list[tuple[int, int, int, int, int, int, int]] = []
         for _ in range(count):
             if r.remaining < 20:
                 break
@@ -503,7 +513,22 @@ def register_handlers(
             r.skip(1)  # grid_index
             container = r.read_u32()
             hue = r.read_u16()
+            new_items.append((serial, graphic, amount, x, y, container, hue))
 
+        containers_in_packet: dict[int, set[int]] = {}
+        for serial, _g, _a, _x, _y, container, _h in new_items:
+            containers_in_packet.setdefault(container, set()).add(serial)
+
+        for container_serial, fresh_serials in containers_in_packet.items():
+            stale = [
+                it.serial for it in p.world.items.values()
+                if it.container == container_serial
+                and it.serial not in fresh_serials
+            ]
+            for s in stale:
+                p.world.remove(s)
+
+        for serial, graphic, amount, x, y, container, hue in new_items:
             item = p.world.get_or_create_item(serial)
             item.graphic = graphic
             item.hue = hue

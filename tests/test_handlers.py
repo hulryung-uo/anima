@@ -669,3 +669,74 @@ def test_cliloc_val_substitution(monkeypatch):
     assert len(speech_events) == 1
     text = speech_events[0].data["text"]
     assert "a pile of gold" in text, f"~1_val~ not substituted: {text!r}"
+
+
+# ---------------------------------------------------------------------------
+# ContainerContent (0x3C) — must drop stale items on refresh
+# ---------------------------------------------------------------------------
+
+
+def _build_container_content(items: list[tuple[int, int, int, int, int, int]]) -> bytes:
+    """Build a 0x3C packet. Each item: (serial, graphic, amount, x, y, container)."""
+    body = struct.pack(">H", len(items))
+    for serial, graphic, amount, x, y, container in items:
+        body += struct.pack(
+            ">IHBHHHBIH",
+            serial, graphic, 0, amount, x, y, 0, container, 0,
+        )
+    length = 3 + len(body)
+    return struct.pack(">BH", 0x3C, length) + body
+
+
+def test_container_content_clears_stale_items():
+    """A second 0x3C for the same container drops items missing from the new payload.
+
+    Without this, vendor buy-list correlation (0x74 sorts items in the
+    container by (x,y)) gets polluted by old serials and the agent ends up
+    sending a stale serial — the server replies "Thou hast bought nothing!".
+    """
+    h, p, _ = _make_stack()
+    container = 0x40000001
+
+    # Initial vendor inventory: 3 items.
+    h.dispatch(0x3C, _build_container_content([
+        (0x50000001, 0x0FBB, 1, 1, 1, container),  # tongs
+        (0x50000002, 0x1034, 1, 2, 1, container),  # saw
+        (0x50000003, 0x0E86, 1, 3, 1, container),  # pickaxe
+    ]))
+    assert {it.serial for it in p.world.items.values() if it.container == container} == {
+        0x50000001, 0x50000002, 0x50000003,
+    }
+
+    # Vendor restocks with 2 entirely new serials.
+    h.dispatch(0x3C, _build_container_content([
+        (0x60000001, 0x0FBB, 1, 1, 1, container),
+        (0x60000002, 0x1034, 1, 2, 1, container),
+    ]))
+    in_container = {it.serial for it in p.world.items.values() if it.container == container}
+    assert in_container == {0x60000001, 0x60000002}, (
+        f"stale items leaked into container: {in_container}"
+    )
+
+
+def test_container_content_does_not_clear_other_containers():
+    """Refreshing container A must not touch items that belong to container B."""
+    h, p, _ = _make_stack()
+    container_a = 0x40000001
+    container_b = 0x40000002
+
+    h.dispatch(0x3C, _build_container_content([
+        (0x50000001, 0x0FBB, 1, 1, 1, container_a),
+        (0x50000002, 0x1034, 1, 1, 1, container_b),
+    ]))
+
+    # Refresh only container A with a different serial.
+    h.dispatch(0x3C, _build_container_content([
+        (0x60000001, 0x0FBB, 1, 1, 1, container_a),
+    ]))
+
+    by_container = {
+        it.container: it.serial for it in p.world.items.values()
+    }
+    assert by_container.get(container_a) == 0x60000001
+    assert by_container.get(container_b) == 0x50000002
