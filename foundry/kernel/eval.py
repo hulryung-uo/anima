@@ -23,12 +23,15 @@ Eval protocol (FOUNDRY.md §5):
 
 from __future__ import annotations
 
+import fcntl
 import signal
 import socket
 import statistics
 import subprocess
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,7 +51,22 @@ ANIMA_ROOT = Path(__file__).resolve().parents[2]   # foundry/kernel/eval.py -> r
 
 # One GM session at a time: the GM account has a single character, and
 # concurrent logins on one ServUO account kick each other.
+# The threading lock covers orchestrator threads; the file lock covers
+# SEPARATE PROCESSES (e.g. a manual probe eval running while the
+# orchestrator is mid-run — without it, simultaneous GM logins kick
+# each other and fixed-start dies with BrokenPipeError).
 _GM_LOCK = threading.Lock()
+_GM_FLOCK_PATH = Path(tempfile.gettempdir()) / "foundry-gm.flock"
+
+
+@contextmanager
+def _gm_process_lock():
+    with open(_GM_FLOCK_PATH, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 @dataclass
@@ -205,7 +223,7 @@ def _gm_setup(cfg: EvalConfig, serial: int, eval_watch: gmmod.JsonlWatch) -> dic
     Raises gm.GmError on failure (the caller fails the eval — an unstandardized
     start would be unfair variance, not signal).
     """
-    with _GM_LOCK:
+    with _GM_LOCK, _gm_process_lock():
         gmcfg = gmmod.GmConfig(
             host=cfg.host, server_port=cfg.server_port,
             proxy_port=cfg.proxy_port + 100,
