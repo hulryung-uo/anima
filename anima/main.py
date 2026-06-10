@@ -502,9 +502,16 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def planner_loop(ctx: AgentContext) -> None:
+async def planner_loop(ctx: AgentContext, start_delay_s: float = 0.0) -> None:
     """Run the v2 rule-based planner instead of behavior tree brain."""
     from anima.planner.planner import Planner
+
+    if start_delay_s > 0:
+        # Used by the Foundry eval harness: hold the first planning tick until
+        # the GM fixed-start setup (teleport/skills/tools) has landed, so the
+        # planner's first decision is made from the standardized start state.
+        logger.info("planner_start_delay", seconds=start_delay_s)
+        await asyncio.sleep(start_delay_s)
 
     # Wait until equipment is loaded (backpack available)
     for _ in range(60):  # up to 30 seconds
@@ -808,6 +815,7 @@ async def run(
     delete_existing: bool = False,
     use_planner: bool = True,
     web_port: int = 8150,
+    planner_delay_s: float = 0.0,
 ) -> None:
     from anima.core.avatar import Avatar
 
@@ -877,7 +885,7 @@ async def run(
 
             # Select brain engine: v2 planner or legacy behavior tree
             if use_planner:
-                engine_coro = planner_loop(brain_ctx)
+                engine_coro = planner_loop(brain_ctx, start_delay_s=planner_delay_s)
                 logger.info("engine_mode", mode="v2_planner")
             else:
                 engine_coro = brain_loop(brain)
@@ -939,6 +947,10 @@ def main() -> None:
     parser.add_argument(
         "--web-port", type=int, default=8150, help="API server port for dashboard/TUI"
     )
+    parser.add_argument(
+        "--planner-delay", type=float, default=0.0,
+        help="Seconds to hold the first planner tick (Foundry eval fixed-start)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -957,6 +969,7 @@ def main() -> None:
         cfg,
         delete_existing=args.recreate,
         use_planner=not args.legacy,
+        planner_delay_s=args.planner_delay,
         web_port=args.web_port,
     ))
 

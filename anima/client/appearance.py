@@ -81,7 +81,10 @@ PERSONA_SKILLS: dict[str, list[tuple[int, int]]] = {
     "bard":        [(46, 50), (48, 50), (0, 0), (0, 0)],      # Musicianship, Peacemaking
     "ranger":      [(31, 50), (44, 50), (0, 0), (0, 0)],      # Archery, Lumberjacking
     "woodcutter":  [(44, 50), (11, 50), (0, 0), (0, 0)],      # Lumberjacking, Carpentry
-    "miner":       [(45, 50), (7, 50), (0, 0), (0, 0)],       # Mining, Blacksmith
+    # Mining only: a Blacksmith creation skill grants ~50 free ingots, which
+    # immediately triggers the planner's batch-craft trip instead of mining.
+    # The seed miner starts as a pure miner; evolution can re-add crafting.
+    "miner":       [(45, 50), (0, 0), (0, 0), (0, 0)],
 }
 
 

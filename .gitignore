@@ -34,3 +34,7 @@ data/supervisor_alert.flag
 data/trajectories/
 data/intents/
 scripts/credentials.env
+foundry/archive/
+data/eval_configs/
+data/eval_logs/
+foundry/STOP
