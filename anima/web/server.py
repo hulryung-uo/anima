@@ -171,7 +171,13 @@ class WebServer:
             self._clients.discard(ws)
 
     async def start(self) -> None:
-        runner = web.AppRunner(self._app, access_log=None)
+        # Browsers on localhost can carry >8KB of cookies; aiohttp's default
+        # 8190-byte header-field limit then rejects the page with
+        # "Header value is too long". Raise the parser limits.
+        runner = web.AppRunner(
+            self._app, access_log=None,
+            max_line_size=32768, max_field_size=32768,
+        )
         await runner.setup()
         site = web.TCPSite(runner, self.host, self.port)
         await site.start()
