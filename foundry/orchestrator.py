@@ -98,7 +98,8 @@ def _pin_ref(gid: str, sha: str) -> None:
 # --- genome assembly --------------------------------------------------------
 
 def _genome_from(arc: Archive, res: EvalResult, parent: str | None,
-                 code_ref: str, hypothesis: str, rc: RunConfig) -> Genome:
+                 code_ref: str, hypothesis: str, rc: RunConfig,
+                 target_cell: tuple | None = None) -> Genome:
     d = res.descriptor
     f = res.fitness
     return Genome(
@@ -106,7 +107,8 @@ def _genome_from(arc: Archive, res: EvalResult, parent: str | None,
         parent=parent,
         code_ref=code_ref,
         config={"persona": rc.persona, "fixed_start": rc.fixed_start,
-                "window_s": rc.window_s, "seeds": rc.seeds},
+                "window_s": rc.window_s, "seeds": rc.seeds,
+                "target_cell": list(target_cell) if target_cell else None},
         eval={
             "fitness": f.total if f else 0.0,
             "cell": list(d.cell) if d else [],
@@ -163,6 +165,7 @@ class _CycleOutcome:
     cycle: int
     slot: int
     parent_id: str | None = None
+    target_cell: tuple | None = None
     mutation: mutate.MutationResult | None = None
     result: EvalResult | None = None
     error: str = ""
@@ -214,8 +217,10 @@ def run(rc: RunConfig) -> Archive:
             with arc_lock:
                 parent = select.choose_parent(arc, seed=i)
                 target = select.suggest_target_cell(arc, seed=i)
-                parent_obs = _parent_observation(arc, parent)
+                parent_obs = (_parent_observation(arc, parent)
+                              + "\n" + observe.history(arc))
             out.parent_id = parent.id if parent else None
+            out.target_cell = target
             parent_ref = (parent.code_ref if parent and parent.code_ref else "HEAD")
             print(f"[cycle {i}] slot={slot} parent={out.parent_id} target_cell={target}")
 
@@ -286,7 +291,8 @@ def run(rc: RunConfig) -> Archive:
                 with arc_lock:
                     g = _genome_from(arc, out.result, parent=out.parent_id,
                                      code_ref=mr.code_ref if mr else "",
-                                     hypothesis=mr.hypothesis if mr else "", rc=rc)
+                                     hypothesis=mr.hypothesis if mr else "", rc=rc,
+                                     target_cell=out.target_cell)
                     r = arc.add(g)
                 _pin_ref(g.id, g.code_ref)
                 prev = f" (prev {r.prev_fitness:.3f})" if r.prev_fitness is not None else ""

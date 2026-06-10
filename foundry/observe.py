@@ -42,6 +42,36 @@ def _smells(res: EvalResult) -> list[str]:
     return out
 
 
+def history(archive: Archive, limit: int = 12) -> str:
+    """REFLECT-lite (FOUNDRY.md §6 step 7): what was tried and what happened.
+
+    The mutator reads this so it stops re-walking dead ends (e.g. three
+    independent meditation mutations that all earned zero skill gain). Drawn
+    from the archive's full lineage, not just grid elites.
+    """
+    gs = archive.all_genomes()
+    if not gs:
+        return ""
+    lines = ["## Prior mutations and what actually happened (learn from these)"]
+    for g in gs[-limit:]:
+        bd = g.eval.get("breakdown", {})
+        notes: list[str] = []
+        if bd.get("skill_gain_rate", 1) == 0:
+            notes.append("ZERO skill gain")
+        if bd.get("viability_gate", 1) < 0.5:
+            notes.append(f"gate {bd['viability_gate']:.2f} (barely alive/active)")
+        target = g.config.get("target_cell")
+        if target and list(target) != list(g.cell):
+            notes.append(f"aimed {tuple(target)} but landed {g.cell}")
+        note = ("  ⚠ " + "; ".join(notes)) if notes else ""
+        lines.append(
+            f"- {g.id} (parent {g.parent or '—'}) fitness {g.fitness:.2f} "
+            f"cell {g.cell}: “{g.hypothesis}”{note}"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def observe(res: EvalResult, archive: Archive | None = None) -> str:
     """Render a markdown observation of one eval for the mutator to read."""
     if not res.ok:
