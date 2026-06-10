@@ -144,11 +144,20 @@ def compute_fitness(summ: TrajectorySummary) -> FitnessBreakdown:
     skill_term = W_SKILL * skill_rate
     worth_term = W_WORTH * (networth_rate / GOLD_NORM)
     produce_term = W_PRODUCE * (produce_rate / GOLD_NORM)
-    behavior_bonus = (
-        WB_EXPLORE * min(regions_rate, MOBILITY_RATE_CAP)
-        + WB_SOCIAL * min(social_resp_rate, SOCIAL_RATE_CAP)
-        + WB_COMBAT * (damage_rate / DAMAGE_NORM)
-    )
+
+    # Tier 3 is DESCRIPTOR-ALIGNED (FOUNDRY.md §5): each cell's elite is the
+    # best OF ITS KIND. The social bonus applies everywhere (sociability is an
+    # active grid axis), but exploration/combat bonuses only carry the
+    # expressive NONE-profession archetypes (pure explorers/fighters-without-
+    # skill-gain). For profession cells the backbone is skill gain — a miner
+    # must not fund 40% of its score by wandering.
+    has_profession = bool(summ.profession_skill_gains())
+    behavior_bonus = WB_SOCIAL * min(social_resp_rate, SOCIAL_RATE_CAP)
+    if not has_profession:
+        behavior_bonus += (
+            WB_EXPLORE * min(regions_rate, MOBILITY_RATE_CAP)
+            + WB_COMBAT * (damage_rate / DAMAGE_NORM)
+        )
 
     inner = skill_term + worth_term + produce_term + behavior_bonus
     total = gate * inner

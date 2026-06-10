@@ -154,3 +154,22 @@ def test_no_packets_in_window_means_zero_duration(tmp_path):
     assert s.duration_s == 0.0
     assert s.total_actions == 0
     assert s.skill_gain_total == 0.0
+
+
+def test_behavior_bonus_is_cell_aligned(tmp_path):
+    """Tier 3 (FOUNDRY.md §5): exploration bonus carries NONE-profession
+    archetypes only — a skill-gaining miner cannot fund its score by walking."""
+    from foundry.kernel.fitness import WB_EXPLORE, compute_fitness
+    from foundry.kernel.trajectory import TrajectorySummary
+
+    explorer = TrajectorySummary(path="synthetic", start_ts=0.0, end_ts=600.0)
+    explorer.positions = [(0.0, x * 8, 0) for x in range(200)]
+    explorer.action_counts = {"move": 200, "use": 5}
+    fb_explorer = compute_fitness(explorer)
+    assert fb_explorer.behavior_bonus > 0.0  # NONE profession keeps the bonus
+
+    f = _write(tmp_path, _fixture_lines())
+    miner = parse_file(f, window_start=20.0)   # has Mining gain
+    fb_miner = compute_fitness(miner)
+    # the miner's bonus must not include the exploration term
+    assert fb_miner.behavior_bonus < WB_EXPLORE * 1.0 + 1e-6
