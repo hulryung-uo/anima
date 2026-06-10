@@ -24,3 +24,4 @@ dislikes:
   - empty taverns
 talkativeness: 0.8
 combat_disposition: pacifist  # never initiates combat
+profession: bard

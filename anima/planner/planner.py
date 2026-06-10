@@ -64,6 +64,16 @@ MIN_LOOP_DELAY = 0.2
 
 SUPERVISOR_HINTS_FILE = Path(__file__).parent.parent.parent / "data" / "supervisor_hints.json"
 
+# Primary procedure chain per persona profession (persona.profession).
+# Ordered: first startable procedure wins. Personas without a profession
+# (or with an empty chain) fall through to the mining gameplay loop.
+PROFESSION_LOOPS: dict[str, tuple[str, ...]] = {
+    "mage": ("practice_magery",),
+    "bard": ("practice_music",),
+    "thief": ("practice_hiding",),
+    "adventurer": ("bandage_self", "hunt_nearby"),
+}
+
 
 def _is_supervisor_skipped(procedure: str) -> bool:
     """Check if supervisor has flagged this procedure for skipping."""
@@ -735,6 +745,23 @@ class Planner:
             if (proc and not self._proc_breaker.is_open("heal_self")
                     and await proc.can_start(ctx)):
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
+                return proc
+            # Bandages heal too (and grind Healing) — combat personas
+            # carry them from creation.
+            proc = _get_proc("bandage_self")
+            if proc and await proc.can_start(ctx):
+                _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 붕대 치료")
+                return proc
+
+        # --- Priority 1.5: Profession loop (non-mining trades) ---
+        # Personas with an explicit profession run their trade procedure
+        # as the primary activity; the mining chain below stays as the
+        # default for miner-type personas and as the universal fallback.
+        profession = getattr(ctx.persona, "profession", "") or ""
+        for proc_name in PROFESSION_LOOPS.get(profession, ()):
+            proc = _get_proc(proc_name)
+            if proc and await proc.can_start(ctx):
+                _intent(f"직업 활동 ({profession}) → {proc_name}")
                 return proc
 
         # --- Priority 2: Overweight → smelt (only if carrying enough ore) ---

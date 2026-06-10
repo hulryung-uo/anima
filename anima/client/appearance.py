@@ -66,25 +66,33 @@ PERSONA_STATS: dict[str, tuple[int, int, int]] = {
     "ranger":      (40, 30, 10),
     "woodcutter":  (50, 20, 10),
     "miner":       (55, 15, 10),
+    "thief":       (20, 45, 15),
 }
 
-# Initial skills: list of (skill_id, value), up to 4 skills, values should sum to 100
-# UO Skill IDs: 0=Alchemy, 8=Blacksmith, 11=Carpentry, 13=Cooking, 17=Healing,
-# 18=Fishing, 25=Magery, 27=Meditation, 31=Archery, 37=Tinkering,
-# 40=Swordsmanship, 41=MaceFighting, 42=Fencing, 44=Lumberjacking, 45=Mining,
-# 46=Musicianship, 48=Peacemaking, 53=Tactics, 57=Tailoring
+# Initial skills: list of (skill_id, value), up to 4 skills.
+# IDs are the ServUO SkillName enum (Server/Skills.cs): 0=Alchemy,
+# 7=Blacksmith, 9=Peacemaking, 11=Carpentry, 17=Healing, 21=Hiding,
+# 25=Magery, 29=Musicianship, 31=Archery, 34=Tailoring, 37=Tinkering,
+# 40=Swords, 44=Lumberjacking, 45=Mining, 46=Meditation, 47=Stealth.
+#
+# ServUO ValidSkills() requires values 0-50 summing to EXACTLY 100 (or
+# 120) — otherwise the whole skill set AND the per-skill starter items
+# (spellbook+reagents for Magery, instrument for Musicianship, …) are
+# silently dropped (Scripts/Misc/CharacterCreation.cs:368-386, 528).
 PERSONA_SKILLS: dict[str, list[tuple[int, int]]] = {
-    "adventurer": [(40, 50), (17, 50), (0, 0), (0, 0)],     # Swordsmanship, Healing
-    "blacksmith":  [(45, 50), (8, 50), (0, 0), (0, 0)],      # Mining, Blacksmith
-    "merchant":    [(37, 50), (57, 50), (0, 0), (0, 0)],      # Tinkering, Tailoring
-    "mage":        [(25, 50), (27, 50), (0, 0), (0, 0)],      # Magery, Meditation
-    "bard":        [(46, 50), (48, 50), (0, 0), (0, 0)],      # Musicianship, Peacemaking
+    "adventurer": [(40, 50), (17, 50), (0, 0), (0, 0)],     # Swords, Healing
+    "blacksmith":  [(45, 50), (7, 50), (0, 0), (0, 0)],      # Mining, Blacksmith
+    "merchant":    [(37, 50), (34, 50), (0, 0), (0, 0)],      # Tinkering, Tailoring
+    "mage":        [(25, 50), (46, 50), (0, 0), (0, 0)],      # Magery, Meditation
+    "bard":        [(29, 50), (9, 50), (0, 0), (0, 0)],      # Musicianship, Peacemaking
     "ranger":      [(31, 50), (44, 50), (0, 0), (0, 0)],      # Archery, Lumberjacking
     "woodcutter":  [(44, 50), (11, 50), (0, 0), (0, 0)],      # Lumberjacking, Carpentry
-    # Mining only: a Blacksmith creation skill grants ~50 free ingots, which
-    # immediately triggers the planner's batch-craft trip instead of mining.
-    # The seed miner starts as a pure miner; evolution can re-add crafting.
+    # Mining only (sum 50 → intentionally fails ValidSkills): no creation
+    # skills/items arrive, which avoids ~50 free Blacksmith ingots that
+    # would derail the planner into a batch-craft trip. The kernel's GM
+    # fixed-start pins Mining and provisions pickaxes instead.
     "miner":       [(45, 50), (0, 0), (0, 0), (0, 0)],
+    "thief":       [(21, 50), (47, 50), (0, 0), (0, 0)],     # Hiding, Stealth
 }
 
 

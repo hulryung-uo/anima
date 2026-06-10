@@ -25,6 +25,9 @@ class Persona:
     # Combat disposition: aggressive (hunt targets), defensive (fight back only),
     # pacifist (never initiate combat)
     combat_disposition: str = "defensive"
+    # Primary trade for planner procedure selection (PROFESSION_LOOPS):
+    # "mage" | "bard" | "thief" | "adventurer" | "" (mining fallback chain)
+    profession: str = ""
 
     def build_system_prompt(self) -> str:
         """Generate the system prompt from this persona."""
@@ -77,6 +80,7 @@ def load_persona(path: str | Path) -> Persona:
         "dislikes",
         "talkativeness",
         "combat_disposition",
+        "profession",
     ):
         if key in raw:
             setattr(p, key, raw[key])

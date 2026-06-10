@@ -54,6 +54,45 @@ FIXED_START_PROFILES: dict[str, dict] = {
         # a bank trip before any work. Shrink these pack stacks to amount 1.
         "neutralize": [0x0EED],            # gold coins
     },
+    # Profession profiles share the calibrated Minoc spot — any open
+    # ground works for these trades, and reusing it keeps Z-calibration
+    # and the eval's region accounting uniform across professions.
+    #
+    # Skill names must match the ServUO SkillName enum property path
+    # ([Set Skills.<Name>.Base) — note "Swords", not "Swordsmanship".
+    "mage": {
+        "go": (2567, 493),
+        # Magery 35 → Greater Heal (circle 4) sits in the gain window;
+        # Meditation 60 keeps mana cycling fast enough for a 10-min eval.
+        "skills": {"Magery": 35.0, "Meditation": 60.0},
+        # Loose reagent stacks (creation reagents arrive nested in a bag
+        # the agent's flat backpack search can't see into).
+        "items": ["Garlic 200", "Ginseng 200", "SpidersSilk 200",
+                  "MandrakeRoot 200"],
+        "neutralize": [0x0EED],
+    },
+    "warrior": {
+        "go": (2567, 493),
+        "skills": {"Swords": 35.0, "Tactics": 35.0, "Healing": 35.0},
+        "items": ["Katana", "Bandage 100"],
+        # Standardized arena: weak melee fodder spawned around the
+        # workplace (nearest wild spawns are ettins ~190 tiles south —
+        # lethal at skill 35). HeadlessOne: HP 16-30, Wrestling 25-40.
+        "spawn_mobs": ["HeadlessOne"] * 8,
+        "neutralize": [0x0EED],
+    },
+    "bard": {
+        "go": (2567, 493),
+        "skills": {"Musicianship": 35.0, "Peacemaking": 35.0},
+        "items": ["Lute"],
+        "neutralize": [0x0EED],
+    },
+    "thief": {
+        "go": (2567, 493),
+        "skills": {"Hiding": 35.0, "Stealth": 35.0},
+        "items": [],                       # hiding needs nothing
+        "neutralize": [0x0EED],
+    },
 }
 
 
@@ -126,6 +165,13 @@ def build_unicode_speech(text: str, hue: int = 0x0034, font: int = 3) -> bytes:
 def build_target_response(cursor_id: int, serial: int) -> bytes:
     """0x6C object-target response (19 bytes)."""
     return struct.pack(">BBIBIHHHH", 0x6C, 0x00, cursor_id, 0x00, serial, 0, 0, 0, 0)
+
+
+def build_ground_target_response(cursor_id: int, x: int, y: int, z: int) -> bytes:
+    """0x6C ground-target response (19 bytes, target_type=1)."""
+    return struct.pack(
+        ">BBIBIHHHH", 0x6C, 0x01, cursor_id, 0x00, 0, x, y, z & 0xFFFF, 0,
+    )
 
 
 # --- decompressed-trajectory tail reader --------------------------------------
@@ -410,6 +456,16 @@ class GmClient:
         self.sock.sendall(build_target_response(cursor, target_serial))
         time.sleep(0.4)
 
+    def command_at(self, command: str, x: int, y: int, z: int) -> None:
+        """Run a [command, answering the cursor with a ground target.
+
+        Used to place world objects/mobiles ([Add HeadlessOne) at a tile.
+        """
+        ts = self.say(command)
+        cursor = self._await_cursor(ts)
+        self.sock.sendall(build_ground_target_response(cursor, x, y, z))
+        time.sleep(0.4)
+
     def goto(self, x: int, y: int, z: int | None = None) -> tuple[int, int, int]:
         """[Go self to (x, y); returns the server-settled (x, y, z).
 
@@ -464,10 +520,22 @@ class GmClient:
                     continue
                 self.command_on("[Set Amount 1", serial)
                 neutralized.append(f"0x{graphic:04X}:0x{serial:08X}")
-        # 4) finally teleport the char to the calibrated workplace
+        # 4) spawn standardized arena mobs around the workplace (warrior
+        #    profile). Ring offsets keep them adjacent-but-not-stacked.
+        spawned: list[str] = []
+        offsets = [(2, 0), (-2, 0), (0, 2), (0, -2),
+                   (3, 2), (-3, -2), (2, -3), (-2, 3)]
+        for i, mob in enumerate(p.get("spawn_mobs", [])):
+            dx, dy = offsets[i % len(offsets)]
+            try:
+                self.command_at(f"[Add {mob}", gx + dx, gy + dy, gz)
+                spawned.append(mob)
+            except GmError as e:
+                spawned.append(f"{mob}:failed({e})")
+        # 5) finally teleport the char to the calibrated workplace
         self.command_on(f"[Set X {gx} Y {gy} Z {gz}", eval_serial)
         return {"workplace": (gx, gy, gz), "profile": profile,
-                "neutralized": neutralized}
+                "neutralized": neutralized, "spawned": spawned}
 
 
 # --- helpers -------------------------------------------------------------------

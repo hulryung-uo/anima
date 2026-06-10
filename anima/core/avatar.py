@@ -206,14 +206,19 @@ class Avatar:
         logger.info("skills_registered", count=len(skill_registry.all_skills))
 
         # 9b. Procedures (v2) — coexists with skills during migration
-        from anima.procedures.base import ProcedureRegistry
+        from anima.procedures.bandage_self import BandageSelf as BandageSelfProc
         from anima.procedures.bank_deposit import BankDeposit as BankDepositProc
+        from anima.procedures.base import ProcedureRegistry
         from anima.procedures.buy_from_vendor import BuyFromVendor as BuyFromVendorProc
         from anima.procedures.check_bank_balance import CheckBankBalance as CheckBankBalanceProc
         from anima.procedures.chop_wood import ChopWood as ChopWoodProc
+        from anima.procedures.combat_loop import HuntNearby as HuntNearbyProc
         from anima.procedures.craft_blacksmith import CraftBlacksmith as CraftBlacksmithProc
         from anima.procedures.make_tools import MakeTools as MakeToolsProc
         from anima.procedures.mine_ore import MineOre as MineOreProc
+        from anima.procedures.practice_hiding import PracticeHiding as PracticeHidingProc
+        from anima.procedures.practice_magery import PracticeMagery as PracticeMageryProc
+        from anima.procedures.practice_music import PracticeMusic as PracticeMusicProc
         from anima.procedures.sell_to_vendor import SellToVendor as SellToVendorProc
         from anima.procedures.smelt_ore import SmeltOre as SmeltOreProc
 
@@ -222,6 +227,8 @@ class Avatar:
             MineOreProc, SmeltOreProc, ChopWoodProc, MakeToolsProc,
             CraftBlacksmithProc, BuyFromVendorProc, SellToVendorProc,
             BankDepositProc, CheckBankBalanceProc,
+            PracticeHidingProc, PracticeMusicProc, PracticeMageryProc,
+            BandageSelfProc, HuntNearbyProc,
         ]:
             procedure_registry.register(proc_cls())
         logger.info("procedures_registered", count=len(procedure_registry.all_procedures))
