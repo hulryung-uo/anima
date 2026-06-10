@@ -11,6 +11,10 @@ dependencies = [
     "litellm>=1.82.4",
     "rich>=13.0",
     "textual>=8.1.1",
+    # required by core memory/perception, not optional (were miscategorized
+    # under the `llm` extra; bare `uv run` in eval worktrees must work)
+    "aiosqlite>=0.20",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -21,8 +25,6 @@ dev = [
 ]
 llm = [
     "httpx>=0.27",
-    "aiosqlite>=0.20",
-    "numpy>=1.26",
 ]
 forum = [
     "aiohttp>=3.9",

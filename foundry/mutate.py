@@ -75,7 +75,8 @@ toward zero.
   (priority selection) and `anima/procedures/*.py` (mine/smelt/craft/sell/etc).
   Movement is `anima/action/movement.py`. Persona templates:
   `anima/client/appearance.py` (PERSONA_SKILLS/PERSONA_STATS) + `personas/*.yaml`.
-- Run `uv run pytest tests/ -q -x --ignore=tests/foundry` — only commit if green.
+- Run `uv run --all-extras pytest tests/ -q -x --ignore=tests/foundry` —
+  only commit if green.
 - Commit ALL your changes with EXACTLY this subject form so the system can read
   your hypothesis:
       foundry-mutation: <one-line hypothesis of what this change improves>
@@ -88,7 +89,7 @@ _ALLOWED_TOOLS = [
     "Edit", "Write", "MultiEdit", "Read", "Glob", "Grep",
     "Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)",
     "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
-    "Bash(uv run pytest:*)", "Bash(uv run ruff:*)", "Bash(uv run python:*)",
+    "Bash(uv run:*)",   # pytest / ruff / python, with flags like --all-extras
 ]
 
 

@@ -246,7 +246,7 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
         #    agent runs from a mutated worktree.
         proxy = _spawn(
             [
-                "uv", "run", "python", "-m", "uo_proxy",
+                "uv", "run", "--all-extras", "python", "-m", "uo_proxy",
                 "--upstream", f"{cfg.host}:{cfg.server_port}",
                 "--listen", f"{cfg.host}:{cfg.proxy_port}",
                 "--advertise", f"{cfg.host}:{cfg.proxy_port}",
@@ -263,9 +263,12 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
         # 2) the genome: anima, rule-based planner (no LLM needed), via proxy.
         #    Isolated config controls persona/forum/llm/db; CLI overrides pin
         #    the connection + account. cwd may be a variant worktree.
+        # --all-extras: older genome commits still miscategorize core deps
+        # (aiosqlite/numpy) under the llm extra; a bare `uv run` in a fresh
+        # worktree venv would then fail at import.
         agent = _spawn(
             [
-                "uv", "run", "python", "-m", "anima",
+                "uv", "run", "--all-extras", "python", "-m", "anima",
                 "--config", str(config_path),
                 "--host", cfg.host,
                 "--port", str(cfg.proxy_port),

@@ -6,6 +6,9 @@ Anima is a Python-based AI player system for Ultima Online. It connects to a UO 
 
 ## Key References
 
+- `docs/FOUNDRY.md` — **Foundry: the self-developing agent system** (evolution loop,
+  trusted kernel, MAP-Elites grid, locked fitness/descriptor). `foundry/README.md`
+  has the runbook. `foundry/kernel/` is HUMAN-OWNED — agents must never edit it.
 - `DESIGN.md` — Full system design (architecture, roadmap, tech stack)
 - `docs/classicuo-analysis.md` — ClassicUO protocol analysis (packet handlers, entity model, all subsystems)
 - `docs/implementation-plan.md` — Concrete implementation plan (module mapping, code sketches)
@@ -54,6 +57,14 @@ Anima is a Python-based AI player system for Ultima Online. It connects to a UO 
 - Test: `uv run pytest`
 - Lint: `uv run ruff check`
 - Format: `uv run ruff format`
+
+### Foundry (evolution loop)
+
+- Boot shard: `cd ~/dev/uo/servuo && MONO_GAC_PREFIX=/opt/homebrew mono ServUO.exe -noconsole`
+  (listens on 127.0.0.1:**2594**)
+- One live eval: `uv run python -m foundry.kernel.eval --user probe1 --window 600`
+- Evolution run: `uv run python -m foundry.orchestrator --cycles 4 --parallel 2 --window 600 --backend claude`
+- Grid status: `uv run python -m foundry.status` · Halt: `touch foundry/STOP`
 
 ## File Organization
 

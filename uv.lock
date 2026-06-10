@@ -124,7 +124,9 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "aiosqlite" },
     { name = "litellm" },
+    { name = "numpy" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -142,19 +144,17 @@ forum = [
     { name = "aiohttp" },
 ]
 llm = [
-    { name = "aiosqlite" },
     { name = "httpx" },
-    { name = "numpy" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.3" },
     { name = "aiohttp", marker = "extra == 'forum'", specifier = ">=3.9" },
-    { name = "aiosqlite", marker = "extra == 'llm'", specifier = ">=0.20" },
+    { name = "aiosqlite", specifier = ">=0.20" },
     { name = "httpx", marker = "extra == 'llm'", specifier = ">=0.27" },
     { name = "litellm", specifier = ">=1.82.4" },
-    { name = "numpy", marker = "extra == 'llm'", specifier = ">=1.26" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
