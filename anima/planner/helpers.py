@@ -23,6 +23,8 @@ logger = structlog.get_logger()
 class _MoveToProcedure:
     """Temporary one-shot procedure to walk to a destination."""
 
+    timeout_s = 600.0  # long walks are legitimate — generous cap
+
     def __init__(self, name: str, x: int, y: int) -> None:
         self.name = f"move_to_{name}"
         self.description = f"Walk to {name}"

@@ -122,6 +122,28 @@ class Planner:
         self._strategy = StrategySelector(interval_s=300.0)
         self._goals = GoalStack()
         self._expedition = MiningExpedition()
+        # Anti-freeze state (see tick() timeout + _liveness_watchdog).
+        # Softer/earlier than _REPEAT_FAIL_LIMIT: demotes a failing
+        # procedure for a cooldown instead of blacklisting it.
+        self._proc_breaker = CircuitBreaker(
+            max_failures=self._STARVE_FAILS, cooldown_s=self._STARVE_COOLDOWN_S,
+        )
+        self._current_proc_task: asyncio.Task | None = None
+        self._watchdog_cancelled = False
+        self._last_progress_ts: float = _time.monotonic()
+        self._force_fallback_until: float = 0.0
+
+    # Anti-freeze knobs. A mutated procedure that blocks forever (awaiting
+    # a packet that never comes) used to wedge the whole planner loop —
+    # the liveness gate then crushes fitness (genome g_00004: 1 action in
+    # 608s). Timeout caps a single execution; the watchdog catches stalls
+    # earlier and forces fallback activity.
+    _PROC_TIMEOUT_S = 300.0       # default per-procedure execution cap
+    _WATCHDOG_POLL_S = 5.0        # watchdog sampling interval
+    _WATCHDOG_STALL_S = 90.0      # no progress for this long → intervene
+    _FALLBACK_WINDOW_S = 60.0     # forced-fallback selection window
+    _STARVE_FAILS = 3             # consecutive failures → temp demotion
+    _STARVE_COOLDOWN_S = 120.0    # demotion duration (auto-expires)
 
     def stop(self) -> None:
         self._running = False
@@ -136,6 +158,18 @@ class Planner:
         ctx.blackboard["_craft_material_breaker"] = self._craft_material_breaker
         ctx.blackboard["_ore_pickup_breaker"] = self._ore_pickup_breaker
 
+        # Anti-freeze watchdog runs as its own task so it can fire even
+        # while tick() is blocked inside a stalled procedure.
+        self._last_progress_ts = _time.monotonic()
+        watchdog_task = asyncio.create_task(self._liveness_watchdog(ctx))
+        try:
+            await self._run_loop(ctx)
+        finally:
+            watchdog_task.cancel()
+
+        logger.info("planner_stopped")
+
+    async def _run_loop(self, ctx: AgentContext) -> None:
         while self._running and ctx.conn.connected:
             # --- Request names for nearby unnamed NPCs ---
             # Without names, _find_vendor cannot identify NPC types
@@ -172,6 +206,9 @@ class Planner:
                     result = await self.tick(ctx)
 
                 if result:
+                    if result.success:
+                        # Progress signal for the anti-freeze watchdog
+                        self._last_progress_ts = _time.monotonic()
                     self.continuation_hint = result.next_suggestion
                     if not result.success and hasattr(result, 'message') and 'Could not reach' in (result.message or ''):
                         import time
@@ -231,8 +268,6 @@ class Planner:
 
             await asyncio.sleep(MIN_LOOP_DELAY)
 
-        logger.info("planner_stopped")
-
     async def _handle_overrides(self, ctx: AgentContext) -> ProcedureResult | None:
         """Check CommandBus for steering overrides. Returns result if handled."""
         if not self.command_bus:
@@ -275,7 +310,15 @@ class Planner:
         if _time.time() < self._health_break_until:
             return None
 
-        proc = await self.select_procedure(ctx)
+        # During a forced-fallback window (set by the liveness watchdog)
+        # prefer a guaranteed-liveness activity over normal selection.
+        proc = None
+        if _time.time() < self._force_fallback_until:
+            proc = await self._fallback_procedure(ctx)
+            if proc is not None:
+                logger.info("planner_fallback_selected", procedure=proc.name)
+        if proc is None:
+            proc = await self.select_procedure(ctx)
         if proc is None:
             return None
 
@@ -291,8 +334,61 @@ class Planner:
             })
 
         _proc_start = _time.monotonic()
-        result = await proc.run(ctx)
+        # Anti-freeze: cap execution time so a blocked procedure (e.g. a
+        # mutation awaiting a server response that never comes) cannot
+        # wedge the planner loop. The watchdog may also cancel the task.
+        timeout_s = getattr(proc, "timeout_s", None) or self._PROC_TIMEOUT_S
+        aborted: str | None = None
+        self._watchdog_cancelled = False
+        self._current_proc_task = asyncio.create_task(proc.run(ctx))
+        try:
+            result = await asyncio.wait_for(self._current_proc_task, timeout=timeout_s)
+        except TimeoutError:
+            aborted = "timeout"
+            logger.warning(
+                "procedure_timeout", procedure=proc.name, timeout_s=timeout_s,
+            )
+            result = ProcedureResult(
+                success=False,
+                reason=FailureReason.INTERRUPTED,
+                message=f"anti-freeze timeout after {timeout_s:.0f}s",
+            )
+        except asyncio.CancelledError:
+            if not self._watchdog_cancelled:
+                raise  # real shutdown — propagate
+            aborted = "watchdog_cancelled"
+            logger.warning("procedure_watchdog_cancelled", procedure=proc.name)
+            result = ProcedureResult(
+                success=False,
+                reason=FailureReason.INTERRUPTED,
+                message="cancelled by liveness watchdog",
+            )
+        finally:
+            self._current_proc_task = None
         ctx.blackboard["current_procedure"] = None
+
+        # Aborted runs never reach Procedure.run()'s auto-logging —
+        # record them here so supervisor/analysis can see freezes.
+        if aborted is not None:
+            ss = ctx.perception.self_state
+            await _record_action_log(
+                memory_db=ctx.memory_db,
+                agent_name=ctx.persona.name if ctx.persona else "unknown",
+                procedure=proc.name,
+                location_x=ss.x,
+                location_y=ss.y,
+                result_str=aborted,
+                message=result.message or "",
+                duration_ms=(_time.monotonic() - _proc_start) * 1000,
+                details=result.details,
+            )
+
+        # Starvation breaker: K consecutive failures demote the procedure
+        # for a cooldown so lower-priority work gets a chance.
+        if result.success:
+            self._proc_breaker.record_success(proc.name)
+        else:
+            self._proc_breaker.record_failure(proc.name)
 
         # Helper procedures (ad-hoc classes like _MoveToProcedure,
         # _PickUpAndSmelt, etc.) don't subclass Procedure and therefore
@@ -300,7 +396,7 @@ class Planner:
         # detect idle planner loops, so writing an entry here keeps long
         # helper-driven tours (e.g. COLLECTING pile visits) visible as
         # liveness.
-        if result is not None and not isinstance(proc, Procedure):
+        if result is not None and not isinstance(proc, Procedure) and aborted is None:
             ss = ctx.perception.self_state
             await _record_action_log(
                 memory_db=ctx.memory_db,
@@ -396,6 +492,11 @@ class Planner:
                             reason="supervisor hint" if name not in skip_bb
                             else "repeat failure")
                 return None
+            if self._proc_breaker.is_open(name):
+                # Starvation guard: temporarily demoted after consecutive
+                # failures — fall through to lower-priority work.
+                logger.debug("planner_starvation_skip", procedure=name)
+                return None
             if self._strategy.is_excluded(name):
                 logger.debug(
                     "planner_strategy_skipping",
@@ -456,7 +557,8 @@ class Planner:
             # Still allow survival and movement without backpack
             if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:
                 proc = self.registry.get("heal_self")
-                if proc and await proc.can_start(ctx):
+                if (proc and not self._proc_breaker.is_open("heal_self")
+                        and await proc.can_start(ctx)):
                     return proc
 
             # Try to buy tools if we have gold — purchase works server-side
@@ -630,7 +732,8 @@ class Planner:
                 except Exception:
                     pass
             proc = self.registry.get("heal_self")
-            if proc and await proc.can_start(ctx):
+            if (proc and not self._proc_breaker.is_open("heal_self")
+                    and await proc.can_start(ctx)):
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
                 return proc
 
@@ -1771,6 +1874,88 @@ class Planner:
         _intent("대기 중")
         logger.debug("planner_no_procedure_available")
         return None
+
+    # ------------------------------------------------------------------
+    # Anti-freeze: liveness watchdog + forced fallback activity
+    # ------------------------------------------------------------------
+
+    async def _liveness_watchdog(self, ctx: AgentContext) -> None:
+        """Cancel a stalled procedure and force fallback activity.
+
+        Runs as a separate task so it fires even while tick() is blocked
+        inside a frozen procedure — the same-task _check_stuck() cannot
+        do that. Progress = a successful result (recorded in _run_loop)
+        or any position change.
+        """
+        last_pos: tuple[int, int] | None = None
+        while self._running and ctx.conn.connected:
+            await asyncio.sleep(self._WATCHDOG_POLL_S)
+            if self.command_bus and self.command_bus.paused:
+                self._last_progress_ts = _time.monotonic()
+                continue
+            ss = ctx.perception.self_state
+            if (ss.x, ss.y) != last_pos:
+                last_pos = (ss.x, ss.y)
+                self._last_progress_ts = _time.monotonic()
+            stalled_s = _time.monotonic() - self._last_progress_ts
+            if stalled_s <= self._WATCHDOG_STALL_S:
+                continue
+
+            logger.warning(
+                "planner_watchdog_stall",
+                stalled_s=f"{stalled_s:.0f}",
+                procedure=self._last_procedure,
+            )
+            task = self._current_proc_task
+            if task is not None and not task.done():
+                self._watchdog_cancelled = True
+                task.cancel()
+            if self._last_procedure:
+                self._proc_breaker.record_failure(self._last_procedure)
+            self._force_fallback_until = _time.time() + self._FALLBACK_WINDOW_S
+            self._last_progress_ts = _time.monotonic()  # re-arm
+            if ctx.bus:
+                ctx.bus.publish("system.stuck", {
+                    "message": (
+                        f"Watchdog: no progress for {stalled_s:.0f}s — "
+                        f"forcing fallback activity"
+                    ),
+                    "importance": 2,
+                })
+
+    async def _fallback_procedure(self, ctx: AgentContext):
+        """Pick a guaranteed-liveness activity for the fallback window.
+
+        Walking always emits wire actions — exactly what the kernel's
+        liveness gate measures — so the last resort is a short walk.
+        """
+        import random
+
+        stalled = self._last_procedure
+        # 1) primary profession work, if it can actually start
+        for name in ("mine_ore", "chop_wood"):
+            if name == stalled:
+                continue
+            proc = self.registry.get(name)
+            if proc is None:
+                continue
+            try:
+                if await proc.can_start(ctx):
+                    return proc
+            except Exception:
+                continue
+        # 2) walk toward a known activity location
+        try:
+            proc = await self._roaming.try_move_to_activity(ctx)
+            if proc is not None and getattr(proc, "name", "") != stalled:
+                return proc
+        except Exception:
+            pass
+        # 3) last resort: short random walk
+        ss = ctx.perception.self_state
+        dx = random.choice([-15, -12, -10, 10, 12, 15])
+        dy = random.choice([-15, -12, -10, 10, 12, 15])
+        return _MoveToProcedure("anti_freeze_wander", ss.x + dx, ss.y + dy)
 
     # ------------------------------------------------------------------
     # Stuck / deadlock detection and resolution
@@ -3372,6 +3557,7 @@ class _DesperateExploration:
     vendors or spawns outside the known location set.
     """
 
+    timeout_s = 900.0  # long multi-leg walk — exempt from default cap
     EXPLORE_STEPS = 8
     STEP_MIN = 30
     STEP_MAX = 50
@@ -3633,6 +3819,7 @@ class _SeekResurrection:
     away from the healer and then walk back to trigger the detection.
     """
 
+    timeout_s = 900.0  # cross-town ghost walk — exempt from default cap
     MAX_HEALER_SEARCH_DIST = 18  # tiles to scan for healer NPCs
     RESURRECT_WAIT_TIMEOUT = 10.0  # seconds to wait after approaching
     RESURRECT_POLL_INTERVAL = 2.0

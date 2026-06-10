@@ -42,6 +42,10 @@ class MovementConfig:
     walk_delay_ms: int = 400
     run_delay_ms: int = 200
     turn_delay_ms: int = 100
+    # Master switch for auto-run in go_to (long legs, enough stamina).
+    # Disable via yaml if the deny ratio rises — it feeds the eval
+    # loop penalty.
+    run_enabled: bool = True
 
 
 @dataclass

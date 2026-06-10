@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 from anima.perception.event_stream import EventStream, GameEventType
@@ -124,8 +123,11 @@ class WalkerManager:
         self.walk_sequence = 0
         self.walking_failed = False
         self.consecutive_denials += 1
-        # Short cooldown — just enough for path recalculation
-        self.last_step_time = asyncio.get_event_loop().time() * 1000 + 200
+        # Short cooldown — just enough for path recalculation.
+        # time.monotonic() is the same clock as the asyncio loop's
+        # time() on CPython, but also works outside a running loop
+        # (packet handlers are dispatched synchronously in tests).
+        self.last_step_time = time.monotonic() * 1000 + 200
         # Invalidate path cache so next step recalculates with denied tile
         self._path_dirty = True
         self.sync_position(x, y, z, direction)
@@ -146,7 +148,7 @@ class WalkerManager:
         )
 
     def can_walk(self) -> bool:
-        now = asyncio.get_event_loop().time() * 1000
+        now = time.monotonic() * 1000
         # Auto-reset stale walk state: if steps_count > 0 but no
         # confirm/deny arrived for 5 seconds, the server has lost track
         # of our walk packets.  Reset to recover.

@@ -250,3 +250,122 @@ class TestFindClosedDoorAt:
         ctx = self._make_ctx(door_x=2525, door_y=548)
         # Diagonal neighbor (2524, 547) — also must not match.
         assert _find_closed_door_at(ctx, 2524, 547) is None
+
+
+# ---------------------------------------------------------------------------
+# Run (달리기) activation in go_to
+# ---------------------------------------------------------------------------
+
+
+class TestRunActivation:
+    def _ss(self, stam=100, stam_max=100):
+        ss = MagicMock()
+        ss.stam = stam
+        ss.stam_max = stam_max
+        return ss
+
+    def _cfg(self, run_enabled=True):
+        cfg = MagicMock()
+        cfg.movement.run_enabled = run_enabled
+        return cfg
+
+    def test_should_run_long_leg_full_stam(self):
+        from anima.action.movement import _should_run
+
+        assert _should_run(self._ss(), remaining=20, cfg=self._cfg(), override=None)
+
+    def test_should_run_near_target_walks(self):
+        from anima.action.movement import _should_run
+
+        assert not _should_run(self._ss(), remaining=3, cfg=self._cfg(), override=None)
+
+    def test_should_run_low_stamina_walks(self):
+        from anima.action.movement import _should_run
+
+        assert not _should_run(
+            self._ss(stam=10, stam_max=100), remaining=20,
+            cfg=self._cfg(), override=None,
+        )
+
+    def test_should_run_override_wins(self):
+        from anima.action.movement import _should_run
+
+        assert _should_run(
+            self._ss(stam=1, stam_max=100), remaining=1,
+            cfg=self._cfg(), override=True,
+        )
+        assert not _should_run(
+            self._ss(), remaining=50, cfg=self._cfg(), override=False,
+        )
+
+    def test_should_run_disabled_by_config(self):
+        from anima.action.movement import _should_run
+
+        assert not _should_run(
+            self._ss(), remaining=50, cfg=self._cfg(run_enabled=False),
+            override=None,
+        )
+
+    def test_should_run_unknown_stamina_walks(self):
+        from anima.action.movement import _should_run
+
+        assert not _should_run(
+            self._ss(stam=0, stam_max=0), remaining=50,
+            cfg=self._cfg(), override=None,
+        )
+
+    def test_run_bit_in_walk_packet(self):
+        from anima.client.packets import build_walk_request
+
+        pkt = build_walk_request(2 | 0x80, 1, 0)
+        assert pkt[0] == 0x02
+        assert pkt[1] == 0x82
+
+    @pytest.mark.asyncio
+    async def test_go_to_runs_far_walks_near(self):
+        """go_to sets the 0x80 run bit on long legs, drops it near target."""
+        from anima.action import movement
+        from anima.action.movement import go_to
+
+        ctx = MagicMock()
+        ss = ctx.perception.self_state
+        ss.x, ss.y, ss.z = 100, 100, 0
+        ss.direction = 2  # already facing east — no turn packets
+        ss.stam, ss.stam_max = 100, 100
+        ctx.conn.connected = True
+        ctx.cfg.movement.walk_delay_ms = 1
+        ctx.cfg.movement.run_delay_ms = 1
+        ctx.cfg.movement.run_enabled = True
+        ctx.walker.denied_tiles = {}
+        ctx.walker.next_sequence = MagicMock(return_value=1)
+        ctx.walker.pop_fast_walk_key = MagicMock(return_value=0)
+
+        sent_dirs: list[int] = []
+        remaining_at_send: list[int] = []
+        target_x = 130
+
+        async def _send(pkt: bytes):
+            if pkt and pkt[0] == 0x02:
+                sent_dirs.append(pkt[1])
+                remaining_at_send.append(target_x - ss.x)
+                ss.x += 1  # server confirms the eastward step
+
+        ctx.conn.send_packet = AsyncMock(side_effect=_send)
+
+        def _fake_path(mr, sx, sy, tx, ty, **kw):
+            return [(x, 100) for x in range(sx + 1, target_x)]
+
+        with (
+            patch.object(movement, "find_path", side_effect=_fake_path),
+            patch.object(movement, "_get_door_positions", return_value=set()),
+            patch.object(movement, "_find_closed_door_at", return_value=None),
+        ):
+            arrived = await go_to(ctx, target_x, 100)
+
+        assert arrived is True
+        assert sent_dirs, "no walk packets captured"
+        for dir_byte, rem in zip(sent_dirs, remaining_at_send):
+            if rem >= movement.RUN_MIN_REMAINING:
+                assert dir_byte & 0x80, f"expected run bit at remaining={rem}"
+            else:
+                assert not (dir_byte & 0x80), f"expected walk at remaining={rem}"

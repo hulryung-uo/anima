@@ -51,6 +51,10 @@ class Procedure(ABC):
 
     name: str = ""
     description: str = ""
+    # Per-procedure execution cap. None → planner default (_PROC_TIMEOUT_S).
+    # The planner cancels execute() past this; long-running procedures
+    # (mining tours, resurrection walks) should set a generous override.
+    timeout_s: float | None = None
 
     @abstractmethod
     async def can_start(self, ctx: AgentContext) -> bool:

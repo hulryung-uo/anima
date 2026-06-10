@@ -23,6 +23,7 @@ logger = structlog.get_logger()
 
 
 class ChopWood(Procedure):
+    timeout_s = 600.0  # full gather tours run long — generous anti-freeze cap
     name = "chop_wood"
     description = "Use hatchet on a tree to chop wood."
 

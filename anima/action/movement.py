@@ -22,6 +22,27 @@ _DIR_NAMES = {
     0: "N", 1: "NE", 2: "E", 3: "SE", 4: "S", 5: "SW", 6: "W", 7: "NW",
 }
 
+# Auto-run policy: run on long legs with enough stamina, walk for
+# precision near the target. The 0x80 run bit rides on the direction
+# byte of the 0x02 walk packet; server cadence for unmounted run is
+# run_delay_ms (200) vs walk_delay_ms (400).
+RUN_FLAG = 0x80
+RUN_MIN_REMAINING = 8     # tiles left — below this, walk for precision
+RUN_MIN_STAM_PCT = 30.0   # don't run toward the stam==0 walk lockout
+
+
+def _should_run(ss, remaining: int, cfg, override: bool | None) -> bool:
+    """Decide walk vs run for the next step of go_to."""
+    if override is not None:
+        return override
+    if not getattr(cfg.movement, "run_enabled", True):
+        return False
+    if remaining < RUN_MIN_REMAINING:
+        return False
+    if ss.stam_max <= 0:  # stamina unknown — be conservative
+        return False
+    return (ss.stam / ss.stam_max) * 100.0 >= RUN_MIN_STAM_PCT
+
 
 async def go_to(
     ctx: BrainContext,
@@ -29,6 +50,7 @@ async def go_to(
     target_y: int,
     interrupt_check: Callable[[], bool] | None = None,
     exact: bool = False,
+    run: bool | None = None,
 ) -> bool:
     """Pathfind and walk step-by-step to (target_x, target_y).
 
@@ -39,6 +61,7 @@ async def go_to(
     - Opens closed doors automatically when blocked
     - Interrupt callback for survival checks between steps
     - Scales max_steps with distance (long-distance travel supported)
+    - Auto-runs on long legs (run=None); run=True/False forces the mode
     """
     ss = ctx.perception.self_state
     step_delay = ctx.cfg.movement.walk_delay_ms / 1000.0
@@ -326,13 +349,19 @@ async def go_to(
             continue
 
         # Move packet — set _pending_step_tile for position tracking
+        use_run = _should_run(ss, remaining, ctx.cfg, run)
         ctx.walker._pending_step_tile = (next_x, next_y)
         move_seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
-        await ctx.conn.send_packet(build_walk_request(direction, move_seq, fastwalk))
+        await ctx.conn.send_packet(build_walk_request(
+            direction | (RUN_FLAG if use_run else 0), move_seq, fastwalk,
+        ))
         ctx.walker.steps_count += 1
         ctx.walker.last_step_time = (
-            asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
+            asyncio.get_event_loop().time() * 1000 + (
+                ctx.cfg.movement.run_delay_ms if use_run
+                else ctx.cfg.movement.walk_delay_ms
+            )
         )
         steps_taken += 1
 

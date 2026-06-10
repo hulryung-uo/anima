@@ -45,6 +45,7 @@ def _trip_bank(ctx: "AgentContext", tx: int, ty: int) -> tuple[int, int]:
 
 
 class MineOre(Procedure):
+    timeout_s = 600.0  # full gather tours run long — generous anti-freeze cap
     name = "mine_ore"
     description = "Use pickaxe on a mountain/cave tile to mine ore."
 
