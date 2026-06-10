@@ -100,6 +100,7 @@ def mutate_with_claude(
     target_cell: tuple | None,
     timeout: int = 900,
     model: str = "sonnet",
+    log_path: str | Path | None = None,
 ) -> MutationResult:
     """Invoke headless Claude Code to mutate anima/ and commit one variant."""
     if target_cell is not None:
@@ -120,7 +121,7 @@ def mutate_with_claude(
 
     before = head(repo)
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [
                 "claude", "-p", prompt,
                 "--model", model,
@@ -130,11 +131,19 @@ def mutate_with_claude(
             cwd=str(repo),
             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
         )
+        if log_path:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(log_path).write_text(
+                f"# exit={proc.returncode}\n## STDOUT\n{proc.stdout}\n"
+                f"## STDERR\n{proc.stderr}\n"
+            )
     except FileNotFoundError:
         return MutationResult(False, error="claude CLI not found")
     except subprocess.TimeoutExpired:
         # claude may have committed before timing out; fall through to check git.
-        pass
+        if log_path:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(log_path).write_text(f"# TIMEOUT after {timeout}s\n")
 
     # fold any uncommitted leftovers into a variant commit
     _commit_all(repo, "foundry-mutation: (auto-commit leftover changes)")

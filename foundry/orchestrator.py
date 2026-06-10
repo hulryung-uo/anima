@@ -222,14 +222,21 @@ def run(rc: RunConfig) -> Archive:
 
             # --- mutate ----------------------------------------------------
             if rc.backend == "claude":
-                mr = mutate.mutate_with_claude(wt, parent_obs, parent, target,
-                                               timeout=rc.mutate_timeout,
-                                               model=rc.mutate_model)
+                mr = mutate.mutate_with_claude(
+                    wt, parent_obs, parent, target,
+                    timeout=rc.mutate_timeout, model=rc.mutate_model,
+                    log_path=ANIMA_ROOT / "data" / "eval_logs" / f"mutate-{rc.run_id}-c{i}.log",
+                )
             else:
                 mr = mutate.mutate_noop(wt, parent)
             out.mutation = mr
             print(f"[cycle {i}] mutation: changed={mr.changed} "
                   f"hypothesis={mr.hypothesis!r}{(' err=' + mr.error) if mr.error else ''}")
+            if rc.backend == "claude" and not mr.changed:
+                # no variant to score — don't burn an eval window re-running
+                # the parent (noop backend exists for that on purpose).
+                out.error = f"mutation produced no commit: {mr.error or 'unknown'}"
+                return
 
             # --- anti-gaming: discard any kernel change before anything else
             safety.revert_kernel(wt, pinned)
