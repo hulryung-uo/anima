@@ -282,8 +282,21 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
             cwd=agent_cwd,
         )
 
-        # 3) wait for the agent to actually enter the world
-        info = gmmod.wait_login_confirm(traj, cfg.login_timeout_s)
+        # 3) wait for the agent to actually enter the world — in short slices
+        #    so a variant that crashes at import fails the eval immediately
+        #    instead of burning the whole login timeout.
+        info = None
+        login_deadline = time.monotonic() + cfg.login_timeout_s
+        watch = gmmod.JsonlWatch(traj)
+        while time.monotonic() < login_deadline:
+            info = gmmod.wait_login_confirm(traj, 5.0, watch=watch)
+            if info is not None:
+                break
+            if agent.poll() is not None:
+                return EvalResult(
+                    False, error=f"agent exited rc={agent.returncode} before login",
+                    trajectory_path=str(traj),
+                )
         if info is None:
             return EvalResult(
                 False, error="agent never entered the world (no 0x1B)",
