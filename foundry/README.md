@@ -3,7 +3,7 @@
 A self-developing agent system: it evolves a population of UO-playing agents
 (the `anima/` package is the genome body) by mutating their code, evaluating each
 variant against a live ServUO shard, and archiving the best of every behavioral
-kind (MAP-Elites). Full design: [`docs/FOUNDRY.md`](../docs/FOUNDRY.md).
+kind (MAP-Elites). Full design: [`docs/FOUNDRY.md`](../docs/FOUNDRY.md). Architecture diagrams: [`docs/foundry-architecture.md`](../docs/foundry-architecture.md).
 
 ## Layout
 
