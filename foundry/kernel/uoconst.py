@@ -109,6 +109,7 @@ CS_TARGET = 0x6C
 CS_VENDOR_BUY = 0x3B
 CS_VENDOR_SELL = 0x9F
 CS_EQUIP_REQ = 0x13
+CS_TEXT_COMMAND = 0x12  # UseSkill ("skill id 0") / CastSpell ("spell id")
 
 # Which C->S pids count as a deliberate action, grouped for descriptor fractions.
 ACTION_GROUP: dict[int, str] = {
@@ -123,4 +124,10 @@ ACTION_GROUP: dict[int, str] = {
     CS_VENDOR_BUY: "trade",
     CS_VENDOR_SELL: "trade",
     CS_EQUIP_REQ: "use",
+    # UseSkill/CastSpell are as deliberate as a tool double-click.
+    # Omitting 0x12 made skill-only professions (Hiding, Meditation,
+    # Magery grinds) read as frozen — liveness gate collapse — and
+    # inflated their sociability to speech/speech. The target reply
+    # (0x6C) stays excluded so use→target flows don't double-count.
+    CS_TEXT_COMMAND: "skill",
 }

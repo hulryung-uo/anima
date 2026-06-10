@@ -104,3 +104,17 @@ def test_archive_insertion_and_persistence(tmp_path):
     arc2 = Archive(tmp_path / "arc")
     assert arc2.grid == arc.grid
     assert arc2.get_elite(("GATHERING", 0)).fitness == 2.0
+
+
+def test_use_skill_counts_as_action():
+    """0x12 (UseSkill/CastSpell) must count toward liveness/actions.
+
+    Regression: skill-only professions (Hiding, Meditation grinds) read
+    as frozen — gate collapse — because 0x12 was missing from
+    ACTION_GROUP, and their sociability inflated to speech/speech.
+    """
+    from foundry.kernel import uoconst
+
+    assert uoconst.ACTION_GROUP.get(0x12) == "skill"
+    # The use→target flow must not double-count: target reply excluded.
+    assert uoconst.CS_TARGET not in uoconst.ACTION_GROUP
