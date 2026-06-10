@@ -71,6 +71,9 @@ toward zero.
 - Edit ONLY files under `anima/`. NEVER touch `foundry/kernel/` (the fitness ruler —
   editing it is cheating and will be reverted anyway).
 - Make ONE focused, minimal change tied to a clear hypothesis. Do not refactor.
+- You have a hard wall-clock budget (~15-20 min). Commit a small working change
+  EARLY rather than perfecting a large one — an uncommitted mutation scores
+  nothing and the cycle is wasted.
 - The agent is driven by the v2 rule-based planner: `anima/planner/planner.py`
   (priority selection) and `anima/procedures/*.py` (mine/smelt/craft/sell/etc).
   Movement is `anima/action/movement.py`. Persona templates:

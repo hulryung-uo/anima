@@ -55,7 +55,7 @@ class RunConfig:
     base_proxy_port: int = 2630
     base_web_port: int = 8170
     archive_root: str = "foundry/archive"
-    mutate_timeout: int = 900
+    mutate_timeout: int = 1500          # EXPLORE mutations + worktree pytest run long
     run_id: str = ""                    # account-name nonce; default = time-based
 
     def __post_init__(self) -> None:
@@ -313,7 +313,7 @@ def _main(argv: list[str]) -> int:
     ap.add_argument("--seeds", type=int, default=1)
     ap.add_argument("--fixed-start", default="miner")
     ap.add_argument("--model", default="sonnet", help="mutator model (cost tiering)")
-    ap.add_argument("--mutate-timeout", type=int, default=900)
+    ap.add_argument("--mutate-timeout", type=int, default=1500)
     ap.add_argument("--archive", default="foundry/archive")
     args = ap.parse_args(argv)
 
