@@ -369,3 +369,44 @@ class TestRunActivation:
                 assert dir_byte & 0x80, f"expected run bit at remaining={rem}"
             else:
                 assert not (dir_byte & 0x80), f"expected walk at remaining={rem}"
+
+
+# ---------------------------------------------------------------------------
+# anima.actions façade + docs/actions.md sync
+# ---------------------------------------------------------------------------
+
+
+class TestActionsFacade:
+    def test_all_exports_resolve(self):
+        """Every façade export must import and be callable (or a type)."""
+        import anima.actions as actions
+
+        for name in actions.__all__:
+            obj = getattr(actions, name)
+            assert callable(obj) or isinstance(obj, type), name
+
+    def test_unknown_attribute_raises(self):
+        import anima.actions as actions
+
+        with pytest.raises(AttributeError):
+            actions.definitely_not_a_primitive  # noqa: B018
+
+    def test_docs_catalog_covers_facade_and_procedures(self):
+        """docs/actions.md must mention every export and procedure name."""
+        from pathlib import Path
+
+        import anima.actions as actions
+
+        doc = (Path(__file__).parent.parent / "docs" / "actions.md").read_text()
+        for name in actions.__all__:
+            assert name in doc, f"docs/actions.md missing façade export: {name}"
+
+        import re
+        proc_dir = Path(__file__).parent.parent / "anima" / "procedures"
+        for py in proc_dir.glob("*.py"):
+            for proc_name in re.findall(
+                r'^\s{4}name = "([a-z_]+)"$', py.read_text(), re.MULTILINE,
+            ):
+                assert proc_name in doc, (
+                    f"docs/actions.md missing procedure: {proc_name} ({py.name})"
+                )

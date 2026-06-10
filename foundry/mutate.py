@@ -78,6 +78,11 @@ toward zero.
   (priority selection) and `anima/procedures/*.py` (mine/smelt/craft/sell/etc).
   Movement is `anima/action/movement.py`. Persona templates:
   `anima/client/appearance.py` (PERSONA_SKILLS/PERSONA_STATS) + `personas/*.yaml`.
+- BEFORE coding, read `docs/actions.md` IF PRESENT in this worktree — the
+  authoritative catalog of every action primitive and procedure (signatures,
+  preconditions, failure modes, freeze traps). When it exists, import
+  primitives from the `anima.actions` façade instead of re-implementing
+  packet flows. (Older lineages predate the doc — skip this if absent.)
 - Run `uv run --all-extras pytest tests/ -q -x --ignore=tests/foundry` —
   only commit if green.
 - Commit ALL your changes with EXACTLY this subject form so the system can read
