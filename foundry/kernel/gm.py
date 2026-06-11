@@ -97,7 +97,11 @@ FIXED_START_PROFILES: dict[str, dict] = {
         # consumables. Blacksmith pinned to the gain window; creation-50
         # Mining left high so smelting gains stay subordinate to smithing.
         "skills": {"Blacksmith": 35.0},
-        "items": ["Tongs", "IronIngot 60"],
+        # 300 ingots ≈ a full window of practice (a failed craft loses ~10;
+        # 60 ran dry in ~90s and the agent fell back to mining — same
+        # rationale as the mage's 50-per-reagent: the trade's consumable
+        # must outlast the eval window). ~30 stones, fine at STR 60.
+        "items": ["Tongs", "IronIngot 300"],
         # Workstations spawned on the GM tile (same reachability argument
         # as the warrior arena). Items are not wiped by [WipeNPCs and will
         # stack across crafter evals — functionally harmless ("an anvil
