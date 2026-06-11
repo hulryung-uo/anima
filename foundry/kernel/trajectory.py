@@ -438,14 +438,24 @@ def _on_server(
         if not baseline:
             summ.steps_denied += 1
 
-    elif pid == P_ADD_TO_CONTAINER and len(data) >= 21:
+    elif pid == P_ADD_TO_CONTAINER and len(data) >= 20:
+        # ServUO sends two variants (Packets.cs ContainerContentUpdate):
+        #   20 bytes: [0x25][serial u32][graphic u16][inc u8][amount u16]
+        #             [x u16][y u16][container u32][hue u16]
+        #   21 bytes (clients ≥6.0.1.7, ours reports 7.0.102.3): same with a
+        #             [grid u8] inserted before container.
+        # The old parse skipped only 2 of x,y's 4 bytes, reading `container`
+        # from garbage — the owned-backpack match NEVER fired and
+        # produce_term credited nothing for the project's whole history
+        # (calibration fix 2026-06-12).
         r = _Reader(data, 1)
         item_serial = r.u32()
         graphic = r.u16()
         r.skip(1)
         amount = r.u16()
-        r.skip(2)                # x, y
-        r.skip(1)                # grid index
+        r.skip(4)                # x u16, y u16
+        if len(data) >= 21:
+            r.skip(1)            # grid index (6017+ format)
         container = r.u32()
         if container in owned:
             if not baseline:

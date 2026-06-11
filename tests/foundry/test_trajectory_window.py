@@ -51,13 +51,22 @@ def p_skill_single(skill_id: int, value10: int) -> bytes:
     return bytes(d)
 
 
-def p_add_to_container(item: int, graphic: int, amount: int, container: int) -> bytes:
-    d = bytearray(21)
+def p_add_to_container(item: int, graphic: int, amount: int, container: int,
+                       grid_byte: bool = True) -> bytes:
+    """0x25 per ServUO Packets.cs ContainerContentUpdate(6017).
+
+    21-byte 6017 layout (what our 7.0.102.3 client receives): container at
+    offset 15, after the grid byte. grid_byte=False emits the legacy 20-byte
+    layout (container at 14). The old builder packed container at 13 in a
+    21-byte buffer — matching the parser's off-by-two bug (it skipped only
+    2 of x,y's 4 bytes), so the test used to confirm the bug.
+    """
+    d = bytearray(21 if grid_byte else 20)
     d[0] = 0x25
     struct.pack_into(">I", d, 1, item)
     struct.pack_into(">H", d, 5, graphic)
     struct.pack_into(">H", d, 8, amount)
-    struct.pack_into(">I", d, 13, container)
+    struct.pack_into(">I", d, 15 if grid_byte else 14, container)
     return bytes(d)
 
 
@@ -209,3 +218,18 @@ def test_damage_attribution_and_entity_census(tmp_path):
     assert s.damage_dealt == 11
     assert s.damage_taken == 7
     assert s.entities_seen == 2          # A and B, self excluded
+
+
+def test_add_to_container_both_formats(tmp_path):
+    """0x25 owned-pack credit works for legacy (20B) and 6017 (21B) layouts."""
+    lines = [
+        _line(10.0, "S->C", p_login_confirm(SELF, 2500, 400)),
+        _line(14.0, "S->C", p_add_to_container(0x4001, 0x0E85, 1, SELF)),
+        _line(21.0, "S->C", p_add_to_container(0x4002, 0x1441, 1, SELF)),
+        _line(22.0, "S->C", p_add_to_container(0x4003, 0x19B5, 3, SELF, grid_byte=False)),
+        _line(23.0, "S->C", p_add_to_container(0x4004, 0x0F51, 1, 0x40009999)),  # not ours
+    ]
+    f = _write(tmp_path, lines)
+    s = parse_file(f, window_start=20.0)
+    got = [(g, a) for g, a, _ in s.items_into_pack]
+    assert got == [(0x1441, 1), (0x19B5, 3)]
