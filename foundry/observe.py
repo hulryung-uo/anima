@@ -52,7 +52,11 @@ def history(archive: Archive, limit: int = 12) -> str:
     gs = archive.all_genomes()
     if not gs:
         return ""
-    lines = ["## Prior mutations and what actually happened (learn from these)"]
+    lines = ["## Current cell elites — the PROVEN recipes (mine these for tricks)"]
+    for e in sorted(archive.elites(), key=lambda g: -g.fitness):
+        lines.append(f"- {e.cell} {e.fitness:.2f} ({e.id}): “{e.hypothesis}”")
+    lines.append("")
+    lines.append("## Prior mutations and what actually happened (learn from these)")
     for g in gs[-limit:]:
         bd = g.eval.get("breakdown", {})
         notes: list[str] = []
