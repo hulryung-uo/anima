@@ -14,6 +14,7 @@ Anima is a Python-based AI player system for Ultima Online. It connects to a UO 
 - `docs/implementation-plan.md` — Concrete implementation plan (module mapping, code sketches)
 - `docs/skill-system.md` — Skill system design (skill catalog, packet requirements, file structure)
 - `docs/reinforcement-learning.md` — **RL 학습 방법론** (Q-learning, UCB1, state encoding, reward signals, LLM 연동)
+- `docs/wiki-integration.md` — **uowiki 연동 가이드** (MCP tools for Claude Code sessions, importable functions for the runtime, report rules)
 - ClassicUO source: `~/dev/uo/classicuo/` (C# reference client)
 
 ## Code Conventions
