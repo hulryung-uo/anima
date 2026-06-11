@@ -260,3 +260,60 @@ class TestPersonaSkillIds:
         assert PERSONA_SKILLS["bard"] [1][0] == 9    # Peacemaking
         assert PERSONA_SKILLS["thief"][0][0] == 21   # Hiding
         assert PERSONA_SKILLS["thief"][1][0] == 47   # Stealth
+
+
+class TestCombatKillDetection:
+    @pytest.mark.asyncio
+    async def test_unknown_health_is_not_a_kill(self):
+        """Default hits=0 (never status-queried) must NOT read as dead.
+
+        Regression: the live warrior probe re-targeted every tick
+        (95 'kills' in 95s), never landing a swing — zero skill gain.
+        """
+        import asyncio as _asyncio
+
+        from anima.perception.enums import NotorietyFlag
+        from anima.procedures import combat_loop as cl
+
+        ctx = _make_ctx()
+        # Katana already equipped (creation grants it worn)
+        ctx.perception.self_state.equipment[1] = 0x9004
+        mob = MagicMock(serial=0xA1, x=101, y=200, body=0x05,
+                        notoriety=NotorietyFlag.ATTACKABLE,
+                        hits=0, hits_max=0)  # health never queried
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[mob])
+        ctx.perception.world.mobiles = {0xA1: mob}
+
+        proc = cl.HuntNearby()
+        with patch.object(cl, "ENGAGEMENT_CAP_S", 0.25), \
+             patch.object(cl, "TICK_S", 0.05):
+            result = await proc.run(ctx)
+
+        # One engagement, no phantom kills
+        assert "0 kills" in result.message or "kills" not in result.message \
+            or result.details.get("kills", 0) == 0 or "Combat: 0 kills" in result.message
+
+    @pytest.mark.asyncio
+    async def test_removed_mobile_counts_as_kill(self):
+        from anima.perception.enums import NotorietyFlag
+        from anima.procedures import combat_loop as cl
+
+        ctx = _make_ctx()
+        ctx.perception.self_state.equipment[1] = 0x9004
+        mob = MagicMock(serial=0xA1, x=101, y=200, body=0x05,
+                        notoriety=NotorietyFlag.ATTACKABLE,
+                        hits=0, hits_max=0)
+        targets = [[mob], []]  # first scan finds it, after kill: none
+
+        def _nearby(*a, **k):
+            return targets[0] if len(targets) == 1 else targets.pop(0)
+
+        ctx.perception.world.nearby_mobiles = MagicMock(side_effect=_nearby)
+        ctx.perception.world.mobiles = {}  # already removed → dead on first check
+
+        proc = cl.HuntNearby()
+        with patch.object(cl, "ENGAGEMENT_CAP_S", 0.25), \
+             patch.object(cl, "TICK_S", 0.05):
+            result = await proc.run(ctx)
+
+        assert "1 kills" in result.message

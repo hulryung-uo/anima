@@ -132,7 +132,14 @@ class HuntNearby(Procedure):
                     break
 
                 current = ctx.perception.world.mobiles.get(target.serial)
-                if current is None or getattr(current, "hits", 1) <= 0:
+                # Dead = removed from the world, or a KNOWN health bar at
+                # zero. MobileInfo defaults hits/hits_max to 0 for mobiles
+                # we never queried — treating that as dead made this loop
+                # re-target every tick and never land a swing.
+                target_dead = current is None or (
+                    current.hits_max > 0 and current.hits <= 0
+                )
+                if target_dead:
                     kills += 1
                     target = _find_target(ctx)
                     if target is None:
