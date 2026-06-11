@@ -325,6 +325,9 @@ class StatePublisher:
             "ts": time.time(),
             "status": {
                 "name": persona.name if persona else "Anima",
+                "title": getattr(persona, "title", "") if persona else "",
+                "persona": getattr(persona, "persona_type", "") if persona else "",
+                "serial": ss.serial,
                 "hp": ss.hits, "hp_max": ss.hits_max,
                 "mana": ss.mana, "mana_max": ss.mana_max,
                 "stam": ss.stam, "stam_max": ss.stam_max,

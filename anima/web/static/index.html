@@ -1,235 +1,281 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Anima Dashboard</title>
 <style>
 :root {
-  --bg: #0d1117; --bg2: #161b22; --border: #30363d;
-  --text: #c9d1d9; --text2: #8b949e; --accent: #58a6ff;
+  --bg: #0b0e14; --bg2: #11151d; --bg3: #181d28; --border: #262d3b;
+  --text: #cdd6e4; --text2: #7d8799; --accent: #58a6ff;
   --green: #3fb950; --yellow: #d29922; --red: #f85149;
-  --cyan: #39d2e0; --orange: #db6d28;
-  --bar-bg: #21262d;
+  --cyan: #39d2e0; --orange: #db6d28; --purple: #bc8cff;
+  --bar-bg: #1c222e;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
 body { background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace; font-size: 13px; }
 
-.dashboard { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: auto auto 1fr auto auto; gap: 8px; padding: 8px; height: 100vh; }
+.dashboard {
+  display: grid;
+  grid-template-columns: 340px 1fr 300px;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  gap: 8px; padding: 8px; height: 100vh;
+}
 
-.panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
-.panel-header { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--accent); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; align-items: center; }
-.panel-body { padding: 8px 10px; overflow-y: auto; flex: 1; font-size: 12px; line-height: 1.6; }
+.panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+.panel-header { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--accent); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+.panel-header .sub { color: var(--text2); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.panel-body { padding: 8px 10px; overflow-y: auto; flex: 1; font-size: 12px; line-height: 1.55; min-height: 0; }
 
-/* Status panel */
-.status-panel { grid-column: 1 / -1; }
-.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 16px; }
-.stat-row { display: flex; align-items: center; gap: 8px; }
-.stat-label { color: var(--text2); min-width: 50px; }
-.stat-value { color: var(--text); font-weight: 600; }
-.bar { flex: 1; height: 14px; background: var(--bar-bg); border-radius: 3px; overflow: hidden; position: relative; }
-.bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
-.bar-text { position: absolute; top: 0; left: 0; right: 0; text-align: center; font-size: 10px; line-height: 14px; color: var(--text); }
+/* ── Top bar: identity + slots ───────────────────────────── */
+.topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; padding: 8px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap; }
+.char-id { display: flex; align-items: baseline; gap: 8px; min-width: 180px; }
+.char-name { font-size: 17px; font-weight: 700; color: #fff; }
+.char-title { color: var(--text2); font-size: 11px; }
+.badge { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
+.badge.dead { background: var(--red); color: #fff; display: none; }
+.badge.paused { background: var(--orange); color: #fff; display: none; }
+.badge.lowhp { background: #6e1b1b; color: #ffb3ad; display: none; }
+.intent-line { flex: 1; min-width: 240px; display: flex; align-items: center; gap: 8px; }
+.intent-ico { color: var(--text2); font-size: 11px; }
+.intent-text { color: var(--cyan); font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.intent-text.warn { color: var(--red); }
+.proc-chip { background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 2px 10px; color: var(--purple); font-size: 11px; white-space: nowrap; }
+.slots { display: flex; gap: 4px; align-items: center; }
+.slot-tab { display: flex; align-items: center; gap: 5px; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; cursor: pointer; font-size: 11px; color: var(--text2); transition: all .15s; user-select: none; }
+.slot-tab:hover { border-color: var(--accent); color: var(--text); }
+.slot-tab.active { background: var(--accent); color: #04111f; border-color: var(--accent); font-weight: 700; }
+.slot-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+.slot-dot.live { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.slot-tab.active .slot-dot.live { background: #04111f; box-shadow: none; }
+
+/* ── Vitals strip ────────────────────────────────────────── */
+.vitals { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)) auto auto auto; gap: 6px 16px; align-items: center; padding: 7px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; }
+.stat-row { display: flex; align-items: center; gap: 7px; }
+.stat-label { color: var(--text2); font-size: 10px; text-transform: uppercase; min-width: 38px; }
+.bar { flex: 1; height: 15px; background: var(--bar-bg); border-radius: 4px; overflow: hidden; position: relative; }
+.bar-fill { height: 100%; border-radius: 4px; transition: width .3s ease, background .3s; }
+.bar-text { position: absolute; inset: 0; text-align: center; font-size: 10px; line-height: 15px; color: #e8edf5; text-shadow: 0 1px 2px rgba(0,0,0,.7); }
 .bar-hp .bar-fill { background: var(--green); }
+.bar-hp.crit .bar-fill { background: var(--red); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .55; } }
 .bar-mana .bar-fill { background: var(--accent); }
 .bar-stam .bar-fill { background: var(--yellow); }
 .bar-weight .bar-fill { background: var(--orange); }
-.pos-value { color: var(--cyan); }
-.gold-value { color: var(--yellow); font-weight: 700; }
+.kv { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.kv .k { color: var(--text2); font-size: 10px; text-transform: uppercase; }
+.kv .v { font-weight: 600; }
+.v.pos { color: var(--cyan); }
+.v.gold { color: var(--yellow); }
 
-/* Agent intent panel */
-.intent-panel { grid-column: 1 / -1; }
-.intent-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline; }
-.intent-label { color: var(--text2); font-size: 12px; white-space: nowrap; }
-.intent-value { color: var(--text); font-size: 12px; }
-.intent-value.highlight { color: var(--cyan); font-weight: 600; }
-.intent-value.move { color: var(--yellow); }
-.intent-value.warn { color: var(--red); }
+/* ── Map (canvas) ────────────────────────────────────────── */
+.map-panel { grid-column: 1; grid-row: 3; }
+#mapcanvas { display: block; width: 100%; image-rendering: pixelated; background: #0a0d12; border-radius: 4px; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 2px 0; color: var(--text2); font-size: 10px; }
+.lg { display: inline-flex; align-items: center; gap: 4px; }
+.sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 
-/* Steering panel */
-.steering-panel { grid-column: 1 / -1; }
-.steering-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.steer-btn { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-family: inherit; font-size: 11px; transition: all 0.15s; }
-.steer-btn:hover { background: var(--accent); color: var(--bg); }
-.steer-btn.active { background: var(--red); color: #fff; border-color: var(--red); }
-.steer-btn.run { background: var(--green); color: var(--bg); border-color: var(--green); }
-.steer-btn.run:hover { opacity: 0.85; }
-.steer-input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-family: inherit; font-size: 11px; width: 80px; }
-.steer-input:focus { border-color: var(--accent); outline: none; }
-.steer-input.wide { width: 160px; }
-.steer-select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-family: inherit; font-size: 11px; }
-.steer-select:focus { border-color: var(--accent); outline: none; }
-.steer-sep { width: 1px; height: 20px; background: var(--border); }
-.steer-label { color: var(--text2); font-size: 11px; }
-.cmd-toast { position: fixed; top: 12px; right: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; font-size: 12px; z-index: 100; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-.cmd-toast.show { opacity: 1; }
-.cmd-toast.ok { border-color: var(--green); color: var(--green); }
-.cmd-toast.err { border-color: var(--red); color: var(--red); }
-.paused-badge { background: var(--red); color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 1px; display: none; }
-
-/* Activity panel */
-.activity-panel { grid-column: 1 / 3; grid-row: 3; min-height: 0; }
-.activity-line { padding: 1px 0; border-bottom: 1px solid var(--border); }
-.activity-line:last-child { border-bottom: none; }
-.activity-ts { color: var(--text2); margin-right: 6px; font-size: 11px; }
-.activity-msg { color: var(--text); }
+/* ── Center: activity ────────────────────────────────────── */
+.center-col { grid-column: 2; grid-row: 3; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.activity-panel { flex: 1; }
+.filters { display: flex; gap: 4px; }
+.filter-btn { background: none; border: 1px solid var(--border); color: var(--text2); border-radius: 4px; font-size: 10px; padding: 1px 7px; cursor: pointer; font-family: inherit; }
+.filter-btn.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.activity-line { padding: 1px 0; display: flex; gap: 6px; align-items: baseline; }
+.activity-ts { color: var(--text2); font-size: 10px; flex-shrink: 0; }
+.activity-tag { font-size: 9px; padding: 0 5px; border-radius: 3px; background: var(--bg3); color: var(--text2); flex-shrink: 0; min-width: 44px; text-align: center; }
+.tag-combat { color: var(--red); } .tag-skill { color: var(--cyan); } .tag-proc { color: var(--purple); } .tag-speech { color: var(--yellow); }
+.activity-msg { color: var(--text); overflow-wrap: anywhere; }
 .activity-msg.success { color: var(--green); }
 .activity-msg.failure { color: var(--red); }
-
-/* Right column */
-.right-col { grid-column: 3; grid-row: 3; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-.inv-item { display: flex; justify-content: space-between; padding: 1px 0; }
-.inv-name { color: var(--text); }
-.inv-amount { color: var(--text2); }
-.mob-row { display: flex; justify-content: space-between; padding: 1px 0; }
-.mob-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mob-pos { color: var(--text2); font-size: 11px; min-width: 60px; text-align: right; }
-.noto-1 { color: var(--accent); }
-.noto-2 { color: var(--text); }
-.noto-3 { color: var(--text2); }
-.noto-4 { color: var(--red); }
-.noto-5 { color: var(--orange); }
-.noto-6 { color: var(--red); }
-.noto-7 { color: var(--yellow); }
-.skill-row { display: flex; justify-content: space-between; padding: 1px 0; }
-.skill-name { color: var(--text); flex: 1; }
-.skill-val { color: var(--cyan); min-width: 50px; text-align: right; }
-.skill-lock { min-width: 16px; text-align: center; }
-
-/* Journal */
-.journal-entry { padding: 1px 0; border-bottom: 1px solid var(--border); }
-.journal-entry:last-child { border-bottom: none; }
 .journal-name { font-weight: 600; margin-right: 4px; }
 .journal-self .journal-name { color: var(--cyan); }
 .journal-text { color: var(--text2); }
 
-/* Minimap */
-.map-panel { grid-column: 1 / -1; }
-.minimap { font-size: 10px; line-height: 1.0; letter-spacing: 1px; white-space: pre; overflow: auto; max-height: 260px; text-align: center; }
-.map-player { color: #fff; font-weight: bold; }
-.map-wall { color: #555; }
-.map-mine { color: var(--yellow); }
-.map-cave { color: var(--orange); }
-.map-mob { color: var(--red); }
-.map-door { color: var(--cyan); }
-.map-goal { color: var(--green); font-weight: bold; }
-.map-tree { color: #2ea043; }
-.map-ground { color: #21262d; }
+/* ── Right column ────────────────────────────────────────── */
+.right-col { grid-column: 3; grid-row: 3; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.right-col .panel { flex: 1; }
+.skill-row { display: grid; grid-template-columns: 1fr 52px 44px; gap: 6px; align-items: center; padding: 1px 0; }
+.skill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-meter { position: relative; height: 11px; background: var(--bar-bg); border-radius: 3px; overflow: hidden; }
+.skill-meter > i { position: absolute; inset: 0 auto 0 0; background: #2f5e8d; border-radius: 3px; }
+.skill-meter > b { position: absolute; inset: 0; font-size: 9px; line-height: 11px; text-align: center; color: #dbe6f2; font-weight: 400; }
+.skill-delta { font-size: 10px; text-align: right; color: var(--text2); }
+.skill-delta.gain { color: var(--green); font-weight: 700; }
+.gain-summary { display: flex; justify-content: space-between; padding: 3px 0 6px; border-bottom: 1px solid var(--border); margin-bottom: 5px; font-size: 11px; }
+.gain-summary b { color: var(--green); }
+.inv-item { display: flex; justify-content: space-between; padding: 1px 0; gap: 8px; }
+.inv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-name.key { color: var(--yellow); }
+.inv-amount { color: var(--text2); flex-shrink: 0; }
+.mob-row { display: flex; justify-content: space-between; padding: 1px 0; gap: 6px; }
+.mob-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mob-pos { color: var(--text2); font-size: 10px; flex-shrink: 0; }
+.noto-1 { color: var(--accent); } .noto-2 { color: var(--green); } .noto-3 { color: var(--text2); }
+.noto-4 { color: var(--text2); } .noto-5 { color: var(--orange); } .noto-6 { color: var(--red); } .noto-7 { color: var(--yellow); }
 
-/* Footer */
-.footer { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; color: var(--text2); font-size: 11px; }
-.ping-good { color: var(--green); }
-.ping-warn { color: var(--yellow); }
-.ping-bad { color: var(--red); }
-.conn-status { display: flex; align-items: center; gap: 4px; }
-.conn-dot { width: 8px; height: 8px; border-radius: 50%; }
+/* ── Steering ────────────────────────────────────────────── */
+.steering-panel { grid-column: 1 / -1; }
+.steering-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 2px 0; }
+.steer-btn { background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 4px 12px; cursor: pointer; font-family: inherit; font-size: 11px; transition: all .15s; }
+.steer-btn:hover { background: var(--accent); color: var(--bg); }
+.steer-btn.active { background: var(--red); color: #fff; border-color: var(--red); }
+.steer-btn.run { background: var(--green); color: var(--bg); border-color: var(--green); }
+.steer-btn.run:hover { opacity: .85; }
+.steer-input, .steer-select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font-family: inherit; font-size: 11px; width: 76px; }
+.steer-input:focus, .steer-select:focus { border-color: var(--accent); outline: none; }
+.steer-input.wide { width: 170px; }
+.steer-select { width: auto; }
+.steer-sep { width: 1px; height: 20px; background: var(--border); }
+.steer-label { color: var(--text2); font-size: 11px; }
+
+/* ── Footer ──────────────────────────────────────────────── */
+.footer { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; padding: 3px 10px; color: var(--text2); font-size: 11px; }
+.conn-status { display: flex; align-items: center; gap: 6px; }
+.conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
 .conn-dot.ok { background: var(--green); }
-.conn-dot.err { background: var(--red); }
+.conn-dot.wait { background: var(--yellow); animation: pulse 1.2s infinite; }
+.ping-good { color: var(--green); } .ping-warn { color: var(--yellow); } .ping-bad { color: var(--red); }
 .stale-warn { color: var(--yellow); }
+
+/* waiting overlay between evals */
+.waiting { position: fixed; inset: 0; background: rgba(8,10,15,.82); display: none; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(2px); }
+.waiting.show { display: flex; }
+.waiting-box { text-align: center; color: var(--text); }
+.spinner { width: 34px; height: 34px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 14px; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.waiting-sub { color: var(--text2); font-size: 11px; margin-top: 6px; }
+
+.cmd-toast { position: fixed; top: 12px; right: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; font-size: 12px; z-index: 100; opacity: 0; transition: opacity .3s; pointer-events: none; }
+.cmd-toast.show { opacity: 1; }
+.cmd-toast.ok { border-color: var(--green); color: var(--green); }
+.cmd-toast.err { border-color: var(--red); color: var(--red); }
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg2); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+@media (max-width: 1100px) {
+  .dashboard { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto auto auto auto auto; height: auto; }
+  .map-panel { grid-column: 1; grid-row: 3; }
+  .center-col { grid-column: 2; grid-row: 3; }
+  .right-col { grid-column: 1 / -1; grid-row: 4; flex-direction: row; }
+}
 </style>
 </head>
 <body>
 <div class="dashboard">
-  <!-- Status -->
-  <div class="panel status-panel">
-    <div class="panel-header">
-      <span>Status</span>
-      <span style="display:flex; align-items:center; gap:8px;">
-        <span class="paused-badge" id="paused-badge">PAUSED</span>
-        <span id="char-name">Anima</span>
-      </span>
+
+  <!-- Top bar: who / what / where to watch -->
+  <div class="topbar">
+    <div class="char-id">
+      <span class="char-name" id="char-name">—</span>
+      <span class="char-title" id="char-title"></span>
+      <span class="badge dead" id="badge-dead">DEAD</span>
+      <span class="badge lowhp" id="badge-lowhp">LOW HP</span>
+      <span class="badge paused" id="badge-paused">PAUSED</span>
     </div>
-    <div class="panel-body">
-      <div class="status-grid">
-        <div class="stat-row">
-          <span class="stat-label">HP</span>
-          <div class="bar bar-hp"><div class="bar-fill" id="hp-bar"></div><div class="bar-text" id="hp-text"></div></div>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Mana</span>
-          <div class="bar bar-mana"><div class="bar-fill" id="mana-bar"></div><div class="bar-text" id="mana-text"></div></div>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Stam</span>
-          <div class="bar bar-stam"><div class="bar-fill" id="stam-bar"></div><div class="bar-text" id="stam-text"></div></div>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Weight</span>
-          <div class="bar bar-weight"><div class="bar-fill" id="weight-bar"></div><div class="bar-text" id="weight-text"></div></div>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Pos</span>
-          <span class="stat-value pos-value" id="pos-value"></span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Gold</span>
-          <span class="stat-value gold-value" id="gold-value"></span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Stats</span>
-          <span class="stat-value" id="stats-value"></span>
-        </div>
+    <div class="intent-line">
+      <span class="intent-ico">판단</span>
+      <span class="intent-text" id="intent-value">—</span>
+      <span class="proc-chip" id="procedure-value">idle</span>
+    </div>
+    <div class="slots" id="slot-tabs"></div>
+  </div>
+
+  <!-- Vitals -->
+  <div class="vitals">
+    <div class="stat-row"><span class="stat-label">HP</span>
+      <div class="bar bar-hp" id="hp-wrap"><div class="bar-fill" id="hp-bar"></div><div class="bar-text" id="hp-text"></div></div></div>
+    <div class="stat-row"><span class="stat-label">Mana</span>
+      <div class="bar bar-mana"><div class="bar-fill" id="mana-bar"></div><div class="bar-text" id="mana-text"></div></div></div>
+    <div class="stat-row"><span class="stat-label">Stam</span>
+      <div class="bar bar-stam"><div class="bar-fill" id="stam-bar"></div><div class="bar-text" id="stam-text"></div></div></div>
+    <div class="stat-row"><span class="stat-label">Weight</span>
+      <div class="bar bar-weight"><div class="bar-fill" id="weight-bar"></div><div class="bar-text" id="weight-text"></div></div></div>
+    <div class="kv"><span class="k">Pos</span><span class="v pos" id="pos-value">—</span></div>
+    <div class="kv"><span class="k">Gold</span><span class="v gold" id="gold-value">—</span></div>
+    <div class="kv"><span class="k">S/D/I</span><span class="v" id="stats-value">—</span></div>
+  </div>
+
+  <!-- Map + nearby -->
+  <div class="panel map-panel">
+    <div class="panel-header"><span>Map</span><span class="sub" id="map-pos"></span></div>
+    <div class="panel-body" style="overflow:hidden; display:flex; flex-direction:column;">
+      <canvas id="mapcanvas" width="328" height="328"></canvas>
+      <div class="map-legend">
+        <span class="lg"><span class="sw" style="background:#ffffff"></span>나</span>
+        <span class="lg"><span class="sw" style="background:#8d6e2f"></span>광맥</span>
+        <span class="lg"><span class="sw" style="background:#b35b22"></span>동굴</span>
+        <span class="lg"><span class="sw" style="background:#3a4356"></span>벽</span>
+        <span class="lg"><span class="sw" style="background:#2ea043"></span>나무</span>
+        <span class="lg"><span class="sw" style="background:#f85149"></span>몹</span>
+        <span class="lg"><span class="sw" style="background:#39d2e0"></span>문</span>
+        <span class="lg"><span class="sw" style="background:#3fb950"></span>목표</span>
+        <span class="lg"><span class="sw" style="background:#264f78"></span>궤적</span>
+      </div>
+      <div class="panel" style="margin-top:8px; flex:1;">
+        <div class="panel-header"><span>Nearby</span><span class="sub" id="nearby-count"></span></div>
+        <div class="panel-body" id="nearby-body"></div>
       </div>
     </div>
   </div>
 
-  <!-- Agent Intent -->
-  <div class="panel intent-panel">
-    <div class="panel-header"><span>Agent Intent</span></div>
-    <div class="panel-body">
-      <div class="intent-grid">
-        <span class="intent-label">판단</span>
-        <span class="intent-value highlight" id="intent-value">—</span>
-        <span class="intent-label">실행 중</span>
-        <span class="intent-value" id="procedure-value">—</span>
-        <span class="intent-label">이동 목표</span>
-        <span class="intent-value move" id="move-target-value">—</span>
-        <span class="intent-label">목표</span>
-        <span class="intent-value" id="goal-value">—</span>
+  <!-- Center: activity + journal merged -->
+  <div class="center-col">
+    <div class="panel activity-panel">
+      <div class="panel-header">
+        <span>Activity</span>
+        <div class="filters">
+          <button class="filter-btn on" data-f="all" onclick="setFilter(this)">전체</button>
+          <button class="filter-btn" data-f="proc" onclick="setFilter(this)">행동</button>
+          <button class="filter-btn" data-f="speech" onclick="setFilter(this)">대화</button>
+          <button class="filter-btn" data-f="combat" onclick="setFilter(this)">전투</button>
+        </div>
       </div>
+      <div class="panel-body" id="activity-body"></div>
+    </div>
+  </div>
+
+  <!-- Right column -->
+  <div class="right-col">
+    <div class="panel" style="flex:1.4;">
+      <div class="panel-header"><span>Skills</span><span class="sub" id="skills-total"></span></div>
+      <div class="panel-body">
+        <div class="gain-summary"><span>세션 게인 <b id="gain-total">+0.0</b></span><span><b id="gain-rate">0.0</b>/h</span></div>
+        <div id="skills-body"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><span>Inventory</span><span class="sub" id="inv-count"></span></div>
+      <div class="panel-body" id="inventory-body"></div>
     </div>
   </div>
 
   <!-- Steering -->
   <div class="panel steering-panel">
     <div class="panel-header"><span>Steering</span></div>
-    <div class="panel-body" style="padding: 6px 10px;">
+    <div class="panel-body" style="padding:6px 10px; overflow:visible;">
       <div class="steering-bar">
-        <!-- Pause/Resume -->
         <button class="steer-btn" id="btn-pause" onclick="sendCmd({cmd:'pause'})">Pause</button>
         <button class="steer-btn run" id="btn-resume" onclick="sendCmd({cmd:'resume'})">Resume</button>
-
         <div class="steer-sep"></div>
-
-        <!-- Go To -->
         <span class="steer-label">Go to</span>
         <input class="steer-input" id="goto-x" type="number" placeholder="x">
         <input class="steer-input" id="goto-y" type="number" placeholder="y">
         <button class="steer-btn" onclick="sendGoTo()">Go</button>
-
         <div class="steer-sep"></div>
-
-        <!-- Run Procedure -->
         <span class="steer-label">Procedure</span>
         <select class="steer-select" id="proc-select">
           <option value="">-- select --</option>
-          <option value="mine_ore">mine_ore</option>
-          <option value="smelt_ore">smelt_ore</option>
-          <option value="craft_blacksmith">craft_blacksmith</option>
-          <option value="make_tools">make_tools</option>
-          <option value="sell_to_vendor">sell_to_vendor</option>
-          <option value="buy_from_vendor">buy_from_vendor</option>
-          <option value="bank_deposit">bank_deposit</option>
+          <option>mine_ore</option><option>smelt_ore</option><option>craft_blacksmith</option>
+          <option>make_tools</option><option>sell_to_vendor</option><option>buy_from_vendor</option>
+          <option>bank_deposit</option><option>practice_hiding</option><option>practice_music</option>
+          <option>practice_magery</option><option>bandage_self</option><option>hunt_nearby</option>
         </select>
         <button class="steer-btn" onclick="sendProc()">Run</button>
-
         <div class="steer-sep"></div>
-
-        <!-- Say -->
         <span class="steer-label">Say</span>
         <input class="steer-input wide" id="say-text" type="text" placeholder="message..." onkeydown="if(event.key==='Enter')sendSay()">
         <button class="steer-btn" onclick="sendSay()">Send</button>
@@ -237,48 +283,29 @@ body { background: var(--bg); color: var(--text); font-family: 'JetBrains Mono',
     </div>
   </div>
 
-  <!-- Activity (left 2/3) -->
-  <div class="activity-panel panel" style="grid-column: 1 / 3; grid-row: 3;">
-    <div class="panel-header"><span>Activity</span><span id="activity-count"></span></div>
-    <div class="panel-body" id="activity-body"></div>
-  </div>
-
-  <!-- Right column -->
-  <div class="right-col">
-    <div class="panel" style="flex:1; min-height:0;">
-      <div class="panel-header"><span>Inventory</span></div>
-      <div class="panel-body" id="inventory-body"></div>
-    </div>
-    <div class="panel" style="flex:1; min-height:0;">
-      <div class="panel-header"><span>Nearby</span></div>
-      <div class="panel-body" id="nearby-body"></div>
-    </div>
-    <div class="panel" style="flex:1; min-height:0;">
-      <div class="panel-header"><span>Skills</span><span id="skills-total"></span></div>
-      <div class="panel-body" id="skills-body"></div>
-    </div>
-  </div>
-
-  <!-- Minimap -->
-  <div class="panel map-panel">
-    <div class="panel-header"><span>Map</span><span id="map-legend" style="color:var(--text2); font-weight:normal">@ you &nbsp; ^ mine &nbsp; o cave &nbsp; M npc &nbsp; + door &nbsp; X goal</span></div>
-    <div class="panel-body"><div class="minimap" id="minimap"></div></div>
-  </div>
-
   <!-- Footer -->
   <div class="footer">
     <div class="conn-status">
       <div class="conn-dot" id="conn-dot"></div>
-      <span id="conn-text">Connecting...</span>
+      <span id="conn-text">연결 중…</span>
+      <span class="sub" id="session-clock"></span>
     </div>
     <div>
       <span id="stale-indicator"></span>
-      Ping: <span id="ping-value">-</span>ms
+      Ping <span id="ping-value">-</span>ms
     </div>
   </div>
 </div>
 
-<!-- Command toast notification -->
+<!-- between-evals overlay -->
+<div class="waiting" id="waiting">
+  <div class="waiting-box">
+    <div class="spinner"></div>
+    <div>에이전트 대기 중</div>
+    <div class="waiting-sub">평가가 끝났거나 시작 전입니다 — 다음 평가가 뜨면 자동 연결됩니다 (<span id="waiting-target"></span>)</div>
+  </div>
+</div>
+
 <div class="cmd-toast" id="cmd-toast"></div>
 
 <script>
@@ -294,58 +321,111 @@ const SKILL_NAMES = {
   40:'Swords', 41:'Macing', 42:'Fencing', 43:'Wrestling', 44:'Lumberjacking',
   45:'Mining', 46:'Meditation', 47:'Stealth', 48:'RemoveTrap', 49:'Necromancy',
 };
-const LOCK_ICONS = {0:'&#x25B2;', 1:'&#x25BC;', 2:'&#x25CF;'};
-const LOCK_COLORS = {0:'var(--green)', 1:'var(--red)', 2:'var(--text2)'};
+const KEY_ITEMS = /ore|ingot|pickaxe|shovel|tongs|hammer|lute|bandage|spellbook|garlic|ginseng|silk|mandrake|katana/i;
 
-let ws = null;
-let reconnectTimer = null;
-let lastTs = 0;
-let isPaused = false;
+// ── slot management ──────────────────────────────────────────
+// Same-origin first; extra slots let one tab watch the parallel eval agents.
+const DEFAULT_SLOTS = [
+  { label: 'slot0', host: '127.0.0.1:8170' },
+  { label: 'slot1', host: '127.0.0.1:8171' },
+  { label: 'probe', host: '127.0.0.1:8160' },
+];
+let slots = [];
+if (location.protocol !== 'file:' && location.host && !DEFAULT_SLOTS.some(s => s.host === location.host)) {
+  slots.push({ label: 'this', host: location.host });
+}
+slots = slots.concat(DEFAULT_SLOTS);
+const urlWs = new URLSearchParams(location.search).get('ws');
+if (urlWs && !slots.some(s => s.host === urlWs)) slots.unshift({ label: 'custom', host: urlWs });
+let activeHost = urlWs || localStorage.getItem('anima.activeHost') || slots[0].host;
+if (!slots.some(s => s.host === activeHost)) activeHost = slots[0].host;
 
-// --- WebSocket ---
+const slotState = {};   // host -> {live:bool}
+
+function renderSlots() {
+  const el = document.getElementById('slot-tabs');
+  el.innerHTML = slots.map(s => {
+    const live = (slotState[s.host] || {}).live;
+    const active = s.host === activeHost;
+    return `<div class="slot-tab ${active ? 'active' : ''}" onclick="switchSlot('${s.host}')" title="${s.host}">
+      <span class="slot-dot ${live ? 'live' : ''}"></span>${s.label}</div>`;
+  }).join('');
+}
+
+function switchSlot(host) {
+  if (host === activeHost) return;
+  activeHost = host;
+  localStorage.setItem('anima.activeHost', host);
+  resetSession();
+  if (ws) { try { ws.onclose = null; ws.close(); } catch {} }
+  setConn(false, '연결 중…');
+  connect();
+  renderSlots();
+}
+
+// probe non-active slots so their dots show live state (ws needs no CORS)
+function probeSlots() {
+  for (const s of slots) {
+    if (s.host === activeHost) continue;
+    try {
+      const p = new WebSocket(`ws://${s.host}/ws`);
+      const t = setTimeout(() => { try { p.close(); } catch {} }, 2500);
+      p.onmessage = () => { slotState[s.host] = { live: true }; clearTimeout(t); try { p.close(); } catch {} renderSlots(); };
+      p.onerror = () => { slotState[s.host] = { live: false }; renderSlots(); };
+    } catch {}
+  }
+}
+setInterval(probeSlots, 7000);
+
+// ── session tracking (fresh character per eval) ──────────────
+let session = { ident: null, t0: null, baseline: null, deaths: 0, wasDead: false, trail: [] };
+function resetSession() {
+  session = { ident: null, t0: null, baseline: null, deaths: 0, wasDead: false, trail: [] };
+}
+
+// ── WebSocket ────────────────────────────────────────────────
+let ws = null, reconnectTimer = null, lastTs = 0, isPaused = false;
+
 function connect() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  document.getElementById('waiting-target').textContent = activeHost;
+  let url = `ws://${activeHost}/ws`;
+  if (location.protocol === 'https:') url = `wss://${activeHost}/ws`;
+  try { ws = new WebSocket(url); } catch { scheduleReconnect(); return; }
   ws.onopen = () => {
-    setConn(true);
+    slotState[activeHost] = { live: true };
+    renderSlots();
     if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
   };
-  ws.onclose = () => {
-    setConn(false);
-    if (!reconnectTimer) reconnectTimer = setInterval(connect, 3000);
-  };
-  ws.onerror = () => ws.close();
+  ws.onclose = () => { setConn(false); scheduleReconnect(); };
+  ws.onerror = () => { try { ws.close(); } catch {} };
   ws.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.type === 'cmd_result') {
-        showToast(data.message, data.ok);
-      } else {
-        update(data);
-      }
+      if (data.type === 'cmd_result') showToast(data.message, data.ok);
+      else { setConn(true); update(data); }
     } catch {}
   };
 }
-
-// --- Commands ---
-function sendCmd(obj) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+function scheduleReconnect() {
+  slotState[activeHost] = { live: false };
+  renderSlots();
+  if (!reconnectTimer) reconnectTimer = setInterval(connect, 1800);
 }
 
+// ── commands ─────────────────────────────────────────────────
+function sendCmd(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 function sendGoTo() {
   const x = parseInt(document.getElementById('goto-x').value);
   const y = parseInt(document.getElementById('goto-y').value);
   if (!x && !y) return;
   sendCmd({cmd: 'go_to', x: x || 0, y: y || 0});
 }
-
 function sendProc() {
   const name = document.getElementById('proc-select').value;
   if (!name) return;
   sendCmd({cmd: 'run_procedure', name});
   document.getElementById('proc-select').value = '';
 }
-
 function sendSay() {
   const el = document.getElementById('say-text');
   const text = el.value.trim();
@@ -353,7 +433,6 @@ function sendSay() {
   sendCmd({cmd: 'say', text});
   el.value = '';
 }
-
 function showToast(message, ok) {
   const el = document.getElementById('cmd-toast');
   el.textContent = message;
@@ -361,175 +440,278 @@ function showToast(message, ok) {
   setTimeout(() => { el.className = 'cmd-toast'; }, 2500);
 }
 
-// --- Display ---
-function setConn(ok) {
-  document.getElementById('conn-dot').className = 'conn-dot ' + (ok ? 'ok' : 'err');
-  document.getElementById('conn-text').textContent = ok ? 'Connected' : 'Disconnected';
+// ── filters ──────────────────────────────────────────────────
+let filter = 'all';
+function setFilter(btn) {
+  filter = btn.dataset.f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('on', b === btn));
+  if (lastSnapshot) renderActivity(lastSnapshot);
+}
+function topicTag(topic) {
+  if (!topic) return ['', ''];
+  if (topic.startsWith('combat') || topic.includes('attack') || topic.includes('damage')) return ['combat', 'tag-combat'];
+  if (topic.includes('skill')) return ['skill', 'tag-skill'];
+  if (topic.startsWith('action') || topic.includes('proc')) return ['proc', 'tag-proc'];
+  if (topic.includes('speech') || topic.includes('journal')) return ['speech', 'tag-speech'];
+  return [topic.split('.')[0].slice(0, 7), ''];
 }
 
+// ── display helpers ──────────────────────────────────────────
+function setConn(ok, msg) {
+  const dot = document.getElementById('conn-dot');
+  const waiting = document.getElementById('waiting');
+  if (ok) {
+    dot.className = 'conn-dot ok';
+    document.getElementById('conn-text').textContent = activeHost;
+    waiting.classList.remove('show');
+  } else {
+    dot.className = 'conn-dot wait';
+    document.getElementById('conn-text').textContent = msg || '대기 중 — 다음 평가 자동 연결';
+    waiting.classList.add('show');
+  }
+}
 function setBar(id, cur, max) {
   const pct = max > 0 ? Math.min(100, (cur / max) * 100) : 0;
   document.getElementById(id + '-bar').style.width = pct + '%';
   document.getElementById(id + '-text').textContent = `${cur}/${max}`;
+  return pct;
 }
+function fmtTime(ts) { return new Date(ts * 1000).toTimeString().slice(0, 8); }
+function fmtDur(s) {
+  s = Math.max(0, Math.floor(s));
+  const m = Math.floor(s / 60), sec = s % 60;
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
-function fmtTime(ts) {
-  const d = new Date(ts * 1000);
-  return d.toTimeString().slice(0, 8);
-}
+// ── main update ──────────────────────────────────────────────
+let lastSnapshot = null;
 
 function update(s) {
+  lastSnapshot = s;
   lastTs = s.ts || 0;
-
-  // Status
   const st = s.status || {};
-  document.getElementById('char-name').textContent = st.name || 'Anima';
-  setBar('hp', st.hp || 0, st.hp_max || 0);
+
+  // fresh character detection → reset session baseline/trail
+  const ident = (st.serial || 0) + '|' + (st.name || '');
+  if (session.ident !== ident) {
+    resetSession();
+    session.ident = ident;
+    session.t0 = lastTs;
+  }
+
+  // identity
+  document.getElementById('char-name').textContent = st.name || '—';
+  document.getElementById('char-title').textContent = st.title || '';
+
+  // vitals
+  const hpPct = setBar('hp', st.hp || 0, st.hp_max || 0);
+  document.getElementById('hp-wrap').classList.toggle('crit', hpPct > 0 && hpPct < 30);
   setBar('mana', st.mana || 0, st.mana_max || 0);
   setBar('stam', st.stam || 0, st.stam_max || 0);
   setBar('weight', st.weight || 0, st.weight_max || 0);
-  document.getElementById('pos-value').textContent = `(${st.x}, ${st.y}, z=${st.z})`;
+  document.getElementById('pos-value').textContent = `${st.x}, ${st.y}`;
+  document.getElementById('map-pos').textContent = `(${st.x}, ${st.y}, z=${st.z})`;
   document.getElementById('gold-value').textContent = (st.gold || 0).toLocaleString();
-  document.getElementById('stats-value').textContent = `STR ${st.str} / DEX ${st.dex} / INT ${st.int}`;
+  document.getElementById('stats-value').textContent = `${st.str}/${st.dex}/${st.int}`;
 
-  // Agent Intent panel
-  document.getElementById('intent-value').textContent = st.intent || '—';
-  const procEl = document.getElementById('procedure-value');
-  procEl.textContent = st.procedure || '—';
-  procEl.className = 'intent-value' + (st.procedure ? ' highlight' : '');
-  const mt = st.move_target;
-  document.getElementById('move-target-value').textContent = mt ? `(${mt[0]}, ${mt[1]})` : '—';
-  const goalEl = document.getElementById('goal-value');
-  goalEl.textContent = st.goal || '—';
-
-  // Color intent red if it mentions failure
-  const intentEl = document.getElementById('intent-value');
-  if ((st.intent || '').includes('실패')) {
-    intentEl.className = 'intent-value warn';
-  } else {
-    intentEl.className = 'intent-value highlight';
-  }
-
-  // Paused state
+  // badges
+  const dead = (st.hp || 0) <= 0 && (st.hp_max || 0) > 0;
+  if (dead && !session.wasDead) session.deaths++;
+  session.wasDead = dead;
+  document.getElementById('badge-dead').style.display = dead ? 'inline-block' : 'none';
+  document.getElementById('badge-lowhp').style.display = (!dead && hpPct > 0 && hpPct < 30) ? 'inline-block' : 'none';
   isPaused = !!st.paused;
-  const badge = document.getElementById('paused-badge');
-  badge.style.display = isPaused ? 'inline-block' : 'none';
+  document.getElementById('badge-paused').style.display = isPaused ? 'inline-block' : 'none';
   document.getElementById('btn-pause').className = 'steer-btn' + (isPaused ? ' active' : '');
 
-  // Activity
-  const acts = (s.activity || []).slice();
-  const actBody = document.getElementById('activity-body');
-  let actHtml = '';
-  const journal = (s.journal || []).map(j => ({...j, _type: 'journal'}));
-  const combined = [...acts.map(a => ({...a, _type: 'activity'})), ...journal];
-  combined.sort((a, b) => (a.ts || a.timestamp || 0) - (b.ts || b.timestamp || 0));
+  // intent
+  const intentEl = document.getElementById('intent-value');
+  intentEl.textContent = st.intent || '—';
+  intentEl.className = 'intent-text' + ((st.intent || '').includes('실패') ? ' warn' : '');
+  document.getElementById('procedure-value').textContent = st.procedure || 'idle';
 
-  for (const item of combined.slice(-50)) {
-    const ts = fmtTime(item.ts || item.timestamp || 0);
-    if (item._type === 'journal') {
-      const selfCls = item.is_self ? 'journal-self' : '';
-      actHtml += `<div class="activity-line journal-entry ${selfCls}"><span class="activity-ts">${ts}</span><span class="journal-name">${esc(item.name)}:</span><span class="journal-text">${esc(item.text)}</span></div>`;
-    } else {
-      const msg = item.message || '';
-      const cls = msg.startsWith('\u2713') ? 'success' : msg.startsWith('\u2717') ? 'failure' : '';
-      actHtml += `<div class="activity-line"><span class="activity-ts">${ts}</span><span class="activity-msg ${cls}">${esc(msg)}</span></div>`;
-    }
-  }
-  actBody.innerHTML = actHtml;
-  actBody.scrollTop = actBody.scrollHeight;
-  document.getElementById('activity-count').textContent = combined.length;
+  // session clock
+  updateClock();
 
-  // Inventory
-  const inv = s.inventory || [];
-  let invHtml = '';
-  for (const it of inv) {
-    const amt = it.amount > 1 ? ` x${it.amount}` : '';
-    invHtml += `<div class="inv-item"><span class="inv-name">${esc(it.name)}</span><span class="inv-amount">${amt}</span></div>`;
-  }
-  document.getElementById('inventory-body').innerHTML = invHtml || '<span style="color:var(--text2)">Empty</span>';
+  renderSkills(s, session.t0 ? (lastTs - session.t0) : 0);
+  renderActivity(s);
+  renderInventory(s);
+  renderNearby(s);
+  renderMap(s, st);
 
-  // Nearby
-  const nearby = s.nearby || [];
-  let nearHtml = '';
-  for (const m of nearby) {
-    const nCls = 'noto-' + (m.notoriety || 1);
-    nearHtml += `<div class="mob-row"><span class="mob-name ${nCls}">${esc(m.name)}</span><span class="mob-pos">(${m.dx>=0?'+':''}${m.dx}, ${m.dy>=0?'+':''}${m.dy})</span></div>`;
-  }
-  document.getElementById('nearby-body').innerHTML = nearHtml || '<span style="color:var(--text2)">Nobody nearby</span>';
-
-  // Skills
-  const sk = s.skills || {};
-  const skills = sk.list || [];
-  let skHtml = '';
-  for (const si of skills) {
-    const name = SKILL_NAMES[si.id] || `Skill#${si.id}`;
-    const lockIcon = LOCK_ICONS[si.lock] || '';
-    const lockColor = LOCK_COLORS[si.lock] || 'var(--text2)';
-    skHtml += `<div class="skill-row"><span class="skill-name">${name}</span><span class="skill-val">${si.value.toFixed(1)}</span><span class="skill-lock" style="color:${lockColor}">${lockIcon}</span></div>`;
-  }
-  document.getElementById('skills-body').innerHTML = skHtml || '<span style="color:var(--text2)">No skills</span>';
-  document.getElementById('skills-total').textContent = `Total: ${(sk.total || 0).toFixed(1)}`;
-
-  // Minimap
-  const mm = s.minimap || {};
-  const rows = mm.rows || [];
-  if (rows.length > 0) {
-    const center = Math.floor(rows.length / 2);
-    const half = 20;
-    const startR = Math.max(0, center - half);
-    const endR = Math.min(rows.length, center + half);
-    let mapHtml = '';
-    for (let r = startR; r < endR; r++) {
-      const row = rows[r];
-      const startC = Math.max(0, Math.floor(row.length / 2) - half);
-      const endC = Math.min(row.length, Math.floor(row.length / 2) + half);
-      for (let c = startC; c < endC; c++) {
-        mapHtml += colorMapChar(row[c]);
-      }
-      mapHtml += '\n';
-    }
-    document.getElementById('minimap').innerHTML = mapHtml;
-  }
-
-  // Ping
+  // ping / stale
   const ping = s.ping_ms || 0;
   const pingEl = document.getElementById('ping-value');
   pingEl.textContent = ping.toFixed(0);
   pingEl.className = ping < 100 ? 'ping-good' : ping < 200 ? 'ping-warn' : 'ping-bad';
-
-  // Stale
   const age = Date.now() / 1000 - lastTs;
   const staleEl = document.getElementById('stale-indicator');
-  if (age > 5) {
-    staleEl.textContent = `STALE (${age.toFixed(0)}s) `;
-    staleEl.className = 'stale-warn';
-  } else {
-    staleEl.textContent = '';
+  staleEl.textContent = age > 5 ? `STALE ${age.toFixed(0)}s ` : '';
+  staleEl.className = 'stale-warn';
+}
+
+function updateClock() {
+  const elapsed = session.t0 ? (lastTs - session.t0) : 0;
+  document.getElementById('session-clock').textContent =
+    ` · 세션 ${fmtDur(elapsed)}${session.deaths ? ` · 사망 ${session.deaths}` : ''}`;
+}
+
+// ── skills with session deltas (fitness backbone, live) ──────
+function renderSkills(s, elapsed) {
+  const sk = s.skills || {};
+  const list = sk.list || [];
+  if (!session.baseline) {
+    session.baseline = {};
+    for (const si of list) session.baseline[si.id] = si.value;
   }
-}
-
-function colorMapChar(ch) {
-  switch (ch) {
-    case '@': return '<span class="map-player">@</span>';
-    case '#': return '<span class="map-wall">#</span>';
-    case '^': return '<span class="map-mine">^</span>';
-    case 'o': return '<span class="map-cave">o</span>';
-    case 'M': return '<span class="map-mob">M</span>';
-    case '+': return '<span class="map-door">+</span>';
-    case 'X': return '<span class="map-goal">X</span>';
-    case 'T': return '<span class="map-tree">T</span>';
-    case '.': return '<span class="map-ground">.</span>';
-    default: return `<span class="map-ground">${esc(ch)}</span>`;
+  let gainTotal = 0;
+  const rows = list.map(si => {
+    let base = session.baseline[si.id];
+    if (base === undefined) { session.baseline[si.id] = si.value; base = si.value; }
+    const delta = si.value - base;
+    if (delta > 0) gainTotal += delta;
+    return { ...si, delta };
+  });
+  rows.sort((a, b) => (b.delta - a.delta) || (b.value - a.value));
+  let html = '';
+  for (const r of rows.slice(0, 14)) {
+    const name = SKILL_NAMES[r.id] || `#${r.id}`;
+    const pct = r.cap > 0 ? Math.min(100, r.value / r.cap * 100) : 0;
+    const d = r.delta > 0.001 ? `+${r.delta.toFixed(1)}` : '';
+    html += `<div class="skill-row">
+      <span class="skill-name">${name}</span>
+      <span class="skill-meter"><i style="width:${pct}%"></i><b>${r.value.toFixed(1)}</b></span>
+      <span class="skill-delta ${d ? 'gain' : ''}">${d}</span></div>`;
   }
+  document.getElementById('skills-body').innerHTML = html || '<span style="color:var(--text2)">—</span>';
+  document.getElementById('skills-total').textContent = `Σ ${(sk.total || 0).toFixed(1)}`;
+  document.getElementById('gain-total').textContent = `+${gainTotal.toFixed(1)}`;
+  const rate = elapsed > 30 ? gainTotal / (elapsed / 3600) : 0;
+  document.getElementById('gain-rate').textContent = rate.toFixed(1);
 }
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+// ── activity + journal merged feed ───────────────────────────
+function renderActivity(s) {
+  const acts = (s.activity || []).map(a => ({ ...a, _type: 'activity' }));
+  const journal = (s.journal || []).map(j => ({ ...j, _type: 'journal' }));
+  let combined = [...acts, ...journal];
+  combined.sort((a, b) => (a.ts || a.timestamp || 0) - (b.ts || b.timestamp || 0));
+  if (filter !== 'all') {
+    combined = combined.filter(item => {
+      if (item._type === 'journal') return filter === 'speech';
+      return topicTag(item.topic)[0] === filter ||
+             (filter === 'proc' && (item.topic || '').startsWith('action'));
+    });
+  }
+  const body = document.getElementById('activity-body');
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  let html = '';
+  for (const item of combined.slice(-80)) {
+    const ts = fmtTime(item.ts || item.timestamp || 0);
+    if (item._type === 'journal') {
+      const selfCls = item.is_self ? 'journal-self' : '';
+      html += `<div class="activity-line ${selfCls}"><span class="activity-ts">${ts}</span><span class="activity-tag tag-speech">대화</span><span class="activity-msg"><span class="journal-name">${esc(item.name)}:</span><span class="journal-text">${esc(item.text)}</span></span></div>`;
+    } else {
+      const msg = item.message || '';
+      const [tag, tagCls] = topicTag(item.topic);
+      const cls = msg.startsWith('✓') || /success|Mined|completed|Arrived/.test(msg) ? 'success'
+                : msg.startsWith('✗') || /failed|FAILED|denied|죽|실패/.test(msg) ? 'failure' : '';
+      html += `<div class="activity-line"><span class="activity-ts">${ts}</span><span class="activity-tag ${tagCls}">${esc(tag)}</span><span class="activity-msg ${cls}">${esc(msg)}</span></div>`;
+    }
+  }
+  body.innerHTML = html || '<span style="color:var(--text2)">—</span>';
+  if (atBottom) body.scrollTop = body.scrollHeight;
 }
 
+function renderInventory(s) {
+  const inv = s.inventory || [];
+  let html = '';
+  for (const it of inv) {
+    const key = KEY_ITEMS.test(it.name || '');
+    const amt = it.amount > 1 ? `×${it.amount}` : '';
+    html += `<div class="inv-item"><span class="inv-name ${key ? 'key' : ''}">${esc(it.name)}</span><span class="inv-amount">${amt}</span></div>`;
+  }
+  document.getElementById('inventory-body').innerHTML = html || '<span style="color:var(--text2)">비어 있음</span>';
+  document.getElementById('inv-count').textContent = inv.length ? `${inv.length}종` : '';
+}
+
+function renderNearby(s) {
+  const nearby = s.nearby || [];
+  let html = '';
+  for (const m of nearby) {
+    const dist = Math.max(Math.abs(m.dx), Math.abs(m.dy));
+    html += `<div class="mob-row"><span class="mob-name noto-${m.notoriety || 1}">${esc(m.name)}</span><span class="mob-pos">${dist}타일 (${m.dx >= 0 ? '+' : ''}${m.dx},${m.dy >= 0 ? '+' : ''}${m.dy})</span></div>`;
+  }
+  document.getElementById('nearby-body').innerHTML = html || '<span style="color:var(--text2)">주변에 아무도 없음</span>';
+  document.getElementById('nearby-count').textContent = nearby.length || '';
+}
+
+// ── canvas minimap with movement trail ───────────────────────
+const TILE_COLORS = {
+  '@': '#ffffff', '#': '#3a4356', '^': '#8d6e2f', 'o': '#b35b22',
+  'M': '#f85149', '+': '#39d2e0', 'X': '#3fb950', 'T': '#2ea043', '.': '#141925',
+};
+function renderMap(s, st) {
+  const mm = s.minimap || {};
+  const rows = mm.rows || [];
+  const cv = document.getElementById('mapcanvas');
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#0a0d12';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!rows.length) return;
+
+  // record trail (world coords)
+  if (st.x && st.y) {
+    const last = session.trail[session.trail.length - 1];
+    if (!last || last[0] !== st.x || last[1] !== st.y) {
+      session.trail.push([st.x, st.y]);
+      if (session.trail.length > 400) session.trail.shift();
+    }
+  }
+
+  const n = rows.length;                       // 2*radius+1 (e.g. 61)
+  const size = cv.width / n;
+  const px = mm.px, py = mm.py, radius = mm.radius || Math.floor(n / 2);
+  const rect = (c, r) => ctx.fillRect(c * size, r * size, Math.ceil(size), Math.ceil(size));
+
+  // terrain
+  for (let r = 0; r < n; r++) {
+    const row = rows[r];
+    for (let c = 0; c < row.length; c++) {
+      const ch = row[c];
+      if (ch === '.') continue;                // ground = bg
+      if (ch === 'M' || ch === 'X' || ch === '@' || ch === '+') continue; // specials later
+      ctx.fillStyle = TILE_COLORS[ch] || '#141925';
+      rect(c, r);
+    }
+  }
+  // trail (world → grid)
+  ctx.fillStyle = '#264f78';
+  for (const [tx, ty] of session.trail) {
+    const c = tx - px + radius, r = ty - py + radius;
+    if (c >= 0 && c < n && r >= 0 && r < n && !(c === radius && r === radius)) rect(c, r);
+  }
+  // specials on top
+  for (let r = 0; r < n; r++) {
+    const row = rows[r];
+    for (let c = 0; c < row.length; c++) {
+      const ch = row[c];
+      if (ch === 'M' || ch === 'X' || ch === '+') { ctx.fillStyle = TILE_COLORS[ch]; rect(c, r); }
+    }
+  }
+  // player marker
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc((radius + 0.5) * size, (radius + 0.5) * size, Math.max(2.5, size * 0.9), 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// ── boot ─────────────────────────────────────────────────────
+renderSlots();
 connect();
+probeSlots();
+setInterval(updateClock, 1000);
 </script>
 </body>
 </html>
