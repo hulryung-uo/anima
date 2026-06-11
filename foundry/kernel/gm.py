@@ -80,7 +80,11 @@ FIXED_START_PROFILES: dict[str, dict] = {
         # Standardized arena: weak melee fodder spawned around the
         # workplace (nearest wild spawns are ettins ~190 tiles south —
         # lethal at skill 35). HeadlessOne: HP 16-30, Wrestling 25-40.
-        "spawn_mobs": ["HeadlessOne"] * 8,
+        # 4, not 8: two independent genomes died to the 8-mob arena with
+        # gate 0.18-0.40 over 600s — no behavior could survive it, so the
+        # cell had no learning gradient. NOTE: this is a ruler recalibration;
+        # COMBAT scores measured under the 8-mob arena are not comparable.
+        "spawn_mobs": ["HeadlessOne"] * 4,
         "neutralize": [0x0EED],
     },
     "bard": {
