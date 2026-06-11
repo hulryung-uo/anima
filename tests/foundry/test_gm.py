@@ -83,3 +83,13 @@ def test_jsonl_watch_incremental(tmp_path):
         fh.write('2}\n')
     assert w.poll() == [{"partial": 2}]
     assert w.poll() == []
+
+
+def test_lane_spots_are_separated():
+    """Lanes must stay outside speech (~18) and wipe (±12) interference."""
+    import itertools
+
+    from foundry.kernel.gm import LANE_SPOTS
+    assert len(LANE_SPOTS) >= 5
+    for a, b in itertools.combinations(LANE_SPOTS, 2):
+        assert max(abs(a[0] - b[0]), abs(a[1] - b[1])) >= 32, (a, b)

@@ -11,7 +11,6 @@ from pathlib import Path
 import structlog
 
 from anima.brain.brain import Brain
-from anima.core.context import AgentContext
 from anima.client.connection import UoConnection
 from anima.client.handler import PacketHandler
 from anima.client.packets import (
@@ -23,6 +22,7 @@ from anima.client.packets import (
     build_unicode_speech,
 )
 from anima.config import Config, load_config
+from anima.core.context import AgentContext
 from anima.data import item_name, mobile_display_name
 from anima.perception import Perception
 from anima.perception.enums import Layer
@@ -502,14 +502,34 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def planner_loop(ctx: AgentContext, start_delay_s: float = 0.0) -> None:
+async def planner_loop(ctx: AgentContext, start_delay_s: float = 0.0,
+                       warp_hold_s: float = 0.0) -> None:
     """Run the v2 rule-based planner instead of behavior tree brain."""
     from anima.planner.planner import Planner
 
-    if start_delay_s > 0:
-        # Used by the Foundry eval harness: hold the first planning tick until
-        # the GM fixed-start setup (teleport/skills/tools) has landed, so the
-        # planner's first decision is made from the standardized start state.
+    if warp_hold_s > 0:
+        # Foundry eval harness: hold the first planning tick until the GM
+        # fixed-start TELEPORT actually lands (position jumps >20 tiles from
+        # where we logged in), or the timeout expires. Unlike a fixed delay
+        # this is robust to GM queueing under parallel evals.
+        ss = ctx.perception.self_state
+        # wait for a real position first (login burst)
+        t0 = asyncio.get_running_loop().time()
+        while (ss.x, ss.y) == (0, 0) and asyncio.get_running_loop().time() - t0 < 30:
+            await asyncio.sleep(0.2)
+        ox, oy = ss.x, ss.y
+        logger.info("planner_warp_hold", max_s=warp_hold_s, origin=(ox, oy))
+        t0 = asyncio.get_running_loop().time()
+        while asyncio.get_running_loop().time() - t0 < warp_hold_s:
+            if max(abs(ss.x - ox), abs(ss.y - oy)) > 20:
+                logger.info("planner_warp_detected", pos=(ss.x, ss.y))
+                await asyncio.sleep(1.0)   # let the post-warp burst settle
+                break
+            await asyncio.sleep(0.3)
+        else:
+            logger.warning("planner_warp_hold_timeout")
+    elif start_delay_s > 0:
+        # Fixed delay variant (kept for compatibility).
         logger.info("planner_start_delay", seconds=start_delay_s)
         await asyncio.sleep(start_delay_s)
 
@@ -704,7 +724,7 @@ Write ONLY the journal entry, nothing else. Make it feel lived-in."""
 
     # Fallback: simple summary if LLM fails
     title = f"{persona_name}'s Log — {now.strftime('%b %d, %H:%M')}"
-    body = f"Been working the mines near Minoc. "
+    body = "Been working the mines near Minoc. "
     if stats_lines:
         body += f"Today's work: {', '.join(stats_lines[:4])}. "
     body += f"Currently at ({ss.x}, {ss.y}) with {ss.gold} gold."
@@ -816,6 +836,7 @@ async def run(
     use_planner: bool = True,
     web_port: int = 8150,
     planner_delay_s: float = 0.0,
+    planner_warp_hold_s: float = 0.0,
 ) -> None:
     from anima.core.avatar import Avatar
 
@@ -885,7 +906,8 @@ async def run(
 
             # Select brain engine: v2 planner or legacy behavior tree
             if use_planner:
-                engine_coro = planner_loop(brain_ctx, start_delay_s=planner_delay_s)
+                engine_coro = planner_loop(brain_ctx, start_delay_s=planner_delay_s,
+                                           warp_hold_s=planner_warp_hold_s)
                 logger.info("engine_mode", mode="v2_planner")
             else:
                 engine_coro = brain_loop(brain)
@@ -951,6 +973,11 @@ def main() -> None:
         "--planner-delay", type=float, default=0.0,
         help="Seconds to hold the first planner tick (Foundry eval fixed-start)",
     )
+    parser.add_argument(
+        "--planner-warp-hold", type=float, default=0.0,
+        help="Hold the first planner tick until a >20-tile teleport lands, "
+             "or this many seconds pass (robust under queued GM setups)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -970,6 +997,7 @@ def main() -> None:
         delete_existing=args.recreate,
         use_planner=not args.legacy,
         planner_delay_s=args.planner_delay,
+        planner_warp_hold_s=args.planner_warp_hold,
         web_port=args.web_port,
     ))
 

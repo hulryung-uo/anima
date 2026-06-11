@@ -165,12 +165,17 @@ def _setup_for(rc: RunConfig, parent: Genome | None,
 
 def _eval_cfg(rc: RunConfig, user: str, slot: int, repo_root: Path | None,
               persona: str | None = None, fixed_start: str | None = None) -> EvalConfig:
+    # Each slot owns a contiguous block of `seeds` lanes/ports so that
+    # parallel seeds (run_eval_multi) never collide across slots:
+    #   slot0 → lanes 0..s-1, proxy 2630..  /  slot1 → lanes s..2s-1, …
+    span = max(1, rc.seeds)
     return EvalConfig(
         account_user=user,
         persona=persona if persona is not None else rc.persona,
         window_s=rc.window_s,
-        proxy_port=rc.base_proxy_port + slot,
-        web_port=rc.base_web_port + slot,
+        proxy_port=rc.base_proxy_port + slot * span,
+        web_port=rc.base_web_port + slot * span,
+        lane=slot * span,
         seed=slot,
         fixed_start=fixed_start if fixed_start is not None else rc.fixed_start,
         repo_root=repo_root,

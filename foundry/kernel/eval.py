@@ -31,6 +31,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,7 +86,10 @@ class EvalConfig:
     fixed_start: str = "miner"          # gm.FIXED_START_PROFILES key; "" = off
     repo_root: Path | None = None       # agent code checkout (worktree); None = main repo
     login_timeout_s: float = 90.0
-    planner_delay_s: float = 25.0       # hold the agent's first plan until setup landed
+    planner_delay_s: float = 25.0       # legacy fixed hold (no fixed-start evals)
+    warp_hold_max_s: float = 240.0      # planner holds until the GM teleport lands
+    lane: int = 0                       # workplace lane (gm.LANE_SPOTS)
+    spawn_stagger_s: float = 0.0        # delay agent spawn to spread the GM queue
     extra_agent_args: list[str] = field(default_factory=list)
 
     def name(self) -> str:
@@ -230,7 +234,7 @@ def _gm_setup(cfg: EvalConfig, serial: int, eval_watch: gmmod.JsonlWatch) -> dic
         )
         with gmmod.GmClient(gmcfg) as g:
             setup = g.fixed_start(serial, cfg.fixed_start,
-                                  eval_traj=cfg.trajectory_path)
+                                  eval_traj=cfg.trajectory_path, lane=cfg.lane)
     gx, gy, _gz = setup["workplace"]
     arrived = eval_watch.wait_for(
         lambda e, d: (
@@ -284,6 +288,8 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
         # --all-extras: older genome commits still miscategorize core deps
         # (aiosqlite/numpy) under the llm extra; a bare `uv run` in a fresh
         # worktree venv would then fail at import.
+        if cfg.spawn_stagger_s > 0:   # spread parallel seeds across the GM queue
+            time.sleep(cfg.spawn_stagger_s)
         agent = _spawn(
             [
                 "uv", "run", "--all-extras", "python", "-m", "anima",
@@ -293,7 +299,10 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
                 "--user", cfg.account_user,
                 "--pass", cfg.account_pass,
                 "--web-port", str(cfg.web_port),
-                "--planner-delay", str(cfg.planner_delay_s if cfg.fixed_start else 0.0),
+                "--planner-warp-hold",
+                str(cfg.warp_hold_max_s if cfg.fixed_start else 0.0),
+                "--planner-delay",
+                str(0.0 if cfg.fixed_start else cfg.planner_delay_s),
                 *cfg.extra_agent_args,
             ],
             logdir / f"agent-{cfg.account_user}.log",
@@ -330,12 +339,10 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
                     False, error=f"fixed-start setup failed: {e}",
                     trajectory_path=str(traj),
                 )
-            time.sleep(2.0)  # let the setup burst settle outside the window
-            # the agent's planner holds its first tick for planner_delay_s
-            # after login; don't start the clock while it is still held.
-            planner_starts = info["ts"] + cfg.planner_delay_s
-            if time.time() < planner_starts:
-                time.sleep(planner_starts - time.time())
+            # setup burst settles; the agent's warp-hold releases its
+            # planner ~1s after the teleport lands, so the scored window
+            # opens with the agent already planning from the standard state.
+            time.sleep(3.0)
 
         # 5) the SCORED window
         window_start = time.time()
@@ -376,15 +383,29 @@ def run_eval_multi(cfg: EvalConfig, seeds: int = 1) -> EvalResult:
             r.per_seed_fitness = [r.score]
         return r
 
-    results: list[EvalResult] = []
-    for k in range(seeds):
-        c = EvalConfig(**{**cfg.__dict__, "account_user": f"{cfg.account_user}s{k}",
-                          "seed": k, "extra_agent_args": list(cfg.extra_agent_args)})
-        r = run_eval(c)
-        if r.ok:
-            results.append(r)
+    def _seed_cfg(k: int) -> EvalConfig:
+        # Each seed gets its own lane (separated workplace), ports, and a
+        # spawn stagger so GM setups queue briefly instead of piling up.
+        return EvalConfig(**{
+            **cfg.__dict__,
+            "account_user": f"{cfg.account_user}s{k}",
+            "seed": k,
+            "lane": cfg.lane + k,
+            "proxy_port": cfg.proxy_port + k,
+            "web_port": cfg.web_port + k,
+            "spawn_stagger_s": k * 15.0,
+            "extra_agent_args": list(cfg.extra_agent_args),
+        })
+
+    # Seeds run CONCURRENTLY: they are independent worlds (own lane/account/
+    # ports), and parallel seeds cut eval latency ~3x without widening the
+    # blind-batch of the evolutionary search (unlike more parallel cycles).
+    with ThreadPoolExecutor(max_workers=seeds, thread_name_prefix="seed") as ex:
+        all_res = list(ex.map(run_eval, [_seed_cfg(k) for k in range(seeds)]))
+    results = [r for r in all_res if r.ok]
     if not results:
-        return EvalResult(False, error=f"all {seeds} seeds failed")
+        errs = "; ".join(r.error for r in all_res if not r.ok)
+        return EvalResult(False, error=f"all {seeds} seeds failed: {errs}")
     return _aggregate(results)
 
 

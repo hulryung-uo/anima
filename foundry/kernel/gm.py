@@ -39,14 +39,28 @@ GM_PASS = "foundry-gm-pass"
 GM_CHAR = "FoundryGM"
 CLIENT_VERSION = "7.0.102.3"
 
+# Concurrent-eval workplaces ("lanes"). Map-scan calibrated (2026-06-11):
+# each spot is walkable, ground-level (z 14-22), miner-capable (≥7 mineable
+# tiles within reach 2) on the Minoc ridge, and ≥33 tiles Chebyshev from every
+# other lane — outside speech range (~18) and the [WipeNPCs radius (±12), and
+# on separate 8×8 ore banks. Parallel evals each get their own lane so they
+# cannot hear, fight, or mine each other's world.
+LANE_SPOTS: list[tuple[int, int]] = [
+    (2567, 493),   # z~22 — the original proven spot
+    (2611, 474),   # z~20
+    (2584, 411),   # z~14
+    (2551, 420),   # z~18
+    (2557, 456),   # z~15
+]
+
 # Fixed-start profiles, keyed by persona (FOUNDRY.md §5 "fixed start state").
-# "go" is self-calibrated for Z: the GM [Go-es there first and the server
-# settles it onto valid ground; the eval char is then [Set to the GM's spot.
+# The workplace comes from LANE_SPOTS[lane]; Z is self-calibrated: the GM
+# [Go-es there first and the server settles it onto valid ground; the eval
+# char is then [Set to the GM's spot.
 FIXED_START_PROFILES: dict[str, dict] = {
     "miner": {
         # Minoc east mountain face at ground level — calibrated offline from
         # map data: a walkable tile with ~19 mineable tiles within reach 2.
-        "go": (2567, 493),
         "skills": {"Mining": 35.0},        # uniform gain region across evals
         "items": ["Pickaxe", "Pickaxe"],   # spare tool (they wear out)
         # Shard-granted starting wealth is front-loading (FOUNDRY.md §5 fixed
@@ -61,7 +75,6 @@ FIXED_START_PROFILES: dict[str, dict] = {
     # Skill names must match the ServUO SkillName enum property path
     # ([Set Skills.<Name>.Base) — note "Swords", not "Swordsmanship".
     "mage": {
-        "go": (2567, 493),
         # Magery 35 → Greater Heal (circle 4) sits in the gain window;
         # Meditation 60 keeps mana cycling fast enough for a 10-min eval.
         "skills": {"Magery": 35.0, "Meditation": 60.0},
@@ -74,7 +87,6 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "neutralize": [0x0EED],
     },
     "warrior": {
-        "go": (2567, 493),
         "skills": {"Swords": 35.0, "Tactics": 35.0, "Healing": 35.0},
         "items": ["Katana", "Bandage 100"],
         # Standardized arena: weak melee fodder spawned around the
@@ -88,13 +100,11 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "neutralize": [0x0EED],
     },
     "bard": {
-        "go": (2567, 493),
         "skills": {"Musicianship": 35.0, "Peacemaking": 35.0},
         "items": ["Lute"],
         "neutralize": [0x0EED],
     },
     "crafter": {
-        "go": (2567, 493),
         # Every eval is a FRESHLY CREATED character, so the 600s economic
         # loop (mine→smelt→buy tongs→craft) never needs to close: the char
         # is born a blacksmith (persona template) and the GM provisions the
@@ -114,7 +124,6 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "neutralize": [0x0EED],
     },
     "thief": {
-        "go": (2567, 493),
         "skills": {"Hiding": 35.0, "Stealth": 35.0},
         "items": [],                       # hiding needs nothing
         "neutralize": [0x0EED],
@@ -534,7 +543,7 @@ class GmClient:
 
     # -- the fixed-start procedure ----------------------------------------
     def fixed_start(self, eval_serial: int, profile: str = "miner",
-                    eval_traj: str | Path | None = None) -> dict:
+                    eval_traj: str | Path | None = None, lane: int = 0) -> dict:
         """Standardize one eval character's start state. Returns what was done.
 
         All commands target the eval char REMOTELY by serial (verified to work
@@ -542,8 +551,9 @@ class GmClient:
         no heavy view-update burst ever hits this fragile log path.
         """
         p = FIXED_START_PROFILES[profile]
+        spot = LANE_SPOTS[lane % len(LANE_SPOTS)]
         # 1) calibrate the workplace Z by standing there ourselves (hidden)
-        gx, gy, gz = self.goto(*p["go"])
+        gx, gy, gz = self.goto(*spot)
         # 1b) clear leftover NPCs from previous evals (e.g. the warrior
         #     profile's arena mobs linger and maul later non-combat evals
         #     at the shared workplace). Players are exempt from WipeNPCs.
@@ -581,7 +591,7 @@ class GmClient:
                 spawned.append(f"{thing}:failed({e})")
         # 5) finally teleport the char to the calibrated workplace
         self.command_on(f"[Set X {gx} Y {gy} Z {gz}", eval_serial)
-        return {"workplace": (gx, gy, gz), "profile": profile,
+        return {"workplace": (gx, gy, gz), "profile": profile, "lane": lane,
                 "neutralized": neutralized, "spawned": spawned}
 
 

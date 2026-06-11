@@ -34,8 +34,9 @@ def reeval_genome(arc: Archive, g: Genome, seeds: int, window_s: int,
         persona=persona,
         fixed_start=fixed_start,
         window_s=window_s,
-        proxy_port=2650 + slot,
-        web_port=8190 + slot,
+        proxy_port=2680 + slot * max(1, seeds),
+        web_port=8200 + slot * max(1, seeds),
+        lane=0,
         repo_root=wt,
     )
     res = run_eval_multi(cfg, seeds=seeds)
