@@ -102,6 +102,13 @@ than coding an in-game acquisition loop. (Creation rules: ≤4 skills, values
   area: what exists near the workplace), `bestiary/` (mob strength),
   `templates/` (profession builds). Read only the 1–3 pages your hypothesis
   depends on — your wall-clock budget is tight.
+- If the parent's eval evidence CONTRADICTS a wiki page (wrong number, missing
+  behavior), file a discrepancy report — the librarian triages them daily:
+      uv run python tools/wiki_report.py --agent foundry-mutator \
+        --wiki-root ~/dev/uo/uowiki --page <src/content/docs/...> \
+        --claim "..." --observed "..." --expected "..." --evidence "..."
+  Never edit the wiki directly, never pass --commit. (Skip if the script is
+  absent in this worktree — older lineages predate it.)
 - Run `uv run --all-extras pytest tests/ -q -x --ignore=tests/foundry` —
   only commit if green.
 - Commit ALL your changes with EXACTLY this subject form so the system can read
