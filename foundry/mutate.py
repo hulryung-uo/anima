@@ -118,21 +118,26 @@ def mutate_with_claude(
     timeout: int = 900,
     model: str = "sonnet",
     log_path: str | Path | None = None,
+    eval_setup: str = "",
 ) -> MutationResult:
     """Invoke headless Claude Code to mutate anima/ and commit one variant."""
     if target_cell is not None:
         goal = (
             f"EXPLORE: change the agent's behavior so it lands in the empty cell "
             f"`{cell_to_str(target_cell)}` (profession|sociability-bin). E.g. make it "
-            f"practice a different skill category, or talk more/less. Note: the eval's "
-            f"fixed-start currently equips a miner; profession changes should make the "
-            f"agent acquire/use what its new trade needs."
+            f"practice a different skill category, or talk more/less."
         )
     else:
         cur = cell_to_str(parent.cell) if parent else "?"
         goal = (
             f"IMPROVE: raise the fitness of this agent within its current cell `{cur}`. "
             f"Focus on the biggest limiter in the observation above."
+        )
+    if eval_setup:
+        goal += (
+            f"\n\nYour variant will be evaluated as: {eval_setup}. Mutate the code "
+            f"paths THAT persona actually executes (its profession loop / planner "
+            f"priorities) — changes to other professions' loops never run."
         )
     prompt = _MUTATION_PROMPT.format(observation=observation, goal=goal)
 

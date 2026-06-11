@@ -100,14 +100,17 @@ def _pin_ref(gid: str, sha: str) -> None:
 
 def _genome_from(arc: Archive, res: EvalResult, parent: str | None,
                  code_ref: str, hypothesis: str, rc: RunConfig,
-                 target_cell: tuple | None = None) -> Genome:
+                 target_cell: tuple | None = None,
+                 persona: str | None = None,
+                 fixed_start: str | None = None) -> Genome:
     d = res.descriptor
     f = res.fitness
     return Genome(
         id=arc.next_id(),
         parent=parent,
         code_ref=code_ref,
-        config={"persona": rc.persona, "fixed_start": rc.fixed_start,
+        config={"persona": persona if persona is not None else rc.persona,
+                "fixed_start": fixed_start if fixed_start is not None else rc.fixed_start,
                 "window_s": rc.window_s, "seeds": rc.seeds,
                 "target_cell": list(target_cell) if target_cell else None},
         eval={
@@ -130,15 +133,42 @@ def _genome_from(arc: Archive, res: EvalResult, parent: str | None,
     )
 
 
-def _eval_cfg(rc: RunConfig, user: str, slot: int, repo_root: Path | None) -> EvalConfig:
+# Which (persona, fixed_start) actually exercises a profession during eval.
+# A cycle aiming at BARD-SOCIAL must be evaluated as a bard — under the run's
+# default miner the mutated bard loop never even executes (observed twice:
+# mage-run cycle 1 landed NONE, main-run cycles 5/6 tuned practice_music that
+# a miner eval would never call). EXPLORE cycles map from the target cell,
+# IMPROVE cycles from the parent's own cell; NONE falls back to run defaults.
+PROFESSION_SETUP: dict[str, tuple[str, str]] = {
+    "GATHERING": ("miner", "miner"),
+    "MAGIC": ("mage", "mage"),
+    "THIEF-STEALTH": ("thief", "thief"),
+    "BARD-SOCIAL": ("bard", "bard"),
+    "COMBAT": ("adventurer", "warrior"),
+    "CRAFTING": ("blacksmith", "crafter"),
+}
+
+
+def _setup_for(rc: RunConfig, parent: Genome | None,
+               target: tuple | None) -> tuple[str, str]:
+    profession = None
+    if target:
+        profession = target[0]
+    elif parent and parent.cell:
+        profession = parent.cell[0]
+    return PROFESSION_SETUP.get(profession, (rc.persona, rc.fixed_start))
+
+
+def _eval_cfg(rc: RunConfig, user: str, slot: int, repo_root: Path | None,
+              persona: str | None = None, fixed_start: str | None = None) -> EvalConfig:
     return EvalConfig(
         account_user=user,
-        persona=rc.persona,
+        persona=persona if persona is not None else rc.persona,
         window_s=rc.window_s,
         proxy_port=rc.base_proxy_port + slot,
         web_port=rc.base_web_port + slot,
         seed=slot,
-        fixed_start=rc.fixed_start,
+        fixed_start=fixed_start if fixed_start is not None else rc.fixed_start,
         repo_root=repo_root,
     )
 
@@ -167,6 +197,8 @@ class _CycleOutcome:
     slot: int
     parent_id: str | None = None
     target_cell: tuple | None = None
+    persona: str = ""
+    fixed_start: str = ""
     mutation: mutate.MutationResult | None = None
     result: EvalResult | None = None
     error: str = ""
@@ -228,8 +260,10 @@ def run(rc: RunConfig) -> Archive:
                               + "\n" + observe.history(arc))
             out.parent_id = parent.id if parent else None
             out.target_cell = target
+            out.persona, out.fixed_start = _setup_for(rc, parent, target)
             parent_ref = (parent.code_ref if parent and parent.code_ref else "HEAD")
-            print(f"[cycle {i}] slot={slot} parent={out.parent_id} target_cell={target}")
+            print(f"[cycle {i}] slot={slot} parent={out.parent_id} target_cell={target} "
+                  f"eval_as={out.persona}/{out.fixed_start}")
 
             wt = _prepare_worktree(slot, parent_ref)
 
@@ -239,6 +273,7 @@ def run(rc: RunConfig) -> Archive:
                     wt, parent_obs, parent, target,
                     timeout=rc.mutate_timeout, model=rc.mutate_model,
                     log_path=ANIMA_ROOT / "data" / "eval_logs" / f"mutate-{rc.run_id}-c{i}.log",
+                    eval_setup=f"persona={out.persona}, fixed_start={out.fixed_start}",
                 )
             else:
                 mr = mutate.mutate_noop(wt, parent)
@@ -260,7 +295,11 @@ def run(rc: RunConfig) -> Archive:
 
             # --- eval the variant from its worktree -------------------------
             user = f"{rc.account_prefix}{rc.run_id}c{i}"
-            out.result = run_eval_multi(_eval_cfg(rc, user, slot, wt), seeds=rc.seeds)
+            out.result = run_eval_multi(
+                _eval_cfg(rc, user, slot, wt,
+                          persona=out.persona, fixed_start=out.fixed_start),
+                seeds=rc.seeds,
+            )
         except Exception as e:  # noqa: BLE001 — a broken cycle must not kill the run
             out.error = f"{type(e).__name__}: {e}"
         finally:
@@ -299,7 +338,8 @@ def run(rc: RunConfig) -> Archive:
                     g = _genome_from(arc, out.result, parent=out.parent_id,
                                      code_ref=mr.code_ref if mr else "",
                                      hypothesis=mr.hypothesis if mr else "", rc=rc,
-                                     target_cell=out.target_cell)
+                                     target_cell=out.target_cell,
+                                     persona=out.persona, fixed_start=out.fixed_start)
                     r = arc.add(g)
                 _pin_ref(g.id, g.code_ref)
                 prev = f" (prev {r.prev_fitness:.3f})" if r.prev_fitness is not None else ""
