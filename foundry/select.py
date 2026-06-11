@@ -60,6 +60,27 @@ def choose_parent(archive: Archive, seed: int = 0) -> Genome | None:
     return rng.choices(elites, weights=weights, k=1)[0]
 
 
+def choose_parent_for_target(archive: Archive, target: tuple | None,
+                             seed: int = 0) -> Genome | None:
+    """Pick a parent matched to the EXPLORE target's profession row.
+
+    Parent and target used to be chosen independently, which paired
+    e.g. a COMBAT|2 target with a bard-lineage parent whose checked-out
+    code predates the combat fixes — the eval then ran broken machinery
+    (observed: two COMBAT|2 cycles landing NONE on parents whose code
+    still had the 0x0B session-crash). The same-row elite IS the working
+    machinery for that profession, and the freshest one carries the
+    newest base-code fixes.
+    """
+    if target:
+        row = [g for g in archive.elites() if g.cell and g.cell[0] == target[0]]
+        if row:
+            rng = random.Random(seed)
+            weights = [1.0 + 0.1 * max(0.0, g.fitness) for g in row]
+            return rng.choices(row, weights=weights, k=1)[0]
+    return choose_parent(archive, seed=seed)
+
+
 def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
     """An empty active cell to aim an EXPLORE-type mutation at (or None if full).
 

@@ -274,8 +274,8 @@ def run(rc: RunConfig) -> Archive:
                 out.skipped = True
                 return
             with arc_lock:
-                parent = select.choose_parent(arc, seed=i)
                 target = select.suggest_target_cell(arc, seed=i)
+                parent = select.choose_parent_for_target(arc, target, seed=i)
                 parent_obs = (_parent_observation(arc, parent)
                               + "\n" + observe.history(arc))
             out.parent_id = parent.id if parent else None
