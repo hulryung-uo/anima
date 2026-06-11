@@ -40,12 +40,23 @@ ATTACKABLE_NOTORIETY = {
 HUMAN_BODIES = {0x0190, 0x0191}
 
 WEAPON_GRAPHICS = {
+    # swords
     0x0F51, 0x0F52,  # dagger
     0x0F5E, 0x0F5F,  # broadsword
     0x13FF, 0x1400,  # katana
     0x13B6, 0x13B7,  # scimitar
     0x0F61, 0x0F62,  # longsword
     0x13B9, 0x13BA,  # viking sword
+    0x1441, 0x1440,  # cutlass
+    # fencing
+    0x1401,          # kryss
+    0x1402, 0x1403,  # short spear
+    0x1404, 0x1405,  # war fork
+    # mace fighting
+    0x0F5C, 0x0F5D,  # mace
+    0x13B3, 0x13B4,  # club
+    0x143A, 0x143B,  # maul
+    0x1406, 0x1407,  # war mace
 }
 
 ENGAGE_RANGE = 10        # tiles to scan for targets

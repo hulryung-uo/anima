@@ -55,25 +55,39 @@ def _get_button_id(btn_type: int, index: int) -> int:
 
 
 # Recipes: (item_name, group_index, item_index, ingots_needed, min_skill)
-# Group indices from ServUO DefBlacksmithy.cs:
-# 0=Metal Armor, 1=Helmets, 2=Shields, 3=Bladed, 4=Axes, 5=Polearms,
-# 6=Bashing, 7=Ringmail, 8=Chainmail, 9=Platemail
+# Group/item indices verified against ServUO DefBlacksmithy.cs under
+# CurrentExpansion=EJ (this shard): all era-gated AddCrafts are active, and
+# ring/chain/platemail are merged into group 0 "Metal Armor". Bladed (group 3)
+# order: 0=BoneHarvester 1=Broadsword 2=CrescentBlade 3=Cutlass 4=Dagger
+# 5=Katana 6=Kryss 7=Longsword 8=Scimitar 9=VikingSword …
+# The old table clicked index (3,0) believing it was Cutlass and crafted
+# BoneHarvester (minSkill 33) instead — 4% success at skill 35, 10 ingots
+# burned per failure.
 _RECIPES = [
-    ("Cutlass", 3, 0, 8, 24.3),
-    ("Katana", 3, 1, 8, 44.1),
-    ("Scimitar", 3, 5, 10, 31.7),
-    ("Ringmail Gloves", 7, 0, 10, 12.0),
-    ("Ringmail Sleeves", 7, 2, 14, 16.9),
-    ("Ringmail Leggings", 7, 1, 16, 19.4),
-    ("Ringmail Tunic", 7, 3, 18, 21.9),
+    ("Dagger", 3, 4, 3, -0.4),
+    ("Ringmail Gloves", 0, 0, 10, 12.0),
+    ("Ringmail Sleeves", 0, 2, 14, 16.9),
+    ("Ringmail Leggings", 0, 1, 16, 19.4),
+    ("Ringmail Tunic", 0, 3, 18, 21.9),
+    ("Cutlass", 3, 3, 8, 24.3),
+    ("Longsword", 3, 7, 12, 28.0),
+    ("Scimitar", 3, 8, 10, 31.7),
+    ("Broadsword", 3, 1, 10, 35.4),
+    ("Kryss", 3, 6, 8, 36.7),
+    ("Katana", 3, 5, 8, 44.1),
+    ("Crescent Blade", 3, 2, 14, 45.0),
 ]
 
 # Graphics of items we crafted (to detect in inventory and to sell)
 CRAFTED_WEAPON_GRAPHICS = {
+    0x0F51, 0x0F52,  # dagger
     0x1441,  # cutlass
     0x13FF,  # katana
+    0x1400, 0x1401,  # kryss
+    0x0F61,  # longsword
     0x13B6,  # scimitar
     0x0F5E,  # broadsword
+    0x26C1, 0x26CB,  # crescent blade
     0x1405,  # war fork
 }
 CRAFTED_ARMOR_GRAPHICS = {
@@ -212,10 +226,25 @@ class CraftBlacksmith(Procedure):
                 skill = sk.value
                 break
 
-        for item_name, grp_idx, item_idx, cost, min_skill in _RECIPES:
-            if skill >= min_skill and ingots >= cost:
-                return item_name, grp_idx, item_idx, cost
-        return None
+        # ServUO success chance is (skill - minSkill) / (maxSkill - minSkill)
+        # with a 50-point window. Prefer recipes in the trainable band
+        # (25-90% success — gains keep coming AND items get made), cheapest
+        # ingot cost first; otherwise fall back to the highest success rate.
+        # Failed crafts consume the FULL ingot cost, so cost matters.
+        affordable = [
+            (name, grp, idx, cost, min(1.0, max(0.0, (skill - min_sk) / 50.0)))
+            for name, grp, idx, cost, min_sk in _RECIPES
+            if ingots >= cost
+        ]
+        affordable = [r for r in affordable if r[4] > 0.0]
+        if not affordable:
+            return None
+        trainable = [r for r in affordable if 0.25 <= r[4] <= 0.90]
+        if trainable:
+            name, grp, idx, cost, _ = min(trainable, key=lambda r: r[3])
+        else:
+            name, grp, idx, cost, _ = max(affordable, key=lambda r: r[4])
+        return name, grp, idx, cost
 
     async def _close_all_gumps(self, ctx: AgentContext) -> None:
         """Close all open gumps to prevent stale state on the server."""

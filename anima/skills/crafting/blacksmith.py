@@ -52,39 +52,43 @@ def _get_button_id(btn_type: int, index: int) -> int:
 
 
 # (display_name, group_index, item_index, min_skill, ingots_needed)
-# Group order from ServUO DefBlacksmithy.cs:
-# 0=Metal Armor, 1=Helmets, 2=Shields, 3=Bladed, 4=Axes, 5=Polearms,
-# 6=Bashing, 7=Ringmail, 8=Chainmail, 9=Platemail
+# Group/item indices verified against ServUO DefBlacksmithy.cs under
+# CurrentExpansion=EJ: every era-gated AddCraft is active and ring/chain/
+# platemail are ONE merged group 0 ("Metal Armor"); there are no separate
+# Ringmail/Chainmail/Platemail groups. Groups: 0=Metal Armor, 1=Helmets,
+# 2=Shields, 3=Bladed, 4=Axes, 5=Polearms, 6=Bashing, …
 CRAFT_TARGETS = [
-    # Ringmail — low skill, good for training
-    ("Ringmail Gloves", 7, 0, 12.0, 10),
-    ("Ringmail Leggings", 7, 1, 19.4, 16),
-    ("Ringmail Sleeves", 7, 2, 16.9, 14),
-    ("Ringmail Tunic", 7, 3, 21.9, 18),
-    # Chainmail — mid skill
-    ("Chainmail Coif", 8, 0, 14.5, 10),
-    ("Chainmail Leggings", 8, 1, 36.7, 18),
-    ("Chainmail Tunic", 8, 2, 39.1, 20),
-    # Bladed weapons — varied skill
-    ("Cutlass", 3, 0, 24.3, 8),
-    ("Katana", 3, 1, 44.1, 8),
-    ("Kryss", 3, 2, 36.7, 8),
-    ("Broadsword", 3, 3, 35.4, 10),
-    ("Longsword", 3, 4, 28.0, 12),
-    ("Scimitar", 3, 5, 31.7, 10),
-    # Platemail — high skill
-    ("Plate Gorget", 9, 0, 56.4, 10),
-    ("Plate Gloves", 9, 1, 58.9, 12),
-    ("Plate Helm", 9, 2, 62.6, 15),
-    ("Plate Arms", 9, 3, 66.3, 18),
-    ("Plate Legs", 9, 4, 68.8, 20),
-    ("Plate Chest", 9, 5, 75.0, 25),
-    # Shields
+    # Metal Armor (group 0) — ringmail first, then chain, then plate
+    ("Ringmail Gloves", 0, 0, 12.0, 10),
+    ("Ringmail Leggings", 0, 1, 19.4, 16),
+    ("Ringmail Sleeves", 0, 2, 16.9, 14),
+    ("Ringmail Tunic", 0, 3, 21.9, 18),
+    ("Chainmail Coif", 0, 4, 14.5, 10),
+    ("Chainmail Leggings", 0, 5, 36.7, 18),
+    ("Chainmail Tunic", 0, 6, 39.1, 20),
+    ("Plate Arms", 0, 7, 66.3, 18),
+    ("Plate Gloves", 0, 8, 58.9, 12),
+    ("Plate Gorget", 0, 9, 56.4, 10),
+    ("Plate Legs", 0, 10, 68.8, 20),
+    ("Plate Chest", 0, 11, 75.0, 25),
+    # Bladed weapons (group 3): 0=BoneHarvester 1=Broadsword 2=CrescentBlade
+    # 3=Cutlass 4=Dagger 5=Katana 6=Kryss 7=Longsword 8=Scimitar 9=VikingSword
+    ("Dagger", 3, 4, -0.4, 3),
+    ("Cutlass", 3, 3, 24.3, 8),
+    ("Longsword", 3, 7, 28.0, 12),
+    ("Scimitar", 3, 8, 31.7, 10),
+    ("Broadsword", 3, 1, 35.4, 10),
+    ("Kryss", 3, 6, 36.7, 8),
+    ("Katana", 3, 5, 44.1, 8),
+    # Shields (group 2): 0=Buckler 1=BronzeShield 2=HeaterShield
+    # 3=MetalShield 4=MetalKiteShield 5=WoodenKiteShield
     ("Buckler", 2, 0, 0.0, 10),
     ("Bronze Shield", 2, 1, 0.0, 12),
     ("Metal Shield", 2, 3, 0.0, 14),
     ("Metal Kite Shield", 2, 4, 4.6, 16),
-    ("Heater Shield", 2, 5, 24.3, 18),
+    ("Heater Shield", 2, 2, 24.3, 18),
+    # Helmets (group 1): 0=Bascinet 1=CloseHelm 2=Helmet 3=NorseHelm 4=PlateHelm
+    ("Plate Helm", 1, 4, 62.6, 15),
 ]
 
 # Sort by min_skill ascending

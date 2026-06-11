@@ -119,6 +119,13 @@ class MetricsCollector:
         count = 0
         max_seen = cutoff
         async with aiosqlite.connect(db_path) as db:
+            # Created lazily by the first procedure log write — a fresh DB
+            # has no table yet; that's "no data", not a poll error.
+            probe = await db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='action_logs'"
+            )
+            if await probe.fetchone() is None:
+                return 0
             cursor = await db.execute(
                 "SELECT timestamp, procedure, result, duration_ms "
                 "FROM action_logs WHERE timestamp > ? ORDER BY timestamp",

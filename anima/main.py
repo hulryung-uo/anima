@@ -385,10 +385,14 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
         if cached_serial:
             candidates.append(cached_serial)
         candidates.extend([
-            serial + 1,
             serial | 0x40000000,
             (serial | 0x40000000) + 1,
         ])
+        # ITEM serials live at >= 0x40000000; a mobile-range candidate
+        # (e.g. serial+1) can "match" because a nearby mob's worn equipment
+        # has container == mob serial — that mis-bound the backpack to a
+        # HeadlessOne once. Only probe item-range serials.
+        candidates = [c for c in candidates if c >= 0x40000000]
 
         for bp_candidate in candidates:
             logger.debug("backpack_brute_try", serial=f"0x{bp_candidate:08X}")

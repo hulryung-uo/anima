@@ -381,8 +381,20 @@ async def go_to(
                 logger.debug("go_to_confirmed", polls=polls, pos=f"({ss.x},{ss.y})")
                 break
 
-        if ss.x != prev_x or ss.y != prev_y:
+        if (ss.x, ss.y) == (next_x, next_y):
             path.pop(0)
+        elif ss.x != prev_x or ss.y != prev_y:
+            # Position changed but NOT to the requested tile — a server
+            # resync/teleport (0x20) landed mid-walk. The rest of the path
+            # is stale; popping blind walks the old plan from the wrong
+            # origin. Drop it and re-pathfind from where we actually are.
+            logger.info(
+                "go_to_resync",
+                pos=f"({ss.x},{ss.y})",
+                expected=f"({next_x},{next_y})",
+            )
+            path = []
+            continue
         else:
             # Walk denied — check if it's stamina depletion, not terrain.
             # UO server rejects ALL walks at stam==0 ("too fatigued").

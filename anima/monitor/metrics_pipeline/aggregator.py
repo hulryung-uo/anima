@@ -294,6 +294,14 @@ async def _aggregate_procedures(
         lambda: {"ok": 0, "fail": 0, "durations": []}
     )
     async with aiosqlite.connect(db_path) as db:
+        # The table is created lazily by the first procedure log write; a
+        # fresh (or per-eval) DB doesn't have it yet. Missing table = no
+        # procedure data, not an error worth spamming every poll.
+        probe = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='action_logs'"
+        )
+        if await probe.fetchone() is None:
+            return {}
         cursor = await db.execute(
             "SELECT procedure, result, duration_ms FROM action_logs "
             "WHERE timestamp >= ? AND timestamp < ?",

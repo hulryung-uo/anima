@@ -25,7 +25,17 @@ class PacketHandler:
         """Dispatch a packet to its handler. Returns True if handled."""
         handler = self._handlers.get(packet_id)
         if handler is not None:
-            handler(packet_id, data)
+            try:
+                handler(packet_id, data)
+            except Exception as e:
+                # One malformed packet must never kill the session (a 0x0B
+                # mis-parse used to crash the agent on every combat hit).
+                logger.error(
+                    "packet_handler_error",
+                    packet_id=f"0x{packet_id:02X}",
+                    size=len(data),
+                    error=str(e),
+                )
             return True
         return False
 

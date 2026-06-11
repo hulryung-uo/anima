@@ -68,11 +68,19 @@ class MiningExpedition:
 
     # --- Mutators ---
 
-    def note_ore_mined(self, x: int, y: int, bank_key: tuple[int, int]) -> None:
+    def note_ore_mined(self, x: int, y: int, bank_key: tuple[int, int],
+                       ground_pile: bool = True) -> None:
         """Register a successful mine at (x, y).
 
         Increments the existing pile at that position, or creates a new
         one. Transitions IDLE → MINING.
+
+        `ground_pile=False` records the mine for the expedition state
+        machine (phase, home_base) WITHOUT registering a pile — used when
+        the ore stayed in the backpack because the server rejected the
+        ground drop (AOS shards bounce drops onto the dropper's own tile).
+        Registering unverified drops creates phantom piles the collect leg
+        can never find ("pile empty at target").
 
         `home_base` is set to (x, y) on the *first* call only and is
         never updated thereafter — it anchors the expedition to the
@@ -84,6 +92,8 @@ class MiningExpedition:
             self.home_base = (x, y)
         if self.phase == Phase.IDLE:
             self.transition_to(Phase.MINING)
+        if not ground_pile:
+            return
         for pile in self.piles:
             if pile.x == x and pile.y == y:
                 pile.est_amount += 1

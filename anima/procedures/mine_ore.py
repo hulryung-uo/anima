@@ -185,10 +185,19 @@ class MineOre(Procedure):
         ore_gained = ore_after - ore_before
 
         if ore_gained > 0:
-            # Drop ore — Razor-style auto-stack: drop onto existing ground ore
+            # Drop ore — Razor-style auto-stack: drop onto existing ground ore.
+            # AOS-era ServUO REJECTS world drops onto a tile occupied by a
+            # mobile (incl. the dropper): the ore silently bounces back into
+            # the pack. Verify the drop landed before registering a ground
+            # pile, and stop trying once a bounce is observed this session —
+            # backpack ore flows to smelt_ore directly.
             from anima.client.packets import build_drop_item, build_pick_up
+            drop_verified = False
+            ground_drops_broken = ctx.blackboard.get("_ground_drop_bounces", False)
             for item in world.items.values():
                 if item.container == backpack and item.graphic in ORE_GRAPHICS:
+                    if ground_drops_broken:
+                        break  # keep ore in pack; smelt_ore picks it up
                     # Find same-type ore on ground nearby to stack on
                     stack_target = None
                     for ground_item in world.items.values():
@@ -215,6 +224,20 @@ class MineOre(Procedure):
                         )
                     await asyncio.sleep(0.3)
 
+                    # Verify: did the item actually leave the backpack?
+                    still_packed = world.items.get(item.serial)
+                    if (still_packed is not None
+                            and still_packed.container == backpack
+                            and not stack_target):
+                        ctx.blackboard["_ground_drop_bounces"] = True
+                        logger.info(
+                            "mine_ore_drop_bounced",
+                            serial=f"0x{item.serial:08X}",
+                            note="server rejected ground drop; keeping ore in pack",
+                        )
+                    else:
+                        drop_verified = True
+
                     # If this ore hue was previously blacklisted, mark as junk
                     # so smelt_ore won't waste a cycle trying it
                     unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
@@ -230,9 +253,16 @@ class MineOre(Procedure):
                 _bank_key,
             )
 
+            # Only register a ground pile the collect leg can actually find.
+            # Unverified drops used to create PHANTOM piles ("pile empty at
+            # target") that wasted a pickup walk every cycle. The expedition
+            # state machine (phase/home_base) still advances either way.
             expedition = ctx.blackboard.get("expedition")
             if expedition is not None:
-                expedition.note_ore_mined(ss.x, ss.y, _bank_key(ss.x, ss.y))
+                expedition.note_ore_mined(
+                    ss.x, ss.y, _bank_key(ss.x, ss.y),
+                    ground_pile=drop_verified,
+                )
 
             # Track consecutive successful mines at the same (x, y).
             # After SAME_SPOT_MINE_LIMIT hits, pause this bank so the

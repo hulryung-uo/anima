@@ -888,7 +888,10 @@ def register_handlers(
         """0x0B Damage — damage dealt to an entity."""
         if len(data) < 7:
             return
-        r = PacketReader(data[3:])  # variable: skip id + length
+        # FIXED 7-byte packet: [0x0B][victim serial u32][amount u16] — there
+        # is no length field. Reading data[3:] here crashed the session on
+        # every combat exchange (4-byte buffer, u32+u16 reads).
+        r = PacketReader(data[1:])
         serial = r.read_u32()
         amount = r.read_u16()
 

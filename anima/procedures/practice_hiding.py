@@ -57,8 +57,11 @@ class PracticeHiding(Procedure):
                 attempt=attempt + 1,
                 hidden=bool(seen.success and seen.data.get("index") == 0),
             )
-            if attempt < ATTEMPTS_PER_RUN - 1:
-                await asyncio.sleep(SKILL_USE_COOLDOWN_S + 0.5)
+            # Always wait out the 10s server skill lockout — skipping the
+            # sleep after the run's LAST attempt made the first attempt of
+            # every next run land inside the lockout ("You must wait a few
+            # moments"), wasting 1 of every 3 Hiding rolls.
+            await asyncio.sleep(SKILL_USE_COOLDOWN_S + 0.5)
 
         skill = ss.skills.get(SKILL_HIDING)
         after = skill.value if skill else 0.0

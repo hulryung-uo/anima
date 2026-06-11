@@ -79,11 +79,13 @@ class PracticeMagery(Procedure):
                 mana_cost=GREATER_HEAL_MANA,
             )
             if result.no_reagents:
-                return ProcedureResult(
-                    success=False,
-                    reason=FailureReason.MISSING_RESOURCE,
-                    message="Out of reagents for Greater Heal",
-                )
+                # Reagents exhausted (every cast, even a fizzle, burns one of
+                # each). Don't strand the mage — Meditation is also a MAGIC
+                # skill and gains without reagents; grind it instead so the
+                # planner's starvation breaker never idles the only procedure.
+                logger.info("practice_magery_no_reagents_meditating")
+                await meditate(ctx, target_pct=100.0, timeout=30.0)
+                continue
             if result.success:
                 casts += 1
                 fizzles += int(result.fizzled)
