@@ -127,6 +127,10 @@ def _genome_from(arc: Archive, res: EvalResult, parent: str | None,
             "window_start": res.window_start,
             "breakdown": f.as_dict() if f else {},
             "setup": res.setup,
+            # descriptor anatomy — lets the mutator see WHY a sociability bin
+            # was missed (e.g. 651 moves drowning 27 speeches → 0.038)
+            "action_counts": dict(res.summary.action_counts) if res.summary else {},
+            "sociability_raw": round(d.sociability, 4) if d else 0.0,
         },
         hypothesis=hypothesis,
         ts=time.time(),
@@ -179,12 +183,23 @@ def _parent_observation(arc: Archive, parent: Genome | None) -> str:
         return "(no parent — this is the first variant)"
     bd = parent.eval.get("breakdown", {})
     desc = parent.eval.get("descriptor", {})
+    counts = parent.eval.get("action_counts") or {}
+    soc_raw = parent.eval.get("sociability_raw")
+    anatomy = ""
+    if counts:
+        total = sum(counts.values()) or 1
+        anatomy = (f"- action mix: {counts} (total {total}); "
+                   f"sociability = speech/total = {soc_raw} "
+                   f"(bins: <0.02 low, <0.10 mid, ≥0.10 high). To raise it, "
+                   f"shrinking the denominator (fewer moves) works as well as "
+                   f"more speech.\n")
     return (
         f"# Parent {parent.id} (cell {parent.cell})\n"
         f"- fitness {parent.fitness:.3f}, label {desc.get('label', '?')}\n"
         f"- skill_gain_rate {bd.get('skill_gain_rate', 0):.2f}/h, "
         f"liveness {bd.get('liveness', 0):.2f}, loop {bd.get('loop_penalty', 0):.2f}\n"
         f"- per-seed fitness: {parent.eval.get('per_seed_fitness', [])}\n"
+        + anatomy +
         f"- hypothesis that produced it: {parent.hypothesis}\n"
     )
 
