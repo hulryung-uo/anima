@@ -66,6 +66,20 @@ Anima is a Python-based AI player system for Ultima Online. It connects to a UO 
 - Evolution run: `uv run python -m foundry.orchestrator --cycles 4 --parallel 2 --window 600 --backend claude`
 - Grid status: `uv run python -m foundry.status` · Halt: `touch foundry/STOP`
 
+## Wiki discrepancy reports
+
+When gameplay contradicts the companion wiki (`../uowiki`) — wrong numbers, behavior
+that doesn't match a page, or a missing page worth proposing — file a report:
+
+```
+python3 tools/wiki_report.py --agent bjorn --page src/content/docs/skills/mining.md \
+  --claim "..." --observed "... + log excerpt" --expected "..." --evidence "agent/timestamp/log path"
+```
+
+Reports land in `../uowiki/reports/open/` where a librarian routine triages them daily.
+Use `--force` for missing pages, `--commit` to commit in the wiki repo (never push).
+Format and triage rules: `../uowiki/CLAUDE.md` ("Discrepancy reports").
+
 ## File Organization
 
 When adding new packet handlers:
