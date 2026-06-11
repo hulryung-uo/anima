@@ -542,15 +542,16 @@ class GmClient:
                     continue
                 self.command_on("[Set Amount 1", serial)
                 neutralized.append(f"0x{graphic:04X}:0x{serial:08X}")
-        # 4) spawn standardized arena mobs around the workplace (warrior
-        #    profile). Ring offsets keep them adjacent-but-not-stacked.
+        # 4) spawn standardized arena mobs (warrior profile) — all on the
+        #    GM's own settled tile. It is the only tile PROVEN walkable
+        #    and reachable here: ring offsets on the Minoc mountain face
+        #    landed mobs on cliff ledges (z 34-63 vs the agent's 22),
+        #    where neither side could ever land a swing. Stacked mobiles
+        #    are legal; the AI fans them out on connected ground.
         spawned: list[str] = []
-        offsets = [(2, 0), (-2, 0), (0, 2), (0, -2),
-                   (3, 2), (-3, -2), (2, -3), (-2, 3)]
-        for i, mob in enumerate(p.get("spawn_mobs", [])):
-            dx, dy = offsets[i % len(offsets)]
+        for mob in p.get("spawn_mobs", []):
             try:
-                self.command_at(f"[Add {mob}", gx + dx, gy + dy, gz)
+                self.command_at(f"[Add {mob}", gx, gy, gz)
                 spawned.append(mob)
             except GmError as e:
                 spawned.append(f"{mob}:failed({e})")
