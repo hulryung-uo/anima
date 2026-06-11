@@ -66,9 +66,11 @@ FIXED_START_PROFILES: dict[str, dict] = {
         # Meditation 60 keeps mana cycling fast enough for a 10-min eval.
         "skills": {"Magery": 35.0, "Meditation": 60.0},
         # Loose reagent stacks (creation reagents arrive nested in a bag
-        # the agent's flat backpack search can't see into).
-        "items": ["Garlic 200", "Ginseng 200", "SpidersSilk 200",
-                  "MandrakeRoot 200"],
+        # the agent's flat backpack search can't see into). 50 each ≈
+        # 20 stones — 200 each overloaded the low-STR mage (159/135
+        # weight) and wedged movement; 50 covers ~50 Greater Heals.
+        "items": ["Garlic 50", "Ginseng 50", "SpidersSilk 50",
+                  "MandrakeRoot 50"],
         "neutralize": [0x0EED],
     },
     "warrior": {
@@ -466,6 +468,19 @@ class GmClient:
         self.sock.sendall(build_ground_target_response(cursor, x, y, z))
         time.sleep(0.4)
 
+    def command_area(self, command: str, x1: int, y1: int, x2: int, y2: int,
+                     z: int) -> None:
+        """Run a bounding-box [command ([WipeNPCs etc.) over a rectangle.
+
+        ServUO's BoundingBoxPicker asks for two ground targets (corners).
+        """
+        ts = self.say(command)
+        cursor = self._await_cursor(ts)
+        self.sock.sendall(build_ground_target_response(cursor, x1, y1, z))
+        cursor = self._await_cursor(time.time())
+        self.sock.sendall(build_ground_target_response(cursor, x2, y2, z))
+        time.sleep(0.4)
+
     def goto(self, x: int, y: int, z: int | None = None) -> tuple[int, int, int]:
         """[Go self to (x, y); returns the server-settled (x, y, z).
 
@@ -505,6 +520,13 @@ class GmClient:
         p = FIXED_START_PROFILES[profile]
         # 1) calibrate the workplace Z by standing there ourselves (hidden)
         gx, gy, gz = self.goto(*p["go"])
+        # 1b) clear leftover NPCs from previous evals (e.g. the warrior
+        #     profile's arena mobs linger and maul later non-combat evals
+        #     at the shared workplace). Players are exempt from WipeNPCs.
+        try:
+            self.command_area("[WipeNPCs", gx - 12, gy - 12, gx + 12, gy + 12, gz)
+        except GmError:
+            pass  # best-effort cleanup — an empty area sends no cursor flow change
         # 2) pin skills + hand tools, targeting by serial from afar
         for skill, val in p.get("skills", {}).items():
             self.command_on(f"[Set Skills.{skill}.Base {val}", eval_serial)

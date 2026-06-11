@@ -56,17 +56,23 @@ CLOTHING_HUES = list(range(0x0002, 0x03E9, 5))  # ~200 colors
 # Persona-to-creation mapping
 # ---------------------------------------------------------------------------
 
-# Stats: (str, dex, int), total must equal 80
+# Stats: (str, dex, int). ServUO SetStats (CharacterCreation.cs:342)
+# requires each stat in 10..60 and the total to equal EXACTLY 90 for
+# modern clients (NewCharacterCreation; 80 only for pre-7.0.16). An
+# off-target total gets rescaled, and any stat pushed past 60 by the
+# rescale resets the whole spread to 10/10/10 — which is how every
+# persona silently lived with 10 INT / 10 STR until the mage probe
+# exposed it (mana_max 10 → could never afford an 11-mana cast).
 PERSONA_STATS: dict[str, tuple[int, int, int]] = {
-    "adventurer": (35, 25, 20),
-    "blacksmith":  (60, 10, 10),
-    "merchant":    (25, 25, 30),
-    "mage":        (10, 10, 60),
-    "bard":        (15, 30, 35),
-    "ranger":      (40, 30, 10),
-    "woodcutter":  (50, 20, 10),
-    "miner":       (55, 15, 10),
-    "thief":       (20, 45, 15),
+    "adventurer": (40, 30, 20),
+    "blacksmith":  (60, 20, 10),
+    "merchant":    (20, 30, 40),
+    "mage":        (10, 20, 60),
+    "bard":        (15, 40, 35),
+    "ranger":      (45, 35, 10),
+    "woodcutter":  (55, 25, 10),
+    "miner":       (60, 20, 10),
+    "thief":       (20, 50, 20),
 }
 
 # Initial skills: list of (skill_id, value), up to 4 skills.

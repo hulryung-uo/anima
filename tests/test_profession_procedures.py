@@ -251,6 +251,16 @@ class TestPersonaSkillIds:
             total = sum(v for _, v in PERSONA_SKILLS[persona])
             assert total == 100, f"{persona} creation skills sum {total} != 100"
 
+    def test_creation_stats_are_servuo_valid(self):
+        """ServUO SetStats: each stat 10..60, total EXACTLY 90 (modern
+        clients) — anything else silently resets to 10/10/10."""
+        from anima.client.appearance import PERSONA_STATS
+
+        for persona, (s, d, i) in PERSONA_STATS.items():
+            assert s + d + i == 90, f"{persona} stats sum {s+d+i} != 90"
+            for v in (s, d, i):
+                assert 10 <= v <= 60, f"{persona} stat {v} out of 10..60"
+
     def test_servuo_enum_ids(self):
         from anima.client.appearance import PERSONA_SKILLS
 
