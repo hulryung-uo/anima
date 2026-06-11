@@ -46,6 +46,7 @@ cities:
       - "bowyer"
       - "inn"
       - "court"
+      - "bank"  # Empath Abbey area (652, 820) — spawner Vendors#293 in servuo Spawns/felucca.xml
     resources_nearby:
       - "vast forests all around"
       - "trees everywhere"
