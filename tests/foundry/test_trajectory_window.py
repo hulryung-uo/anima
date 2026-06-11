@@ -173,3 +173,39 @@ def test_behavior_bonus_is_cell_aligned(tmp_path):
     fb_miner = compute_fitness(miner)
     # the miner's bonus must not include the exploration term
     assert fb_miner.behavior_bonus < WB_EXPLORE * 1.0 + 1e-6
+
+
+def p_damage(victim: int, amount: int) -> bytes:
+    return struct.pack(">BIH", 0x0B, victim, amount)
+
+
+def p_attack_req(target: int) -> bytes:
+    return struct.pack(">BI", 0x05, target)
+
+
+def p_mobile_moving(serial: int) -> bytes:
+    d = bytearray(17)
+    d[0] = 0x77
+    struct.pack_into(">I", d, 1, serial)
+    return bytes(d)
+
+
+def test_damage_attribution_and_entity_census(tmp_path):
+    """Dealt damage counts only against serials WE attacked; arena mobs
+    mauling each other (and our own taken hits) stay out of damage_dealt.
+    mobiles_seen counts distinct non-self entities incl. setup phase."""
+    MOB_A, MOB_B = 0x300, 0x301
+    lines = [
+        _line(10.0, "S->C", p_login_confirm(SELF, 2500, 400)),
+        _line(12.0, "S->C", p_mobile_moving(MOB_A)),     # setup-phase sighting
+        # window
+        _line(21.0, "C->S", p_attack_req(MOB_A)),        # we attack A
+        _line(22.0, "S->C", p_damage(MOB_A, 11)),        # dealt
+        _line(23.0, "S->C", p_damage(SELF, 7)),          # taken
+        _line(24.0, "S->C", p_damage(MOB_B, 25)),        # mob-vs-mob: ignored
+        _line(25.0, "S->C", p_mobile_moving(MOB_B)),
+    ]
+    s = parse_file(_write(tmp_path, lines), window_start=20.0)
+    assert s.damage_dealt == 11
+    assert s.damage_taken == 7
+    assert s.entities_seen == 2          # A and B, self excluded

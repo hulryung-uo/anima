@@ -41,6 +41,7 @@ P_ASCII_TALK = 0x1C         # S->C speech
 P_UNICODE_TALK = 0xAE       # S->C speech
 P_CLILOC = 0xC1             # S->C localized speech
 P_MOBILE_INCOMING = 0x78    # S->C mobile (incl. self at login) + equipment
+P_MOBILE_MOVING = 0x77      # S->C other mobile moved into/within view
 
 REGION_SHIFT = 3  # 8x8-tile region buckets for mobility (1 << 3 == 8)
 
@@ -138,6 +139,12 @@ class TrajectorySummary:
     attacks_initiated: int = 0
     damage_dealt: int = 0
     damage_taken: int = 0
+    attacked_serials: set[int] = field(default_factory=set)
+
+    # environment: distinct non-self mobiles that entered view during the
+    # window (mobs + NPCs + players — the wire doesn't distinguish). 0 means
+    # the workplace is EMPTY: combat/social/begging hypotheses have no targets.
+    mobiles_seen: set[int] = field(default_factory=set)
 
     # provenance / health of the parse
     packet_counts: dict[str, int] = field(default_factory=dict)
@@ -156,6 +163,14 @@ class TrajectorySummary:
     @property
     def skill_gain_total(self) -> float:
         return sum(s.gain for s in self.skills.values())
+
+    @property
+    def entities_seen(self) -> int:
+        """Distinct non-self mobiles observed (environment, incl. setup phase)."""
+        s = set(self.mobiles_seen)
+        if self.self_serial is not None:
+            s.discard(self.self_serial)
+        return len(s)
 
     @property
     def gold_delta(self) -> int:
@@ -307,6 +322,8 @@ def _on_client(
         if not baseline:
             summ.speech_sent += 1
     elif pid == P_ATTACK:
+        if len(data) >= 5:
+            summ.attacked_serials.add(struct.unpack_from(">I", data, 1)[0])
         if not baseline:
             summ.attacks_initiated += 1
 
@@ -392,11 +409,15 @@ def _on_server(
     elif pid == P_MOBILE_INCOMING and len(data) >= 19:
         # self at login carries our equipment (backpack -> owned container)
         serial = struct.unpack_from(">I", data, 3)[0]
+        summ.mobiles_seen.add(serial)   # environment census (self filtered later)
         if summ.self_serial is None:
             summ.self_serial = serial
         if serial == summ.self_serial:
             owned.add(serial)
             _scan_equipment_for_pack(data, serial, owned)
+
+    elif pid == P_MOBILE_MOVING and len(data) >= 5:
+        summ.mobiles_seen.add(struct.unpack_from(">I", data, 1)[0])
 
     elif pid == P_EQUIP and len(data) >= 15:
         serial = struct.unpack_from(">I", data, 1)[0]
@@ -436,12 +457,18 @@ def _on_server(
             summ.speech_recv += 1
 
     elif pid == P_DAMAGE and len(data) >= 7:
-        serial = struct.unpack_from(">I", data, 3)[0]
-        amount = struct.unpack_from(">H", data, 7 - 2)[0]
+        # [0x0B][victim serial u32 @1][amount u16 @5] — verified on live
+        # captures (the old @3 read produced garbage serials, so self-damage
+        # was never recognized and EVERYTHING counted as dealt).
+        serial = struct.unpack_from(">I", data, 1)[0]
+        amount = struct.unpack_from(">H", data, 5)[0]
         if not baseline:
             if serial == summ.self_serial:
                 summ.damage_taken += amount
-            else:
+            elif serial in summ.attacked_serials:
+                # only damage to mobiles WE attacked counts as dealt —
+                # 0x0B broadcasts every hit in view, and arena mobs mauling
+                # each other once inflated damage_rate to ~370k/h.
                 summ.damage_dealt += amount
 
     return cur_x, cur_y

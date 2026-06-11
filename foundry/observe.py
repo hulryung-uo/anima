@@ -114,6 +114,10 @@ def observe(res: EvalResult, archive: Archive | None = None) -> str:
     lines.append(f"- gold delta {s.gold_delta}, items to pack {len(s.items_into_pack)}")
     lines.append(f"- speech sent/recv {s.speech_sent}/{s.speech_recv}, "
                  f"attacks {s.attacks_initiated}")
+    env = s.entities_seen
+    note = " — the workplace is EMPTY: combat/begging/social hypotheses have no targets" \
+        if env == 0 else ""
+    lines.append(f"- entities seen nearby during eval: {env}{note}")
     lines.append("")
 
     smells = _smells(res)
