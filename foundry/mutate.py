@@ -80,9 +80,11 @@ than coding an in-game acquisition loop. (Creation rules: ≤4 skills, values
 - Edit ONLY files under `anima/`. NEVER touch `foundry/kernel/` (the fitness ruler —
   editing it is cheating and will be reverted anyway).
 - Make ONE focused, minimal change tied to a clear hypothesis. Do not refactor.
-- You have a hard wall-clock budget (~15-20 min). Commit a small working change
-  EARLY rather than perfecting a large one — an uncommitted mutation scores
-  nothing and the cycle is wasted.
+- You have a hard wall-clock budget (~15-20 min) AND a turn budget (~110 tool
+  calls). Budget them: skim at most ~5 reference files (wiki pages, actions.md,
+  code), then edit and COMMIT EARLY — an uncommitted mutation scores nothing
+  and the cycle is wasted. Committing a small change at turn 30 beats running
+  out of turns at 60 with uncommitted work.
 - The agent is driven by the v2 rule-based planner: `anima/planner/planner.py`
   (priority selection) and `anima/procedures/*.py` (mine/smelt/craft/sell/etc).
   Movement is `anima/action/movement.py`. Persona templates:
@@ -164,7 +166,7 @@ def mutate_with_claude(
             [
                 "claude", "-p", prompt,
                 "--model", model,
-                "--max-turns", "60",
+                "--max-turns", "110",
                 "--allowedTools", *_ALLOWED_TOOLS,
             ],
             cwd=str(repo),
