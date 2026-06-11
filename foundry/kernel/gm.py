@@ -89,6 +89,22 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "items": ["Lute"],
         "neutralize": [0x0EED],
     },
+    "crafter": {
+        "go": (2567, 493),
+        # Every eval is a FRESHLY CREATED character, so the 600s economic
+        # loop (mine→smelt→buy tongs→craft) never needs to close: the char
+        # is born a blacksmith (persona template) and the GM provisions the
+        # consumables. Blacksmith pinned to the gain window; creation-50
+        # Mining left high so smelting gains stay subordinate to smithing.
+        "skills": {"Blacksmith": 35.0},
+        "items": ["Tongs", "IronIngot 60"],
+        # Workstations spawned on the GM tile (same reachability argument
+        # as the warrior arena). Items are not wiped by [WipeNPCs and will
+        # stack across crafter evals — functionally harmless ("an anvil
+        # nearby" is a boolean), cosmetically untidy.
+        "spawn_items": ["Anvil", "Forge"],
+        "neutralize": [0x0EED],
+    },
     "thief": {
         "go": (2567, 493),
         "skills": {"Hiding": 35.0, "Stealth": 35.0},
@@ -549,12 +565,12 @@ class GmClient:
         #    where neither side could ever land a swing. Stacked mobiles
         #    are legal; the AI fans them out on connected ground.
         spawned: list[str] = []
-        for mob in p.get("spawn_mobs", []):
+        for thing in [*p.get("spawn_mobs", []), *p.get("spawn_items", [])]:
             try:
-                self.command_at(f"[Add {mob}", gx, gy, gz)
-                spawned.append(mob)
+                self.command_at(f"[Add {thing}", gx, gy, gz)
+                spawned.append(thing)
             except GmError as e:
-                spawned.append(f"{mob}:failed({e})")
+                spawned.append(f"{thing}:failed({e})")
         # 5) finally teleport the char to the calibrated workplace
         self.command_on(f"[Set X {gx} Y {gy} Z {gz}", eval_serial)
         return {"workplace": (gx, gy, gz), "profile": profile,

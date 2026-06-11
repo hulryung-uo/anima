@@ -64,6 +64,15 @@ Mining 35). Fitness = viability_gate × (skill_gain_rate + 0.3·gold_rate +
 PER HOUR doing its trade. Dying, freezing, or walking into walls gates everything
 toward zero.
 
+Every eval is a NEWLY CREATED character on a fresh account — nothing persists
+between evals. That makes the creation template part of the genome: editing
+PERSONA_SKILLS / PERSONA_STATS in `anima/client/appearance.py` changes what the
+agent is BORN with, and ServUO grants starter items per creation skill (e.g.
+Blacksmith → smith tools + ingots; Magery → spellbook + reagents). Changing
+birth skills is often the cheapest way to shift profession_focus — far cheaper
+than coding an in-game acquisition loop. (Creation rules: ≤4 skills, values
+0-50 summing to exactly 100 or 120; stats sum to exactly 90.)
+
 ## Your goal this cycle
 {goal}
 
