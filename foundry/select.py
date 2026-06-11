@@ -61,8 +61,28 @@ def choose_parent(archive: Archive, seed: int = 0) -> Genome | None:
 
 
 def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
-    """An empty active cell to aim an EXPLORE-type mutation at (or None if full)."""
+    """An empty active cell to aim an EXPLORE-type mutation at (or None if full).
+
+    Weighted toward "easy" rows — professions whose loop is already PROVEN
+    (more filled cells, higher best fitness in the row). Reaching the last
+    bin of a working profession is a small behavioral tweak; cracking an
+    unproven profession is a capability problem. Spend exploration on the
+    cheap wins first (and previously: 4 consecutive CRAFTING|2 attempts
+    failed on a broken craft primitive while COMBAT|2 sat untried).
+    """
     empties = empty_cells(archive)
     if not empties:
         return None
-    return random.Random(seed).choice(empties)
+    row_filled: dict[str, int] = {}
+    row_best: dict[str, float] = {}
+    for g in archive.elites():
+        prof = g.cell[0]
+        row_filled[prof] = row_filled.get(prof, 0) + 1
+        row_best[prof] = max(row_best.get(prof, 0.0), g.fitness)
+    weights = [
+        1.0
+        + 2.0 * row_filled.get(c[0], 0)              # proven machinery
+        + min(2.0, row_best.get(c[0], 0.0) / 20.0)   # row quality, capped
+        for c in empties
+    ]
+    return random.Random(seed).choices(empties, weights=weights, k=1)[0]
