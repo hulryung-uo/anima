@@ -76,9 +76,14 @@ python3 tools/wiki_report.py --agent bjorn --page src/content/docs/skills/mining
   --claim "..." --observed "... + log excerpt" --expected "..." --evidence "agent/timestamp/log path"
 ```
 
-Reports land in `../uowiki/reports/open/` where a librarian routine triages them daily.
-Use `--force` for missing pages, `--commit` to commit in the wiki repo (never push).
-Format and triage rules: `../uowiki/CLAUDE.md` ("Discrepancy reports").
+Reports land in `../uowiki/reports/open/`; the librarian routine
+(`../uowiki/LIBRARIAN.md`) triages them on demand. Use `--force` for missing pages,
+`--commit` to commit in the wiki repo (never push). Format and triage rules:
+`../uowiki/CLAUDE.md` ("Discrepancy reports").
+
+Claude Code sessions here also get the wiki MCP server (`.mcp.json` → `uowiki`):
+`wiki_search` / `wiki_read_page` to consult game facts, `wiki_file_report`,
+`wiki_update_page` (curated pages only, with evidence).
 
 ## File Organization
 

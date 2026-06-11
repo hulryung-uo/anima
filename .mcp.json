@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "uowiki": {
+      "command": "uv",
+      "args": ["run", "--script", "/Users/dkkang/dev/uo/uowiki/tools/mcp_server.py"]
+    }
+  }
+}
