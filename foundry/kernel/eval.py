@@ -250,6 +250,23 @@ def _gm_setup(cfg: EvalConfig, serial: int, eval_watch: gmmod.JsonlWatch) -> dic
     return setup
 
 
+def _planner_hold_args(cfg: EvalConfig, agent_cwd: Path) -> list[str]:
+    """First-planner-tick hold flags, matched to what the genome's code
+    actually supports — older code_refs predate --planner-warp-hold and
+    argparse exits rc=2 on unknown flags (same class as --all-extras)."""
+    if not cfg.fixed_start:
+        return ["--planner-delay", str(cfg.planner_delay_s)] if cfg.planner_delay_s else []
+    main_py = agent_cwd / "anima" / "main.py"
+    try:
+        supports_warp = "--planner-warp-hold" in main_py.read_text()
+    except OSError:
+        supports_warp = False
+    if supports_warp:
+        return ["--planner-warp-hold", str(cfg.warp_hold_max_s),
+                "--planner-delay", "0.0"]
+    return ["--planner-delay", str(cfg.planner_delay_s)]
+
+
 def run_eval(cfg: EvalConfig) -> EvalResult:
     traj = cfg.trajectory_path
     if traj.exists():
@@ -299,10 +316,7 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
                 "--user", cfg.account_user,
                 "--pass", cfg.account_pass,
                 "--web-port", str(cfg.web_port),
-                "--planner-warp-hold",
-                str(cfg.warp_hold_max_s if cfg.fixed_start else 0.0),
-                "--planner-delay",
-                str(0.0 if cfg.fixed_start else cfg.planner_delay_s),
+                *_planner_hold_args(cfg, agent_cwd),
                 *cfg.extra_agent_args,
             ],
             logdir / f"agent-{cfg.account_user}.log",
