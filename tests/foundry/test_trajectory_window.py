@@ -233,3 +233,20 @@ def test_add_to_container_both_formats(tmp_path):
     s = parse_file(f, window_start=20.0)
     got = [(g, a) for g, a, _ in s.items_into_pack]
     assert got == [(0x1441, 1), (0x19B5, 3)]
+
+
+def test_produce_credit_is_amount_delta_per_serial(tmp_path):
+    """A drop the server bounces back re-fires 0x25 for the same serial —
+    that must not mint produce credit (anti reward-hack). Stack growth
+    credits only the growth."""
+    lines = [
+        _line(10.0, "S->C", p_login_confirm(SELF, 2500, 400)),
+        _line(21.0, "S->C", p_add_to_container(0x4002, 0x19B5, 5, SELF)),  # mined ore
+        _line(25.0, "S->C", p_add_to_container(0x4002, 0x19B5, 5, SELF)),  # bounce: same serial+amount
+        _line(30.0, "S->C", p_add_to_container(0x4002, 0x19B5, 5, SELF)),  # bounce again
+        _line(40.0, "S->C", p_add_to_container(0x4002, 0x19B5, 8, SELF)),  # stack grew 5->8
+    ]
+    f = _write(tmp_path, lines)
+    s = parse_file(f, window_start=20.0)
+    got = [(g, a) for g, a, _ in s.items_into_pack]
+    assert got == [(0x19B5, 5), (0x19B5, 3)]

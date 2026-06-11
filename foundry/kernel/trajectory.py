@@ -238,6 +238,7 @@ def parse_file(path: str | Path, window_start: float = 0.0) -> TrajectorySummary
     cur_x: int | None = None
     cur_y: int | None = None
     owned_containers: set[int] = set()
+    pack_amounts: dict[int, int] = {}   # item serial -> last credited amount
 
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -284,7 +285,8 @@ def parse_file(path: str | Path, window_start: float = 0.0) -> TrajectorySummary
                     )
                 else:  # "S->C"
                     cur_x, cur_y = _on_server(
-                        summ, pid, data, ts, cur_x, cur_y, owned_containers, baseline
+                        summ, pid, data, ts, cur_x, cur_y, owned_containers,
+                        pack_amounts, baseline
                     )
             except (IndexError, struct.error):
                 summ.parse_errors += 1
@@ -333,7 +335,7 @@ def _on_client(
 def _on_server(
     summ: TrajectorySummary, pid: int, data: bytes, ts: float,
     cur_x: int | None, cur_y: int | None, owned: set[int],
-    baseline: bool = False,
+    pack_amounts: dict[int, int], baseline: bool = False,
 ) -> tuple[int | None, int | None]:
     """Decode a server->client packet, updating ground-truth state.
 
@@ -458,8 +460,18 @@ def _on_server(
             r.skip(1)            # grid index (6017+ format)
         container = r.u32()
         if container in owned:
-            if not baseline:
-                summ.items_into_pack.append((graphic, amount or 1, ts))
+            # Credit only the AMOUNT DELTA per item serial. The same serial
+            # re-entering the pack (e.g. a ground drop the server bounces
+            # back — AOS rejects drops onto the dropper's own tile) repeats
+            # the 0x25; crediting every event let a pick-up/drop loop mint
+            # produce score from one ore pile (observed: GATHERING|0 jumped
+            # 9→106→262 the moment produce_term came alive). A stack that
+            # genuinely grows credits its growth; a bounce credits zero.
+            amt = amount or 1
+            prev = pack_amounts.get(item_serial, 0)
+            pack_amounts[item_serial] = amt
+            if not baseline and amt > prev:
+                summ.items_into_pack.append((graphic, amt - prev, ts))
             owned.add(item_serial)  # nested bag tracking
 
     elif pid in (P_ASCII_TALK, P_UNICODE_TALK, P_CLILOC):
