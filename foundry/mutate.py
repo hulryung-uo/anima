@@ -92,6 +92,16 @@ than coding an in-game acquisition loop. (Creation rules: ≤4 skills, values
   preconditions, failure modes, freeze traps). When it exists, import
   primitives from the `anima.actions` façade instead of re-implementing
   packet flows. (Older lineages predate the doc — skip this if absent.)
+- UO game mechanics are NOT guessable — check the wiki at
+  `~/dev/uo/uowiki/src/content/docs/` (source-verified against THIS server's
+  code) before betting your one mutation on a mechanic. Highest value:
+  `mechanics/skill-gain.md` (a skill only gains when the task sits between
+  its minSkill and maxSkill — meditating at full mana, casting trivially easy
+  spells, or working far above the task's window gains NOTHING),
+  `skills/<name>.md` per-skill training notes, `world/minoc.md` (the eval
+  area: what exists near the workplace), `bestiary/` (mob strength),
+  `templates/` (profession builds). Read only the 1–3 pages your hypothesis
+  depends on — your wall-clock budget is tight.
 - Run `uv run --all-extras pytest tests/ -q -x --ignore=tests/foundry` —
   only commit if green.
 - Commit ALL your changes with EXACTLY this subject form so the system can read
