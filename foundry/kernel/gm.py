@@ -39,18 +39,25 @@ GM_PASS = "foundry-gm-pass"
 GM_CHAR = "FoundryGM"
 CLIENT_VERSION = "7.0.102.3"
 
-# Concurrent-eval workplaces ("lanes"). Map-scan calibrated (2026-06-11):
-# each spot is walkable, ground-level (z 14-22), miner-capable (≥7 mineable
-# tiles within reach 2) on the Minoc ridge, and ≥33 tiles Chebyshev from every
-# other lane — outside speech range (~18) and the [WipeNPCs radius (±12), and
-# on separate 8×8 ore banks. Parallel evals each get their own lane so they
-# cannot hear, fight, or mine each other's world.
+# Concurrent-eval workplaces ("lanes"). Map-scan calibrated (2026-06-12):
+# each spot is walkable, ground-level (z 5-22), miner-capable (≥7 mineable
+# rock tiles within reach 2) on the Minoc ridge, ≥33 tiles Chebyshev from
+# every other lane — outside speech range (~18) and the [WipeNPCs radius
+# (±12), on separate 8×8 ore banks — AND flood-fill OPEN (≥1000 connected
+# walkable tiles). The old 5th spot (2557,456) was a 113-tile closed island:
+# agents warped there could not path anywhere, every go_to failed. 10 lanes
+# cover parallel 3 × seeds 3 (9 concurrent) without wraparound sharing.
 LANE_SPOTS: list[tuple[int, int]] = [
     (2567, 493),   # z~22 — the original proven spot
     (2611, 474),   # z~20
     (2584, 411),   # z~14
     (2551, 420),   # z~18
-    (2557, 456),   # z~15
+    (2524, 532),   # z~6
+    (2608, 538),   # z~10
+    (2485, 550),   # z~5
+    (2698, 538),   # z~8
+    (2659, 538),   # z~8
+    (2500, 382),   # z~6
 ]
 
 # Fixed-start profiles, keyed by persona (FOUNDRY.md §5 "fixed start state").

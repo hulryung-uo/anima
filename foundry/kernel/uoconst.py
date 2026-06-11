@@ -78,6 +78,19 @@ ITEM_VALUES: dict[int, int] = {
     0x1BF1: 6,   # Ingot
     0x1BF2: 6,   # Iron ingot
     0x0F8F: 0,   # (placeholder) gem — keep 0 until valued
+    # Crafted goods (ruler calibration 2026-06-12: crafted output earned 0
+    # produce credit because only raw materials were valued — a working
+    # blacksmith scored as if it produced nothing). Rough vendor prices.
+    0x0F51: 10, 0x0F52: 10,    # dagger
+    0x1441: 24, 0x1440: 24,    # cutlass
+    0x13FF: 33, 0x1400: 33,    # katana
+    0x1401: 30,                # kryss
+    0x0F61: 28, 0x0F62: 28,    # longsword
+    0x13B6: 28, 0x13B7: 28,    # scimitar
+    0x0F5E: 28, 0x0F5F: 28,    # broadsword
+    0x13B9: 30, 0x13BA: 30,    # viking sword
+    0x26C1: 35, 0x26CB: 35,    # crescent blade
+    0x13EB: 25, 0x13F0: 35, 0x13EE: 30, 0x13EC: 40,  # ringmail set
 }
 ITEM_VALUE_DEFAULT = 1
 GOLD_GRAPHIC = 0x0EED
