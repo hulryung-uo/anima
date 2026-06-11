@@ -57,6 +57,7 @@ class RunConfig:
     archive_root: str = "foundry/archive"
     mutate_timeout: int = 1500          # EXPLORE mutations + worktree pytest run long
     run_id: str = ""                    # account-name nonce; default = time-based
+    force_seed: bool = False            # plant a HEAD-based root genome even if grid non-empty
 
     def __post_init__(self) -> None:
         self.parallel = max(1, min(self.parallel, safety.MAX_CONCURRENT_EVALS))
@@ -173,7 +174,8 @@ class _CycleOutcome:
 
 
 def seed_archive(arc: Archive, rc: RunConfig) -> Genome | None:
-    print("[seed] evaluating current code as the first genome…")
+    print(f"[seed] evaluating current HEAD as a root genome "
+          f"(persona={rc.persona}, fixed_start={rc.fixed_start or 'off'})…")
     res = run_eval_multi(_eval_cfg(rc, f"{rc.account_prefix}{rc.run_id}seed", 0, None),
                          seeds=rc.seeds)
     if not res.ok:
@@ -198,8 +200,13 @@ def run(rc: RunConfig) -> Archive:
           f"window={rc.window_s}s seeds={rc.seeds} fixed_start={rc.fixed_start or 'off'} "
           f"kernel_pin={pinned[:10]} run_id={rc.run_id}")
 
-    if not arc.elites():
-        if seed_archive(arc, rc) is None:
+    # Seed when the grid is empty — or when forced. Forced seeding is how
+    # improvements to the BASE genome code enter an existing gene pool:
+    # cycle evals check out parent.code_ref, so a new capability at HEAD
+    # (e.g. a profession primitive) is invisible to old lineages until a
+    # HEAD-based root genome is planted for them to descend from.
+    if rc.force_seed or not arc.elites():
+        if seed_archive(arc, rc) is None and not arc.elites():
             return arc
 
     slots: queue.Queue[int] = queue.Queue()
@@ -321,6 +328,9 @@ def _main(argv: list[str]) -> int:
     ap.add_argument("--model", default="sonnet", help="mutator model (cost tiering)")
     ap.add_argument("--mutate-timeout", type=int, default=1500)
     ap.add_argument("--archive", default="foundry/archive")
+    ap.add_argument("--seed", action="store_true", dest="force_seed",
+                    help="plant a HEAD-based root genome for this persona even "
+                         "if the grid is non-empty (use --cycles 0 for pure seeding)")
     args = ap.parse_args(argv)
 
     rc = RunConfig(
@@ -328,6 +338,7 @@ def _main(argv: list[str]) -> int:
         backend=args.backend, parallel=args.parallel, seeds=args.seeds,
         fixed_start=args.fixed_start, mutate_model=args.model,
         mutate_timeout=args.mutate_timeout, archive_root=args.archive,
+        force_seed=args.force_seed,
     )
     run(rc)
     return 0
