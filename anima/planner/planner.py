@@ -1934,10 +1934,15 @@ class Planner:
                 procedure=self._last_procedure,
             )
             task = self._current_proc_task
+            cancelled_running = False
             if task is not None and not task.done():
                 self._watchdog_cancelled = True
                 task.cancel()
-            if self._last_procedure:
+                cancelled_running = True
+            # Only blame the procedure if we actually killed one mid-run.
+            # An idle stall (nothing selectable) is not its fault — the
+            # forced fallback below is the remedy there.
+            if cancelled_running and self._last_procedure:
                 self._proc_breaker.record_failure(self._last_procedure)
             self._force_fallback_until = _time.time() + self._FALLBACK_WINDOW_S
             self._last_progress_ts = _time.monotonic()  # re-arm
