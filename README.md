@@ -4,209 +4,157 @@
 
 [![Fork this repo](https://img.shields.io/github/forks/hulryung-uo/anima?style=social)](https://github.com/hulryung-uo/anima/fork)
 
-## 🧬 We Found Something Interesting
+## 🧬 Anima Foundry — Evolution, Not Just Automation
 
-While building Anima — an AI that plays Ultima Online — we accidentally stumbled onto something unexpected: **an AI agent that improves its own code.**
+Anima started as an AI that plays Ultima Online. It grew into something stranger: **Anima Foundry**, a system where an AI *develops* AI players — by mutating their code, evaluating every variant against a live server, and keeping the best of every behavioral kind.
 
-Here's how it works: Anima runs in-game as a woodcutter named Bjorn. Every 10 minutes, a self-improvement loop kicks in:
+```
+            ┌──────────────────────────────────────────────────┐
+            │                  FOUNDRY LOOP                    │
+            │                                                  │
+   select ──►  pick a parent elite + an empty target cell      │
+            │       (MAP-Elites grid: profession × sociability)│
+   mutate ──►  Claude reads the eval evidence + the UO wiki,   │
+            │  forms ONE hypothesis, edits the agent's code    │
+   evaluate ►  the variant plays 600s on a live ServUO shard   │
+            │  (fresh character, GM-standardized start,        │
+            │   3 parallel seeds, isolated lane workplaces)    │
+   score  ──►  a HUMAN-OWNED kernel parses the raw packet      │
+            │  stream independently and computes fitness       │
+   archive ─►  better than the cell's elite? it takes the cell │
+            └──────────────────────────────────────────────────┘
+```
 
-1. **Analyze** — Parse game logs, compute success rates, detect problems (stuck? failing? overweight?)
-2. **Plan** — Generate a markdown improvement plan with suggested fixes
-3. **Fix** — Call Claude Code to automatically modify the source code
-4. **Test** — Run `pytest` to verify nothing breaks
-5. **Deploy** — `git commit && git push` → restart the agent with improved code
+The grid is currently **21/21 full**: every profession (gathering, crafting, combat, magic, bard, stealth, none) × every sociability level (silent, occasional, chatty) has a code-evolved champion. Highlights from the lineage so far:
 
-The agent writes problem reports about itself. It asks for help in-game when it's stuck. It tracks which trees are depleted, learns which paths are blocked, and adjusts its strategy through reinforcement learning.
+- A mage that **speaks once per spell practice** beat its silent ancestor — the mutation that finally completed the MAGIC row at fitness 168 (held-out validated: it replicates at 0.93).
+- A mutation **removed Mining from the character creation template** to crack the CRAFTING cell — evolution discovered the birth-skill lever on its own.
+- A thief variant that overshot its sociability target accidentally became the best chatty miner. Serendipity is kept: MAP-Elites archives what *landed*, not what was aimed.
+- Evolution also found a reward hack within hours of a scoring bug going live (re-crediting bouncing item stacks). The kernel's held-out re-evaluation caught it, five inflated genomes were demoted with evidence preserved, and the ruler was fixed the same day.
 
-**This isn't AGI. It's not even close.** It's a game bot that happens to have an automated feedback loop. But watching it fix its own bugs, tune its own parameters, and gradually get better at chopping wood — that's genuinely fun to watch.
-
-We think this pattern — **AI agent + self-analysis + automated code improvement** — could be applied to many other domains. If you're curious, fork it and try.
-
-[**→ Fork Anima and start experimenting**](https://github.com/hulryung-uo/anima/fork)
-
----
+**This isn't AGI. It's not even close.** It's a Darwin-Gödel-style loop wired to a 1997 MMO. But watching a population of game bots *evolve real code changes* — new procedures, new pacing, new social behavior — because the fitness function rewarded it, is genuinely fun.
 
 ## Why This Exists
 
 I've been playing Ultima Online since 1998. Almost thirty years later, I still think it's the greatest game ever made. Nothing else has come close to that feeling — a true sandbox where anything could happen, where the world felt alive because *real people* made it alive.
 
-But time passes. I got older. I don't have hours to grind anymore. I tried dozens of free shards over the years, chasing that nostalgia, but it was never quite right. The worlds felt empty. The few players left were hardcore veterans who'd min-maxed everything years ago. New players would log in, get overwhelmed by the brutal learning curve, and quit within a week. The economy would collapse because there weren't enough people to sustain it. Towns that were once bustling marketplaces sat empty. The magic was gone — not because the game changed, but because the *people* did.
+But time passes. The free shards I chased for nostalgia felt empty — a few min-maxed veterans, towns that were once bustling marketplaces sitting silent. The magic was gone, not because the game changed, but because the *people* did.
 
-Then I had a thought: **what if, instead of macros and bots, actual AI characters could live in Britannia?**
+Then I had a thought: **what if, instead of macros and bots, actual AI characters could live in Britannia?** Not scripted NPCs. Real characters — ones that walk to work, dig ore, panic when a PK shows up, gossip about it, and come home with stories. And if the characters are software… they can *get better at living* the same way software does: by changing their own code.
 
-Not scripted NPCs with canned dialogue. Not automation tools that repeat the same loop forever. Real characters — ones that wake up in the morning, walk to work, chop wood, dig ore, get lost in a dungeon, panic when a PK shows up, run back to town to warn everyone, write angry posts about it in the community board, form a guild to fight back, make friends, hold grudges, discover new places, and come home to tell stories about their day.
+## The Two Halves
 
-## What Anima Does
+### 1. Anima — the avatar (the genome's body)
 
-Anima connects to a UO server as a **real game client** over the standard packet protocol. From the server's perspective, an Anima agent is indistinguishable from a human player using ClassicUO. No server modifications, no special privileges, no cheating — just a soul in a body, trying to figure out Britannia.
+Anima connects to a UO server as a **real game client** over the standard packet protocol. From the server's perspective, an agent is indistinguishable from a human player on ClassicUO. No server modifications, no special privileges — just a soul in a body.
 
-Each agent has:
-- **Eyes** — Perception system that tracks nearby entities, items, terrain, and chat
-- **A brain** — Behavior tree for routine decisions, with LLM escalation for complex ones
-- **Legs** — A* pathfinding on actual UO map data with Z-aware walkability and obstacle avoidance
-- **Hands** — Lumberjacking, crafting, trading, combat — all through standard game packets
-- **A mouth** — Speaks in-game, responds to conversation, writes forum posts about adventures
-- **Memory** — Remembers experiences, people, places, and learns from mistakes via Q-learning
-- **Self-awareness** — Generates problem reports, asks for help, and improves its own code
+- **Eyes** — `anima/perception/`: packet handlers maintain `WorldState` (entities, items, terrain, journal, own hidden/war flags). The brain never parses bytes.
+- **Legs** — A* pathfinding on real UO map data, Z-aware walkability, door traversal, resync recovery.
+- **Hands** — `anima/procedures/` (18 procedures): mining, smelting, batch blacksmithing (craft-gump MAKE LAST loop), melee combat with bandage interleave + shield parry + corpse looting, magery with meditation fallback, hiding with stealth-walking, peacemaking, vendor buy/sell, banking.
+- **A brain** — `anima/planner/`: a priority-rule planner picks procedures per persona profession (`PROFESSION_LOOPS`); LLM escalation is optional and off during evals.
+- **A mouth** — speaks in-game, responds in character; sociability is a measured, evolved behavior axis.
 
-## The Self-Improvement Loop
+### 2. Foundry — the developer (the genome's editor)
 
-```
-┌─────────────────────────────────────────┐
-│           Anima (playing UO)            │
-│  chop wood → craft → sell → repeat     │
-└──────────────┬──────────────────────────┘
-               │ logs + metrics
-┌──────────────▼──────────────────────────┐
-│         Analyzer (every 10 min)         │
-│  success rates, stuck detection,        │
-│  problem patterns → improvement plan    │
-└──────────────┬──────────────────────────┘
-               │ plan.md
-┌──────────────▼──────────────────────────┐
-│         Claude Code (auto-called)       │
-│  reads plan → fixes code → pytest       │
-│  → git commit → git push               │
-└──────────────┬──────────────────────────┘
-               │ restart
-               └──────────► back to playing
-```
+- **`foundry/kernel/` is HUMAN-OWNED.** It is pinned to a git SHA and reverted before every eval. It parses the wire traffic *independently of the agent* (a proxy logs every packet), so a genome cannot lie about its own performance. Mutating agents never edit the kernel; the kernel never imports agent code.
+- **Fitness** = skill-gain/hour (backbone) + 0.3×gold/hour + 0.2×produced-value/hour, gated by survival/liveness/anti-stuck. All measured from server packets only.
+- **Descriptor** = profession (from which skill categories actually gained) × sociability (speech share of actions). New axes (aggression, mobility) are staged for Phase 2.
+- **Anti-variance**: every eval is a *fresh character*, teleported by a kernel GM session to an isolated lane workplace (10 map-scanned, flood-fill-verified spots), skills pinned to a fixed baseline, tools provided, starting gold neutralized. Multi-seed evals run concurrently and average.
+- **Anti-gaming**: scored windows exclude the GM setup; produce credit is per-item-serial amount *delta* (stack bounces mint nothing); champions get **held-out re-evaluation** on fresh accounts — genomes that don't replicate are demoted by a human, with the evidence preserved in their records.
+- **REFLECT**: every mutation's hypothesis and outcome feeds back into the next mutation prompt, along with the current elites' proven recipes — evolution remembers what worked and stops re-walking dead ends.
 
-Run it yourself:
+### The knowledge flywheel
 
-```bash
-# Start the self-improvement loop
-uv run python tools/self_improve.py --loop --claude
-```
+Agents and operators share a companion wiki (835+ pages, source-verified against the server code). The mutator **reads it** before betting its one mutation on a game mechanic — and **files discrepancy reports back** when live evidence contradicts a page. Verified field discoveries (skill lockout timings, crafting failure costs, drop-bounce rules) get written into the wiki, which future mutations then read. The wiki is the system's long-term memory.
 
 ## Current Personas
 
-| Persona | Name | Focus | Combat |
-|---------|------|-------|--------|
-| Adventurer | Anima | Exploring, meeting people | Defensive |
-| Blacksmith | Tormund | Mining, smithing | Pacifist |
-| Woodcutter | Bjorn | Lumberjacking, carpentry | Pacifist |
-| Merchant | Sera | Trading, tailoring | Pacifist |
-| Mage | Elric | Magery, meditation | Defensive |
-| Ranger | Ash | Archery, hunting | Aggressive |
-| Bard | Melody | Music, peacemaking | Pacifist |
+| Persona | Name | Focus | Eval role |
+|---------|------|-------|-----------|
+| Adventurer | Anima | Melee combat, exploring | COMBAT row (warrior arena) |
+| Blacksmith | Tormund | Smithing at the forge | CRAFTING row |
+| Miner | Grimm | Mining, smelting | GATHERING row |
+| Mage | Elric | Magery, meditation | MAGIC row |
+| Bard | Melody | Music, peacemaking | BARD-SOCIAL row |
+| Thief | Shade | Hiding, stealth | THIEF-STEALTH row |
+| Woodcutter | Bjorn | Lumberjacking, carpentry | free play |
+| Merchant | Sera | Trading, tailoring | free play |
+| Ranger | Ash | Archery, hunting | free play |
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) — fast Python package manager
-- A UO server (e.g. [ServUO](https://www.servuo.com/))
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/)
+- A UO server — for the Foundry loop you want a **local [ServUO](https://www.servuo.com/)** shard
 - UO client data files (map0, statics0, tiledata)
-- LLM provider — [Ollama](https://ollama.com/) (local) or Replicate/OpenAI (API)
+- Optional: an LLM provider for free-play Think escalation ([Ollama](https://ollama.com/) local, or an API)
+- For evolution runs: [Claude Code](https://claude.com/claude-code) (the mutation operator shells out to it)
 
 ### Setup
 
 ```bash
 git clone https://github.com/hulryung-uo/anima.git
 cd anima
-uv sync
-cp config.example.yaml config.yaml
-# Edit config.yaml — server, account, LLM settings
+uv sync --all-extras
+cp config.example.yaml config.yaml   # server, account, LLM settings
 ```
 
-### Configuration
-
-```yaml
-server:
-  host: your-server.com
-  port: 2593
-
-account:
-  username: myaccount
-  password: mypassword
-
-character:
-  name: Anima
-  persona: adventurer  # adventurer, blacksmith, woodcutter, merchant, mage, ranger, bard
-  city_index: 3        # 0=New Haven, 3=Britain
-
-llm:
-  provider: replicate  # ollama, openai, anthropic, replicate
-  model: deepseek-ai/deepseek-v3.1
-  api_key: ""
-
-map:
-  resource_dir: ~/path/to/uo-client-data
-```
-
-### Running
-
-There are three ways to run Anima, depending on what you need.
-
-#### 1. Agent Only
-
-Run a single AI agent that connects to the server and plays autonomously.
+### Run a single agent (free play)
 
 ```bash
-uv run python -m anima
+uv run python -m anima                 # plays per its persona
+uv run python -m anima --tui          # with the in-process terminal dashboard
+uv run python tools/tui.py            # or a standalone TUI in another terminal
 ```
 
-Options:
-- `--config path/to/config.yaml` — use a specific config file
-- `--host / --port` — override server address
-- `--user / --pass` — override account credentials
-- `--recreate` — delete existing character and create a new one
-- `--tui` — enable in-process TUI dashboard (embedded in the agent process)
+A live **web dashboard** ships with the agent (`--web-port`, default 8160): canvas minimap with movement trail, session skill deltas, merged activity/journal feed, multi-slot tabs for watching parallel agents.
 
-#### 2. Supervisor (Agent + Self-Improvement)
-
-The supervisor runs the agent as a subprocess and periodically analyzes its logs. If it detects serious problems (stuck, failing skills, etc.), it can call Claude Code to automatically fix the code, then restart the agent with the updated version.
+### Run evolution (Foundry)
 
 ```bash
-# Full auto: agent + analysis + Claude Code fixes
-uv run python tools/supervisor.py
+# 1. Boot the local shard (listens on 127.0.0.1:2594)
+cd ~/dev/uo/servuo && MONO_GAC_PREFIX=/opt/homebrew mono ServUO.exe -noconsole &
+cd ~/dev/uo/anima
 
-# Analysis only, no auto-fix
-uv run python tools/supervisor.py --no-claude
+# 2. One-time: create the kernel's GameMaster account (server stopped; human act)
+python3 -m foundry.kernel.provision --apply
 
-# Custom interval (default: 600s = 10 min)
-uv run python tools/supervisor.py --interval 300
+# 3. One live eval — fixed-start, scored window, no mutation
+uv run python -m foundry.kernel.eval --user probe1 --window 600 --seeds 3
 
-# Pass extra args to the agent subprocess
-uv run python tools/supervisor.py --agent-args --recreate
+# 4. The evolution loop: 10 cycles, 3 parallel slots, 3 seeds each
+uv run python -m foundry.orchestrator --cycles 10 --parallel 3 --seeds 3 \
+        --window 600 --backend claude --model sonnet
+
+# 5. Plant a HEAD root genome (surface new base-code capabilities to old lineages)
+uv run python -m foundry.orchestrator --cycles 0 --seed \
+        --persona blacksmith --fixed-start crafter --seeds 3 --window 600
+
+# 6. Watch / verify / stop
+uv run python -m foundry.status                  # grid + lineage
+uv run python -m foundry.reeval g_00039          # held-out champion check
+touch foundry/STOP                               # graceful halt
 ```
 
-The supervisor cycle:
-1. Start the agent
-2. Wait for the analysis interval
-3. Analyze recent logs — detect problems (stuck, low success rate, etc.)
-4. If HIGH/CRITICAL problems found — stop agent, call Claude Code to fix
-5. Restart agent (with new code if changed)
-6. Repeat
-
-#### 3. TUI Monitor (Standalone)
-
-A separate terminal dashboard that visualizes the agent's state in real time. It reads `data/state.json` written by the running agent — no shared memory needed. Run it in a separate terminal alongside the agent or supervisor.
-
-```bash
-uv run python tools/tui.py
-```
-
-Keyboard shortcuts: `m` Map | `i` Inventory | `s` Skills | `q` Quit
-
-The agent must be running for the TUI to show live data. If the data is older than 5 seconds, the footer shows a STALE warning.
+Full runbook: [`foundry/README.md`](foundry/README.md). Design: [`docs/FOUNDRY.md`](docs/FOUNDRY.md).
 
 ### Development
 
 ```bash
-uv run pytest          # run tests
+uv run pytest          # run tests   (tests/foundry/ = kernel invariants)
 uv run ruff check      # lint
 uv run ruff format     # format
 ```
 
 ## Documentation
 
-- [DESIGN.md](DESIGN.md) — Architecture and system design
-- [docs/woodcutter-workflow.md](docs/woodcutter-workflow.md) — Woodcutter work cycle
-- [docs/uor-skills-reference.md](docs/uor-skills-reference.md) — UOR skills & stats reference
-- [docs/self-improvement-plan.md](docs/self-improvement-plan.md) — Self-improvement system design
+- [docs/FOUNDRY.md](docs/FOUNDRY.md) — **the Foundry design**: evolution loop, trusted kernel, MAP-Elites grid, locked fitness/descriptor
+- [foundry/README.md](foundry/README.md) — Foundry runbook (boot, eval, runs, anti-variance protocol)
+- [docs/actions.md](docs/actions.md) — catalog of every action primitive and procedure
+- [DESIGN.md](DESIGN.md) — original architecture and system design
+- [docs/wiki-integration.md](docs/wiki-integration.md) — the knowledge flywheel (wiki tools, report rules)
+- [docs/reinforcement-learning.md](docs/reinforcement-learning.md) — RL methodology notes
 
 ## ⚠️ Security Notice — Please Read Before Using
 
@@ -215,112 +163,30 @@ Anima is a **hobby/research project**, not a hardened production tool. A few thi
 ### Your credentials live in `config.yaml` (plaintext)
 
 - `config.yaml` is **gitignored** by default — do **not** remove it from `.gitignore` and do **not** commit the file.
-- The UO login protocol sends usernames and passwords over the wire in plaintext (no TLS). Treat any account you use with Anima as **disposable**: generate a fresh account per shard, never reuse a password you care about, and assume anyone sniffing the network between you and the server could read it.
-- API keys (Replicate, OpenAI, Anthropic, UO Tavern) sit in the same file. Rotate them if you ever share your machine or suspect a leak.
-- `setup.py` will auto-generate a strong random password for you if you leave the field blank. Use it — don't default to `username == password`.
+- The UO login protocol sends usernames and passwords over the wire in plaintext (no TLS). Treat any account you use with Anima as **disposable**: generate a fresh account per shard, never reuse a password you care about.
+- API keys sit in the same file. Rotate them if you ever share your machine or suspect a leak.
 
 ### This repo's git history contains an old test account
 
-Early in development (March 2026, commits `ded3d96` – `1ad584c`), a `config.yaml` with placeholder credentials `test5 / test5` for `uo.hulryung.com:2593` was briefly committed before being gitignored. Those credentials are still visible in the git history via `git log -p -- config.yaml`. The account on the shared test server has been invalidated, but if you mirror or fork this repo, **do not assume old history is clean** — the historical values should be treated as public.
+Early in development (March 2026, commits `ded3d96` – `1ad584c`), a `config.yaml` with placeholder credentials `test5 / test5` for `uo.hulryung.com:2593` was briefly committed before being gitignored. Those credentials are still visible in the git history. The account has been invalidated, but if you mirror or fork this repo, **do not assume old history is clean**.
 
-If you run your own fork, please don't commit real credentials even temporarily; rewriting public git history (BFG / `git filter-repo`) is painful and breaks every downstream fork.
+### Evolution edits and commits code automatically
+
+A Foundry run calls Claude Code to **edit the agent source in isolated worktrees and commit** under your git identity (it does not push). The legacy supervisor (`tools/supervisor.py --claude`) goes further and **pushes to `origin`**. Run either on a dedicated branch or fork you're OK having rewritten — never on a branch you share.
 
 ### The shared test server is a toy
 
-`uo.hulryung.com:2593` is a ServUO shard kept running for experimentation. It is:
-- **Not monitored for abuse** — don't run stress tests or grief the AI characters
-- **Not persistent** — the world may be wiped without notice
-- **Not production** — do not use it to test anything you care about
+`uo.hulryung.com:2593` is a ServUO shard kept running for experimentation — not monitored, not persistent, not production. For serious work (and for any Foundry run), spin up your own local shard.
 
-If you want a serious environment, spin up your own ServUO shard locally and point Anima at `127.0.0.1`.
-
-### The supervisor runs `git commit && git push` automatically
-
-When you run `tools/supervisor.py` with `--claude`, the self-improvement loop will:
-1. Call Claude Code to edit your source tree
-2. Commit changes under your git identity
-3. **Push to `origin`** (this is why commits end up in your public fork)
-
-Run the supervisor on a dedicated branch or fork you're OK having rewritten. Don't run it against a branch you share with other people.
-
-### What is *not* a problem
-
-- The `uo.hulryung.com` server address is intentional and public — it's in the README on purpose.
-- Character persona names (`Bjorn`, `Grimm`, etc.) are template values, not tied to any real account.
-- `anima/brain/llm.py` contains a docstring example `api_key="sk-ant-..."` — that's a placeholder, not a real key.
-
-**TL;DR — treat Anima like you'd treat any game bot demo you grabbed off GitHub: fun to play with, not something to point at your main account or a server you care about.**
-
----
-
-## Try It Live — Test Server
-
-We run a public test server where you can watch AI agents in action or drop in alongside them with a real client.
-
-**Server:** `uo.hulryung.com:2593` (ServUO, UOR era)
-
-You can:
-- **Watch Bjorn chop wood** — connect with ClassicUO and find him wandering around Britain
-- **Talk to the agents** — they respond in character (English and Korean)
-- **Run your own agent** — point Anima at the test server with a new account
-
-```yaml
-# config.yaml for the test server
-server:
-  host: uo.hulryung.com
-  port: 2593
-account:
-  username: your_test_account
-  password: your_password
-character:
-  persona: adventurer  # or blacksmith, woodcutter, mage...
-```
-
-## TUI Dashboard
-
-Anima comes with a real-time terminal dashboard that shows everything the agent is doing.
-
-```bash
-uv run python -m anima --tui
-```
-
-```
-┌─ Status ──────────────────┐┌─ Activity ────────────────────────────┐
-│ Bjorn — a humble woodcutter││ 01:23:45 ⚒ Chopping oak tree          │
-│                            ││ 01:23:40 → Walking to tree (1596,1491)│
-│ HP   ████████░░ 79/79      ││ 01:23:35 ⭐ Think: go to forest       │
-│ Mana ██░░░░░░░░ 10/10      ││ 01:23:30 ⚒ Made 5 boards!            │
-│ Stam ████████░░ 22/22      ││                                       │
-│                            ││                                       │
-│ Pos (1595, 1490, 35)       ││                                       │
-│ Gold 1,000  Wt 60/243      ││                                       │
-│ Goal Find good oak trees   ││                                       │
-├─ Nearby ──────┐┌─ Journal ────────┐┌─ Q-Values ────────────────────┤
-│ Bilal innkeep ││ System: Welcome  ││ chop_wood    Q=12.3  n=80     │
-│ a rat    6N   ││ Bjorn: hello!    ││ make_boards  Q= 3.1  n=12     │
-│               ││ ↑ Lumberjack →51 ││ carpentry    Q=-0.5  n=15     │
-└───────────────┘└──────────────────┘└────────────────────────────────┘
- j Journal  i Inventory  s Skills  q Quit
-```
-
-The dashboard shows:
-- **Status** — HP, mana, stamina, position, weight, current goal
-- **Activity** — Real-time feed of brain decisions, skill executions, movement
-- **Nearby** — NPCs and players within range with notoriety colors
-- **Journal** — In-game speech and system messages (cliloc decoded)
-- **Q-Values** — Reinforcement learning scores for skill selection
-- **Inventory** — Backpack contents (toggle with `i`)
-- **Skills** — Skill values with lock states ↑↓• (toggle with `s`)
+**TL;DR — treat Anima like any game-bot demo off GitHub: fun to play with, not something to point at your main account or a server you care about.**
 
 ## Join In
 
-This is an experiment. It might go somewhere interesting, or it might just be a really elaborate way to chop virtual trees. Either way, it's fun.
+This is an experiment. It might go somewhere interesting, or it might just be a really elaborate way to evolve virtual blacksmiths. Either way, it's fun.
 
-If you want to try it:
+[**→ Fork this repo**](https://github.com/hulryung-uo/anima/fork) — spin up your own shard, seed a population, and watch the grid fill.
 
-[**→ Fork this repo**](https://github.com/hulryung-uo/anima/fork) — spin up your own AI character on your own shard, or connect to our test server and play alongside the AI.
-
-If you have ideas, questions, or just want to see what Bjorn is up to — open an issue or drop by.
+If you have ideas, questions, or just want to see what the agents are up to — open an issue or drop by.
 
 ## License
 
