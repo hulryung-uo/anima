@@ -49,6 +49,26 @@ _RESULT_PATTERNS = [
 ATTEMPTS_PER_RUN = 3  # ~30s per procedure run (10s lockout between uses)
 
 
+async def _play_through_lockout(ctx, instrument_serial: int,
+                                duration_s: float) -> int:
+    """Fill a skill-lockout wait with instrument plays.
+
+    Plain instrument double-clicks roll Musicianship server-side and are NOT
+    gated by the 10s UseSkill lockout (field data: 200 plays in one 600s
+    window). Idling here cost the first bard seed 4/5 of its gain rate —
+    exclusive lockout-paced peacemaking scored 16/h vs 52/h for play-spam.
+    """
+    from anima.client.packets import build_double_click
+
+    plays = 0
+    deadline = asyncio.get_event_loop().time() + duration_s
+    while asyncio.get_event_loop().time() < deadline:
+        await ctx.conn.send_packet(build_double_click(instrument_serial))
+        plays += 1
+        await asyncio.sleep(1.3)  # server play lockout is 1s + margin
+    return plays
+
+
 class PracticePeacemaking(Procedure):
     timeout_s = 120.0
     name = "practice_peacemaking"
@@ -79,6 +99,7 @@ class PracticePeacemaking(Procedure):
         music_before = music.value if music else 0.0
 
         successes = 0
+        plays = 0
         for attempt in range(ATTEMPTS_PER_RUN):
             since = time.time()
             ss.pending_target = None
@@ -87,7 +108,8 @@ class PracticePeacemaking(Procedure):
             cursor = await wait_for_target(ctx, timeout=3.0)
             if not cursor.success:
                 # No cursor — most likely still inside the skill lockout.
-                await asyncio.sleep(SKILL_USE_COOLDOWN_S + 0.5)
+                await _play_through_lockout(
+                    ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
                 continue
 
             # First-ever use asks which instrument to play (500617); the
@@ -102,7 +124,8 @@ class PracticePeacemaking(Procedure):
                 )
                 cursor = await wait_for_target(ctx, timeout=3.0)
                 if not cursor.success:
-                    await asyncio.sleep(SKILL_USE_COOLDOWN_S + 0.5)
+                    await _play_through_lockout(
+                        ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
                     continue
 
             # Creature cursor ("Whom do you wish to calm?" 1049525) —
@@ -119,8 +142,10 @@ class PracticePeacemaking(Procedure):
                 calmed=calmed,
             )
             # Wait out the server skill lockout (10s on fail, 5s on
-            # success — use the long one so no attempt is ever wasted).
-            await asyncio.sleep(SKILL_USE_COOLDOWN_S + 0.5)
+            # success — use the long one so no attempt is ever wasted),
+            # filling it with Musicianship-rolling instrument plays.
+            plays += await _play_through_lockout(
+                ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
 
         peace = ss.skills.get(SKILL_PEACEMAKING)
         music = ss.skills.get(SKILL_MUSICIANSHIP)
@@ -134,8 +159,9 @@ class PracticePeacemaking(Procedure):
         return ProcedureResult(
             success=True,
             message=(
-                f"Peacemaking practice: {successes}/{ATTEMPTS_PER_RUN} calmed, "
-                f"+{peace_gain:.1f} Peacemaking, +{music_gain:.1f} Musicianship"
+                f"Peacemaking practice: {successes}/{ATTEMPTS_PER_RUN} calmed "
+                f"({plays} plays), +{peace_gain:.1f} Peacemaking, "
+                f"+{music_gain:.1f} Musicianship"
             ),
             skill_gains=gains,
             next_suggestion="practice_peacemaking",
