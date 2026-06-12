@@ -185,6 +185,41 @@ class EvalResult:
         return self.descriptor.cell if self.descriptor else ()
 
 
+def _evict_stale_proxy(host: str, port: int) -> None:
+    """Kill an orphaned uo_proxy holding our listen port.
+
+    An ungracefully killed run leaves its proxies alive (observed when a
+    pkill pattern silently matched nothing): the NEW eval's proxy then dies
+    on bind, the agent connects to the STALE proxy, packets land in the OLD
+    run's JSONL, and the eval watcher reads an empty file — "agent never
+    entered the world". Eval ports are foundry-reserved, so any listener
+    here that is a uo_proxy is ours to evict; anything else is a config
+    error we surface by letting the bind fail loudly.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            pass
+    except OSError:
+        return  # port free — the common case
+    out = subprocess.run(
+        ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+        capture_output=True, text=True, timeout=10,
+    )
+    for pid_s in out.stdout.split():
+        try:
+            pid = int(pid_s)
+            cmd = subprocess.run(
+                ["ps", "-p", pid_s, "-o", "command="],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            if "uo_proxy" in cmd:
+                print(f"[eval] evicting stale uo_proxy pid={pid} on port {port}")
+                subprocess.run(["kill", pid_s], timeout=5)
+        except (ValueError, subprocess.TimeoutExpired):
+            continue
+    time.sleep(1.0)
+
+
 def _wait_port(host: str, port: int, timeout_s: float = 15.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -283,6 +318,7 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
         # 1) proxy between agent and the real server, logging the trajectory.
         #    ALWAYS spawned from the main repo (trusted infra), even when the
         #    agent runs from a mutated worktree.
+        _evict_stale_proxy(cfg.host, cfg.proxy_port)
         proxy = _spawn(
             [
                 "uv", "run", "--all-extras", "python", "-m", "uo_proxy",
