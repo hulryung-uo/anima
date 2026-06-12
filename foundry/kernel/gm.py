@@ -94,8 +94,12 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "neutralize": [0x0EED],
     },
     "warrior": {
-        "skills": {"Swords": 35.0, "Tactics": 35.0, "Healing": 35.0},
-        "items": ["Katana", "Bandage 100"],
+        "skills": {"Swords": 35.0, "Tactics": 35.0, "Healing": 35.0,
+                   "Parry": 35.0},
+        # Buckler: a 1H weapon + shield trains Parrying passively from every
+        # incoming swing — a fourth concurrent COMBAT gain stream (and less
+        # damage taken). Skill name is SkillName.Parry on ServUO.
+        "items": ["Katana", "Buckler", "Bandage 100"],
         # Standardized arena: weak melee fodder spawned around the
         # workplace (nearest wild spawns are ettins ~190 tiles south —
         # lethal at skill 35). HeadlessOne: HP 16-30, Wrestling 25-40.
