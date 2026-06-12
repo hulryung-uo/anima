@@ -76,7 +76,19 @@ def choose_parent_for_target(archive: Archive, target: tuple | None,
         row = [g for g in archive.elites() if g.cell and g.cell[0] == target[0]]
         if row:
             rng = random.Random(seed)
-            weights = [1.0 + 0.1 * max(0.0, g.fitness) for g in row]
+            # Code-recency multiplier (genome id is monotonic): newer row
+            # members carry newer base-code fixes. A 46%-probability draw of
+            # an old-code COMBAT elite re-ran the pre-crash-fix combat loop
+            # and scored 4.1 vs the fresh seed's 23.9 — fitness weighting
+            # alone doesn't protect against stale machinery.
+            by_age = sorted(row, key=lambda g: g.id)
+            rank = {g.id: i for i, g in enumerate(by_age)}
+            n = len(row)
+            weights = [
+                (1.0 + 0.1 * max(0.0, g.fitness))
+                * (1.0 + 2.0 * (rank[g.id] / (n - 1)) if n > 1 else 1.0)
+                for g in row
+            ]
             return rng.choices(row, weights=weights, k=1)[0]
     return choose_parent(archive, seed=seed)
 
