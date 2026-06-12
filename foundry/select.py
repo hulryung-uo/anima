@@ -104,14 +104,29 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
     failed on a broken craft primitive while COMBAT|2 sat untried).
     """
     empties = empty_cells(archive)
-    if not empties:
-        return None
     row_filled: dict[str, int] = {}
     row_best: dict[str, float] = {}
     for g in archive.elites():
         prof = g.cell[0]
         row_filled[prof] = row_filled.get(prof, 0) + 1
         row_best[prof] = max(row_best.get(prof, 0.0), g.fitness)
+    if not empties:
+        # FULL GRID: target the cells with the largest gap to their row's
+        # best — proven headroom (the row best's machinery exists; it just
+        # hasn't been adapted to this cell's sociability bin). Returning a
+        # target (instead of None) keeps the row-matched/recency parent
+        # pairing in play; IMPROVE cycles on bare frontier draws kept
+        # handing weak cells to stale-code lineages (g_00068: 6.9 on a
+        # pre-crash-fix parent while the row's fresh seed sat at 55.9).
+        elites = archive.elites()
+        if not elites:
+            return None
+        cells = [g.cell for g in elites]
+        weights = [
+            1.0 + max(0.0, row_best.get(c[0], 0.0) - archive.get_elite(c).fitness)
+            for c in cells
+        ]
+        return random.Random(seed).choices(cells, weights=weights, k=1)[0]
     weights = [
         1.0
         + 2.0 * row_filled.get(c[0], 0)              # proven machinery
