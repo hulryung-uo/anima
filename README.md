@@ -114,7 +114,7 @@ A live **web dashboard** ships with the agent (`--web-port`, default 8160): canv
 
 ```bash
 # 1. Boot the local shard (listens on 127.0.0.1:2594)
-cd ~/dev/uo/servuo && MONO_GAC_PREFIX=/opt/homebrew mono ServUO.exe -noconsole &
+cd ~/dev/uo/servuo && nohup env MONO_GAC_PREFIX=/opt/homebrew mono ServUO.exe -noconsole > /tmp/servuo.log 2>&1 & disown
 cd ~/dev/uo/anima
 
 # 2. One-time: create the kernel's GameMaster account (server stopped; human act)

@@ -44,7 +44,11 @@ foundry/
 ```sh
 # 1. Boot the local server (listens on 127.0.0.1:2594; precompiled Scripts.dll,
 #    the dotnet recompile error on boot is non-fatal).
-cd ~/dev/uo/servuo && MONO_GAC_PREFIX=/opt/homebrew mono ServUO.exe -noconsole &
+cd ~/dev/uo/servuo && nohup env MONO_GAC_PREFIX=/opt/homebrew \
+    mono ServUO.exe -noconsole > /tmp/servuo.log 2>&1 & disown
+#    (nohup+disown: a bare `&` ties the shard to the spawning shell — it
+#     dies silently on SIGHUP hours later and every eval starts failing
+#     with "agent never entered the world / upstream_connect_failed")
 
 cd ~/dev/uo/anima
 
