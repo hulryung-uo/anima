@@ -96,14 +96,23 @@ than coding an in-game acquisition loop. (Creation rules: ≤4 skills, values
   packet flows. (Older lineages predate the doc — skip this if absent.)
 - UO game mechanics are NOT guessable — check the wiki at
   `~/dev/uo/uowiki/src/content/docs/` (source-verified against THIS server's
-  code) before betting your one mutation on a mechanic. Highest value:
-  `mechanics/skill-gain.md` (a skill only gains when the task sits between
-  its minSkill and maxSkill — meditating at full mana, casting trivially easy
-  spells, or working far above the task's window gains NOTHING),
-  `skills/<name>.md` per-skill training notes, `world/minoc.md` (the eval
-  area: what exists near the workplace), `bestiary/` (mob strength),
-  `templates/` (profession builds). Read only the 1–3 pages your hypothesis
-  depends on — your wall-clock budget is tight.
+  code) before betting your one mutation on a mechanic. Content map:
+  - `mechanics/skill-gain.md` — THE gain law (a skill only gains when the
+    task sits between its minSkill and maxSkill — meditating at full mana,
+    casting trivially easy spells, or grinding far above the window gains
+    NOTHING).
+  - `playing/<topic>.md` — 30+ how-to guides for every activity: the exact
+    interaction flow for combat-basics, healing, spellcasting, crafting,
+    vendors-and-banking, targeting, using-and-training-skills,
+    items-and-inventory, hiding-and-stealth, movement-and-travel,
+    death-and-resurrection. Read these to learn what a player must DO.
+  - `professions/<name>.md` (22 hubs) + `templates/` — what the ideal
+    build/loop for a profession looks like; aim your variant at one.
+  - `skills/<name>.md` per-skill training notes; `items/weapons|armor|
+    tools|reagents.md` equipment facts; `crafting/<trade>.md` full recipe
+    tables; `world/minoc.md` (the eval area); `bestiary/` (mob strength).
+  Read only the 1–3 pages your hypothesis depends on — your wall-clock
+  budget is tight (English pages only; skip ko/ and ja/ mirrors).
 - If the parent's eval evidence CONTRADICTS a wiki page (wrong number, missing
   behavior), file a discrepancy report — the librarian triages them daily:
       uv run python tools/wiki_report.py --agent foundry-mutator \
