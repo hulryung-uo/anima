@@ -219,6 +219,9 @@ class Avatar:
         from anima.procedures.practice_hiding import PracticeHiding as PracticeHidingProc
         from anima.procedures.practice_magery import PracticeMagery as PracticeMageryProc
         from anima.procedures.practice_music import PracticeMusic as PracticeMusicProc
+        from anima.procedures.practice_peacemaking import (
+            PracticePeacemaking as PracticePeacemakingProc,
+        )
         from anima.procedures.sell_to_vendor import SellToVendor as SellToVendorProc
         from anima.procedures.smelt_ore import SmeltOre as SmeltOreProc
 
@@ -228,6 +231,7 @@ class Avatar:
             CraftBlacksmithProc, BuyFromVendorProc, SellToVendorProc,
             BankDepositProc, CheckBankBalanceProc,
             PracticeHidingProc, PracticeMusicProc, PracticeMageryProc,
+            PracticePeacemakingProc,
             BandageSelfProc, HuntNearbyProc,
         ]:
             procedure_registry.register(proc_cls())

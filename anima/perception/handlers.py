@@ -53,6 +53,9 @@ def register_handlers(
             # Don't track self in world mobiles
             walker.sync_position(x, y, z, direction & 0x07)
             p.self_state.body = body
+            # ServUO pushes self 0x78 on flag changes (OnHiddenChanged) —
+            # this is where the hidden bit (0x80) for our own char arrives.
+            p.self_state.flags = MobileFlags(flags & 0xFF)
             return
 
         mob = p.world.get_or_create_mobile(serial)
@@ -151,6 +154,7 @@ def register_handlers(
             walker.steps_count = 0
             walker.walking_failed = False
             p.self_state.body = body
+            p.self_state.flags = MobileFlags(flags & 0xFF)
         else:
             mob = p.world.get_or_create_mobile(serial)
             mob.body = body
@@ -1258,7 +1262,7 @@ def register_handlers(
     def handle_play_sound(packet_id: int, data: bytes) -> None:
         """0x54 PlaySound."""
         r = PacketReader(data[1:])
-        flags = r.read_u8()
+        r.skip(1)  # flags
         sound_id = r.read_u16()
         logger.debug("play_sound", sound_id=f"0x{sound_id:04X}")
 
@@ -1304,7 +1308,7 @@ def register_handlers(
         """0xBC SeasonChange."""
         r = PacketReader(data[1:])
         season = r.read_u8()
-        cursor = r.read_u8()
+        r.skip(1)  # cursor
         logger.debug("season_change", season=season)
 
     handler.register(0xBC, handle_season)

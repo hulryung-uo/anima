@@ -28,25 +28,32 @@ class SellToVendor(Procedure):
 
     @staticmethod
     def _dynamic_keep(ctx: AgentContext) -> set[int]:
-        """KEEP_GRAPHICS minus items we can't use (e.g. ingots without tongs)."""
-        import time
+        """KEEP_GRAPHICS, releasing ingots only as a dead-broke last resort.
 
+        Ingots are the smithing training feedstock — selling them stalls
+        the craft→sell loop (a transient material cooldown or standing a
+        few tiles from the forge used to drop protection and the agent
+        sold its training ingots). They lose protection only when crafting
+        is truly dead AND we cannot raise gold any other way: no tongs in
+        the pack, no crafted items left to sell, and gold below the
+        emergency floor (enough to rebuy tongs).
+        """
         from anima.actions.inventory import find_in_backpack
         from anima.procedures.craft_blacksmith import (
+            CRAFTED_ITEM_GRAPHICS as _CRAFTED_GFX,
+        )
+        from anima.procedures.craft_blacksmith import (
             TONGS_GRAPHICS as _TONGS_GFX,
-            _has_anvil_and_forge,
         )
 
         keep = set(KEEP_GRAPHICS)
+        ss = ctx.perception.self_state
         has_tongs = bool(find_in_backpack(ctx, _TONGS_GFX))
-        cooldown = ctx.blackboard.get("_craft_bs_material_cooldown", 0)
-        craft_blocked = isinstance(cooldown, (int, float)) and time.time() < cooldown
-        # Ingots are only worth keeping if we can actually craft right now:
-        # need tongs + no material block + forge/anvil within reach.
-        can_craft = has_tongs and not craft_blocked and _has_anvil_and_forge(ctx)
-        if not can_craft:
+        has_crafted = bool(find_in_backpack(ctx, _CRAFTED_GFX))
+        broke = ss.gold < 50
+        if not has_tongs and not has_crafted and broke:
             for _ig in (0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1):
-                keep.discard(_ig)  # ingots sellable when crafting not possible
+                keep.discard(_ig)  # last resort: sell ingots to rebuy tools
         return keep
 
     @staticmethod
@@ -58,14 +65,20 @@ class SellToVendor(Procedure):
         though they're in KEEP_GRAPHICS, so the vendor we walk to must
         accept them (e.g. a tinker for extra tinker's tools).
         """
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
         from anima.procedures.vendor_knowledge import ITEM_VENDOR_MAP
         from anima.skills.crafting.tinker import (
-            TINKER_TOOLS_GRAPHICS as _TINKER_GFX,
-            PICKAXE_GRAPHICS as _PICK_GFX,
             HATCHET_GRAPHICS as _HATCH_GFX,
+        )
+        from anima.skills.crafting.tinker import (
+            PICKAXE_GRAPHICS as _PICK_GFX,
+        )
+        from anima.skills.crafting.tinker import (
             SAW_GRAPHICS as _SAW_GFX,
         )
-        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
+        from anima.skills.crafting.tinker import (
+            TINKER_TOOLS_GRAPHICS as _TINKER_GFX,
+        )
 
         ss = ctx.perception.self_state
         backpack = ss.equipment.get(0x15)
@@ -230,13 +243,19 @@ class SellToVendor(Procedure):
         # KEEP_GRAPHICS blocks ALL of a tool type from being sold.
         # But if we have 2+ of a type, surplus can be sold. We protect
         # exactly 1 serial per tool group and allow the rest through.
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
         from anima.skills.crafting.tinker import (
-            TINKER_TOOLS_GRAPHICS as _TINKER_GFX,
-            PICKAXE_GRAPHICS as _PICK_GFX,
             HATCHET_GRAPHICS as _HATCH_GFX,
+        )
+        from anima.skills.crafting.tinker import (
+            PICKAXE_GRAPHICS as _PICK_GFX,
+        )
+        from anima.skills.crafting.tinker import (
             SAW_GRAPHICS as _SAW_GFX,
         )
-        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS as _TONGS_GFX
+        from anima.skills.crafting.tinker import (
+            TINKER_TOOLS_GRAPHICS as _TINKER_GFX,
+        )
 
         _TOOL_GROUPS = [_TONGS_GFX, _TINKER_GFX, _PICK_GFX, _HATCH_GFX, _SAW_GFX]
         protected_serials: set[int] = set()

@@ -24,3 +24,4 @@ dislikes:
   - idle chatter
 talkativeness: 0.3
 combat_disposition: pacifist  # never initiates combat
+profession: blacksmith

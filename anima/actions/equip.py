@@ -78,3 +78,36 @@ async def equip_weapon_from_pack(
     if not weapons:
         return ActionResult(success=False, message="No weapon in backpack")
     return await equip_item(ctx, weapons[0].serial, layer)
+
+
+# Shield item graphics — verified against ServUO
+# Scripts/Items/Equipment/Armor/*.cs ``base(0x....)`` constructors.
+SHIELD_GRAPHICS = {
+    0x1B72,  # BronzeShield
+    0x1B73,  # Buckler
+    0x1B74,  # MetalKiteShield
+    0x1B76,  # HeaterShield
+    0x1B78,  # WoodenKiteShield
+    0x1B7A,  # WoodenShield
+    0x1B7B,  # MetalShield
+    0x1BC3,  # ChaosShield
+    0x1BC4,  # OrderShield
+}
+
+
+async def equip_shield_from_pack(ctx: AgentContext) -> ActionResult:
+    """Find a shield in the backpack and equip it to the left hand (layer 2).
+
+    Wearing a shield makes every melee exchange roll Parrying on
+    ServUO, adding a passive COMBAT skill stream while hunting.
+    """
+    from anima.actions.inventory import find_in_backpack
+
+    ss = ctx.perception.self_state
+    if ss.equipment.get(LAYER_TWO_HANDED):
+        return ActionResult(success=True, message="Left hand already occupied")
+
+    shields = find_in_backpack(ctx, SHIELD_GRAPHICS)
+    if not shields:
+        return ActionResult(success=False, message="No shield in backpack")
+    return await equip_item(ctx, shields[0].serial, LAYER_TWO_HANDED)

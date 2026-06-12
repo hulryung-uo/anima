@@ -175,13 +175,23 @@ class TestMineOreExpeditionHook:
             result = await proc.execute(ctx)
 
         assert result.success is True
-        assert len(exp.piles) == 1
-        assert exp.piles[0].x == ctx.perception.self_state.x
-        assert exp.piles[0].y == ctx.perception.self_state.y
-        assert exp.piles[0].bank_key == _bank_key(
+        # Drop-verify semantics (2026-06-12): the mocked world never moves the
+        # ore out of the backpack, so the ground drop reads as BOUNCED — no
+        # ground pile may be registered (phantom piles wasted collect walks).
+        # The expedition state machine still advances on the mine itself.
+        assert len(exp.piles) == 0
+        assert exp.phase == Phase.MINING
+        assert exp.home_base == (
             ctx.perception.self_state.x, ctx.perception.self_state.y,
         )
-        assert exp.phase == Phase.MINING
+        # A VERIFIED ground drop still registers a pile.
+        exp2 = MiningExpedition()
+        exp2.note_ore_mined(
+            ctx.perception.self_state.x, ctx.perception.self_state.y,
+            _bank_key(ctx.perception.self_state.x, ctx.perception.self_state.y),
+            ground_pile=True,
+        )
+        assert len(exp2.piles) == 1
 
     @pytest.mark.asyncio
     async def test_mine_without_expedition_does_not_crash(self):

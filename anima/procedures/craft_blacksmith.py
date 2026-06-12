@@ -14,18 +14,19 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.actions.gump import wait_for_gump
-from anima.actions.inventory import count_items, find_in_backpack
+from anima.actions.inventory import find_in_backpack
 from anima.client.packets import build_double_click, build_gump_response
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.crafting.blacksmith import ANVIL_IDS, FORGE_IDS
+from anima.skills.crafting.smelt import INGOT_GRAPHICS
 
 if TYPE_CHECKING:
     from anima.core.context import AgentContext
+    from anima.perception.self_state import SelfState
 
 logger = structlog.get_logger()
 
 TONGS_GRAPHICS = {0x0FBB, 0x0FBC}  # smith's hammer / tongs
-from anima.skills.crafting.smelt import INGOT_GRAPHICS
 INGOT_GRAPHIC = 0x1BF2  # kept for backward compat (large-stack graphic)
 IRON_HUE = 0  # Iron ingots have default (no) hue; colored metals have non-zero hue
 MIN_INGOTS = 8  # most weapons need 8-12 ingots
@@ -52,6 +53,37 @@ def _get_button_id(btn_type: int, index: int) -> int:
     type 0 = show group (category), type 1 = create item.
     """
     return 1 + btn_type + (index * 7)
+
+
+# MAKE LAST misc button: GetButtonID(6, 2) = 1 + 6 + 2*7 = 21.
+# ServUO CraftGump.cs OnResponse → case 6 (misc buttons) → case 2 "Make last":
+# re-crafts context.LastMade without re-navigating material/group/item pages.
+MAKE_LAST_BUTTON = _get_button_id(6, 2)  # 21
+
+MAX_BATCH_ATTEMPTS = 80   # sane cap per procedure run
+_RESULT_TIMEOUT_S = 6.0   # craft delay is ~2s; past 6s the re-sent gump is lost
+_TIMEOUT_MARGIN_S = 12.0  # stop batching this long before the planner cap
+
+
+def _classify_craft_text(text: str) -> str:
+    """Map a craft notice / journal line to an outcome token ('' if none).
+
+    Strings are the ServUO clilocs the shard attaches to the re-sent
+    CraftGump notice (or sends as journal messages when the tool broke):
+    1044154/1044155/1044156 "You create …", 502785 "barely able to make",
+    1044043 "You failed to create …", 1044157 "You fail to create …",
+    1044038 "You have worn out your tool!", 1044037 "… sufficient metal …".
+    """
+    tl = text.lower()
+    if "worn out" in tl:
+        return "tool_broke"
+    if "sufficient metal" in tl or "sufficient material" in tl:
+        return "no_material"
+    if "failed to create" in tl or "you fail" in tl:
+        return "fail"
+    if "you create" in tl or "barely able to make" in tl:
+        return "success"
+    return ""
 
 
 # Recipes: (item_name, group_index, item_index, ingots_needed, min_skill)
@@ -195,6 +227,9 @@ def _find_craft_walk_target(ctx: AgentContext) -> tuple[int, int] | None:
 class CraftBlacksmith(Procedure):
     name = "craft_blacksmith"
     description = "Craft weapons or armor from ingots to sell for profit."
+    # Matches the planner default, pinned here so the batch loop can budget
+    # against it (stop batching _TIMEOUT_MARGIN_S before the cancel cap).
+    timeout_s = 300.0
 
     async def can_start(self, ctx: AgentContext) -> bool:
         # CircuitBreaker check (preferred)
@@ -255,8 +290,92 @@ class CraftBlacksmith(Procedure):
                 build_gump_response(g.serial, g.gump_id, 0)
             )
 
+    @staticmethod
+    def _extract_gump_notice(ss: SelfState) -> str:
+        """Read the notice line from an open CraftGump, or ''.
+
+        ServUO renders the notice at AddHtmlLocalized(170, 295, …)
+        (CraftGump.cs); skip the "NOTICES" header label at x=10, y=302
+        (cliloc 1044012).
+        """
+        for g in ss.gumps.values():
+            for t in g.texts:
+                if 280 <= t.y <= 310 and t.x >= 150:
+                    text = g.get_text(t.text_id)
+                    if text:
+                        return re.sub(r"<[^>]+>", "", text).strip()
+        return ""
+
+    async def _await_craft_result(
+        self,
+        ctx: AgentContext,
+        journal_mark: float,
+        timeout: float = _RESULT_TIMEOUT_S,
+    ) -> tuple[str, str]:
+        """Wait for a craft attempt to resolve and classify the outcome.
+
+        ServUO re-sends the CraftGump with a result notice when the attempt
+        resolves (CraftItem.CompleteCraft); if the tool broke it is deleted,
+        so only a journal line arrives — no gump. Waits on bus events rather
+        than fixed sleeps where possible.
+
+        Returns ``(outcome, notice)``; outcome is one of: ``success`` /
+        ``fail`` / ``tool_broke`` / ``no_material`` / ``no_station`` /
+        ``unknown`` (gump arrived, notice unrecognized) / ``''`` (nothing
+        arrived before *timeout*).
+        """
+        ss = ctx.perception.self_state
+
+        def _journal_outcomes() -> set[str]:
+            found: set[str] = set()
+            for entry in ctx.perception.social.recent(count=8):
+                if entry.timestamp >= journal_mark:
+                    outcome = _classify_craft_text(entry.text)
+                    if outcome:
+                        found.add(outcome)
+            return found
+
+        def _resolved() -> bool:
+            return bool(ss.gumps) or bool(_journal_outcomes())
+
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "", ""
+            if ctx.bus:
+                if not await ctx.bus.wait_for_condition(_resolved, timeout=remaining):
+                    return "", ""
+            elif not _resolved():
+                await asyncio.sleep(0.25)
+                continue
+
+            notice = self._extract_gump_notice(ss)
+            notice_outcome = _classify_craft_text(notice) if notice else ""
+            nl = notice.lower()
+            if not notice_outcome and ("anvil" in nl or "forge" in nl):
+                notice_outcome = "no_station"
+            journal = _journal_outcomes()
+
+            # Priority: tool_broke > no_material/no_station > fail > success
+            # (a failing craft can break the tool in the same attempt).
+            if "tool_broke" in journal or notice_outcome == "tool_broke":
+                return "tool_broke", notice
+            if notice_outcome in ("no_material", "no_station") or "no_material" in journal:
+                return notice_outcome or "no_material", notice
+            if "fail" in journal or notice_outcome == "fail":
+                return "fail", notice
+            if "success" in journal or notice_outcome == "success":
+                return "success", notice
+            if ss.gumps:
+                # Gump re-arrived but the notice is unrecognized or empty
+                return "unknown", notice
+            # Spurious wake (e.g. gump consumed between checks) — retry
+            await asyncio.sleep(0.1)
+
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
+        exec_start = time.monotonic()
 
         # Close stale gumps from previous failed runs
         await self._close_all_gumps(ctx)
@@ -285,7 +404,8 @@ class CraftBlacksmith(Procedure):
                     return ProcedureResult(
                         success=False,
                         reason=FailureReason.WRONG_LOCATION,
-                        message=f"walked to ({target[0]},{target[1]}) but still no anvil/forge within 2 tiles",
+                        message=f"walked to ({target[0]},{target[1]}) but still"
+                                " no anvil/forge within 2 tiles",
                     )
                 logger.info("craft_bs_walked_to_forge", target=f"({target[0]},{target[1]})")
             else:
@@ -317,7 +437,259 @@ class CraftBlacksmith(Procedure):
             if it.container == ss.equipment.get(0x15) and it.graphic in CRAFTED_ITEM_GRAPHICS
         ])
         ingots_before = _count_iron_ingots(ctx)
+
+        # First attempt: full gump navigation (open → Iron → group → item).
         journal_mark = time.time()
+        nav_fail = await self._open_gump_and_craft(ctx, grp_idx, item_idx)
+        if nav_fail is not None:
+            return nav_fail
+
+        # Batch loop — ServUO re-sends the CraftGump with a result notice
+        # after every attempt resolves, so each further attempt is a single
+        # MAKE LAST click on the re-sent gump instead of a full menu
+        # re-navigation (~5-7s of overhead → ~2s per attempt).
+        deadline = exec_start + (self.timeout_s or 300.0) - _TIMEOUT_MARGIN_S
+        attempts = 0
+        successes = 0
+        fails = 0
+        renavigated = False
+        stop_reason = ""
+        last_notice = ""
+
+        async def _renavigate_once() -> bool:
+            """Fallback when the gump is lost: redo the full navigation once."""
+            nonlocal renavigated, journal_mark
+            if renavigated:
+                return False
+            renavigated = True
+            logger.info("craft_bs_renavigate", attempts=attempts)
+            await self._close_all_gumps(ctx)
+            journal_mark = time.time()
+            return (await self._open_gump_and_craft(ctx, grp_idx, item_idx)) is None
+
+        while True:
+            attempts += 1
+            outcome, last_notice = await self._await_craft_result(ctx, journal_mark)
+
+            if outcome == "success":
+                successes += 1
+            elif outcome == "fail":
+                fails += 1
+            elif outcome == "tool_broke":
+                stop_reason = "tool_broke"
+                break
+            elif outcome in ("no_material", "no_station"):
+                stop_reason = outcome
+                break
+            else:  # '' (no result within ~6s) or 'unknown' (unreadable notice)
+                if await _renavigate_once():
+                    continue
+                stop_reason = outcome or "no_gump"
+                break
+
+            # Exit checks before queuing the next attempt
+            if attempts >= MAX_BATCH_ATTEMPTS:
+                stop_reason = "attempt_cap"
+                break
+            if time.monotonic() > deadline:
+                stop_reason = "timeout"
+                break
+            if _count_iron_ingots(ctx) < ingot_cost:
+                stop_reason = "out_of_ingots"
+                break
+
+            # The result usually rides in on the re-sent gump; if the outcome
+            # came from the journal first, give the gump a moment to land.
+            if not ss.gumps:
+                gres = await wait_for_gump(ctx, timeout=3.0)
+                if not gres.success:
+                    if await _renavigate_once():
+                        continue
+                    stop_reason = "gump_lost"
+                    break
+            gump = ss.gumps[max(ss.gumps.keys())]
+            if not gump.find_button_by_id(MAKE_LAST_BUTTON):
+                stop_reason = "no_make_last_button"
+                break
+
+            journal_mark = time.time()
+            ss.gumps.clear()
+            switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
+            text_entries = [
+                (te.entry_id, te.initial_text) for te in gump.text_entries
+            ]
+            await ctx.conn.send_packet(build_gump_response(
+                serial=gump.serial, gump_id=gump.gump_id,
+                button_id=MAKE_LAST_BUTTON,
+                switches=switches, text_entries=text_entries,
+            ))
+
+        ingots_after = _count_iron_ingots(ctx)
+        items_after = len([
+            it for it in ctx.perception.world.items.values()
+            if it.container == ss.equipment.get(0x15)
+            and it.graphic in CRAFTED_ITEM_GRAPHICS
+        ])
+        crafted = max(successes, items_after - items_before)
+        consumed = max(0, ingots_before - ingots_after)
+
+        # Close remaining gumps
+        await self._close_all_gumps(ctx)
+
+        if crafted > 0:
+            logger.info(
+                "craft_blacksmith_batch",
+                item=item_name, crafted=crafted, failed=fails,
+                attempts=attempts, ingots_used=consumed, stop=stop_reason,
+            )
+            ctx.blackboard["_craft_bs_fails"] = 0
+            ctx.blackboard["_craft_bs_material_fails"] = 0
+            ctx.blackboard["_craft_bs_location_fails"] = 0
+            breaker = ctx.blackboard.get("_craft_material_breaker")
+            if breaker is not None:
+                breaker.record_success("iron")
+            msg = (f"Crafted {crafted}x {item_name} in {attempts} attempts "
+                   f"({fails} failed, {consumed} ingots)")
+            if stop_reason == "tool_broke":
+                msg += " — tongs broke"
+            keep_going = stop_reason not in (
+                "tool_broke", "out_of_ingots", "no_material",
+            )
+            return ProcedureResult(
+                success=True,
+                message=msg,
+                next_suggestion="craft_blacksmith" if keep_going else None,
+                details={
+                    "item": item_name, "crafted": crafted, "failed": fails,
+                    "attempts": attempts, "ingots_used": consumed,
+                    "stop": stop_reason,
+                },
+            )
+
+        if stop_reason == "tool_broke":
+            logger.warning("craft_blacksmith_tool_broke")
+            ctx.blackboard["_craft_bs_fails"] = 0
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="Tongs broke — need replacement tool",
+            )
+
+        if fails > 0 or ingots_after < ingots_before:
+            lost = ingots_before - ingots_after
+            logger.info(
+                "craft_blacksmith_failed",
+                item=item_name, ingots_lost=lost, attempts=attempts,
+            )
+            ctx.blackboard["_craft_bs_fails"] = 0
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Craft {item_name} failed — lost {lost} ingots (skill check)",
+                next_suggestion="craft_blacksmith",
+            )
+
+        notice_lower = last_notice.lower()
+
+        if (stop_reason == "no_material" or "sufficient metal" in notice_lower
+                or "sufficient material" in notice_lower):
+            # If we counted enough iron ingots but server still says insufficient,
+            # the craft context likely has the wrong material selected (Gold, etc.).
+            # Set a cooldown to stop retrying — the agent should sell ingots instead.
+            mat_fails = ctx.blackboard.get("_craft_bs_material_fails", 0) + 1
+            ctx.blackboard["_craft_bs_material_fails"] = mat_fails
+
+            # CircuitBreaker: only count when we know we had enough ingots
+            # (that's the material-type mismatch signal)
+            cb = ctx.blackboard.get("_craft_material_breaker")
+            if cb is not None and ingots_before >= ingot_cost:
+                cb.record_failure("iron")
+                if cb.is_open("iron"):
+                    logger.warning(
+                        "craft_bs_material_cooldown",
+                        fails=cb.failure_count("iron"),
+                        ingots=ingots_before,
+                        cost=ingot_cost,
+                    )
+
+            # Legacy flag fallback (kept for tests that don't install breaker)
+            if mat_fails >= 3 and ingots_before >= ingot_cost:
+                cooldown = min(300 * (mat_fails - 2), 1800)  # escalate: 300→600→…→1800s
+                ctx.blackboard["_craft_bs_material_cooldown"] = time.time() + cooldown
+                logger.warning(
+                    "craft_bs_material_cooldown",
+                    fails=mat_fails,
+                    ingots=ingots_before,
+                    cost=ingot_cost,
+                    cooldown_sec=cooldown,
+                )
+            logger.warning(
+                "craft_blacksmith_no_material",
+                item=item_name, notice=last_notice,
+                ingots_counted=ingots_before, ingot_cost=ingot_cost,
+                material_fails=mat_fails,
+            )
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message=f"Server says insufficient metal for {item_name} "
+                        f"(counted {ingots_before}, need {ingot_cost}) — {last_notice}",
+            )
+
+        if (stop_reason == "no_station" or "anvil" in notice_lower
+                or "forge" in notice_lower):
+            logger.warning("craft_blacksmith_no_station", notice=last_notice)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.WRONG_LOCATION,
+                message=f"No anvil/forge — {last_notice}",
+            )
+
+        # Nothing changed and no recognizable result — unclear
+        fail_count = ctx.blackboard.get("_craft_bs_fails", 0) + 1
+        ctx.blackboard["_craft_bs_fails"] = fail_count
+
+        logger.warning(
+            "craft_blacksmith_unclear",
+            item=item_name, fail_count=fail_count, stop=stop_reason,
+            notice=last_notice or "(none)",
+            ingots_before=ingots_before, ingots_after=ingots_after,
+            items_before=items_before, items_after=items_after,
+        )
+
+        if fail_count >= 5:
+            ctx.blackboard["_craft_bs_fails"] = 0
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.PERMANENT,
+                message=f"Gave up crafting after {fail_count} unclear results"
+                        f" — last notice: {last_notice or 'none'}",
+            )
+
+        return ProcedureResult(
+            success=False,
+            reason=FailureReason.BLOCKED,
+            message=f"Craft result unclear ({fail_count}/5)"
+                    f" — notice: {last_notice or 'none'}",
+        )
+
+    async def _open_gump_and_craft(
+        self, ctx: AgentContext, grp_idx: int, item_idx: int,
+    ) -> ProcedureResult | None:
+        """Full craft-gump navigation: open the tongs gump, force Iron,
+        click the group button, then the item's make button.
+
+        Returns a failure ProcedureResult, or None when the craft attempt
+        was sent (result pending — ServUO re-sends the gump on resolution).
+        """
+        ss = ctx.perception.self_state
+        tools = find_in_backpack(ctx, TONGS_GRAPHICS)
+        if not tools:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="no tongs",
+            )
 
         # 1. Open blacksmithy gump
         ss.gumps.clear()
@@ -474,186 +846,6 @@ class CraftBlacksmith(Procedure):
             text_entries=text_entries,
         ))
 
-        # 5. Wait for crafting result via journal (like the skill version)
-        # Scan ALL recent entries for both fail and tool_broke — if both
-        # appear (craft fails AND tongs break in same attempt), tool_broke
-        # takes priority so the agent knows to replace tongs.
-        result_msg = ""
-        deadline = time.monotonic() + 6.0
-        while time.monotonic() < deadline:
-            await asyncio.sleep(0.5)
-            saw_fail = False
-            saw_tool_broke = False
-            saw_success = False
-            for entry in ctx.perception.social.recent(count=5):
-                if entry.timestamp < journal_mark:
-                    continue
-                text_lower = entry.text.lower()
-                if "you create" in text_lower:
-                    saw_success = True
-                if "failed to create" in text_lower or "you fail" in text_lower:
-                    saw_fail = True
-                if "worn out your tool" in text_lower:
-                    saw_tool_broke = True
-            # Prioritize: tool_broke > fail > success
-            if saw_tool_broke:
-                result_msg = "tool_broke"
-            elif saw_fail:
-                result_msg = "fail"
-            elif saw_success:
-                result_msg = "success"
-            if result_msg:
-                break
-
-        ingots_after = _count_iron_ingots(ctx)
-        items_after = len([
-            it for it in ctx.perception.world.items.values()
-            if it.container == ss.equipment.get(0x15) and it.graphic in CRAFTED_ITEM_GRAPHICS
-        ])
-
-        # Extract gump notice from result gump BEFORE closing gumps —
-        # ServUO reports craft errors (no anvil, insufficient metal) only
-        # via the re-sent CraftGump notice area, not as journal messages.
-        gump_notice = ""
-        for g in ss.gumps.values():
-            for t in g.texts:
-                # Notice content is at x=170, y=295; skip the "NOTICES"
-                # header label at x=10, y=302 (cliloc 1044012).
-                if 280 <= t.y <= 310 and t.x >= 150:
-                    text = g.get_text(t.text_id)
-                    if text:
-                        gump_notice = re.sub(r"<[^>]+>", "", text).strip()
-                        break
-            if gump_notice:
-                break
-
-        # Check gump notice for craft result (fallback if journal missed it)
-        if not result_msg and gump_notice:
-            nl = gump_notice.lower()
-            if "you create" in nl:
-                result_msg = "success"
-            elif "failed to create" in nl or "you fail" in nl:
-                result_msg = "fail"
-            elif "worn out" in nl:
-                result_msg = "tool_broke"
-
-        # Close remaining gumps
-        await self._close_all_gumps(ctx)
-
-        if result_msg == "success" or items_after > items_before:
-            consumed = ingots_before - ingots_after
-            logger.info("craft_blacksmith_success", item=item_name, ingots_used=consumed)
-            ctx.blackboard["_craft_bs_fails"] = 0
-            ctx.blackboard["_craft_bs_material_fails"] = 0
-            ctx.blackboard["_craft_bs_location_fails"] = 0
-            breaker = ctx.blackboard.get("_craft_material_breaker")
-            if breaker is not None:
-                breaker.record_success("iron")
-            return ProcedureResult(
-                success=True,
-                message=f"Crafted {item_name}",
-                next_suggestion="craft_blacksmith",
-                details={"item": item_name},
-            )
-
-        if result_msg == "fail" or ingots_after < ingots_before:
-            lost = ingots_before - ingots_after
-            logger.info("craft_blacksmith_failed", item=item_name, ingots_lost=lost)
-            ctx.blackboard["_craft_bs_fails"] = 0
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.BLOCKED,
-                message=f"Craft {item_name} failed — lost {lost} ingots (skill check)",
-                next_suggestion="craft_blacksmith",
-            )
-
-        if result_msg == "tool_broke":
-            logger.warning("craft_blacksmith_tool_broke")
-            ctx.blackboard["_craft_bs_fails"] = 0
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.MISSING_RESOURCE,
-                message="Tongs broke — need replacement tool",
-            )
-
-        notice_lower = gump_notice.lower()
-
-        if "sufficient metal" in notice_lower or "sufficient material" in notice_lower:
-            # If we counted enough iron ingots but server still says insufficient,
-            # the craft context likely has the wrong material selected (Gold, etc.).
-            # Set a cooldown to stop retrying — the agent should sell ingots instead.
-            mat_fails = ctx.blackboard.get("_craft_bs_material_fails", 0) + 1
-            ctx.blackboard["_craft_bs_material_fails"] = mat_fails
-
-            # CircuitBreaker: only count when we know we had enough ingots
-            # (that's the material-type mismatch signal)
-            cb = ctx.blackboard.get("_craft_material_breaker")
-            if cb is not None and ingots_before >= ingot_cost:
-                cb.record_failure("iron")
-                if cb.is_open("iron"):
-                    logger.warning(
-                        "craft_bs_material_cooldown",
-                        fails=cb.failure_count("iron"),
-                        ingots=ingots_before,
-                        cost=ingot_cost,
-                    )
-
-            # Legacy flag fallback (kept for tests that don't install breaker)
-            if mat_fails >= 3 and ingots_before >= ingot_cost:
-                cooldown = min(300 * (mat_fails - 2), 1800)  # escalate: 300→600→…→1800s
-                ctx.blackboard["_craft_bs_material_cooldown"] = time.time() + cooldown
-                logger.warning(
-                    "craft_bs_material_cooldown",
-                    fails=mat_fails,
-                    ingots=ingots_before,
-                    cost=ingot_cost,
-                    cooldown_sec=cooldown,
-                )
-            logger.warning(
-                "craft_blacksmith_no_material",
-                item=item_name, notice=gump_notice,
-                ingots_counted=ingots_before, ingot_cost=ingot_cost,
-                material_fails=mat_fails,
-            )
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.MISSING_RESOURCE,
-                message=f"Server says insufficient metal for {item_name} "
-                        f"(counted {ingots_before}, need {ingot_cost}) — {gump_notice}",
-            )
-
-        if "anvil" in notice_lower or "forge" in notice_lower:
-            logger.warning("craft_blacksmith_no_station", notice=gump_notice)
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.WRONG_LOCATION,
-                message=f"No anvil/forge — {gump_notice}",
-            )
-
-        # Nothing changed and no recognizable result — unclear
-        fail_count = ctx.blackboard.get("_craft_bs_fails", 0) + 1
-        ctx.blackboard["_craft_bs_fails"] = fail_count
-
-        logger.warning(
-            "craft_blacksmith_unclear",
-            item=item_name, fail_count=fail_count,
-            notice=gump_notice or "(none)",
-            ingots_before=ingots_before, ingots_after=ingots_after,
-            items_before=items_before, items_after=items_after,
-        )
-
-        if fail_count >= 5:
-            ctx.blackboard["_craft_bs_fails"] = 0
-            return ProcedureResult(
-                success=False,
-                reason=FailureReason.PERMANENT,
-                message=f"Gave up crafting after {fail_count} unclear results"
-                        f" — last notice: {gump_notice or 'none'}",
-            )
-
-        return ProcedureResult(
-            success=False,
-            reason=FailureReason.BLOCKED,
-            message=f"Craft result unclear ({fail_count}/5)"
-                    f" — notice: {gump_notice or 'none'}",
-        )
+        # Craft attempt sent — the result arrives via the re-sent CraftGump
+        # notice (or a journal line when the tool broke).
+        return None

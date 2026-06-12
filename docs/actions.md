@@ -151,8 +151,9 @@ Skill ids = ServUO `SkillName` enum (table in `anima/client/appearance.py`).
 | `buy_from_vendor` | gold, vendor known | context-menu buy flow + verify |
 | `sell_to_vendor` | sellables, vendor | sell flow + gold verify |
 | `bank_deposit` / `check_bank_balance` | banker near | banking |
-| `practice_hiding` | alive | Hiding grind (no items); 10s lockout pacing |
+| `practice_hiding` | alive | Hiding grind (no items); 10s lockout pacing; after a successful hide, walks slow E/W steps through the lockout to roll Stealth (stops on reveal) |
 | `practice_music` | instrument in pack | Musicianship grind; no journal signal — detects via 0x3A skill deltas; speaks ~1/9 plays |
+| `practice_peacemaking` | alive, instrument in pack | area-peace on self (creature cursor → own serial): rolls Musicianship AND Peacemaking, no mobs needed; first use answers the instrument cursor; 10s lockout pacing |
 | `practice_magery` | spellbook worn/in pack | Greater Heal self-cast grind; meditates when mana low |
 | `bandage_self` | bandages, HP <95% | one bandage cycle (~8s); Healing gain |
 | `hunt_nearby` | weapon, hostile ≤10 tiles, HP ≥40% | bounded combat loop; retreats <35% HP; always drops war mode |

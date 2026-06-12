@@ -7,6 +7,10 @@ so simply staying engaged grinds the COMBAT category.
 Safety rails: only engages ATTACKABLE/hostile notoriety (humans only if
 clearly hostile), retreats to the engagement anchor below the HP floor,
 caps each engagement at 45s, and always drops war mode on exit.
+
+Throughput add-ons: equips a shield (Parrying stream), interleaves
+fire-and-forget self-bandages between swings (Healing stream + uptime),
+and loots adjacent corpses after each kill (gold/h).
 """
 
 from __future__ import annotations
@@ -17,9 +21,13 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from anima.actions.equip import equip_weapon_from_pack
+from anima.actions.equip import equip_shield_from_pack, equip_weapon_from_pack
+from anima.actions.inventory import find_in_backpack
+from anima.actions.loot import find_corpses, loot_corpse
+from anima.actions.target import use_on_object
 from anima.client.packets import build_attack, build_war_mode
 from anima.perception.enums import NotorietyFlag
+from anima.procedures.bandage_self import BANDAGE_GRAPHICS
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 
 if TYPE_CHECKING:
@@ -63,6 +71,57 @@ ENGAGE_RANGE = 10        # tiles to scan for targets
 ENGAGEMENT_CAP_S = 45.0  # per-target time box
 RETREAT_HP_PCT = 35.0    # break off and retreat below this
 TICK_S = 1.0
+
+BANDAGE_HP_PCT = 85.0    # interleave a self-bandage below this
+BANDAGE_REAPPLY_S = 8.5  # min spacing — re-applying restarts the timer
+LOOT_RANGE = 2           # container-open range for corpses
+CORPSE_SPAWN_WAIT_S = 1.0  # kill → corpse item appears in world state
+
+
+async def _maybe_bandage(ctx: AgentContext) -> None:
+    """Fire-and-forget self-bandage between swings.
+
+    Double-clicks a bandage (0x0E21) and answers the target cursor
+    (0x6C) with the agent's own serial, then returns immediately — no
+    waiting for the "You finish applying" journal line, so war mode
+    stays on and attack re-sends continue while the bandage timer runs.
+    """
+    ss = ctx.perception.self_state
+    if ss.hits_max <= 0 or ss.hp_percent >= BANDAGE_HP_PCT:
+        return
+    now = time.monotonic()
+    if now - ctx.blackboard.get("_bandage_last_ts", 0.0) < BANDAGE_REAPPLY_S:
+        return
+    bandages = find_in_backpack(ctx, BANDAGE_GRAPHICS)
+    if not bandages:
+        return
+    used = await use_on_object(ctx, bandages[0].serial, ss.serial, timeout=2.0)
+    if used.success:
+        ctx.blackboard["_bandage_last_ts"] = now
+        logger.info("combat_bandage", hp_pct=round(ss.hp_percent, 1))
+    else:
+        logger.debug("combat_bandage_failed", message=used.message)
+
+
+async def _loot_fresh_corpses(ctx: AgentContext) -> int:
+    """Loot corpses adjacent to the agent after a kill. Returns gold lifted."""
+    await asyncio.sleep(CORPSE_SPAWN_WAIT_S)  # let the corpse spawn in
+    looted: set[int] = ctx.blackboard.setdefault("_looted_corpses", set())
+    gold = 0
+    for corpse in find_corpses(ctx, max_dist=LOOT_RANGE):
+        if corpse.serial in looted:
+            continue
+        looted.add(corpse.serial)
+        result = await loot_corpse(ctx, corpse.serial)
+        gold += result.data.get("gold", 0)
+        logger.info(
+            "hunt_loot",
+            corpse=f"0x{corpse.serial:08X}",
+            items=result.data.get("items", 0),
+            gold=result.data.get("gold", 0),
+            message=result.message,
+        )
+    return gold
 
 
 def _find_target(ctx: AgentContext):
@@ -120,6 +179,19 @@ class HuntNearby(Procedure):
                     message="No weapon to fight with",
                 )
 
+        # Parrying stream: raise a shield if the left hand is free.
+        # Best-effort — a missing shield never fails the hunt.
+        if not ss.equipment.get(2):
+            try:
+                shield = await equip_shield_from_pack(ctx)
+                if shield.success and shield.data:
+                    logger.info(
+                        "hunt_shield_equipped",
+                        serial=f"0x{shield.data.get('serial', 0):08X}",
+                    )
+            except Exception as exc:
+                logger.debug("hunt_shield_skip", error=str(exc))
+
         target = _find_target(ctx)
         if target is None:
             return ProcedureResult(
@@ -129,6 +201,7 @@ class HuntNearby(Procedure):
             )
 
         kills = 0
+        gold_looted = 0
         retreated = False
         try:
             await ctx.conn.send_packet(build_war_mode(True))
@@ -142,6 +215,10 @@ class HuntNearby(Procedure):
                     retreated = True
                     break
 
+                # Interleaved self-heal — sends bandage + self-target and
+                # returns; the heal resolves while we keep swinging.
+                await _maybe_bandage(ctx)
+
                 current = ctx.perception.world.mobiles.get(target.serial)
                 # Dead = removed from the world, or a KNOWN health bar at
                 # zero. MobileInfo defaults hits/hits_max to 0 for mobiles
@@ -152,6 +229,7 @@ class HuntNearby(Procedure):
                 )
                 if target_dead:
                     kills += 1
+                    gold_looted += await _loot_fresh_corpses(ctx)
                     target = _find_target(ctx)
                     if target is None:
                         break
@@ -188,6 +266,7 @@ class HuntNearby(Procedure):
             reason=FailureReason.INTERRUPTED if retreated and kills == 0 else None,
             message=(
                 f"Combat: {kills} kills, +{gained:.1f} weapon/tactics"
+                + (f", looted {gold_looted} gold" if gold_looted else "")
                 + (" (retreated low HP)" if retreated else "")
             ),
             skill_gains={SKILL_SWORDS: gained} if gained else {},

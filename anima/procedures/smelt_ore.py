@@ -62,7 +62,10 @@ class SmeltOre(Procedure):
         world = ctx.perception.world
         backpack = ss.equipment.get(0x15)
 
-        # Find ore (skip hues we've proven unsmelable, prefer larger piles)
+        # Find ore (skip hues we've proven unsmelable, smelt smallest piles
+        # first — ServUO consumes the whole targeted pile per attempt, so
+        # small piles first means more smelt attempts (more Mining gain
+        # rolls) and less ore wasted on failures)
         unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
         small_iron = ctx.blackboard.get("_small_iron_ore_serials", set())
         ore_candidates = [
@@ -71,7 +74,10 @@ class SmeltOre(Procedure):
                 and item.hue not in unsmelable
                 and not (item.serial in small_iron and item.amount < 2))
         ]
-        ore_candidates.sort(key=lambda x: x.amount, reverse=True)
+        # Ascending among piles with amount >= 2; sub-2 piles sort last so
+        # they're only targeted when nothing else remains (the small-pile
+        # combine logic in the failure path then handles them).
+        ore_candidates.sort(key=lambda x: (x.amount < 2, x.amount))
         ore = ore_candidates[0] if ore_candidates else None
 
         if not ore:
@@ -156,8 +162,10 @@ class SmeltOre(Procedure):
 
         if not result.success:
             if ctx.bus:
-                if sub1: ctx.bus.unsubscribe(sub1)
-                if sub2: ctx.bus.unsubscribe(sub2)
+                if sub1:
+                    ctx.bus.unsubscribe(sub1)
+                if sub2:
+                    ctx.bus.unsubscribe(sub2)
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
@@ -167,8 +175,10 @@ class SmeltOre(Procedure):
         await asyncio.sleep(2.0)
 
         if ctx.bus:
-            if sub1: ctx.bus.unsubscribe(sub1)
-            if sub2: ctx.bus.unsubscribe(sub2)
+            if sub1:
+                ctx.bus.unsubscribe(sub1)
+            if sub2:
+                ctx.bus.unsubscribe(sub2)
 
         ingots_after = sum(
             it.amount for it in world.items.values()

@@ -69,9 +69,14 @@ SUPERVISOR_HINTS_FILE = Path(__file__).parent.parent.parent / "data" / "supervis
 # (or with an empty chain) fall through to the mining gameplay loop.
 PROFESSION_LOOPS: dict[str, tuple[str, ...]] = {
     "mage": ("practice_magery",),
-    "bard": ("practice_music",),
+    # peacemaking first: it self-throttles on the 10s skill lockout and rolls
+    # BOTH Musicianship and Peacemaking; plain plays fill the gaps.
+    "bard": ("practice_peacemaking", "practice_music"),
     "thief": ("practice_hiding",),
     "adventurer": ("bandage_self", "hunt_nearby"),
+    # stationary, gump-resident craft loop (wiki optimum); smelt feeds it,
+    # selling restocks. Falls through to the generic ladder when blocked.
+    "blacksmith": ("craft_blacksmith", "smelt_ore", "sell_to_vendor"),
 }
 
 

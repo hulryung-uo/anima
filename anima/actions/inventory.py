@@ -54,8 +54,32 @@ async def drag_drop(
     """
     import asyncio
 
+    # Snapshot pre-lift state. On a successful lift ServUO removes the item
+    # from view (it moves into the mobile's Holding), so the world entry
+    # either disappears or changes. A rejected lift (0x27 LiftRej) leaves it
+    # exactly where it was.
+    world = ctx.perception.world
+    pre_state = None
+    if item_serial in world.items:
+        before = world.items[item_serial]
+        pre_state = (before.container, before.x, before.y, before.z)
+
     await ctx.conn.send_packet(build_pick_up(item_serial, amount))
     await asyncio.sleep(0.3)
+
+    if pre_state is not None and item_serial in world.items:
+        after = world.items[item_serial]
+        if (after.container, after.x, after.y, after.z) == pre_state:
+            logger.debug(
+                "drag_drop_lift_rejected",
+                item=f"0x{item_serial:08X}",
+                amount=amount,
+                target=f"0x{target_serial:08X}",
+            )
+            return ActionResult(
+                success=False, message="lift rejected (item did not move)"
+            )
+
     await ctx.conn.send_packet(build_drop_item(item_serial, x, y, z, target_serial))
     await asyncio.sleep(0.3)
 

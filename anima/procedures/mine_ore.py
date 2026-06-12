@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.actions.inventory import find_in_backpack
-from anima.actions.target import use_on_target, wait_for_target
+from anima.actions.target import use_on_target
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.gathering.mine import (
     ORE_GRAPHICS,
@@ -34,7 +34,9 @@ def _trip_bank(ctx: "AgentContext", tx: int, ty: int) -> tuple[int, int]:
     present on the blackboard. Returns the bank key for logging.
     """
     import time as _t
+
     from anima.skills.gathering.mine import _bank_key
+
     bk = _bank_key(tx, ty)
     depleted_banks = ctx.blackboard.setdefault("depleted_banks", {})
     depleted_banks[bk] = _t.time()
@@ -143,7 +145,41 @@ class MineOre(Procedure):
             # Also subscribe to cliloc speech
             sub2 = ctx.bus.subscribe("avatar.speech_cliloc", _check_speech)
 
-        await asyncio.sleep(3.0)
+        # Event-driven cadence: instead of a flat 3s nap per swing, poll
+        # until the swing resolves — new ore in the pack OR a mining-result
+        # journal line — and only burn the full window on a true timeout.
+        _result_snippets = (
+            "you dig some",
+            "you loosen some rocks",
+            "there is no metal here",
+            "can't mine",
+            "too far away",
+        )
+
+        def _ore_in_pack() -> int:
+            return sum(
+                it.amount for it in world.items.values()
+                if it.container == backpack and it.graphic in ORE_GRAPHICS
+            )
+
+        def _journal_result_seen() -> bool:
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < mine_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in _result_snippets):
+                    return True
+            return False
+
+        deadline = mine_start + 3.5
+        while _time.time() < deadline:
+            await asyncio.sleep(0.2)
+            if (
+                _ore_in_pack() > ore_before
+                or any(_mine_flags.values())
+                or _journal_result_seen()
+            ):
+                break
 
         if sub and ctx.bus:
             ctx.bus.unsubscribe(sub)
@@ -194,10 +230,13 @@ class MineOre(Procedure):
             from anima.client.packets import build_drop_item, build_pick_up
             drop_verified = False
             ground_drops_broken = ctx.blackboard.get("_ground_drop_bounces", False)
-            for item in world.items.values():
+            # Once a bounce is observed, skip the whole pick_up/drop dance
+            # up-front — keep ore in pack; smelt_ore picks it up.
+            drop_candidates = (
+                () if ground_drops_broken else tuple(world.items.values())
+            )
+            for item in drop_candidates:
                 if item.container == backpack and item.graphic in ORE_GRAPHICS:
-                    if ground_drops_broken:
-                        break  # keep ore in pack; smelt_ore picks it up
                     # Find same-type ore on ground nearby to stack on
                     stack_target = None
                     for ground_item in world.items.values():

@@ -225,9 +225,11 @@ class TestKernelProfiles:
     def test_all_profession_profiles_exist(self):
         from foundry.kernel.gm import FIXED_START_PROFILES
 
-        for key in ("miner", "mage", "warrior", "bard", "thief"):
+        # Workplaces moved out of profiles into LANE_SPOTS (lane workplaces,
+        # 2026-06-11) — profiles carry skills/items/spawns only.
+        for key in ("miner", "mage", "warrior", "bard", "thief", "crafter"):
             p = FIXED_START_PROFILES[key]
-            assert "go" in p and "skills" in p
+            assert "skills" in p and "go" not in p
 
     def test_ground_target_response_layout(self):
         from foundry.kernel.gm import build_ground_target_response

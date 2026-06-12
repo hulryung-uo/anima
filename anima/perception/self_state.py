@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from anima.perception.enums import Lock
+from anima.perception.enums import Lock, MobileFlags
 
 if TYPE_CHECKING:
     from anima.perception.gump import GumpData
@@ -64,6 +64,9 @@ class SelfState:
         self.y: int = 0
         self.z: int = 0
         self.direction: int = 0
+
+        # Status flags (synced from self-branch of 0x78 / 0x20)
+        self.flags: MobileFlags = MobileFlags.NONE
 
         # Vitals
         self.hits: int = 0
@@ -142,3 +145,8 @@ class SelfState:
     @property
     def is_alive(self) -> bool:
         return self.hits > 0 or self.hits_max == 0
+
+    @property
+    def hidden(self) -> bool:
+        """True while the server reports us hidden (UO flag 0x80)."""
+        return bool(self.flags & MobileFlags.HIDDEN)
