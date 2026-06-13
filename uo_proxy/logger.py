@@ -30,6 +30,14 @@ class ProxyLogger:
 
     async def start(self) -> None:
         self._out_path.parent.mkdir(parents=True, exist_ok=True)
+        # TRUNCATE on start: each proxy session owns a fresh file. The flush
+        # loop appends, so without this a reused output path (e.g. the
+        # kernel's deterministic held-out account names) accumulates packets
+        # ACROSS sessions — the parsed trajectory then spans hours, duration_h
+        # balloons, and every per-hour fitness rate collapses (held-out
+        # g_00078 read as 7.7h → fitness 4.76 vs the real 108).
+        with open(self._out_path, "w", encoding="utf-8"):
+            pass
         self._task = asyncio.create_task(self._flush_loop())
 
     async def stop(self) -> None:

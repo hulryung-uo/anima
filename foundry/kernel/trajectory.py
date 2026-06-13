@@ -221,7 +221,8 @@ class TrajectorySummary:
         return max(gained, key=lambda s: s.gain) if gained else None
 
 
-def parse_file(path: str | Path, window_start: float = 0.0) -> TrajectorySummary:
+def parse_file(path: str | Path, window_start: float = 0.0,
+               window_end: float = 0.0) -> TrajectorySummary:
     """Parse a uo_proxy JSONL trajectory into a TrajectorySummary.
 
     ``window_start`` (unix ts) marks the start of the SCORED eval window.
@@ -231,6 +232,13 @@ def parse_file(path: str | Path, window_start: float = 0.0) -> TrajectorySummary
     keeps GM fixed-start setup (teleport, [Set Skills.*, [AddToPack) from
     contaminating fitness: a pre-window skill set shifts the baseline instead
     of counting as gain, and a GM-given tool never enters produce_term.
+
+    ``window_end`` (unix ts, 0 = no bound) caps the scored window. Packets
+    after it are ignored entirely. Without this, duration = (last packet −
+    window_start); a trajectory file holding stray packets from a reconnect
+    storm or a reused output path then reports hours of duration, and every
+    per-hour fitness rate collapses. The eval passes window_start + window_s
+    so duration can never exceed the intended window.
     """
     summ = TrajectorySummary(path=str(path))
     # Per-trajectory mutable parse state.
@@ -255,6 +263,8 @@ def parse_file(path: str | Path, window_start: float = 0.0) -> TrajectorySummary
                 continue
 
             ts = float(ev.get("ts", 0.0))
+            if window_end > 0.0 and ts > window_end:
+                continue  # past the scored window — stray/stale packet
             baseline = ts < window_start
             if not baseline:
                 if summ.start_ts == 0.0:

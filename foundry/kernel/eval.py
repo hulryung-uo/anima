@@ -411,7 +411,11 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
     if not traj.exists() or traj.stat().st_size == 0:
         return EvalResult(False, error="no trajectory captured", trajectory_path=str(traj))
 
-    summ = parse_file(traj, window_start=window_start)
+    # window_end caps duration at the intended window — a trajectory with
+    # stray packets (reconnect storm, reused file) must not inflate duration_h
+    # and crush every per-hour rate.
+    window_end = window_start + cfg.window_s if window_start > 0.0 else 0.0
+    summ = parse_file(traj, window_start=window_start, window_end=window_end)
     fit = compute_fitness(summ)
     desc = compute_descriptor(summ)
     return EvalResult(

@@ -242,7 +242,7 @@ def test_produce_credit_is_amount_delta_per_serial(tmp_path):
     lines = [
         _line(10.0, "S->C", p_login_confirm(SELF, 2500, 400)),
         _line(21.0, "S->C", p_add_to_container(0x4002, 0x19B5, 5, SELF)),  # mined ore
-        _line(25.0, "S->C", p_add_to_container(0x4002, 0x19B5, 5, SELF)),  # bounce: same serial+amount
+        _line(25.0, "S->C", p_add_to_container(0x4002, 0x19B5, 5, SELF)),  # bounce: same
         _line(30.0, "S->C", p_add_to_container(0x4002, 0x19B5, 5, SELF)),  # bounce again
         _line(40.0, "S->C", p_add_to_container(0x4002, 0x19B5, 8, SELF)),  # stack grew 5->8
     ]
@@ -250,3 +250,26 @@ def test_produce_credit_is_amount_delta_per_serial(tmp_path):
     s = parse_file(f, window_start=20.0)
     got = [(g, a) for g, a, _ in s.items_into_pack]
     assert got == [(0x19B5, 5), (0x19B5, 3)]
+
+
+def test_window_end_caps_duration(tmp_path):
+    """Stray packets after the window (reconnect storm / reused file) must not
+    inflate duration_h and crush per-hour rates (held-out g_00078 read as 7.7h
+    → fitness 4.76 vs the real 108)."""
+    lines = [
+        _line(20.0, "S->C", p_login_confirm(SELF, 2500, 400)),
+        _line(21.0, "C->S", p_walk_req(0, 2)),
+        _line(21.5, "S->C", p_confirm_walk()),
+        _line(80.0, "S->C", p_add_to_container(0x4002, 0x19B5, 7, SELF)),
+        # stray packet 2 hours later (stale tail in a reused/reconnect file)
+        _line(7220.0, "S->C", p_add_to_container(0x4003, 0x19B5, 1, SELF)),
+    ]
+    f = _write(tmp_path, lines)
+    # window [20, 620]: the 7220s stray packet is excluded, duration capped
+    s = parse_file(f, window_start=20.0, window_end=620.0)
+    assert s.end_ts == 80.0
+    assert abs(s.duration_s - 60.0) < 1e-9
+    assert [(g, a) for g, a, _ in s.items_into_pack] == [(0x19B5, 7)]
+    # without the bound, the stray packet balloons duration to ~2h
+    s2 = parse_file(f, window_start=20.0)
+    assert s2.duration_s > 7000
