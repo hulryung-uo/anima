@@ -34,8 +34,14 @@ from pathlib import Path
 
 from foundry import mutate, observe, select
 from foundry.kernel import safety
-from foundry.kernel.archive import Archive, Genome
-from foundry.kernel.eval import ANIMA_ROOT, EvalConfig, EvalResult, run_eval_multi
+from foundry.kernel.archive import Archive, Genome, reliability_score
+from foundry.kernel.eval import (
+    ANIMA_ROOT,
+    EvalConfig,
+    EvalResult,
+    merge_confirmation,
+    run_eval_multi,
+)
 
 REPO = str(ANIMA_ROOT)
 WORKTREES = ANIMA_ROOT / ".worktrees"
@@ -58,6 +64,9 @@ class RunConfig:
     mutate_timeout: int = 1500          # EXPLORE mutations + worktree pytest run long
     run_id: str = ""                    # account-name nonce; default = time-based
     force_seed: bool = False            # plant a HEAD-based root genome even if grid non-empty
+    max_seeds: int | None = None        # adaptive-seed cap (None = no top-up)
+    cv_high: float = 0.30               # per-seed CV above which to top up seeds
+    confirm_promotions: bool = False    # re-eval a would-be promotion before committing
 
     def __post_init__(self) -> None:
         self.parallel = max(1, min(self.parallel, safety.MAX_CONCURRENT_EVALS))
@@ -318,8 +327,27 @@ def run(rc: RunConfig) -> Archive:
             out.result = run_eval_multi(
                 _eval_cfg(rc, user, slot, wt,
                           persona=out.persona, fixed_start=out.fixed_start),
-                seeds=rc.seeds,
+                seeds=rc.seeds, max_seeds=rc.max_seeds, cv_high=rc.cv_high,
             )
+
+            # CONFIRM-ON-PROMOTION: if this eval would win its (landed) cell,
+            # re-eval on fresh accounts and pool the seeds before committing.
+            # A lucky single run can't crown a volatile genome — the recorded
+            # fitness/reliability then reflect two independent rounds. Only
+            # fires on would-be promotions (~the minority of cycles).
+            if rc.confirm_promotions and out.result.ok:
+                with arc_lock:
+                    incumbent = arc.get_elite(tuple(out.result.cell))
+                    inc_rel = incumbent.reliability if incumbent else None
+                cand_rel = reliability_score(
+                    out.result.per_seed_fitness, out.result.score)
+                if inc_rel is None or cand_rel > inc_rel:
+                    confirm = run_eval_multi(
+                        _eval_cfg(rc, f"{user}cf", slot, wt,
+                                  persona=out.persona, fixed_start=out.fixed_start),
+                        seeds=rc.seeds, max_seeds=rc.max_seeds, cv_high=rc.cv_high,
+                    )
+                    out.result = merge_confirmation(out.result, confirm)
         except Exception as e:  # noqa: BLE001 — a broken cycle must not kill the run
             out.error = f"{type(e).__name__}: {e}"
         finally:
@@ -391,6 +419,14 @@ def _main(argv: list[str]) -> int:
     ap.add_argument("--seed", action="store_true", dest="force_seed",
                     help="plant a HEAD-based root genome for this persona even "
                          "if the grid is non-empty (use --cycles 0 for pure seeding)")
+    ap.add_argument("--max-seeds", type=int, default=None,
+                    help="adaptive-seed cap: top up to this many seeds when the "
+                         "per-seed CV exceeds --cv-high (combat/crafting noise)")
+    ap.add_argument("--cv-high", type=float, default=0.30,
+                    help="per-seed coefficient-of-variation threshold for top-up")
+    ap.add_argument("--confirm-promotions", action="store_true",
+                    help="re-eval a would-be promotion on fresh accounts and pool "
+                         "the seeds before committing (kills the optimizer's curse)")
     args = ap.parse_args(argv)
 
     rc = RunConfig(
@@ -398,7 +434,8 @@ def _main(argv: list[str]) -> int:
         backend=args.backend, parallel=args.parallel, seeds=args.seeds,
         fixed_start=args.fixed_start, mutate_model=args.model,
         mutate_timeout=args.mutate_timeout, archive_root=args.archive,
-        force_seed=args.force_seed,
+        force_seed=args.force_seed, max_seeds=args.max_seeds,
+        cv_high=args.cv_high, confirm_promotions=args.confirm_promotions,
     )
     run(rc)
     return 0

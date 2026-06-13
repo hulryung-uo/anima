@@ -424,19 +424,30 @@ def run_eval(cfg: EvalConfig) -> EvalResult:
     )
 
 
-def run_eval_multi(cfg: EvalConfig, seeds: int = 1) -> EvalResult:
+def _seed_coefvar(results: list["EvalResult"]) -> float:
+    """Coefficient of variation of per-seed fitness (0 if <2 seeds / mean~0)."""
+    vals = [r.score for r in results]
+    if len(vals) < 2:
+        return 0.0
+    m = statistics.fmean(vals)
+    return statistics.pstdev(vals) / m if m > 1e-6 else 0.0
+
+
+def run_eval_multi(cfg: EvalConfig, seeds: int = 1, max_seeds: int | None = None,
+                   cv_high: float = 0.30) -> EvalResult:
     """Re-run a genome on fresh accounts and aggregate (FOUNDRY.md §5 trust).
 
     Aggregation per §4/§5: fitness = mean across seeds; profession_focus by
     mode; continuous descriptor axes mean-then-bin. Failed seeds are dropped;
     all seeds failing fails the eval.
-    """
-    if seeds <= 1:
-        r = run_eval(cfg)
-        if r.ok:
-            r.per_seed_fitness = [r.score]
-        return r
 
+    ADAPTIVE SEEDS: after the base `seeds`, if the per-seed coefficient of
+    variation exceeds ``cv_high`` and ``max_seeds`` allows, run more seeds and
+    re-aggregate. High-variance professions (combat's bimodal survival gate,
+    crafting's gump-timing throughput) thus get the extra samples they need to
+    pin a reliable mean, while low-variance ones (magic, gathering) stop at the
+    base count — evals are spent where they reduce noise, not uniformly.
+    """
     def _seed_cfg(k: int) -> EvalConfig:
         # Each seed gets its own lane (separated workplace), ports, and a
         # spawn stagger so GM setups queue briefly instead of piling up.
@@ -447,20 +458,60 @@ def run_eval_multi(cfg: EvalConfig, seeds: int = 1) -> EvalResult:
             "lane": cfg.lane + k,
             "proxy_port": cfg.proxy_port + k,
             "web_port": cfg.web_port + k,
-            "spawn_stagger_s": k * 15.0,
+            "spawn_stagger_s": (k % 3) * 15.0,
             "extra_agent_args": list(cfg.extra_agent_args),
         })
 
-    # Seeds run CONCURRENTLY: they are independent worlds (own lane/account/
-    # ports), and parallel seeds cut eval latency ~3x without widening the
-    # blind-batch of the evolutionary search (unlike more parallel cycles).
-    with ThreadPoolExecutor(max_workers=seeds, thread_name_prefix="seed") as ex:
-        all_res = list(ex.map(run_eval, [_seed_cfg(k) for k in range(seeds)]))
+    if seeds <= 1 and not max_seeds:
+        r = run_eval(cfg)
+        if r.ok:
+            r.per_seed_fitness = [r.score]
+        return r
+
+    def _run_batch(ks: list[int]) -> list[EvalResult]:
+        # Seeds run CONCURRENTLY: independent worlds (own lane/account/ports);
+        # parallel seeds cut eval latency ~Nx without widening the blind-batch
+        # of the evolutionary search (unlike more parallel cycles).
+        with ThreadPoolExecutor(max_workers=len(ks),
+                                thread_name_prefix="seed") as ex:
+            return list(ex.map(run_eval, [_seed_cfg(k) for k in ks]))
+
+    all_res = _run_batch(list(range(seeds)))
     results = [r for r in all_res if r.ok]
+
+    # Top up high-variance evals with extra seeds (up to max_seeds).
+    if max_seeds and max_seeds > seeds and results and \
+            _seed_coefvar(results) > cv_high:
+        extra = _run_batch(list(range(seeds, max_seeds)))
+        all_res += extra
+        results += [r for r in extra if r.ok]
+
     if not results:
         errs = "; ".join(r.error for r in all_res if not r.ok)
-        return EvalResult(False, error=f"all {seeds} seeds failed: {errs}")
+        return EvalResult(False, error=f"all {len(all_res)} seeds failed: {errs}")
     return _aggregate(results)
+
+
+def merge_confirmation(first: EvalResult, second: EvalResult) -> EvalResult:
+    """Combine two independent multi-seed evals of the SAME genome into one
+    result whose per-seed list (and recorded mean) spans both rounds.
+
+    Used by confirm-on-promotion: a genome that would win a cell is re-eval'd
+    on fresh accounts; pooling all seeds makes its recorded fitness and
+    reliability reflect both rounds, so a single lucky run can't crown it.
+    Keeps the first round's descriptor/summary for display; only the scalar
+    fitness and per_seed_fitness are pooled (those drive promotion).
+    """
+    import dataclasses
+    if not second.ok or second.fitness is None:
+        return first
+    pooled = list(first.per_seed_fitness) + list(second.per_seed_fitness)
+    mean_total = statistics.fmean(pooled) if pooled else first.score
+    return dataclasses.replace(
+        first,
+        fitness=dataclasses.replace(first.fitness, total=mean_total),
+        per_seed_fitness=pooled,
+    )
 
 
 def _aggregate(results: list[EvalResult]) -> EvalResult:

@@ -21,8 +21,27 @@ No imports from anima/.
 from __future__ import annotations
 
 import json
+import statistics
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+# Promotion is decided on a reliability-discounted score (lower-confidence
+# bound), NOT the raw multi-seed mean. With run-to-run variance, comparing
+# point means lets a cell fill with whichever genome got the luckiest run —
+# the "optimizer's curse" (observed 2026-06-12: g_00070 recorded 91.9 from
+# seeds [49,50,17], held-out mean 39; its lucky run displaced a steadier
+# elite). R = mean − LAMBDA·pstdev penalizes BOTH a low mean and high spread,
+# so a steady genome beats a volatile one of equal mean.
+PROMOTION_LAMBDA = 1.0
+
+
+def reliability_score(per_seed: list[float], point: float) -> float:
+    """Lower-confidence bound used for promotion. Falls back to the point
+    estimate when per-seed data is unavailable (single-seed or legacy)."""
+    vals = [float(v) for v in per_seed] if per_seed else []
+    if len(vals) < 2:
+        return point
+    return statistics.fmean(vals) - PROMOTION_LAMBDA * statistics.pstdev(vals)
 
 
 def cell_to_str(cell: tuple) -> str:
@@ -42,6 +61,12 @@ class Genome:
     @property
     def fitness(self) -> float:
         return float(self.eval.get("fitness", 0.0))
+
+    @property
+    def reliability(self) -> float:
+        """Promotion score: reliability-discounted, not the raw mean."""
+        return reliability_score(
+            self.eval.get("per_seed_fitness", []), self.fitness)
 
     @property
     def cell(self) -> tuple:
@@ -121,10 +146,12 @@ class Archive:
     def add(self, g: Genome) -> InsertResult:
         """Persist genome and insert into the grid iff it is the new elite.
 
-        Rule: enter the cell if it is empty (filled) or this genome's fitness
-        strictly exceeds the current occupant's (improved). Otherwise rejected.
-        The genome is always persisted regardless of grid outcome (full lineage
-        is kept; the grid only tracks elites).
+        Rule: enter the cell if it is empty (filled) or this genome's
+        RELIABILITY score (mean − λ·pstdev across seeds) strictly exceeds the
+        current occupant's (improved). Promoting on the reliability bound,
+        not the raw mean, stops a single lucky run from crowning a volatile
+        genome over a steadier one. The genome is always persisted regardless
+        of grid outcome (full lineage is kept; the grid only tracks elites).
         """
         self.save_genome(g)
         cell_str = cell_to_str(g.cell)
@@ -137,7 +164,8 @@ class Archive:
 
         cur = self.get(cur_id)
         prev_fit = cur.fitness if cur else None
-        if prev_fit is None or g.fitness > prev_fit:
+        prev_rel = cur.reliability if cur else None
+        if prev_rel is None or g.reliability > prev_rel:
             self.grid[cell_str] = g.id
             self._save_grid()
             return InsertResult("improved", g.cell, g.fitness, prev_fit)

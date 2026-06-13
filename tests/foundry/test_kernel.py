@@ -106,6 +106,39 @@ def test_archive_insertion_and_persistence(tmp_path):
     assert arc2.get_elite(("GATHERING", 0)).fitness == 2.0
 
 
+def test_promotion_uses_reliability_not_mean(tmp_path):
+    """A volatile challenger with a higher MEAN must not displace a steadier
+    incumbent: promotion compares mean − λ·pstdev, not the raw mean."""
+    arc = Archive(tmp_path / "arc")
+
+    def mk(gid, cell, per_seed):
+        import statistics
+        return Genome(id=gid, eval={
+            "fitness": statistics.fmean(per_seed),
+            "cell": list(cell),
+            "per_seed_fitness": per_seed,
+        })
+
+    # steady incumbent: mean 50, no spread -> reliability 50
+    assert arc.add(mk("g_1", ("COMBAT", 0), [50.0, 50.0, 50.0])).status == "filled"
+    # volatile challenger: higher MEAN 52 but huge spread (a lucky run)
+    # mean 52, pstdev ~26 -> reliability ~26 < 50 -> REJECTED despite higher mean
+    r = arc.add(mk("g_2", ("COMBAT", 0), [88.0, 50.0, 18.0]))
+    assert r.status == "rejected"
+    assert arc.get_elite(("COMBAT", 0)).id == "g_1"
+    # a genuinely better, steady challenger DOES promote
+    r2 = arc.add(mk("g_3", ("COMBAT", 0), [60.0, 58.0, 62.0]))
+    assert r2.status == "improved"
+    assert arc.get_elite(("COMBAT", 0)).id == "g_3"
+
+
+def test_reliability_falls_back_to_point_estimate(tmp_path):
+    """Legacy/single-seed genomes (no per_seed_fitness) compare by raw fitness."""
+    from foundry.kernel.archive import reliability_score
+    assert reliability_score([], 7.0) == 7.0
+    assert reliability_score([7.0], 7.0) == 7.0
+
+
 def test_use_skill_counts_as_action():
     """0x12 (UseSkill/CastSpell) must count toward liveness/actions.
 
