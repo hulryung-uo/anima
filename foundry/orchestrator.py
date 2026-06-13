@@ -67,6 +67,7 @@ class RunConfig:
     max_seeds: int | None = None        # adaptive-seed cap (None = no top-up)
     cv_high: float = 0.30               # per-seed CV above which to top up seeds
     confirm_promotions: bool = False    # re-eval a would-be promotion before committing
+    forum_log: bool = False             # post an in-world training note per cycle
 
     def __post_init__(self) -> None:
         self.parallel = max(1, min(self.parallel, safety.MAX_CONCURRENT_EVALS))
@@ -393,6 +394,11 @@ def run(rc: RunConfig) -> Archive:
                 prev = f" (prev {r.prev_fitness:.3f})" if r.prev_fitness is not None else ""
                 print(f"[cycle {i}] {g.id} fitness={g.fitness:.3f} "
                       f"cell={g.cell} -> {r.status}{prev}")
+                if rc.forum_log:
+                    # In-world training-log post, best-effort (never breaks the run).
+                    from foundry import chronicle
+                    chronicle.post_cycle_note(
+                        g.cell, r.status, g.fitness, r.prev_fitness)
             finally:
                 slots.put(out.slot)
 
@@ -427,6 +433,9 @@ def _main(argv: list[str]) -> int:
     ap.add_argument("--confirm-promotions", action="store_true",
                     help="re-eval a would-be promotion on fresh accounts and pool "
                          "the seeds before committing (kills the optimizer's curse)")
+    ap.add_argument("--forum-log", action="store_true",
+                    help="post a short in-world training-log note to UO Tavern "
+                         "after each evaluated cycle")
     args = ap.parse_args(argv)
 
     rc = RunConfig(
@@ -436,6 +445,7 @@ def _main(argv: list[str]) -> int:
         mutate_timeout=args.mutate_timeout, archive_root=args.archive,
         force_seed=args.force_seed, max_seeds=args.max_seeds,
         cv_high=args.cv_high, confirm_promotions=args.confirm_promotions,
+        forum_log=args.forum_log,
     )
     run(rc)
     return 0

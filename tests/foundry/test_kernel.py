@@ -151,3 +151,20 @@ def test_use_skill_counts_as_action():
     assert uoconst.ACTION_GROUP.get(0x12) == "skill"
     # The use→target flow must not double-count: target reply excluded.
     assert uoconst.CS_TARGET not in uoconst.ACTION_GROUP
+
+
+def test_chronicle_cycle_text_is_in_world():
+    """Per-cycle forum notes must read in-world — no fitness/genome/code jargon."""
+    from foundry.chronicle import cycle_text
+    banned = ("fitness", "genome", "cell", "sociability", "bin", "g_0", "eval")
+    for cell, status, prev in [(("CRAFTING", 1), "improved", 17.0),
+                               (("COMBAT", 2), "filled", None),
+                               (("MAGIC", 0), "rejected", 165.0)]:
+        title, body = cycle_text(cell, status, 99.0, prev)
+        assert title and body
+        low = (title + body).lower()
+        for w in banned:
+            assert w not in low, (w, title)
+    # improved note surfaces the before→after numbers
+    _, body = cycle_text(("CRAFTING", 1), "improved", 99.0, 17.0)
+    assert "17" in body and "99" in body
