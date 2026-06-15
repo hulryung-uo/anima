@@ -21,6 +21,21 @@ from foundry.kernel.archive import Archive, Genome, cell_to_str
 SOC_BINS = 3  # Phase-0 active grid: profession_focus × sociability (3 bins)
 
 
+def _selection_quality(g: Genome) -> float:
+    """Variance-aware parent quality that ALSO honors human held-out corrections.
+
+    reliability (mean − λ·pstdev, recomputed from per_seed_fitness) is the right
+    conservative signal for normal genomes — but it bypasses the authoritative
+    ``eval.fitness`` scalar, which the human grid-correction tool overwrote to a
+    held-out value for the ruler-inflation genomes (2026-06-12; markers
+    ``fitness_inflated_ruler`` / ``held_out_correction`` in the records). Their
+    per_seed data is the PRESERVED INFLATED evidence, so reliability re-inflates
+    them (e.g. g_00052 held-out 3.06 → reliability 174.9). min() picks the
+    held-out value when one exists and the variance-discounted bound otherwise.
+    """
+    return min(g.fitness, g.reliability)
+
+
 def all_active_cells() -> list[tuple]:
     return [(prof, soc) for prof in uoconst.PROFESSION_BINS for soc in range(SOC_BINS)]
 
@@ -58,9 +73,9 @@ def choose_parent(archive: Archive, seed: int = 0) -> Genome | None:
     weights = []
     for g in elites:
         fp = _frontier_potential(g.cell, filled)
-        # reliability (lower-confidence bound), not raw fitness: same signal the
-        # kernel promotes on, so we don't favour volatile lucky parents.
-        weights.append(1.0 + 2.0 * fp + 0.1 * max(0.0, g.reliability))
+        # variance-aware quality that honors held-out corrections (see
+        # _selection_quality) — don't favour volatile lucky / re-inflated parents.
+        weights.append(1.0 + 2.0 * fp + 0.1 * max(0.0, _selection_quality(g)))
     return rng.choices(elites, weights=weights, k=1)[0]
 
 
@@ -89,7 +104,7 @@ def choose_parent_for_target(archive: Archive, target: tuple | None,
             rank = {g.id: i for i, g in enumerate(by_age)}
             n = len(row)
             weights = [
-                (1.0 + 0.1 * max(0.0, g.reliability))
+                (1.0 + 0.1 * max(0.0, _selection_quality(g)))
                 * (1.0 + 2.0 * (rank[g.id] / (n - 1)) if n > 1 else 1.0)
                 for g in row
             ]
@@ -113,7 +128,7 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
     for g in archive.elites():
         prof = g.cell[0]
         row_filled[prof] = row_filled.get(prof, 0) + 1
-        row_best[prof] = max(row_best.get(prof, 0.0), g.reliability)
+        row_best[prof] = max(row_best.get(prof, 0.0), _selection_quality(g))
     if not empties:
         # FULL GRID: target the cells with the largest gap to their row's
         # best — proven headroom (the row best's machinery exists; it just
@@ -127,7 +142,7 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
             return None
         cells = [g.cell for g in elites]
         weights = [
-            1.0 + max(0.0, row_best.get(c[0], 0.0) - archive.get_elite(c).reliability)
+            1.0 + max(0.0, row_best.get(c[0], 0.0) - _selection_quality(archive.get_elite(c)))
             for c in cells
         ]
         return random.Random(seed).choices(cells, weights=weights, k=1)[0]
