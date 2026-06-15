@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import queue
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,14 @@ from foundry.kernel.eval import (
     merge_confirmation,
     run_eval_multi,
 )
+from foundry.kernel.gm import LANE_SPOTS
+
+# Lane/port budget: each parallel slot reserves a contiguous block of `span`
+# lanes (and proxy/web/GM ports keyed off the same offset). All slots' blocks
+# must fit inside the GM lane table, or a slot's seeds wrap (lane % len) onto
+# another slot's workplace and the concurrent evals collide on ports + GM
+# lanes — the multi-hour stall observed in run 103443.
+LANE_BUDGET = len(LANE_SPOTS)
 
 REPO = str(ANIMA_ROOT)
 WORKTREES = ANIMA_ROOT / ".worktrees"
@@ -71,8 +80,34 @@ class RunConfig:
 
     def __post_init__(self) -> None:
         self.parallel = max(1, min(self.parallel, safety.MAX_CONCURRENT_EVALS))
+        self.seeds = max(1, self.seeds)
+        # --- lane/port budget enforcement (anti-collision) -----------------
+        # Each slot owns `span` consecutive lanes/ports, where span is the
+        # WORST-CASE seed count (adaptive top-up reaches max_seeds). Base seeds
+        # must always fit; if not, drop parallelism. Then clamp max_seeds so the
+        # topped-up blocks still fit. Without this, parallel*max_seeds > lanes
+        # made slot blocks overlap and the evals wedged for hours.
+        if self.parallel * self.seeds > LANE_BUDGET:
+            new_par = max(1, LANE_BUDGET // self.seeds)
+            print(f"[config] parallel {self.parallel}*seeds {self.seeds} exceeds "
+                  f"{LANE_BUDGET} lanes; reducing parallel -> {new_par}")
+            self.parallel = new_par
+        if self.max_seeds:
+            cap = LANE_BUDGET // self.parallel
+            if self.max_seeds > cap:
+                print(f"[config] max_seeds {self.max_seeds} exceeds per-slot lane "
+                      f"budget ({LANE_BUDGET} lanes / {self.parallel} slots = {cap}); "
+                      f"clamping max_seeds -> {cap}")
+                self.max_seeds = cap
+            if self.max_seeds <= self.seeds:
+                self.max_seeds = None  # no headroom to top up
         if not self.run_id:
             self.run_id = format(int(time.time()) % 1679616, "04x")  # 4 hex chars
+
+    @property
+    def slot_span(self) -> int:
+        """Lanes/ports each slot reserves: worst-case seed count."""
+        return max(1, self.max_seeds or self.seeds)
 
 
 # --- git helpers -----------------------------------------------------------
@@ -175,10 +210,12 @@ def _setup_for(rc: RunConfig, parent: Genome | None,
 
 def _eval_cfg(rc: RunConfig, user: str, slot: int, repo_root: Path | None,
               persona: str | None = None, fixed_start: str | None = None) -> EvalConfig:
-    # Each slot owns a contiguous block of `seeds` lanes/ports so that
-    # parallel seeds (run_eval_multi) never collide across slots:
-    #   slot0 → lanes 0..s-1, proxy 2630..  /  slot1 → lanes s..2s-1, …
-    span = max(1, rc.seeds)
+    # Each slot owns a contiguous block of `span` lanes/ports so that parallel
+    # seeds (run_eval_multi, which fans out over max_seeds on adaptive top-up)
+    # never collide across slots. span = worst-case seed count, NOT base seeds —
+    # otherwise a topped-up slot overruns into the next slot's block.
+    #   slot0 → lanes 0..span-1, proxy 2630..  /  slot1 → lanes span..2span-1, …
+    span = rc.slot_span
     return EvalConfig(
         account_user=user,
         persona=persona if persona is not None else rc.persona,
@@ -410,6 +447,14 @@ def run(rc: RunConfig) -> Archive:
 
 def _main(argv: list[str]) -> int:
     import argparse
+
+    # Line-buffer stdout so progress is visible when redirected to a log file
+    # (block buffering left the log empty through a multi-hour stall, blinding
+    # the operator). Harmless on a tty.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
 
     ap = argparse.ArgumentParser(description="Foundry develop-cycle orchestrator (Phase 1)")
     ap.add_argument("--cycles", type=int, default=1)
