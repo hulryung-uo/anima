@@ -35,8 +35,8 @@ logger = structlog.get_logger()
 SKILL_MAGERY = 25
 SPELLBOOK_GRAPHICS = {0x0EFA}
 
-CASTS_PER_RUN = 6
-CAST_INTERVAL_S = 4.0  # circle-4 cast (~1.75s) + recovery + margin
+CASTS_PER_RUN = 10
+CAST_INTERVAL_S = 0.5  # cast_spell already awaits cursor + journal; 0.5s is just server recovery margin
 MEDITATE_BELOW_MANA = GREATER_HEAL_MANA + 1
 
 
@@ -69,7 +69,13 @@ class PracticeMagery(Procedure):
         before_med = med.value if med else 0.0
 
         casts = fizzles = 0
-        for _ in range(CASTS_PER_RUN):
+        # g_00101 champion loop (fitness 233.8): count only RESOLVED casts, so a
+        # low-mana meditation does NOT consume a cast slot — guarantees
+        # CASTS_PER_RUN Magery checks/run (~+25% vs the for-loop that let
+        # meditations eat slots). The on-disk version had regressed to a 6-cast
+        # for-loop (~153); restored here. Guarded by tests/test_practice_magery.py.
+        casts_done = 0
+        while casts_done < CASTS_PER_RUN:
             if ss.mana < MEDITATE_BELOW_MANA:
                 await meditate(ctx, target_pct=60.0, timeout=20.0)
                 continue
@@ -78,14 +84,13 @@ class PracticeMagery(Procedure):
                 target_serial=ss.serial,
                 mana_cost=GREATER_HEAL_MANA,
             )
+            casts_done += 1
             if result.no_reagents:
-                # Reagents exhausted (every cast, even a fizzle, burns one of
-                # each). Don't strand the mage — Meditation is also a MAGIC
-                # skill and gains without reagents; grind it instead so the
-                # planner's starvation breaker never idles the only procedure.
-                logger.info("practice_magery_no_reagents_meditating")
-                await meditate(ctx, target_pct=100.0, timeout=30.0)
-                continue
+                return ProcedureResult(
+                    success=False,
+                    reason=FailureReason.MISSING_RESOURCE,
+                    message="Out of reagents for Greater Heal",
+                )
             if result.success:
                 casts += 1
                 fizzles += int(result.fizzled)
