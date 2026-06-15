@@ -30,6 +30,11 @@ TONGS_GRAPHICS = {0x0FBB, 0x0FBC}  # smith's hammer / tongs
 INGOT_GRAPHIC = 0x1BF2  # kept for backward compat (large-stack graphic)
 IRON_HUE = 0  # Iron ingots have default (no) hue; colored metals have non-zero hue
 MIN_INGOTS = 8  # most weapons need 8-12 ingots
+# Yield the forge to a sell trip once this many crafted items have piled up.
+# Without it, can_start stays True forever (first-startable-wins) and the
+# crafter never advances to sell_to_vendor — worth_term/networth_rate stay
+# structurally 0 while produce_term balloons (the CRAFTING worth=0 plateau).
+SELL_BACKLOG_THRESHOLD = 10
 
 
 def _count_iron_ingots(ctx: AgentContext) -> int:
@@ -129,6 +134,19 @@ CRAFTED_ARMOR_GRAPHICS = {
     0x13EC,  # ringmail tunic
 }
 CRAFTED_ITEM_GRAPHICS = CRAFTED_WEAPON_GRAPHICS | CRAFTED_ARMOR_GRAPHICS
+
+
+def _count_crafted_in_pack(ctx: AgentContext) -> int:
+    """Count crafted weapons/armor sitting in the backpack (the sell backlog)."""
+    ss = ctx.perception.self_state
+    backpack = ss.equipment.get(0x15)
+    if not backpack:
+        return 0
+    return sum(
+        getattr(item, "amount", 1)
+        for item in ctx.perception.world.items.values()
+        if item.container == backpack and item.graphic in CRAFTED_ITEM_GRAPHICS
+    )
 
 
 _CRAFT_SEARCH_RANGE = 8  # Wider range for walk-to-forge feature
@@ -244,6 +262,11 @@ class CraftBlacksmith(Procedure):
         if not find_in_backpack(ctx, TONGS_GRAPHICS):
             return False
         if _count_iron_ingots(ctx) < MIN_INGOTS:
+            return False
+        # Vendor-flush: once a sellable batch has piled up, yield so the
+        # profession loop advances to sell_to_vendor (converts produce_term
+        # into worth_term/gold instead of crafting indefinitely).
+        if _count_crafted_in_pack(ctx) >= SELL_BACKLOG_THRESHOLD:
             return False
         # Accept if forge+anvil are within 2 tiles (ready to craft)
         # OR within 8 tiles (can walk there during execute).
