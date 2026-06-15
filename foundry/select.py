@@ -3,7 +3,9 @@
 MAP-Elites is illuminated by *which* parent we mutate next. Pure fitness-greedy
 selection collapses diversity; pure random ignores the frontier. This policy
 biases toward elites that sit next to EMPTY cells (so a mutation is likely to
-fill new behavioral ground), with fitness as a mild tiebreak. It is on the
+fill new behavioral ground), with RELIABILITY (the variance-aware lower bound
+the kernel promotes on) as a mild tiebreak — not the raw fitness mean, which
+over-weights lucky high-variance parents the promotion rule would reject. It is on the
 mutable side of the kernel boundary: the AI may rewrite this strategy. It may
 read the kernel (archive, constants) but must not weaken the archive's
 promotion rule (that lives in the kernel).
@@ -56,7 +58,9 @@ def choose_parent(archive: Archive, seed: int = 0) -> Genome | None:
     weights = []
     for g in elites:
         fp = _frontier_potential(g.cell, filled)
-        weights.append(1.0 + 2.0 * fp + 0.1 * max(0.0, g.fitness))
+        # reliability (lower-confidence bound), not raw fitness: same signal the
+        # kernel promotes on, so we don't favour volatile lucky parents.
+        weights.append(1.0 + 2.0 * fp + 0.1 * max(0.0, g.reliability))
     return rng.choices(elites, weights=weights, k=1)[0]
 
 
@@ -85,7 +89,7 @@ def choose_parent_for_target(archive: Archive, target: tuple | None,
             rank = {g.id: i for i, g in enumerate(by_age)}
             n = len(row)
             weights = [
-                (1.0 + 0.1 * max(0.0, g.fitness))
+                (1.0 + 0.1 * max(0.0, g.reliability))
                 * (1.0 + 2.0 * (rank[g.id] / (n - 1)) if n > 1 else 1.0)
                 for g in row
             ]
@@ -109,7 +113,7 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
     for g in archive.elites():
         prof = g.cell[0]
         row_filled[prof] = row_filled.get(prof, 0) + 1
-        row_best[prof] = max(row_best.get(prof, 0.0), g.fitness)
+        row_best[prof] = max(row_best.get(prof, 0.0), g.reliability)
     if not empties:
         # FULL GRID: target the cells with the largest gap to their row's
         # best — proven headroom (the row best's machinery exists; it just
@@ -123,7 +127,7 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
             return None
         cells = [g.cell for g in elites]
         weights = [
-            1.0 + max(0.0, row_best.get(c[0], 0.0) - archive.get_elite(c).fitness)
+            1.0 + max(0.0, row_best.get(c[0], 0.0) - archive.get_elite(c).reliability)
             for c in cells
         ]
         return random.Random(seed).choices(cells, weights=weights, k=1)[0]
