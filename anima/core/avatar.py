@@ -213,6 +213,7 @@ class Avatar:
         from anima.procedures.check_bank_balance import CheckBankBalance as CheckBankBalanceProc
         from anima.procedures.chop_wood import ChopWood as ChopWoodProc
         from anima.procedures.combat_loop import HuntNearby as HuntNearbyProc
+        from anima.procedures.combat_loop import WanderForCombat as WanderForCombatProc
         from anima.procedures.craft_blacksmith import CraftBlacksmith as CraftBlacksmithProc
         from anima.procedures.make_tools import MakeTools as MakeToolsProc
         from anima.procedures.mine_ore import MineOre as MineOreProc
@@ -232,7 +233,7 @@ class Avatar:
             BankDepositProc, CheckBankBalanceProc,
             PracticeHidingProc, PracticeMusicProc, PracticeMageryProc,
             PracticePeacemakingProc,
-            BandageSelfProc, HuntNearbyProc,
+            BandageSelfProc, HuntNearbyProc, WanderForCombatProc,
         ]:
             procedure_registry.register(proc_cls())
         logger.info("procedures_registered", count=len(procedure_registry.all_procedures))

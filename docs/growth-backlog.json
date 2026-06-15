@@ -1,0 +1,235 @@
+{
+  "summary": "Fan out sub-agents to analyze many Foundry sessions in parallel, then compress findings into a prioritized growth backlog",
+  "agentCount": 10,
+  "logs": [
+    "[stall] agent \"analyze:death-recovery\" stalled (no progress) after 464s — retrying (1/5)",
+    "[stall] agent \"analyze:meta-mode\" stalled (no progress) after 464s — retrying (1/5)",
+    "[stall] agent \"analyze:magic\" stalled (no progress) after 464s — retrying (1/5)",
+    "[stall] agent \"analyze:infra\" stalled (no progress) after 464s — retrying (1/5)",
+    "[stall] agent \"analyze:grid-gaps\" stalled (no progress) after 464s — retrying (1/5)",
+    "[stall] agent \"analyze:weak-rows\" stalled (no progress) after 464s — retrying (1/5)",
+    "[stall] agent \"analyze:meta-mode\" stalled (no progress) after 1052s — retrying (2/5)",
+    "[stall] agent \"analyze:magic\" stalled (no progress) after 1052s — retrying (2/5)",
+    "[stall] agent \"analyze:death-recovery\" stalled (no progress) after 1052s — retrying (2/5)",
+    "[stall] agent \"analyze:infra\" stalled (no progress) after 1052s — retrying (2/5)",
+    "[stall] agent \"analyze:weak-rows\" stalled (no progress) after 1052s — retrying (2/5)",
+    "[stall] agent \"analyze:grid-gaps\" stalled (no progress) after 1052s — retrying (2/5)",
+    "[stall] agent \"analyze:death-recovery\" stalled (no progress) after 303s — retrying (3/5)",
+    "[stall] agent \"analyze:magic\" stalled (no progress) after 303s — retrying (3/5)",
+    "[stall] agent \"analyze:meta-mode\" stalled (no progress) after 303s — retrying (3/5)",
+    "[stall] agent \"analyze:infra\" stalled (no progress) after 303s — retrying (3/5)",
+    "[stall] agent \"analyze:combat\" stalled (no progress) after 1820s — retrying (1/5)",
+    "[stall] agent \"analyze:weak-rows\" stalled (no progress) after 303s — retrying (3/5)",
+    "[stall] agent \"analyze:grid-gaps\" stalled (no progress) after 303s — retrying (3/5)",
+    "[stall] agent \"analyze:craft-bard\" stalled (no progress) after 1820s — retrying (1/5)",
+    "[stall] agent \"analyze:meta-mode\" stalled (no progress) after 975s — retrying (4/5)",
+    "[stall] agent \"analyze:grid-gaps\" stalled (no progress) after 975s — retrying (4/5)",
+    "[stall] agent \"analyze:combat\" stalled (no progress) after 975s — retrying (2/5)",
+    "[stall] agent \"analyze:weak-rows\" stalled (no progress) after 975s — retrying (4/5)",
+    "[stall] agent \"analyze:infra\" stalled (no progress) after 1995s — retrying (4/5)",
+    "[stall] agent \"analyze:magic\" stalled (no progress) after 1995s — retrying (4/5)",
+    "[stall] agent \"analyze:grid-gaps\" stalled (no progress) after 1020s — retrying (5/5)",
+    "[stall] agent \"analyze:death-recovery\" stalled (no progress) after 1995s — retrying (4/5)",
+    "[stall] agent \"analyze:craft-bard\" stalled (no progress) after 1995s — retrying (2/5)",
+    "[stall] agent \"analyze:combat\" stalled (no progress) after 1020s — retrying (3/5)",
+    "[stall] agent \"analyze:weak-rows\" stalled (no progress) after 1020s — retrying (5/5)",
+    "[stall] agent \"analyze:meta-mode\" stalled (no progress) after 1940s — retrying (5/5)",
+    "[stall] agent \"analyze:combat\" stalled (no progress) after 920s — retrying (4/5)",
+    "[stall] agent \"analyze:magic\" stalled (no progress) after 920s — retrying (5/5)",
+    "[stall] agent \"analyze:craft-bard\" stalled (no progress) after 920s — retrying (3/5)",
+    "[stall] agent \"analyze:death-recovery\" stalled (no progress) after 920s — retrying (5/5)",
+    "[stall] agent \"analyze:infra\" stalled (no progress) after 920s — retrying (5/5)",
+    "parallel[2] failed: agent stalled on all 6 attempts (no progress for 180000ms each)",
+    "parallel[5] failed: agent stalled on all 6 attempts (no progress for 180000ms each)",
+    "collected 29 findings across 6 slices"
+  ],
+  "result": {
+    "summary": "Through-line: the Foundry grid is being optimized on a noisy, mean-based signal while two free, already-proven code wins have silently regressed out of the working tree. Fix the measurement first (it compounds across all 21 cells), reclaim the regressed champions, then propagate three transferable levers (loop-throughput / interrupt-doesn't-consume-slot / health-break suppression) into the weak rows. Three structural capability gaps explain almost all low-fitness: (1) COMBAT seeds collapse because the warrior falls through to mining when no target is in range and has no flee/re-engage/death-recovery, (2) CRAFTING never sells so worth_term is structurally 0, (3) the meta-controller is inert in evals so no dynamic mode-switching evidence exists. A handful of these are kernel-human-owned (robust estimator, behavior-bonus caps, Anatomy birth-skill, balance descriptor) and should be proposed, not edited, by evolution agents. The editable wins (restore g_00101, select.py reliability weighting, re-engage step, sell-loop, deterministic shadow policy) are low-cost and high-reach and should ship first.",
+    "backlog": [
+      {
+        "rank": 1,
+        "title": "Restore the g_00101 magery champion to the working tree (while-loop + 0.5s/10 casts) and add a selftest guarding HEAD against future regressions",
+        "track": "evolution",
+        "ownership": "editable",
+        "rationale": "The strongest known genome (233.8) lives only in refs/foundry/g_00101; on-disk practice_magery.py reverted to the 4.0s/6/for-loop baseline (~153). force_seed plants HEAD-rooted roots, so every manual run and HEAD-seeded evolution silently starts from the inferior version. Pure reclaim of a proven win, zero search cost. A cheap selftest assert (HEAD loop shape == g_00101) prevents recurrence.",
+        "expected_impact": "Restores ~+53% magery fitness (153->234) for any HEAD-seeded or live run; keeps the strongest lineage as the floor instead of discarding the champion.",
+        "merged_from": [
+          "Working-tree practice_magery has regressed below the g_00101 champion",
+          "Champion code is reachable only via refs/foundry/<id>; guard against HEAD-seed regressions"
+        ]
+      },
+      {
+        "rank": 2,
+        "title": "Make selection weight on reliability (lower-confidence bound), not the raw fitness mean, and recompute the 5 stale cached scalars",
+        "track": "evolution",
+        "ownership": "editable",
+        "rationale": "select.py choose_parent/choose_parent_for_target/suggest_target_cell all weight parents by g.fitness while promotion uses g.reliability — two inconsistent quality signals that disagree exactly on high-variance genomes. Worse, 5 genomes (g_00049/51/42/50/52) have eval.fitness scalars that match neither their per-seed mean nor reliability. One small editable change in select.py makes 'parent quality' and 'who wins the cell' one variance-aware signal with system-wide reach.",
+        "expected_impact": "Frontier-biased selection stops over-weighting volatile lucky parents and corrupt cached numbers; every future lineage descends from reliably-good genomes. Compounds across all cells.",
+        "merged_from": [
+          "select.py reads the raw fitness mean (stale for 5 genomes) while promotion reads reliability"
+        ]
+      },
+      {
+        "rank": 3,
+        "title": "Add a combat re-engage step so a weaponed warrior never falls through to the mining/smelt chain when no target is in range",
+        "track": "evolution",
+        "ownership": "editable",
+        "rationale": "planner.py:779-800 runs hunt_nearby then falls straight to mine_ore when _find_target() returns None within ENGAGE_RANGE=10. This is the single biggest combat-uptime leak and the named-but-never-landed content of two elite hypotheses (g_00070 widen ENGAGE_RANGE, g_00091 wander_for_combat). It is ALSO the mechanism behind COMBAT's variance problem: the 40x seed gap (4.95 vs 203.9) is whether the window caught the agent engaged vs stuck in fallthrough, not fewer swings. Insert wander_for_combat / walk-back-to-anchor + rescan in PROFESSION_LOOPS['adventurer'] before mining.",
+        "expected_impact": "Removes the largest dead-time source in COMBAT seeds; cutting the sub-15 catastrophic seeds roughly doubles cell means (e.g. g_00115 71.8->~94). Lifts the floor of every COMBAT cell, especially the weak COMBAT|2.",
+        "merged_from": [
+          "Warrior falls through to the mining chain whenever no target is in ENGAGE_RANGE",
+          "COMBAT fitness is variance-dominated — weak COMBAT|2 is a sampling artifact of catastrophic low seeds"
+        ]
+      },
+      {
+        "rank": 4,
+        "title": "Replace the mean point-estimate in eval aggregation/reliability with a robust median + quantile lower bound for bimodal per-seed data (PROPOSE to kernel)",
+        "track": "evolution",
+        "ownership": "kernel-human-owned",
+        "rationale": "Many elites are bimodal, not noisy: g_00118 per_seed [8.7,8.7,8.7,135.8,141.9,144.2] (two regimes, mean lands in the empty valley); g_00107 same; g_00102 has a 5.0 death-outlier among ~100-200. _aggregate uses fmean and reliability=mean-1.0*pstdev, which describes neither cluster and collapses on regime-switching data. Switching to median + quantile/IQR lower bound makes majority-regime genomes promotable on their typical behavior. Kernel-owned, so propose. Compounds: every promotion across 21 cells reads this estimator.",
+        "expected_impact": "Selection signal stops being dominated by which regime a coin-flip landed in; bimodal genomes ranked by dominant outcome. System-wide quality lift.",
+        "merged_from": [
+          "Promotion/selection use a mean estimator on demonstrably bimodal per-seed data",
+          "Bimodal seeds signal intermittent fixed-start/setup failure the CV-topup does not diagnose"
+        ]
+      },
+      {
+        "rank": 5,
+        "title": "Make crafters sell crafted output (and generalize to a sell/restock mode switch) so worth_term/networth_rate stops being structurally 0",
+        "track": "evolution",
+        "ownership": "editable",
+        "rationale": "Every CRAFTING champion shows worth_term=0 and networth_rate=0 (g_00093/78/96); the winning genomes explicitly suppressed sell_to_vendor to camp the forge. Blacksmith genomes accumulate huge produce_term (180-262) that never converts (g_00052 produce=261.7/worth=0/fit=3.1). The smithing loop already defines sell_to_vendor but first-startable-wins re-enters craft forever. Flush pack to vendor after N sellable items / add an economy redecide on gold_rate~0 with rising inventory.",
+        "expected_impact": "Unlocks the currently-zero worth_term (W_WORTH=0.3); lifts crafting from the ~88-108 produce-only plateau and the 3-17 stranded-produce band toward 100+. Large headroom in all CRAFTING cells.",
+        "merged_from": [
+          "Crafting champions never sell crafted output — worth_term stuck at 0",
+          "Blacksmith economic stall: produce never converts to worth, needs a sell/restock mode switch"
+        ]
+      },
+      {
+        "rank": 6,
+        "title": "Add an editable death-recovery ladder: flee-under-pressure, recover-own-corpse, re-equip-from-pack after resurrection",
+        "track": "apprentice",
+        "ownership": "editable",
+        "rationale": "Three compounding gaps in one failure mode. (a) No _Flee: survival branch only heals in place, melee cancels bandaging, warriors die surrounded — the af<0.2 deaths (g_00022/16 at 8 mobs) are pure mob-density, not code. (b) Post-res has zero follow-up: agent revives naked (own corpse 0x2006 never looted; _LootCorpses only loots foreign corpses) and re-dies. (c) The Lv0-7 deadlock ladder is miner-bootstrap-only ('no tools, no coin') with no combat-death rung. Build _Flee (above heal when hits<30% and >=3 hostiles) -> _RecoverOwnCorpse -> _ReequipFromBackpack as a forced post-res chain.",
+        "expected_impact": "Converts 8-mob deaths from af~0.1 to survivors (combat-row fitness several-fold), closes the die->res->naked->die loop, raises longest_unassisted_survival_s and drives interventions_per_hour toward 0.",
+        "merged_from": [
+          "No flee/disengage procedure: warriors fight to death",
+          "Post-resurrection has no re-equip / own-corpse recovery",
+          "Deadlock ladder is miner-bootstrap-only, no death/combat-recovery rung",
+          "Adventurer death cohort: low-HP rest/travel switch would rescue ~6 dying genomes"
+        ]
+      },
+      {
+        "rank": 7,
+        "title": "Propagate the three transferable grind levers (loop-throughput, interrupt-doesn't-consume-slot, health-break suppression) into peacemaking/music/crafting",
+        "track": "evolution",
+        "ownership": "editable",
+        "rationale": "Three independently-proven MAGIC/BARD wins that have NOT crossed to weaker rows. (a) g_00065: kill fixed post-action sleeps the helper already awaits — practice_peacemaking.py:68 sleep(1.3) and practice_music PLAY_INTERVAL_S=1.3 over a 1s lockout are dead time. (b) g_00101: rewrite bounded loops as while-done<N counting only resolved actions — peacemaking's for-attempt loop with two continue branches burns 1 of 3 slots on a cursor miss, the exact bug g_00101 fixed (~+25% effective attempts). (c) g_00106: the 60s health-break (planner.py:120,263-274) is a dead-time tax every ~171s; it doubled bard skill_rate — confirm CRAFTING lineage actually inherits it.",
+        "expected_impact": "Single-to-double-digit % skill_gain_rate gains on BARD/peacemaking (lifts ~134 ceiling) plus up to ~2x if crafting still pays the 60s health-break tax. Reuses proven wins instead of re-discovering them.",
+        "merged_from": [
+          "Loop-throughput lever (g_00065): kill fixed post-action sleeps",
+          "Meditation-not-consuming-casts lever (g_00101) transfers to peacemaking loop",
+          "Biggest BARD win was health-break suppression — generalize it"
+        ]
+      },
+      {
+        "rank": 8,
+        "title": "Give the MetaController a deterministic fallback ModePolicy so the P0 shadow stage logs decisions during evals",
+        "track": "meta-controller",
+        "ownership": "editable",
+        "rationale": "_do_decide early-returns when ctx.llm is None (meta_controller.py:263), and evals run without an LLM — so maybe_decide never fires and data/meta_shadow.jsonl does not exist across 120+ genomes. The P0 would-pick-vs-actual dataset that would justify P1 activation has zero rows. A cheap rule table over LivingState (low-HP->rest, flat-gold+overweight->sell, danger->travel, else profession default) emits the agreement data. This is the prerequisite for ranks 5/6's mode-switching and for distilling a learned policy.",
+        "expected_impact": "Unblocks P0->P1: produces grounded would-switch evidence per eval and lets a human audit divergence from the fixed loop before live activation.",
+        "merged_from": [
+          "MetaController is fully inert during deterministic evals, shadow stage gathers zero data"
+        ]
+      },
+      {
+        "rank": 9,
+        "title": "Default confirm-on-promotion for high-CV cells (COMBAT/CRAFTING/NONE) and use a robust per-cell variance gate for promotion",
+        "track": "evolution",
+        "ownership": "editable",
+        "rationale": "The optimizer's curse is documented (g_00070 recorded 91.9 from [49,50,17], held-out 39, displaced a steadier elite) and g_00070 is STILL the live COMBAT|0 elite. The confirm-on-promotion re-eval exists (orchestrator.py:376) but is opt-in (--confirm-promotions default False). Crafting elites also show CV 0.19-0.26 where one lucky forge run wins a cell. Make confirmation the default only where first-round CV exceeds cv_high (data already available via _seed_coefvar) — cheap for the stable majority, decisive where the curse bites.",
+        "expected_impact": "Eliminates residual curse on the noisiest cells without doubling eval cost on stable cells; a curse-free elite is the parent of every descendant in that row.",
+        "merged_from": [
+          "Optimizer's curse mitigated only behind opt-in flag",
+          "High per-seed variance in low-social crafting champions makes promotions noisy"
+        ]
+      },
+      {
+        "rank": 10,
+        "title": "Stop speech-only descriptor gaming: fill sociability bins by copying the cell's best capability genome + one cheap speech step",
+        "track": "evolution",
+        "ownership": "editable",
+        "rationale": "Sociability bin = speech_sent/total_actions forces 3 bins/profession, so ~1/3 of CRAFTING and BARD genomes mutate ONLY speech rate (g_00054/55/79/90/110/40), producing near-duplicate champions in adjacent cells (g_00093/78/96 are one crafter at three speech rates). Each full evolution cycle spent on speech tuning is wasted compute. Bias the mutator to reach an empty bin in a single speech-only step then spend remaining budget on capability, or flag speech-only diffs as non-novel.",
+        "expected_impact": "Stops re-deriving the same crafter/bard at different speech rates; redirects eval budget toward real skill/economy gains. Medium search-efficiency win.",
+        "merged_from": [
+          "~1/3 of CRAFTING and BARD genomes are pure descriptor-gaming"
+        ]
+      },
+      {
+        "rank": 11,
+        "title": "PROPOSE kernel changes: liveness must credit stationary-but-progressing skills; tighten/penalize the behavior-bonus gaming vector; add a balance descriptor + balance_term",
+        "track": "meta-controller",
+        "ownership": "kernel-human-owned",
+        "rationale": "Three kernel-owned signal fixes that block whole archetypes. (a) _liveness (fitness.py:92) is movement/variety only, so meditate/spirit-speak genomes (g_00004/8) ran the full window alive but scored ~0.15 — magic/bard stationary trades are structurally unscorable. (b) behavior_bonus (fitness.py:155) makes NONE/COMBAT cells ~1.7x noisier (CV 0.294 vs 0.176); g_00118 failed its profession, wandered, and banked a high volatile NONE score — lower the per-hour caps / require sustained-presence. (c) The grid descriptor is (profession x sociability) only, so single-skill grinders (g_00101 fit=234, move=0) dominate balanced living adventurers (g_00102 fit=111) — without a balance term a correct meta-controller would be selected against. All kernel-owned: propose, do not edit.",
+        "expected_impact": "Unblocks the MAGIC/bard stationary rows, makes the noisiest 21% of the grid trustworthy, and aligns the selection gradient with the 'living resident' goal — prerequisite for evolving (not hand-writing) mode-switching.",
+        "merged_from": [
+          "liveness watchdog mislabels stationary procedures as frozen",
+          "Behavior-bonus archetypes are ~1.7x noisier — the bonus is a gaming vector",
+          "Dynamic mode-switching needs a balance descriptor in the kernel"
+        ]
+      },
+      {
+        "rank": 12,
+        "title": "Open the Anatomy-30 warrior birth template (kernel) and, as the editable complement, make the auto-bandage fire more often to capture passive Healing/Anatomy rolls",
+        "track": "evolution",
+        "ownership": "kernel-human-owned",
+        "rationale": "Both COMBAT elites (g_00102/00115) converged on 'add Anatomy 30 to the adventurer birth template — every swing rolls Anatomy, opening a 5th gain stream' but the birth skills live in foundry/kernel/gm.py:97 (off-limits; sum already 140 so something must drop). g_00102 estimates Anatomy alone is +62% fitness, and skill_term is the dominant term (46.1 of 111). Healing 35 is redundant with the interleaved auto-bandage, so a human can drop Healing for Anatomy. Editable complement: lower BANDAGE_REAPPLY_S (combat_loop.py:76, 8.5s) so Healing+Anatomy passive rolls fire more often without touching the kernel — ships immediately and also raises survivability on low seeds.",
+        "expected_impact": "Opens a 5th per-swing CheckSkill stream (~+30-60% skill term per the elite's own estimate) with no behavior change once the kernel edit lands; the editable bandage tweak captures part of it now and improves alive_fraction.",
+        "merged_from": [
+          "Anatomy 30 birth template requires a kernel edit",
+          "Healing stream is redundant with the auto-bandage and wasting a birth-skill slot"
+        ]
+      }
+    ],
+    "top_next_actions": [
+      "Restore anima/procedures/practice_magery.py to the g_00101 body (while casts_done < CASTS_PER_RUN, CAST_INTERVAL_S=0.5, CASTS_PER_RUN=10) from refs/foundry/g_00101, and add a selftest asserting HEAD matches that loop shape so force_seed roots can't regress (rank 1).",
+      "Edit foundry/select.py:59/88/126 to weight parent quality on g.reliability instead of g.fitness, and recompute the 5 stale eval.fitness scalars (g_00049/51/42/50/52) from their per-seed data (rank 2).",
+      "Add a combat re-engage step to PROFESSION_LOOPS['adventurer'] in anima/planner/planner.py:779+ (wander_for_combat / walk-back-to-combat_anchor + rescan) so a weaponed warrior with no in-range target never starts mine_ore (rank 3).",
+      "Add a periodic vendor-flush to anima/procedures/craft_blacksmith.py / the smithing loop so accumulated weapons/armor get sold (worth_term currently structurally 0 across all CRAFTING cells) (rank 5).",
+      "Add a deterministic fallback ModePolicy in anima/planner/meta_controller.py so _do_decide emits decisions to data/meta_shadow.jsonl during LLM-less evals, unblocking the P0 shadow dataset (rank 8)."
+    ],
+    "critic": [
+      {
+        "title": "Restore the g_00101 magery champion to the working tree (while-loop + 0.5s/10 casts) and add a selftest guarding HEAD against future regressions",
+        "status": "valid",
+        "note": "Confirmed against code. On-disk /Users/dkkang/dev/uo/anima/anima/procedures/practice_magery.py:38-39,72 has CASTS_PER_RUN=6, CAST_INTERVAL_S=4.0, and a `for _ in range(...)` loop. `git show refs/foundry/g_00101:anima/procedures/practice_magery.py` has CASTS_PER_RUN=10, CAST_INTERVAL_S=0.5, and a `while casts_done < CASTS_PER_RUN` loop (also returns early on no_reagents rather than meditating). g_00101 eval.fitness=233.81 (foundry/archive/genomes/g_00101.json, per_seed [228,252,237,288,217,181], reliable). HEAD-seed regression mechanism is real: orchestrator.py:283 seeds with code_ref=mutate.head(REPO), and line 302-307 comment confirms cycle evals check out parent.code_ref, so force_seed plants HEAD code. CAVEAT on the selftest: the existing foundry/selftest.py is an offline KERNEL-composition test that scores recorded trajectories — it never reads procedure source, so the proposed `assert HEAD loop shape == g_00101` is a NEW test type, not an extension of the current one, and it isn't run by any CI/hook (only documented in foundry/README.md). The 153 baseline figure is plausible but I did not find an on-disk genome pinning the exact 4.0s/for-loop score. Both files are editable (procedures/ and selftest.py are outside foundry/kernel/)."
+      },
+      {
+        "title": "Make selection weight on reliability (lower-confidence bound), not the raw fitness mean, and recompute the 5 stale cached scalars",
+        "status": "valid",
+        "note": "Inconsistency confirmed. foundry/select.py uses g.fitness in every weighting path (lines 59, 88-89, 112, 126, 133). archive.py: g.fitness (line 62-63) reads eval['fitness']; g.reliability (line 66-69) = reliability_score(per_seed, point) = fmean - PROMOTION_LAMBDA*pstdev (lines 38-44); promotion add() uses g.reliability (line 168). So selection and promotion read different signals — exactly as claimed. The 5 stale scalars are REAL and worse than described: g_00049 eval.fitness=10.7 but breakdown.total=262.06 and per_seed mean=262; g_00052 eval.fitness=3.06 vs breakdown.total=256.3; g_00042/50/51 likewise. The cached eval['fitness'] disagrees with the genome's OWN breakdown.total (which _aggregate at eval.py:519-522 would set equal to the per-seed-total mean), so these scalars predate the current aggregation — genuine corruption. CAVEAT: 'recompute scalars in select.py' is mis-scoped — that's data repair (rewriting eval['fitness'] in genome JSON / re-deriving from per_seed_fitness or breakdown.total), not selection logic; select.py is the wrong owner for the repair even though it's the consumer. Both the select.py change and a repair script are editable (outside kernel)."
+      },
+      {
+        "title": "Add a combat re-engage step so a weaponed warrior never falls through to the mining/smelt chain when no target is in range",
+        "status": "valid",
+        "note": "Confirmed with a correction to the cited lines. PROFESSION_LOOPS['adventurer'] = ('bandage_self','hunt_nearby') (planner.py:77). HuntNearby.can_start (combat_loop.py:148-160) returns `has_weapon and _find_target(ctx) is not None`, and _find_target scans only within ENGAGE_RANGE=10 (combat_loop.py:70,127-131). When no target is in range can_start=False, the profession loop (planner.py:779-783) is exhausted, and control falls to the mining/smelt chain at planner.py:785+. The item's line cite '779-800' is the generic PROFESSION_LOOPS dispatch, not a combat-specific block — minor inaccuracy. IMPORTANT NUANCE: a combat re-engage DOES already exist, but only deep in the deadlock-recovery ladder (planner.py:1620-1637, 'Lv2 with weapon -> move_to_location mine/camp so _find_huntable_target has something to bite on'), which is reached only after the agent fails the mining path enough times to escalate to deadlock level 2+. So the named-but-never-landed g_00070/g_00091 hypotheses are accurate: there is no wander/re-engage BEFORE the mining fallthrough. The variance claim is supported (g_00115 per_seed spans 9.0..184.3; g_00102 has a 5.0 outlier among 90-200). Fix is editable (planner.py)."
+      },
+      {
+        "title": "Replace the mean point-estimate in eval aggregation/reliability with a robust median + quantile lower bound for bimodal per-seed data (PROPOSE to kernel)",
+        "status": "valid",
+        "note": "Bimodality confirmed in archive data: g_00118 per_seed [8.67,8.65,8.65,135.79,141.85,144.22] (two regimes, mean 74.6 in the empty valley); g_00107 [8.5,8.6,8.6,98.7,90,114]; g_00102 [203.9,...,5.0,...] has a 5.0 death-outlier. Estimator location is correct: foundry/kernel/eval.py _aggregate (line 517-543) uses statistics.fmean field-by-field; foundry/kernel/archive.py reliability_score (line 38-44) = fmean - PROMOTION_LAMBDA*pstdev — neither describes a bimodal cluster. Ownership is CORRECT: both files are under foundry/kernel/ which CLAUDE.md marks HUMAN-OWNED ('agents must never edit it'), so PROPOSE is the right disposition. Note this item and item 2 overlap: item 2's 'stale scalar' genomes (g_00049/52) and item 4's bimodal genomes both stem from the same eval-fitness pipeline, but they are distinct defects (corrupt cached scalar vs. wrong central-tendency estimator)."
+      },
+      {
+        "title": "Make crafters sell crafted output (and generalize to a sell/restock mode switch) so worth_term/networth_rate stops being structurally 0",
+        "status": "valid",
+        "note": "Confirmed. CRAFTING champions g_00093/78/96 all show worth_term=0.0 and networth_rate=0.0 with produce_term ~52-54 (foundry/archive/genomes); g_00052 has produce_term=261.7, worth=0.0, eval.fitness=3.06. The mechanism in the rationale is accurate: blacksmith PROFESSION_LOOPS = ('craft_blacksmith','smelt_ore','sell_to_vendor') (planner.py:80) — so sell_to_vendor IS already wired, the item's own rationale acknowledges this. The planner returns the FIRST proc whose can_start is True (planner.py:779-783); craft_blacksmith.can_start (craft_blacksmith.py:234-250) returns True whenever ingots>=MIN_INGOTS and forge+anvil are nearby, so it re-enters craft indefinitely and never advances to sell_to_vendor. Additionally sell_to_vendor.can_start (sell_to_vendor.py:110-114) requires a vendor nearby, which a forge-camping agent lacks. The proposed flush-to-vendor / economy-redecide mode switch is feasible and editable (planner.py + procedures/). W_WORTH=0.3 weight not separately verified but worth_term being structurally 0 is solid."
+      },
+      {
+        "title": "Add an editable death-recovery ladder: flee-under-pressure, recover-own-corpse, re-equip-from-pack after resurrection",
+        "status": "valid",
+        "note": "All three sub-gaps confirmed. (a) No _Flee exists (grep across planner.py/procedures returned nothing); Priority 1 survival (planner.py:752-772) only does heal_self/bandage_self — yet the module docstring (line 4) claims 'Survival (HP<30% -> flee/heal)', so flee is documented-but-absent. (b) Post-resurrection has no forced follow-up: seek_resurrection (planner.py:3860+) revives the agent then control returns to the normal planner; corpse looting (_LootCorpses, planner.py:3430+, trigger 1558-1568) lives inside the deadlock-recovery bootstrap ladder, not a post-res chain. CORRECTION to the item: _LootCorpses does NOT filter own vs foreign corpses — it loots ANY 0x2006 within radius (planner.py:3476-3482, 1558-1565); the real gap is that it's gated behind the deadlock ladder, not that own corpses are excluded by code. (c) The bootstrap ladder is indeed miner/no-tools-oriented (Lv0-4 sell/drop/wander/beg/scavenge/loot at planner.py:1066-1648) with no combat-death rung. Death cohort grounded: g_00022 alive_fraction=0.099, g_00016=0.184, both COMBAT|0. All proposed nodes are editable (planner.py/procedures/). Track 'apprentice' vs others' 'evolution' is a labeling choice, not a code issue."
+      }
+    ]
+  }
+}

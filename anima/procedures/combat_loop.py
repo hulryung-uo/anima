@@ -272,3 +272,70 @@ class HuntNearby(Procedure):
             skill_gains={SKILL_SWORDS: gained} if gained else {},
             next_suggestion="bandage_self" if retreated else "hunt_nearby",
         )
+
+
+# Roam outward from the combat anchor in a rotating direction so a weaponed
+# warrior with no target in ENGAGE_RANGE keeps hunting for one instead of
+# falling through to the mining/smelt chain (the single biggest COMBAT-uptime
+# leak — the "wander_for_combat" / "widen engage" content of elite hypotheses
+# g_00091 / g_00070 that was named but never landed in the loop).
+WANDER_RADIUS = 8
+WANDER_DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+
+
+class WanderForCombat(Procedure):
+    timeout_s = 60.0
+    name = "wander_for_combat"
+    description = (
+        "Roam near the combat anchor to find hostiles when none are in range — "
+        "keeps a warrior from idling into the mining loop between fights."
+    )
+
+    async def can_start(self, ctx: AgentContext) -> bool:
+        ss = ctx.perception.self_state
+        if not ss.is_alive:
+            return False
+        if ss.hits_max > 0 and ss.hp_percent < 40:
+            return False  # too wounded — let survival/bandage run first
+        has_weapon = (
+            bool(ss.equipment.get(1)) or bool(ss.equipment.get(2))
+            or bool(find_in_backpack(ctx, WEAPON_GRAPHICS))
+        )
+        # Activate exactly when hunt_nearby cannot: armed, but no target in range.
+        return has_weapon and _find_target(ctx) is None
+
+    async def execute(self, ctx: AgentContext) -> ProcedureResult:
+        from anima.action.movement import go_to
+
+        ss = ctx.perception.self_state
+        # Orbit the anchor (where mobs spawn / were last fought), not drift away.
+        ax, ay = ctx.blackboard.get("combat_anchor", (ss.x, ss.y))
+        idx = ctx.blackboard.get("_wander_dir_idx", 0) % len(WANDER_DIRS)
+        ctx.blackboard["_wander_dir_idx"] = idx + 1
+        dx, dy = WANDER_DIRS[idx]
+        dest_x, dest_y = ax + dx * WANDER_RADIUS, ay + dy * WANDER_RADIUS
+
+        found: dict[str, object] = {}
+
+        def _spotted() -> bool:
+            t = _find_target(ctx)
+            if t is not None:
+                found["t"] = t
+                return True  # interrupt the walk — engage immediately
+            return False
+
+        await go_to(ctx, dest_x, dest_y, run=True, interrupt_check=_spotted)
+
+        if found.get("t") is not None or _find_target(ctx) is not None:
+            return ProcedureResult(
+                success=True,
+                message="Spotted a hostile while roaming → engaging",
+                next_suggestion="hunt_nearby",
+            )
+        # No target yet — still a successful reposition (liveness; NOT a
+        # fallthrough to mining). Next tick rotates to the next direction.
+        return ProcedureResult(
+            success=True,
+            message=f"Roamed toward ({dest_x},{dest_y}); no hostile yet",
+            next_suggestion="wander_for_combat",
+        )

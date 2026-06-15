@@ -44,6 +44,7 @@ from anima.planner.expedition import (
     Phase,
 )
 from anima.planner.health import PlannerHealth
+from anima.planner.meta_controller import MetaController
 from anima.planner.roaming import RoamingHelper
 from anima.planner.strategy import StrategySelector
 from anima.planner.goals import GoalStack
@@ -73,7 +74,11 @@ PROFESSION_LOOPS: dict[str, tuple[str, ...]] = {
     # BOTH Musicianship and Peacemaking; plain plays fill the gaps.
     "bard": ("practice_peacemaking", "practice_music"),
     "thief": ("practice_hiding",),
-    "adventurer": ("bandage_self", "hunt_nearby"),
+    # hunt when a target is in range; otherwise roam to FIND one
+    # (wander_for_combat) instead of falling through to the mining chain —
+    # the largest COMBAT-uptime leak (variance-dominated seeds: engaged vs
+    # stuck in mining fallthrough).
+    "adventurer": ("bandage_self", "hunt_nearby", "wander_for_combat"),
     # stationary, gump-resident craft loop (wiki optimum); smelt feeds it,
     # selling restocks. Falls through to the generic ladder when blocked.
     "blacksmith": ("craft_blacksmith", "smelt_ore", "sell_to_vendor"),
@@ -135,6 +140,10 @@ class Planner:
         self._deadlock = DeadlockResolver(self)
         self._roaming = RoamingHelper(self)
         self._strategy = StrategySelector(interval_s=300.0)
+        # Meta-controller (docs/meta-controller.md). P0 SHADOW: runs and logs
+        # which mode it WOULD pick, but does NOT drive selection — behaviour is
+        # identical with it on or off. Promote to driving in P1.
+        self._meta = MetaController(interval_s=180.0, shadow=True)
         self._goals = GoalStack()
         self._expedition = MiningExpedition()
         # Anti-freeze state (see tick() timeout + _liveness_watchdog).
@@ -206,6 +215,14 @@ class Planner:
                     await self._strategy.maybe_refresh(ctx)
                 except Exception as e:
                     logger.warning("strategy_refresh_error", error=str(e))
+
+                # Meta-controller (P0 SHADOW): log which mode it would pick.
+                # Does not affect selection; spawns a background LLM task and
+                # returns immediately (no-op when no LLM is configured).
+                try:
+                    await self._meta.maybe_decide(ctx)
+                except Exception as e:
+                    logger.warning("meta_decide_error", error=str(e))
 
                 # Update goal stack — pop satisfied / expired goals
                 try:
