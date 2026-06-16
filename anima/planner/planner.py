@@ -749,11 +749,30 @@ class Planner:
                 except Exception:
                     pass
             _intent(f"사망 상태 — 부활 필요")
+            ctx.blackboard["_was_dead"] = True  # remember for post-res recovery
             proc = self.registry.get("seek_resurrection")
             if proc and await proc.can_start(ctx):
                 return proc
             return None
+
+        # --- Priority 1a: Post-resurrection recovery ---
+        # Just revived (was dead, now alive): the agent stands naked next to
+        # its corpse. Recover the gear and re-equip before resuming, instead of
+        # running the profession loop unarmed (→ immediate re-death).
+        if ctx.blackboard.get("_was_dead") and ss.is_alive:
+            recover = _RecoverAfterDeath()
+            if await recover.can_start(ctx):
+                _intent("부활 직후 — 시체 회수 + 재장착")
+                return recover
+            ctx.blackboard["_was_dead"] = False  # nothing left to recover
+
         if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:
+            # --- Priority 1b: Flee a swarm before healing ---
+            # Bandaging in place fails when surrounded (melee cancels it), so a
+            # wounded warrior facing several hostiles breaks contact first.
+            if _count_hostiles(ctx, ss, dist=6) >= _FLEE_HOSTILE_COUNT:
+                _intent("HP 위험 + 다수 적 → 후퇴 후 치료")
+                return _FleeFromHostiles()
             logger.warning("agent_low_hp", hp=ss.hits, hp_max=ss.hits_max)
             if ctx.bus is not None:
                 try:
@@ -4366,4 +4385,131 @@ class _DeathEscalate:
         return ProcedureResult(
             success=True,
             message="Posted ghost help request; cleared healer rotation",
+        )
+
+
+# Survival floor for COMBAT death-recovery (backlog rank 6, apprentice track).
+# Healing in place fails when surrounded (melee cancels the bandage), so a
+# wounded-and-swarmed warrior must FLEE first; and a freshly-resurrected agent
+# revives naked next to its corpse and must recover its gear before resuming —
+# neither path existed (Priority 1 only healed in place; corpse looting was
+# gated behind the miner-bootstrap deadlock ladder).
+
+_FLEE_HP_PCT = 0.30        # below this HP fraction...
+_FLEE_HOSTILE_COUNT = 3    # ...with at least this many hostiles, flee not heal
+_HOSTILE_NOTORIETY = None  # set lazily (avoid import at module load)
+
+
+def _attackable_set():
+    from anima.perception.enums import NotorietyFlag
+    return {
+        NotorietyFlag.ATTACKABLE,
+        NotorietyFlag.CRIMINAL,
+        NotorietyFlag.ENEMY,
+        NotorietyFlag.MURDERER,
+    }
+
+
+def _count_hostiles(ctx, ss, dist: int) -> int:
+    attackable = _attackable_set()
+    return sum(
+        1
+        for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=dist)
+        if m.serial != ss.serial and getattr(m, "notoriety", None) in attackable
+    )
+
+
+class _FleeFromHostiles:
+    """Retreat away from a swarm when too wounded to fight. Healing in place
+    fails surrounded (melee interrupts the bandage), so break contact first."""
+
+    timeout_s = 30.0
+    FLEE_DIST = 12
+
+    def __init__(self) -> None:
+        self.name = "flee_from_hostiles"
+        self.description = "Retreat from a swarm when too wounded to fight"
+
+    async def can_start(self, ctx) -> bool:
+        return ctx.perception.self_state.is_alive
+
+    async def run(self, ctx) -> ProcedureResult:
+        import math
+
+        from anima.action.movement import go_to
+
+        ss = ctx.perception.self_state
+        attackable = _attackable_set()
+        hostiles = [
+            m for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
+            if m.serial != ss.serial and getattr(m, "notoriety", None) in attackable
+        ]
+        if not hostiles:
+            return ProcedureResult(success=True, message="No hostiles to flee from")
+
+        # Move directly away from the hostile centroid.
+        cx = sum(m.x for m in hostiles) / len(hostiles)
+        cy = sum(m.y for m in hostiles) / len(hostiles)
+        dx, dy = ss.x - cx, ss.y - cy
+        norm = math.hypot(dx, dy) or 1.0
+        fx = int(ss.x + (dx / norm) * self.FLEE_DIST)
+        fy = int(ss.y + (dy / norm) * self.FLEE_DIST)
+        logger.warning(
+            "fleeing_swarm", hostiles=len(hostiles),
+            hp=f"{ss.hits}/{ss.hits_max}", to=f"({fx},{fy})",
+        )
+        await go_to(ctx, fx, fy, run=True)
+        return ProcedureResult(
+            success=True,
+            message=f"Fled from {len(hostiles)} hostiles to ({fx},{fy})",
+            next_suggestion="bandage_self",
+        )
+
+
+class _RecoverAfterDeath:
+    """Post-resurrection: walk to the (own) corpse, loot the gear back, and
+    re-equip a weapon before resuming the profession loop."""
+
+    timeout_s = 120.0
+    SEARCH_DIST = 14
+
+    def __init__(self) -> None:
+        self.name = "recover_after_death"
+        self.description = "Recover own corpse and re-equip after resurrection"
+
+    async def can_start(self, ctx) -> bool:
+        ss = ctx.perception.self_state
+        if not ss.is_alive:
+            return False
+        from anima.actions.loot import find_corpses
+        has_corpse = bool(find_corpses(ctx, max_dist=self.SEARCH_DIST))
+        weaponless = not (ss.equipment.get(1) or ss.equipment.get(2))
+        return has_corpse or weaponless
+
+    async def run(self, ctx) -> ProcedureResult:
+        from anima.action.movement import go_to
+        from anima.actions.equip import equip_weapon_from_pack
+        from anima.actions.loot import find_corpses, loot_corpse
+        from anima.procedures.combat_loop import WEAPON_GRAPHICS
+
+        ss = ctx.perception.self_state
+        looted = 0
+        # Loot the nearest corpse(s) — right after res the agent's own corpse
+        # is the closest (find_corpses returns nearest-first).
+        for corpse in find_corpses(ctx, max_dist=self.SEARCH_DIST)[:2]:
+            if max(abs(corpse.x - ss.x), abs(corpse.y - ss.y)) > 2:
+                await go_to(ctx, corpse.x, corpse.y, run=True)
+            res = await loot_corpse(ctx, corpse.serial)
+            looted += (res.data or {}).get("items", 0) if hasattr(res, "data") else 0
+
+        equipped = False
+        if not (ss.equipment.get(1) or ss.equipment.get(2)):
+            eq = await equip_weapon_from_pack(ctx, WEAPON_GRAPHICS)
+            equipped = bool(getattr(eq, "success", False))
+
+        # One bounded recovery pass — clear the post-death flag either way.
+        ctx.blackboard["_was_dead"] = False
+        return ProcedureResult(
+            success=True,
+            message=f"Post-res recovery: looted {looted} item(s), re-equipped={equipped}",
         )
