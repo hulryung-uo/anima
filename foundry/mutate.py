@@ -14,11 +14,27 @@ Backends:
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from foundry.kernel.archive import Genome, cell_to_str
+
+
+def _kill_process_group(proc: "subprocess.Popen") -> None:
+    """SIGKILL the child's whole process group. ``claude`` (a Node CLI) spawns
+    children that inherit our stdout pipe — killing only the leader leaves the
+    pipe open and communicate() blocks forever. Requires start_new_session=True.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
 
 
 @dataclass
@@ -170,8 +186,15 @@ def mutate_with_claude(
     prompt = _MUTATION_PROMPT.format(observation=observation, goal=goal)
 
     before = head(repo)
+    stdout = stderr = ""
+    timed_out = False
     try:
-        proc = subprocess.run(
+        # Run claude in its OWN process group so a hung call (e.g. an API stall
+        # during a network outage) can be killed group-wide on timeout. With
+        # subprocess.run, the timeout kills only the direct child; claude's
+        # grandchildren keep the stdout pipe open and communicate() then blocks
+        # FOREVER (observed: a 1500s-timeout mutation wedged a slot for 3h).
+        proc = subprocess.Popen(
             [
                 "claude", "-p", prompt,
                 "--model", model,
@@ -179,21 +202,30 @@ def mutate_with_claude(
                 "--allowedTools", *_ALLOWED_TOOLS,
             ],
             cwd=str(repo),
-            capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdin=subprocess.DEVNULL, start_new_session=True,
         )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # SIGKILL the whole group, then drain (now bounded — the pipe closes
+            # once the grandchildren are dead). claude may have committed before
+            # hanging; the git check below still picks that up.
+            timed_out = True
+            _kill_process_group(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
         if log_path:
             Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            header = (f"# TIMEOUT after {timeout}s (group killed)\n" if timed_out
+                      else f"# exit={proc.returncode}\n")
             Path(log_path).write_text(
-                f"# exit={proc.returncode}\n## STDOUT\n{proc.stdout}\n"
-                f"## STDERR\n{proc.stderr}\n"
+                f"{header}## STDOUT\n{stdout}\n## STDERR\n{stderr}\n"
             )
     except FileNotFoundError:
         return MutationResult(False, error="claude CLI not found")
-    except subprocess.TimeoutExpired:
-        # claude may have committed before timing out; fall through to check git.
-        if log_path:
-            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(log_path).write_text(f"# TIMEOUT after {timeout}s\n")
 
     # fold any uncommitted leftovers into a variant commit
     _commit_all(repo, "foundry-mutation: (auto-commit leftover changes)")
