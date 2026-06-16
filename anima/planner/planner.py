@@ -4207,7 +4207,8 @@ class _SeekResurrection:
                         cont_btn = gump.find_button_near_text("CONTINUE")
                         if cont_btn is None:
                             cont_btn = gump.find_button_near_text("OK")
-                        button_id = cont_btn.button_id if cont_btn else 1
+                        button_id = self._safe_button(
+                            gump, cont_btn.button_id if cont_btn else 1)
                         await ctx.conn.send_packet(
                             build_gump_response(gump.serial, gump_id, button_id)
                         )
@@ -4270,6 +4271,7 @@ class _SeekResurrection:
                         text_lines=gump.text_lines[:8],
                     )
                     continue
+            button_id = self._safe_button(gump, button_id)  # never disconnect
             logger.info(
                 "seek_resurrection_gump_accept",
                 gump_id=hex(gump_id),
@@ -4284,6 +4286,22 @@ class _SeekResurrection:
             if ss.is_alive:
                 return True
         return False
+
+    @staticmethod
+    def _safe_button(gump, preferred: int) -> int:
+        """Coerce a gump-response button to one ServUO will accept.
+
+        ServUO's PacketHandlers.DisplayGumpResponse calls state.Dispose()
+        (DISCONNECTS the client) on any response whose button is neither 0 nor
+        a real GumpButton/GumpImageTileButton entry. The young-player death
+        gump matched our resurrection heuristic but has no button 1, so sending
+        1 killed the connection mid-death-recovery. Button 0 ('close') is always
+        valid; fall back to it when the preferred button isn't in the gump.
+        """
+        if preferred == 0:
+            return 0
+        valid = {b.button_id for b in getattr(gump, "buttons", [])}
+        return preferred if preferred in valid else 0
 
     @staticmethod
     def _success_result(message: str, ctx) -> ProcedureResult:
