@@ -281,6 +281,9 @@ class HuntNearby(Procedure):
 # g_00091 / g_00070 that was named but never landed in the loop).
 WANDER_RADIUS = 8
 WANDER_DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+# After this many consecutive empty roams (area swept, no hostile), give up and
+# yield to productive work instead of looping until the planner health-break.
+WANDER_MAX_EMPTY = 4
 
 
 class WanderForCombat(Procedure):
@@ -327,15 +330,29 @@ class WanderForCombat(Procedure):
         await go_to(ctx, dest_x, dest_y, run=True, interrupt_check=_spotted)
 
         if found.get("t") is not None or _find_target(ctx) is not None:
+            ctx.blackboard["_wander_empty"] = 0
             return ProcedureResult(
                 success=True,
                 message="Spotted a hostile while roaming → engaging",
                 next_suggestion="hunt_nearby",
             )
-        # No target yet — still a successful reposition (liveness; NOT a
-        # fallthrough to mining). Next tick rotates to the next direction.
+        # No target. Keep roaming for a few rounds (a momentary gap between
+        # fights / a target just out of range), but bound it: once we've swept
+        # the area in several directions and found nothing, this spot is cleared
+        # of hostiles — YIELD so the agent does productive work (mining/etc.)
+        # instead of roaming until the planner's 60s health-break fires. Open
+        # world keeps re-engaging (mobs respawn/roam); a depleted arena doesn't.
+        empty = ctx.blackboard.get("_wander_empty", 0) + 1
+        ctx.blackboard["_wander_empty"] = empty
+        if empty >= WANDER_MAX_EMPTY:
+            ctx.blackboard["_wander_empty"] = 0
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message=f"No hostiles after {empty} roams → yielding to other work",
+            )
         return ProcedureResult(
             success=True,
-            message=f"Roamed toward ({dest_x},{dest_y}); no hostile yet",
+            message=f"Roamed toward ({dest_x},{dest_y}); no hostile yet ({empty}/{WANDER_MAX_EMPTY})",
             next_suggestion="wander_for_combat",
         )

@@ -100,3 +100,21 @@ class TestExecute:
         assert ctx.blackboard["_wander_dir_idx"] == 1
         await proc.execute(ctx)
         assert ctx.blackboard["_wander_dir_idx"] == 2
+
+    @pytest.mark.asyncio
+    async def test_yields_to_other_work_after_max_empty_roams(self, monkeypatch):
+        # Depleted arena (no hostiles ever): wander a few rounds then YIELD
+        # (success=False) so the planner falls through to productive work,
+        # instead of roaming until the 60s health-break fires.
+        from anima.procedures.combat_loop import WANDER_MAX_EMPTY
+
+        async def fake_go_to(ctx, x, y, run=False, interrupt_check=None):
+            return None
+
+        monkeypatch.setattr(movement, "go_to", fake_go_to)
+        ctx = _ctx(mobiles=[])
+        proc = WanderForCombat()
+        results = [await proc.execute(ctx) for _ in range(WANDER_MAX_EMPTY)]
+        assert all(r.success for r in results[:-1])      # earlier roams keep trying
+        assert results[-1].success is False              # final sweep yields
+        assert ctx.blackboard["_wander_empty"] == 0       # reset → can retry later
