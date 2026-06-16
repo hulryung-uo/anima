@@ -29,6 +29,8 @@ data/fixing.json
 data/metrics_events.jsonl
 data/metrics_hourly.jsonl
 data/metrics_daily.jsonl
+data/meta_shadow.jsonl
+data/apprentice/
 data/metrics_alerts.jsonl
 data/supervisor_alert.flag
 data/trajectories/
