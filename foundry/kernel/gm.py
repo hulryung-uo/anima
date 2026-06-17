@@ -119,17 +119,23 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "skills": {"Swords": 35.0, "Tactics": 35.0, "Healing": 35.0,
                    "Parry": 35.0},
         "items": ["Katana", "Buckler", "Bandage 100"],
+        # Co-locate the whole survival "arena" beside the Minoc Healer so the
+        # die→recover→fight loop CLOSES tightly: workplace (and spawner) 3 tiles
+        # from the healer. Without this the spawner sat on the far ridge 106
+        # tiles from the only known healer, the warrior drifted off the spawner
+        # into wild ettins, and a death stranded it (K3: alive_fraction 0.244,
+        # 2 hunts/896s). (2577,602) is confirmed walkable z~0 (agent path log).
+        "workplace": (2577, 602),
         # Spawner(amount, minDelay, maxDelay, team, spawnRange, name) — int
         # delays are MINUTES (ServUO Spawner.cs), so 0..1 keeps ~count alive
-        # with sub-minute refills around the workplace (range within ENGAGE).
-        "spawner": {"name": "HeadlessOne", "count": 3, "min_min": 0,
-                    "max_min": 1, "range": 6},
-        # Ensure a Healer NPC at the agent's KNOWN resurrection location so a
-        # dead warrior can SELF-recover (walk to the healer → OnMovement
-        # OfferResurrection → the agent accepts the ResurrectGump). The eval
-        # shard has none there and [WipeNPCs clears strays, so without this the
-        # agent reaches the (empty) Minoc Healer spot and stays a ghost. Coord
-        # MUST match anima/world_knowledge.py "Minoc Healer".
+        # with sub-minute refills. count 4 keeps a target always in ENGAGE so
+        # the warrior stays engaged here instead of wandering off.
+        "spawner": {"name": "HeadlessOne", "count": 4, "min_min": 0,
+                    "max_min": 1, "range": 5},
+        # Healer at the agent's KNOWN resurrection location (now ~3 tiles from
+        # the arena) so a dead warrior self-recovers: walk → OnMovement
+        # OfferResurrection → accept ResurrectGump → Rank 6 re-equip → fight on.
+        # Coord MUST match anima/world_knowledge.py "Minoc Healer".
         "healer_at": (2577, 599),
         "neutralize": [0x0EED],
     },
@@ -585,7 +591,9 @@ class GmClient:
         no heavy view-update burst ever hits this fragile log path.
         """
         p = FIXED_START_PROFILES[profile]
-        spot = LANE_SPOTS[lane % len(LANE_SPOTS)]
+        # A profile may pin its own workplace (e.g. warrior_survival co-locates
+        # the arena beside its healer); otherwise use the concurrent-eval lane.
+        spot = p.get("workplace") or LANE_SPOTS[lane % len(LANE_SPOTS)]
         # 1) calibrate the workplace Z by standing there ourselves (hidden)
         gx, gy, gz = self.goto(*spot)
         # 1b) clear leftover NPCs from previous evals (e.g. the warrior
