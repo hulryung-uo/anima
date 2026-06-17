@@ -124,6 +124,13 @@ FIXED_START_PROFILES: dict[str, dict] = {
         # with sub-minute refills around the workplace (range within ENGAGE).
         "spawner": {"name": "HeadlessOne", "count": 3, "min_min": 0,
                     "max_min": 1, "range": 6},
+        # Ensure a Healer NPC at the agent's KNOWN resurrection location so a
+        # dead warrior can SELF-recover (walk to the healer → OnMovement
+        # OfferResurrection → the agent accepts the ResurrectGump). The eval
+        # shard has none there and [WipeNPCs clears strays, so without this the
+        # agent reaches the (empty) Minoc Healer spot and stays a ghost. Coord
+        # MUST match anima/world_knowledge.py "Minoc Healer".
+        "healer_at": (2577, 599),
         "neutralize": [0x0EED],
     },
     "bard": {
@@ -641,6 +648,25 @@ class GmClient:
                 spawned.append(f"spawner:{sp['name']}x{sp.get('count', 3)}")
             except GmError as e:
                 spawned.append(f"spawner:{sp['name']}:failed({e})")
+        # 4c) survival profiles: place a Healer NPC at the agent's known
+        #     resurrection spot so the dead agent SELF-recovers via its existing
+        #     seek_resurrection (no GM crutch). goto calibrates that tile's Z
+        #     (it differs from the workplace ridge); WipeNPCs first so healers
+        #     don't accumulate across survival evals; then [Add Healer there.
+        hl = p.get("healer_at")
+        if hl:
+            try:
+                hx, hy, hz = self.goto(hl[0], hl[1])
+                self.command_area("[WipeNPCs", hx - 4, hy - 4, hx + 4, hy + 4, hz)
+                self.command_at("[Add Healer", hx, hy, hz)
+                spawned.append(f"healer@({hx},{hy})")
+            except GmError as e:
+                spawned.append(f"healer:failed({e})")
+            finally:
+                try:
+                    self.goto(gx, gy)  # back to the workplace tile
+                except GmError:
+                    pass
         # 5) finally teleport the char to the calibrated workplace
         self.command_on(f"[Set X {gx} Y {gy} Z {gz}", eval_serial)
         return {"workplace": (gx, gy, gz), "profile": profile, "lane": lane,
