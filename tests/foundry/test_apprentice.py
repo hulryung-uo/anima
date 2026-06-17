@@ -15,6 +15,12 @@ class TestAnalyzeDeaths:
         s = _summary([(1000, 50, 50), (1500, 30, 50), (2800, 45, 50)])
         assert analyze_deaths(s) == []
 
+    def test_transient_hp0_blip_not_counted(self):
+        # hits 0 then 1 one second later → transient reading, not a ghost death
+        # (a real death stays a ghost until a healer resurrection, many seconds).
+        s = _summary([(1000, 50, 50), (1542, 0, 71), (1543, 1, 71)])
+        assert analyze_deaths(s) == []
+
     def test_self_rescued_within_grace(self):
         s = _summary([(1000, 50, 50), (1100, 0, 50), (1200, 40, 50)])  # dead 100s
         ev = analyze_deaths(s, grace_s=180)

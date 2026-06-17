@@ -35,6 +35,11 @@ RECOVERY_GRACE_S = 180.0
 # A gap this long between server vitals samples is a coarse "went unresponsive"
 # (stall) signal — secondary to death, and noisier (depends on update cadence).
 STALL_GAP_S = 120.0
+# A hits=0 reading shorter than this is a TRANSIENT, not a true ghost death: a
+# real UO death stays a ghost until a healer resurrection (many seconds — walk
+# there + accept). A 1-second 0→1 blip (observed at a K1 soak's window end) must
+# not be counted as a death/self-rescue or the autonomy metric is meaningless.
+MIN_DEATH_S = 3.0
 
 
 @dataclass
@@ -73,11 +78,14 @@ class SoakReport:
 
 
 def analyze_deaths(summary: TrajectorySummary,
-                   grace_s: float = RECOVERY_GRACE_S) -> list[DeathEvent]:
-    """Reconstruct death/recovery intervals from the hp_samples timeline.
+                   grace_s: float = RECOVERY_GRACE_S,
+                   min_death_s: float = MIN_DEATH_S) -> list[DeathEvent]:
+    """Reconstruct TRUE death/recovery intervals from the hp_samples timeline.
 
     A death starts at the first sample with hits<=0 and ends at the next sample
-    with hits>0 (a resurrection) or at window end (never recovered)."""
+    with hits>0 (a resurrection) or at window end (never recovered). Intervals
+    shorter than ``min_death_s`` are dropped as transient hp=0 readings (not a
+    ghost death) so the autonomy metric counts real deaths only."""
     events: list[DeathEvent] = []
     death_ts: float | None = None
     for ts, hits, _ in summary.hp_samples:
@@ -85,18 +93,20 @@ def analyze_deaths(summary: TrajectorySummary,
             death_ts = ts
         elif hits > 0 and death_ts is not None:
             dead_s = ts - death_ts
-            events.append(DeathEvent(
-                died_ts=death_ts, revived_ts=ts, dead_s=dead_s,
-                self_rescued=dead_s <= grace_s,
-                needed_intervention=dead_s > grace_s,
-            ))
+            if dead_s >= min_death_s:  # ignore transient hp=0 blips
+                events.append(DeathEvent(
+                    died_ts=death_ts, revived_ts=ts, dead_s=dead_s,
+                    self_rescued=dead_s <= grace_s,
+                    needed_intervention=dead_s > grace_s,
+                ))
             death_ts = None
     if death_ts is not None:  # died and never revived before the window ended
         dead_s = max(0.0, summary.end_ts - death_ts)
-        events.append(DeathEvent(
-            died_ts=death_ts, revived_ts=None, dead_s=dead_s,
-            self_rescued=False, needed_intervention=True,
-        ))
+        if dead_s >= min_death_s:
+            events.append(DeathEvent(
+                died_ts=death_ts, revived_ts=None, dead_s=dead_s,
+                self_rescued=False, needed_intervention=True,
+            ))
     return events
 
 
