@@ -110,6 +110,22 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "spawn_mobs": ["HeadlessOne"] * 4,
         "neutralize": [0x0EED],
     },
+    # Survival/apprentice mode (docs/apprentice-eval-env.md, K1). Same combat
+    # birth template as `warrior`, but a respawning ServUO Spawner keeps the
+    # threat SUSTAINED so a long soak faces continuous danger instead of
+    # clearing the one-shot mobs and idling. NOT used by the scored 600s eval —
+    # survival mode only. HUMAN-AUTHORIZED kernel addition (2026-06-17).
+    "warrior_survival": {
+        "skills": {"Swords": 35.0, "Tactics": 35.0, "Healing": 35.0,
+                   "Parry": 35.0},
+        "items": ["Katana", "Buckler", "Bandage 100"],
+        # Spawner(amount, minDelay, maxDelay, team, spawnRange, name) — int
+        # delays are MINUTES (ServUO Spawner.cs), so 0..1 keeps ~count alive
+        # with sub-minute refills around the workplace (range within ENGAGE).
+        "spawner": {"name": "HeadlessOne", "count": 3, "min_min": 0,
+                    "max_min": 1, "range": 6},
+        "neutralize": [0x0EED],
+    },
     "bard": {
         "skills": {"Musicianship": 35.0, "Peacemaking": 35.0},
         "items": ["Lute"],
@@ -572,6 +588,17 @@ class GmClient:
             self.command_area("[WipeNPCs", gx - 12, gy - 12, gx + 12, gy + 12, gz)
         except GmError:
             pass  # best-effort cleanup — an empty area sends no cursor flow change
+        # 1c) survival profiles place a persistent Spawner ITEM that [WipeNPCs
+        #     (mobiles only) won't clear, so it would respawn into later evals.
+        #     Also wipe map items here — the agent isn't teleported in yet and
+        #     its gear is in-pack (WipeItems only hits items ON the map), so a
+        #     leftover spawner is removed without touching the agent. Gated to
+        #     spawner profiles so the scored evals' setup is untouched.
+        if p.get("spawner"):
+            try:
+                self.command_area("[WipeItems", gx - 12, gy - 12, gx + 12, gy + 12, gz)
+            except GmError:
+                pass
         # 2) pin skills + hand tools, targeting by serial from afar
         for skill, val in p.get("skills", {}).items():
             self.command_on(f"[Set Skills.{skill}.Base {val}", eval_serial)
@@ -600,6 +627,20 @@ class GmClient:
                 spawned.append(thing)
             except GmError as e:
                 spawned.append(f"{thing}:failed({e})")
+        # 4b) sustained-threat Spawner (survival profiles): a ServUO Spawner on
+        #     the GM's settled tile auto-respawns mobs so a long soak faces
+        #     continuous danger. `[Add Spawner amount minMin maxMin team range
+        #     name` matches Spawner(int,int,int,int,int,string). NOT reached by
+        #     the scored evals (they have no "spawner" key).
+        sp = p.get("spawner")
+        if sp:
+            cmd = (f"[Add Spawner {sp.get('count', 3)} {sp.get('min_min', 0)} "
+                   f"{sp.get('max_min', 1)} 0 {sp.get('range', 6)} {sp['name']}")
+            try:
+                self.command_at(cmd, gx, gy, gz)
+                spawned.append(f"spawner:{sp['name']}x{sp.get('count', 3)}")
+            except GmError as e:
+                spawned.append(f"spawner:{sp['name']}:failed({e})")
         # 5) finally teleport the char to the calibrated workplace
         self.command_on(f"[Set X {gx} Y {gy} Z {gz}", eval_serial)
         return {"workplace": (gx, gy, gz), "profile": profile, "lane": lane,
