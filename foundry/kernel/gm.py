@@ -128,10 +128,19 @@ FIXED_START_PROFILES: dict[str, dict] = {
         "workplace": (2577, 602),
         # Spawner(amount, minDelay, maxDelay, team, spawnRange, name) — int
         # delays are MINUTES (ServUO Spawner.cs), so 0..1 keeps ~count alive
-        # with sub-minute refills. count 4 keeps a target always in ENGAGE so
-        # the warrior stays engaged here instead of wandering off.
+        # with sub-minute refills. HeadlessOne (HP 16-30) = engagement fodder;
+        # soaks proved even count 8 can't kill a skill-35 warrior (it heals +
+        # Rank 6-flees). count 4 for steady engagement.
         "spawner": {"name": "HeadlessOne", "count": 4, "min_min": 0,
                     "max_min": 1, "range": 5},
+        # One-shot Ettins (lethal at skill 35 — gm.py warrior note) make this a
+        # GENUINE survival test, not fodder: a competent genome (bandage + Rank 6
+        # flee) survives and even clears them (soak: 6 kills, +160 gold, skill
+        # +6.6), while a genome that breaks healing/flee dies — the gradient an
+        # autonomy_term needs. (3-5 Ettins still couldn't kill the competent
+        # warrior, so deaths aren't forceable without unrealistic mobs — which is
+        # itself the finding: the avatar survives sustained threat.)
+        "spawn_mobs": ["Ettin", "Ettin"],
         # Healer at the agent's KNOWN resurrection location (now ~3 tiles from
         # the arena) so a dead warrior self-recovers: walk → OnMovement
         # OfferResurrection → accept ResurrectGump → Rank 6 re-equip → fight on.
