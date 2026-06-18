@@ -12,6 +12,7 @@ import pytest
 
 from anima.planner.modes import MODES, default_mode_for_profession
 from anima.planner.meta_controller import (
+    HeuristicModePolicy,
     LivingState,
     LlmModePolicy,
     MetaController,
@@ -78,6 +79,91 @@ class TestLlmModePolicyParsing:
         assert d.mode == "bard"
 
 
+class TestHeuristicModePolicy:
+    @pytest.mark.asyncio
+    async def test_danger_returns_rest(self):
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", danger_nearby=True))
+        assert d.mode == "rest"
+        assert d.mode in MODES
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_low_hp_returns_rest(self):
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="combat", hp_frac=0.4))
+        assert d.mode == "rest"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_overweight_returns_travel(self):
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", weight_frac=0.95,
+                        hp_frac=0.9, danger_nearby=False))
+        assert d.mode == "travel"
+        assert d.mode in MODES
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_balance_rotates_off_actual(self):
+        # last 3 stints all the actual mode, healthy/safe → rotate to a
+        # different low-risk productive mode.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.2,
+                        danger_nearby=False, phase="early",
+                        last_modes=["mining", "mining", "mining"]))
+        assert d.mode != "mining"
+        assert d.mode in MODES
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_balance_rotation_is_deterministic(self):
+        st = _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.2,
+                         danger_nearby=False, phase="early",
+                         last_modes=["mining", "mining", "mining"])
+        a = await HeuristicModePolicy().choose(st)
+        b = await HeuristicModePolicy().choose(st)
+        assert a.mode == b.mode  # pure / no randomness
+
+    @pytest.mark.asyncio
+    async def test_late_phase_socializes(self):
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.2,
+                        danger_nearby=False, phase="late",
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "socialize"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_early_phase_keeps_actual(self):
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="magery", hp_frac=0.9, weight_frac=0.2,
+                        danger_nearby=False, phase="early",
+                        last_modes=["magery", "combat"]))
+        assert d.mode == "magery"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_every_branch_returns_valid_mode_with_none_goal(self):
+        policy = HeuristicModePolicy()
+        cases = [
+            _make_state(danger_nearby=True),
+            _make_state(hp_frac=0.1),
+            _make_state(weight_frac=0.99, hp_frac=0.9, danger_nearby=False),
+            _make_state(actual_mode="mining", hp_frac=0.9, danger_nearby=False,
+                        last_modes=["mining", "mining", "mining"]),
+            _make_state(phase="late", hp_frac=0.9, danger_nearby=False),
+            _make_state(phase="mid", hp_frac=0.9, danger_nearby=False),
+            # actual_mode not in MODES → clamps to mining
+            _make_state(actual_mode="bogus", hp_frac=0.9, danger_nearby=False,
+                        phase="mid"),
+        ]
+        for st in cases:
+            d = await policy.choose(st)
+            assert d.mode in MODES
+            assert d.goal is None
+
+
 class TestMetaControllerShadow:
     def test_min_interval_enforced(self):
         assert MetaController(interval_s=5).interval_s >= 60.0
@@ -86,15 +172,30 @@ class TestMetaControllerShadow:
         assert MetaController().active_mode is None
 
     @pytest.mark.asyncio
-    async def test_no_llm_is_inert(self):
+    async def test_no_llm_uses_heuristic_and_logs(self, tmp_path, monkeypatch):
+        # P0 shadow stage must still log during LLM-less (deterministic eval)
+        # runs — the heuristic fallback produces a decision and a JSONL row.
+        import anima.planner.meta_controller as mod
+        monkeypatch.setattr(mod, "_SHADOW_LOG", tmp_path / "meta_shadow.jsonl")
         c = MetaController()
         ctx = MagicMock()
         ctx.llm = None
+        ctx.persona.profession = "miner"
+        ss = ctx.perception.self_state
+        ss.hits = 80; ss.hits_max = 100; ss.weight = 50; ss.weight_max = 400
+        ss.gold = 100; ss.x = 10; ss.y = 20; ss.serial = 0x1
+        ss.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[])
+
         spawned = await c.maybe_decide(ctx)
-        if c._decide_task:
-            await c._decide_task
-        assert spawned is True          # spawned a task...
-        assert c.active_mode is None     # ...but with no LLM it decided nothing
+        await c._decide_task
+        assert spawned is True
+        # heuristic now produces a decision (intended behaviour change)
+        assert c.active_mode is not None
+        assert c.active_mode in MODES
+        log = (tmp_path / "meta_shadow.jsonl").read_text().strip()
+        assert '"policy": "heuristic"' in log
 
     @pytest.mark.asyncio
     async def test_interval_gate_blocks_second_call(self):

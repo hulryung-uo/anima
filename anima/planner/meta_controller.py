@@ -136,6 +136,90 @@ def build_living_state(
     )
 
 
+class HeuristicModePolicy:
+    """Deterministic, LLM-free policy — encodes the docs §5 "living" principles
+    as pure priority logic over existing LivingState fields.
+
+    This is the fallback used during deterministic Foundry evals (no LLM). It
+    exists so the P0 shadow stage actually logs decisions in exactly the runs
+    that produce the offline trajectory dataset — otherwise the controller
+    would be inert and write zero rows. No time, no randomness: every branch is
+    a pure function of `state`, so replays are reproducible.
+
+    goal is always None — P0 does not consume goals.
+    """
+
+    # Fixed rotation of low-risk *productive* modes for the balance branch.
+    # Ordering is stable so rotation is deterministic.
+    _LOW_RISK_PRODUCTIVE: tuple[str, ...] = ("mining", "smithing", "magery", "bard")
+    # How many identical recent stints trigger a balance rotation.
+    _BALANCE_STINTS = 3
+
+    async def choose(self, state: LivingState) -> ModeDecision:  # type: ignore[override]
+        actual = state.actual_mode if state.actual_mode in MODES else "mining"
+
+        # (a) survival-defer: low HP or danger → rest. Actual fleeing/healing is
+        # still handled by the planner's Priority 0/1 below the controller; the
+        # controller only steers the long-horizon mode, never the tick action.
+        if state.danger_nearby or state.hp_frac < 0.5:
+            return ModeDecision(
+                mode="rest",
+                rationale=f"survival-defer: hp={state.hp_frac:.0%} danger={state.danger_nearby}",
+                goal=None,
+            )
+
+        # (b) overweight: offload before resuming productive work.
+        if state.weight_frac >= 0.9:
+            return ModeDecision(
+                mode="travel",
+                rationale=f"overweight: weight={state.weight_frac:.0%} → offload",
+                goal=None,
+            )
+
+        # (c) balance: if the last N stints were all the current mode, rotate to
+        # a different low-risk productive mode (deterministic next-in-list).
+        recent = state.last_modes[-self._BALANCE_STINTS :]
+        if (
+            len(recent) >= self._BALANCE_STINTS
+            and all(m == actual for m in recent)
+            and actual in MODES
+        ):
+            rotated = self._next_low_risk(actual)
+            if rotated != actual:
+                return ModeDecision(
+                    mode=rotated,
+                    rationale=f"balance: rotated off {actual} after {self._BALANCE_STINTS} stints",
+                    goal=None,
+                )
+
+        # (d) day-phase default. early/mid = keep grinding the actual mode;
+        # late = socialize/tidy up. Clamp to actual_mode if the mapping ever
+        # yields a non-mode (defensive — every value here is already valid).
+        phase_mode = {"early": actual, "mid": actual, "late": "socialize"}.get(
+            state.phase, actual
+        )
+        if phase_mode not in MODES:
+            phase_mode = actual
+        return ModeDecision(
+            mode=phase_mode,
+            rationale=f"day-phase: {state.phase} → {phase_mode}",
+            goal=None,
+        )
+
+    def _next_low_risk(self, actual: str) -> str:
+        """Deterministically pick the next low-risk productive mode after
+        `actual` in the fixed list, skipping `actual` itself."""
+        order = self._LOW_RISK_PRODUCTIVE
+        if actual in order:
+            i = order.index(actual)
+            return order[(i + 1) % len(order)]
+        # actual isn't in the rotation list → return its first distinct entry.
+        for m in order:
+            if m != actual:
+                return m
+        return actual
+
+
 class LlmModePolicy:
     """v1 policy — asks the LLM which mode to be in, given the living state.
 
@@ -259,9 +343,13 @@ class MetaController:
         return (gold - g0) / dt_min if dt_min > 0 else 0.0
 
     async def _do_decide(self, ctx: "AgentContext") -> None:
+        # The living state (gold-rate / session / history) is LLM-independent,
+        # so build it first. With no LLM (deterministic Foundry evals) we fall
+        # back to the pure HeuristicModePolicy so the shadow log is still
+        # written — that path is precisely the one that produces the offline
+        # trajectory dataset, so an inert controller would defeat P0's purpose.
         llm = getattr(ctx, "llm", None)
-        if llm is None:
-            return  # no model (e.g. deterministic eval) → controller is inert
+        policy_kind = "llm" if llm is not None else "heuristic"
         try:
             ss = ctx.perception.self_state
             state = build_living_state(
@@ -270,7 +358,10 @@ class MetaController:
                 session_minutes=(time.monotonic() - self._started_at) / 60.0,
                 last_modes=self._mode_history,
             )
-            decision = await self.policy.choose_with_llm(state, llm)
+            if llm is None:
+                decision = await HeuristicModePolicy().choose(state)
+            else:
+                decision = await self.policy.choose_with_llm(state, llm)
         except Exception as e:  # never let the controller break the planner
             logger.warning("meta_decide_failed", error=str(e))
             return
@@ -289,9 +380,10 @@ class MetaController:
             gold_rate=round(state.gold_rate_per_min, 1),
             goal=decision.goal,
             rationale=decision.rationale[:100],
+            policy=policy_kind,
             shadow=self.shadow,
         )
-        self._append_shadow_log(state, decision, prev, agree)
+        self._append_shadow_log(state, decision, prev, agree, policy_kind)
 
     def _append_shadow_log(
         self,
@@ -299,12 +391,18 @@ class MetaController:
         decision: ModeDecision,
         prev: str | None,
         agree: bool,
+        policy_kind: str = "llm",
     ) -> None:
-        """Best-effort JSONL artifact for offline P0 evaluation. Never raises."""
+        """Best-effort JSONL artifact for offline P0 evaluation. Never raises.
+
+        `policy` distinguishes heuristic (LLM-less eval) rows from llm rows so
+        offline analysis can separate the two populations.
+        """
         try:
             _SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
             rec = {
                 "ts": time.time(),
+                "policy": policy_kind,
                 "would_pick": decision.mode,
                 "actual_mode": state.actual_mode,
                 "agree": agree,
