@@ -156,7 +156,8 @@ Skill ids = ServUO `SkillName` enum (table in `anima/client/appearance.py`).
 | `practice_peacemaking` | alive, instrument in pack | area-peace on self (creature cursor → own serial): rolls Musicianship AND Peacemaking, no mobs needed; first use answers the instrument cursor; 10s lockout pacing |
 | `practice_magery` | spellbook worn/in pack | Greater Heal self-cast grind; meditates when mana low |
 | `bandage_self` | bandages, HP <95% | one bandage cycle (~8s); Healing gain |
-| `hunt_nearby` | weapon, hostile ≤10 tiles, HP ≥40% | bounded combat loop; retreats <35% HP; always drops war mode |
+| `hunt_nearby` | weapon, hostile ≤10 tiles, HP ≥40% | bounded combat loop; retreats <35% HP; always drops war mode; targets wounded-first (focus-fire) |
+| `wander_for_combat` | weapon, no hostile in range, HP ≥40% | roam the combat anchor to find hostiles when none are in range (re-engage instead of falling through to mining); yields to other work after a few empty sweeps |
 
 ## Planner integration — `anima/planner/planner.py`
 
