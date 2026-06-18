@@ -273,8 +273,18 @@ class Planner:
                     # detects actual stalls; the 60s health break would just
                     # interrupt productive work. Suppress it.
                     expedition = ctx.blackboard.get("expedition")
+                    dominant = self._health.dominant_procedure()
                     if (expedition is not None
                             and getattr(expedition.phase, "value", "idle") != "idle"):
+                        self._health.reset()
+                    elif dominant and self._repeat_counter.get(dominant, 0) == 0:
+                        # PRODUCTIVE grind repeats by design (hunt_nearby landing
+                        # kills, a practice loop gaining skill) — like an active
+                        # expedition. The 60s break is only for a STUCK loop (the
+                        # dominant procedure FAILING); a succeeding one (no
+                        # consecutive failures) should keep working, not eat a
+                        # 60s pause. Fixes the combat-uptime drain seen in soaks
+                        # (30 productive hunt_nearby → false "looping" → 60s idle).
                         self._health.reset()
                     else:
                         logger.warning(
