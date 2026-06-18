@@ -46,6 +46,8 @@ _HIDE_PATTERNS = [
 ]
 
 ATTEMPTS_PER_RUN = 3  # ~30s per procedure run (10s lockout between uses)
+# Hard safety cap on total UseSkill iterations.
+MAX_ATTEMPTS = ATTEMPTS_PER_RUN * 2
 
 # Stealth-walk tuning: alternate E/W single steps so the agent never
 # drifts more than 1 tile from its lane workplace. 8 walk-paced steps
@@ -73,19 +75,27 @@ class PracticeHiding(Procedure):
 
         successes = 0
         stealth_steps = 0
-        for attempt in range(ATTEMPTS_PER_RUN):
+        resolved = 0
+        iterations = 0
+        while resolved < ATTEMPTS_PER_RUN and iterations < MAX_ATTEMPTS:
+            iterations += 1
             since = time.time()
             lockout_end = time.monotonic() + SKILL_USE_COOLDOWN_S + 0.5
             await use_skill(ctx, SKILL_HIDING)
             seen = await wait_for_journal(ctx, _HIDE_PATTERNS, timeout=3.0, since=since)
-            hid = bool(seen.success and seen.data.get("index") == 0)
+            rolled = bool(seen.success)
+            hid = bool(rolled and seen.data.get("index") == 0)
+            if rolled:
+                resolved += 1
             if hid:
                 successes += 1
                 # Train Stealth through the Hiding lockout instead of idling.
                 stealth_steps += await self._stealth_walk(ctx, lockout_end)
             logger.debug(
                 "practice_hiding_attempt",
-                attempt=attempt + 1,
+                iteration=iterations,
+                resolved=resolved,
+                rolled=rolled,
                 hidden=hid,
             )
             # Always wait out the 10s server skill lockout — skipping the
