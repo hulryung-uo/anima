@@ -119,6 +119,83 @@ class TestCastSpell:
         assert result.fizzled is True
 
 
+class TestPracticeHidingResolvedSlots:
+    @pytest.mark.asyncio
+    async def test_noop_does_not_consume_resolved_slot(self):
+        from anima.actions.result import ActionResult
+        from anima.procedures import practice_hiding as ph
+        from anima.procedures.practice_hiding import PracticeHiding
+
+        ctx = _make_ctx()
+        ctx.cfg.movement.walk_delay_ms = 450
+        journal_seq = [
+            ActionResult(success=False),
+            ActionResult(success=True, data={"index": 0}),
+            ActionResult(success=True, data={"index": 0}),
+            ActionResult(success=True, data={"index": 0}),
+        ]
+        with (
+            patch.object(ph, "use_skill", new=AsyncMock()) as use_skill_mock,
+            patch.object(ph, "wait_for_journal",
+                         new=AsyncMock(side_effect=journal_seq)),
+            patch.object(ph, "asyncio") as aio,
+        ):
+            aio.sleep = AsyncMock()
+            ctx.perception.self_state.hidden = False
+            result = await PracticeHiding().execute(ctx)
+
+        hide_calls = [c for c in use_skill_mock.await_args_list
+                      if c.args[1] == ph.SKILL_HIDING]
+        assert len(hide_calls) >= 4
+        assert f"{ph.ATTEMPTS_PER_RUN}/{ph.ATTEMPTS_PER_RUN} hidden" in result.message
+
+    @pytest.mark.asyncio
+    async def test_all_resolved_uses_exactly_attempts_per_run(self):
+        from anima.actions.result import ActionResult
+        from anima.procedures import practice_hiding as ph
+        from anima.procedures.practice_hiding import PracticeHiding
+
+        ctx = _make_ctx()
+        ctx.cfg.movement.walk_delay_ms = 450
+        with (
+            patch.object(ph, "use_skill", new=AsyncMock()) as use_skill_mock,
+            patch.object(ph, "wait_for_journal", new=AsyncMock(
+                return_value=ActionResult(success=True, data={"index": 0}))),
+            patch.object(ph, "asyncio") as aio,
+        ):
+            aio.sleep = AsyncMock()
+            ctx.perception.self_state.hidden = False
+            result = await PracticeHiding().execute(ctx)
+
+        hide_calls = [c for c in use_skill_mock.await_args_list
+                      if c.args[1] == ph.SKILL_HIDING]
+        assert len(hide_calls) == ph.ATTEMPTS_PER_RUN
+        assert f"{ph.ATTEMPTS_PER_RUN}/{ph.ATTEMPTS_PER_RUN} hidden" in result.message
+
+    @pytest.mark.asyncio
+    async def test_always_timeout_caps_at_max_attempts(self):
+        from anima.actions.result import ActionResult
+        from anima.procedures import practice_hiding as ph
+        from anima.procedures.practice_hiding import PracticeHiding
+
+        ctx = _make_ctx()
+        ctx.cfg.movement.walk_delay_ms = 450
+        with (
+            patch.object(ph, "use_skill", new=AsyncMock()) as use_skill_mock,
+            patch.object(ph, "wait_for_journal", new=AsyncMock(
+                return_value=ActionResult(success=False))),
+            patch.object(ph, "asyncio") as aio,
+        ):
+            aio.sleep = AsyncMock()
+            ctx.perception.self_state.hidden = False
+            result = await PracticeHiding().execute(ctx)
+
+        hide_calls = [c for c in use_skill_mock.await_args_list
+                      if c.args[1] == ph.SKILL_HIDING]
+        assert len(hide_calls) == ph.MAX_ATTEMPTS
+        assert f"0/{ph.ATTEMPTS_PER_RUN} hidden" in result.message
+
+
 class TestProcedureGates:
     @pytest.mark.asyncio
     async def test_practice_hiding_needs_only_life(self):
@@ -187,6 +264,65 @@ class TestProcedureGates:
                           notoriety=NotorietyFlag.ATTACKABLE)
         ctx.perception.world.nearby_mobiles = MagicMock(return_value=[human])
         assert _find_target(ctx) is None
+
+    def test_find_target_focus_fires_wounded_over_nearest(self):
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+        from anima.procedures.combat_loop import _find_target
+
+        ctx = _make_ctx()
+        # ss is at (100, 200). near full-HP at dist 2, far wounded at dist 6.
+        near = SimpleNamespace(serial=0xB1, x=102, y=200, body=0x05,
+                               notoriety=NotorietyFlag.ENEMY,
+                               hits=100, hits_max=100)
+        far = SimpleNamespace(serial=0xB2, x=106, y=200, body=0x05,
+                              notoriety=NotorietyFlag.ENEMY,
+                              hits=10, hits_max=100)
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[near, far])
+        # Focus-fire beats nearest: the wounded far mob is chosen.
+        assert _find_target(ctx).serial == 0xB2
+
+    def test_find_target_distance_tiebreaks_equal_health(self):
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+        from anima.procedures.combat_loop import _find_target
+
+        ctx = _make_ctx()
+        # Both unknown health (hits_max=0) -> hp_frac 1.0 tie -> nearest wins.
+        near = SimpleNamespace(serial=0xC1, x=102, y=200, body=0x05,
+                               notoriety=NotorietyFlag.ENEMY,
+                               hits=0, hits_max=0)
+        far = SimpleNamespace(serial=0xC2, x=106, y=200, body=0x05,
+                              notoriety=NotorietyFlag.ENEMY,
+                              hits=0, hits_max=0)
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[far, near])
+        assert _find_target(ctx).serial == 0xC1
+
+        # Equal known wounded fraction also tiebreaks on distance.
+        near2 = SimpleNamespace(serial=0xC3, x=102, y=200, body=0x05,
+                                notoriety=NotorietyFlag.ENEMY,
+                                hits=50, hits_max=100)
+        far2 = SimpleNamespace(serial=0xC4, x=106, y=200, body=0x05,
+                               notoriety=NotorietyFlag.ENEMY,
+                               hits=50, hits_max=100)
+        ctx.perception.world.nearby_mobiles = MagicMock(
+            return_value=[far2, near2])
+        assert _find_target(ctx).serial == 0xC3
+
+    def test_find_target_handles_missing_health_attrs(self):
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+        from anima.procedures.combat_loop import _find_target
+
+        ctx = _make_ctx()
+        # No hits/hits_max attributes at all — must not raise, still selectable.
+        mob = SimpleNamespace(serial=0xD1, x=103, y=200, body=0x05,
+                              notoriety=NotorietyFlag.ENEMY)
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[mob])
+        assert _find_target(ctx).serial == 0xD1
 
 
 class TestPlannerProfessionBranch:

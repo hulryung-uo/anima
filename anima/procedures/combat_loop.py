@@ -136,7 +136,24 @@ def _find_target(ctx: AgentContext):
         candidates.append(m)
     if not candidates:
         return None
-    candidates.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
+
+    def _key(m):
+        dist = abs(m.x - ss.x) + abs(m.y - ss.y)
+        # Focus-fire: known-wounded mobs sort first (lower hits fraction =
+        # higher priority), distance is the tiebreaker. Health is "known"
+        # only when hits_max is a positive number — un-queried mobs default
+        # hits/hits_max to 0, and test mobs may lack the fields entirely or
+        # carry non-numeric mocks, so we coerce defensively and fall back to
+        # hp_frac=1.0 (pure-nearest, today's behavior) whenever it's unknown.
+        hits_max = getattr(m, "hits_max", 0)
+        hits = getattr(m, "hits", 0)
+        try:
+            hp_frac = (hits / hits_max) if hits_max > 0 else 1.0
+        except TypeError:
+            hp_frac = 1.0
+        return (hp_frac, dist)
+
+    candidates.sort(key=_key)
     return candidates[0]
 
 
