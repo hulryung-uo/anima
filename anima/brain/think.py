@@ -69,6 +69,36 @@ _HOSTILE_NOTORIETY = frozenset(
 )
 
 
+# How many distinct mobile names to spell out per line before summarizing.
+_MAX_MOB_NAMES = 5
+
+
+def _summarize_mob_names(names: list[str]) -> str:
+    """Collapse a list of mobile names into a compact, count-aware summary.
+
+    Two failures fed the strategist a misleading picture in a crowded scene
+    (e.g. the survival arena's 2 Ettins + 4 HeadlessOne):
+      * Duplicates were listed verbatim ("a headless one, a headless one, ...")
+        instead of being tallied, wasting the line and reading like distinct
+        foes.
+      * The raw ``[:5]`` slice *silently dropped* the 6th+ mob, so the LLM saw
+        five threats when there were more and under-weighted the danger exactly
+        when survival mattered.
+    Group identical names into "name xN" (preserving first-seen order) and, when
+    there are more distinct groups than we spell out, append the true remaining
+    count so the magnitude is never hidden.
+    """
+    counts: dict[str, int] = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+    parts = [n if c == 1 else f"{n} x{c}" for n, c in counts.items()]
+    shown = parts[:_MAX_MOB_NAMES]
+    hidden = len(parts) - len(shown)
+    if hidden > 0:
+        shown.append(f"and {hidden} more")
+    return ", ".join(shown)
+
+
 def _build_surroundings(ctx: BrainContext) -> str:
     """Build a description of what Anima can see."""
     ss = ctx.perception.self_state
@@ -99,11 +129,11 @@ def _build_surroundings(ctx: BrainContext) -> str:
         m for m in nearby_mobs if not m.is_dead and m.notoriety not in _HOSTILE_NOTORIETY
     ]
     if hostiles:
-        names = [m.name or "something" for m in hostiles[:5]]
-        lines.append(f"Hostile nearby: {', '.join(names)}")
+        names = [m.name or "something" for m in hostiles]
+        lines.append(f"Hostile nearby: {_summarize_mob_names(names)}")
     if friendlies:
-        names = [m.name or "someone" for m in friendlies[:5]]
-        lines.append(f"People nearby: {', '.join(names)}")
+        names = [m.name or "someone" for m in friendlies]
+        lines.append(f"People nearby: {_summarize_mob_names(names)}")
 
     return "\n".join(lines) if lines else "Nothing notable nearby."
 
