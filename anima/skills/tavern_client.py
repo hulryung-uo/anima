@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import aiohttp
@@ -10,6 +11,9 @@ import structlog
 from anima.skills.forum import ForumClient, ForumPost, ForumReply
 
 logger = structlog.get_logger()
+
+# Bound every request so a hung/unreachable board can't wedge the brain loop.
+_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10.0)
 
 
 class TavernForumClient(ForumClient):
@@ -25,15 +29,41 @@ class TavernForumClient(ForumClient):
             "x-api-key": self._api_key,
         }
 
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: dict | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int | None, object]:
+        """Perform one HTTP request, degrading gracefully on network failure.
+
+        Returns ``(status, payload)`` where ``status`` is the HTTP status code
+        and ``payload`` is the decoded JSON (or the raw text body on a decode
+        failure). On a transport-level error (board unreachable, DNS failure,
+        timeout) ``status`` is ``None`` so callers fall through to their normal
+        non-2xx sentinels instead of letting the exception crash the caller.
+        """
+        try:
+            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
+                async with session.request(method, url, json=json, headers=headers) as resp:
+                    try:
+                        payload: object = await resp.json()
+                    except (aiohttp.ContentTypeError, ValueError):
+                        payload = await resp.text()
+                    return resp.status, payload
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("tavern_unreachable", method=method, url=url, error=str(exc))
+            return None, None
+
     async def read_posts(self, category: str, limit: int = 10) -> list[ForumPost]:
         board = self._category_to_board(category)
         url = f"{self._base_url}/posts?board={board}&limit={limit}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    logger.warning("tavern_read_failed", status=resp.status)
-                    return []
-                data = await resp.json()
+        status, data = await self._request("GET", url)
+        if status != 200 or not isinstance(data, dict):
+            logger.warning("tavern_read_failed", status=status)
+            return []
 
         posts = []
         for p in data.get("posts", []):
@@ -50,11 +80,9 @@ class TavernForumClient(ForumClient):
 
     async def read_post(self, post_id: str) -> ForumPost | None:
         url = f"{self._base_url}/posts/{post_id}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    return None
-                p = await resp.json()
+        status, p = await self._request("GET", url)
+        if status != 200 or not isinstance(p, dict):
+            return None
 
         agent = p.get("agent") or {}
         replies = []
@@ -86,31 +114,25 @@ class TavernForumClient(ForumClient):
             "content": body,
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=self._headers()) as resp:
-                if resp.status != 201:
-                    text = await resp.text()
-                    logger.error("tavern_post_failed", status=resp.status, body=text)
-                    return ""
-                data = await resp.json()
-                post_id = data.get("id", "")
-                logger.info("tavern_posted", post_id=post_id, title=title, board=board)
-                return post_id
+        status, data = await self._request("POST", url, json=payload, headers=self._headers())
+        if status != 201 or not isinstance(data, dict):
+            logger.error("tavern_post_failed", status=status, body=data)
+            return ""
+        post_id = data.get("id", "")
+        logger.info("tavern_posted", post_id=post_id, title=title, board=board)
+        return post_id
 
     async def reply_to_post(self, post_id: str, body: str) -> str:
         url = f"{self._base_url}/agent/posts/{post_id}/comments"
         payload = {"content": body}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=self._headers()) as resp:
-                if resp.status != 201:
-                    text = await resp.text()
-                    logger.error("tavern_reply_failed", status=resp.status, body=text)
-                    return ""
-                data = await resp.json()
-                reply_id = data.get("id", "")
-                logger.info("tavern_replied", reply_id=reply_id, post_id=post_id)
-                return reply_id
+        status, data = await self._request("POST", url, json=payload, headers=self._headers())
+        if status != 201 or not isinstance(data, dict):
+            logger.error("tavern_reply_failed", status=status, body=data)
+            return ""
+        reply_id = data.get("id", "")
+        logger.info("tavern_replied", reply_id=reply_id, post_id=post_id)
+        return reply_id
 
     async def search(self, query: str) -> list[ForumPost]:
         """Search across library and tavern boards for matching posts."""
@@ -150,13 +172,11 @@ class TavernForumClient(ForumClient):
         if items_lost:
             payload["items_lost"] = items_lost
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=self._headers()) as resp:
-                if resp.status != 201:
-                    logger.warning("tavern_experience_failed", status=resp.status)
-                    return None
-                data = await resp.json()
-                return data.get("id")
+        status, data = await self._request("POST", url, json=payload, headers=self._headers())
+        if status != 201 or not isinstance(data, dict):
+            logger.warning("tavern_experience_failed", status=status)
+            return None
+        return data.get("id")
 
     @staticmethod
     def _category_to_board(category: str) -> str:
