@@ -17,6 +17,7 @@ from anima.brain.behavior_tree import (
     Status,
 )
 from anima.brain.think import llm_think
+from anima.perception.enums import MessageType
 from anima.perception.event_stream import GameEventType
 
 # forum_read/write are now registered as skills, not BT nodes
@@ -26,6 +27,16 @@ logger = structlog.get_logger()
 
 # Cooldown between skill executions (seconds)
 SKILL_COOLDOWN = 0.5  # minimal gap between skill executions
+
+# Message types that ride the speech packets but are NOT a person talking to us:
+# server SYSTEM lines, single-click LABEL responses ("Hastin the baker"), and
+# FOCUS prompts. think._build_recent_speech and action.respond_to_speech both
+# exclude this exact set; the poll path must too, or one of these lines queues a
+# bogus pending reply AND stamps last_player_speech — tripping llm_think's
+# in_conversation gate and freezing fresh strategising for CONVERSATION_TIMEOUT.
+_NON_CONVERSATIONAL_TYPES = frozenset(
+    {MessageType.SYSTEM, MessageType.LABEL, MessageType.FOCUS}
+)
 
 
 def _has_low_hp(ctx: BrainContext) -> bool:
@@ -290,6 +301,11 @@ class Brain:
                 if serial == my_serial or serial == 0xFFFFFFFF:
                     continue
                 if event.data.get("name", "").lower() == "system":
+                    continue
+                # LABEL/FOCUS/SYSTEM-typed lines are not chatter even when they
+                # carry a mobile-range serial — they must neither queue a reply
+                # nor stamp the conversation clock (which would freeze thinking).
+                if event.data.get("type", 0) in _NON_CONVERSATIONAL_TYPES:
                     continue
                 pending = self.context.blackboard.setdefault("pending_speech", [])
                 pending.append(event.data)
