@@ -192,7 +192,7 @@ TONGS_GRAPHICS = {0x0FBB, 0x0FBC}
 KEEP_GRAPHICS: set[int] = (
     HATCHET_GRAPHICS | SAW_GRAPHICS | TINKER_TOOLS_GRAPHICS | PICKAXE_GRAPHICS
     | SMITH_HAMMER_GRAPHICS | TONGS_GRAPHICS
-    | {0x1BDD, 0x1BD7}  # logs, boards
+    | {0x1BDD, 0x1BE0, 0x1BD7}  # logs (both stack graphics), boards
     | {0x19B7, 0x19B8, 0x19B9, 0x19BA}  # ore
     | {0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1}  # ingots (all stack-size graphics)
     | {0x0EED}  # gold coins
