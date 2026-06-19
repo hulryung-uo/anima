@@ -469,15 +469,22 @@ def register_handlers(
             return  # skill name list metadata — not needed
 
         is_single = list_type in (0xDF, 0xFF)
-        has_cap = list_type in (0x02, 0x03, 0xDF, 0xFF)
-        # For full lists (0x00, 0x02), ClassicUO decrements skill_id by 1
-        adjust_id = list_type in (0x00, 0x01, 0x02, 0x03)
+        # Match ClassicUO UpdateSkills (PacketHandlers.cs):
+        #   haveCap = (type != 0 && type <= 0x03) || type == 0xDF
+        #   -> caps present for 0x01, 0x02, 0x03 and 0xDF; 0xFF carries NO cap
+        has_cap = list_type in (0x01, 0x02, 0x03, 0xDF)
+        # ClassicUO decrements the (1-based) skill_id only for `type == 0 || type == 0x02`.
+        # Types 0x01/0x03 are already 0-based — decrementing them shifts every
+        # skill to the wrong id and silently corrupts skill-progress tracking.
+        adjust_id = list_type in (0x00, 0x02)
 
         while r.remaining >= 2:
             skill_id = r.read_u16()
 
-            # Full lists are terminated by skill_id=0
-            if not is_single and skill_id == 0:
+            # ClassicUO breaks on a zero id only for the 1-based full list (type 0x00).
+            # The 0-based variants (0x01/0x03) have a legitimate skill_id 0 (Alchemy)
+            # and run until the buffer is exhausted instead.
+            if list_type == 0x00 and skill_id == 0:
                 break
 
             if r.remaining < 5:

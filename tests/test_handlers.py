@@ -733,6 +733,55 @@ def test_skill_single_update_type_0xDF():
     assert p.self_state.skills[7].lock.value == 1  # DOWN
 
 
+def _build_skill_packet_0based(list_type: int, skills: list[tuple[int, int, int, int, int]]) -> bytes:
+    """Build a 0x3A full-list packet for the 0-based variants (type 0x01/0x03).
+
+    Per ClassicUO these carry a cap field and use raw (0-based) skill ids with
+    no terminating zero entry; the list ends when the buffer is exhausted.
+    skills: list of (skill_id, value, base, lock, cap) — values in tenths.
+    """
+    buf = PacketWriter()
+    buf.write_u8(0x3A)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u8(list_type)
+    for sid, val, base, lock, cap in skills:
+        buf.write_u16(sid)
+        buf.write_u16(val)
+        buf.write_u16(base)
+        buf.write_u8(lock)
+        buf.write_u16(cap)
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_skill_full_list_refresh_type_0x01_no_id_adjustment():
+    """Type 0x01 full-list refresh: ids are already 0-based and carry a cap.
+
+    Regression for an off-by-one that decremented 0x01/0x03 ids (landing every
+    skill on the wrong slot) and read no cap, misaligning the rest of the list.
+    """
+    h, p, w = _make_stack()
+
+    packet = _build_skill_packet_0based(0x01, [
+        (25, 800, 800, 0, 1200),   # Magery — id stays 25, cap 120.0
+        (45, 750, 700, 2, 1000),   # Mining — id stays 45, cap 100.0
+    ])
+    h.dispatch(0x3A, packet)
+
+    # No off-by-one: ids are recorded verbatim, not shifted to 24/44.
+    assert 25 in p.self_state.skills and 24 not in p.self_state.skills
+    assert p.self_state.skills[25].value == 80.0
+    assert p.self_state.skills[25].cap == 120.0  # cap field actually consumed
+
+    # Stream stayed aligned, so the second entry decoded correctly too.
+    assert 45 in p.self_state.skills and 44 not in p.self_state.skills
+    assert p.self_state.skills[45].value == 75.0
+    assert p.self_state.skills[45].base == 70.0
+    assert p.self_state.skills[45].cap == 100.0
+    assert p.self_state.skills[45].lock.value == 2  # LOCKED
+
+
 def test_skill_cap_defaults_to_100():
     """Full list without caps (type 0x00) should default cap to 100.0."""
     h, p, w = _make_stack()
