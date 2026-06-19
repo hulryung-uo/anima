@@ -75,9 +75,17 @@ class LocationStats:
         """Return a LocationScore for the given location and distance."""
         name = location.name
 
-        # Decay failed_attempts if last failure was more than 5 minutes ago
+        # Decay failed_attempts if last failure was more than 5 minutes ago.
+        # Clear the *persistent* counter (not just the returned value) so a
+        # recovered location starts fresh. Previously only `failed` was zeroed
+        # while `_failed_attempts` kept growing, so a location that failed N
+        # times, waited out the cooldown, then failed once more jumped straight
+        # back to N+1 attempts (a huge penalty) — effectively a permanent
+        # blacklist that defeated the whole point of the decay.
         failed_at = self._failed_at.get(name)
         if failed_at is not None and _time.time() - failed_at > _FAILURE_DECAY:
+            self._failed_attempts.pop(name, None)
+            self._failed_at.pop(name, None)
             failed = 0
         else:
             failed = self._failed_attempts.get(name, 0)

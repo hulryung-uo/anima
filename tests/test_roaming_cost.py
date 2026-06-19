@@ -60,6 +60,27 @@ class TestLocationStats:
         score = stats.get_score(_loc("Bad Vendor"), distance=10)
         assert score.failed_attempts == 0  # decayed
 
+    def test_decay_resets_counter_so_later_failure_starts_fresh(self):
+        """After the decay window, the persistent counter must reset.
+
+        Regression guard: a location that failed many times, waited out the
+        5-min cooldown, then fails once more should be penalised as a SINGLE
+        fresh failure — not as (old_count + 1), which would permanently
+        blacklist any location that ever failed repeatedly.
+        """
+        stats = LocationStats()
+        for _ in range(5):
+            stats.record_failure("Flaky Mine")
+        # Age the failure past the 5-minute decay window.
+        stats._failed_at["Flaky Mine"] = time.time() - 360
+        # Reading the score during the decay window must clear the counter.
+        decayed = stats.get_score(_loc("Flaky Mine"), distance=10)
+        assert decayed.failed_attempts == 0
+        # A single new failure now starts the count over at 1, not 6.
+        stats.record_failure("Flaky Mine")
+        after = stats.get_score(_loc("Flaky Mine"), distance=10)
+        assert after.failed_attempts == 1
+
     def test_unvisited_location_gets_default_score(self):
         stats = LocationStats()
         score = stats.get_score(_loc("New Place"), distance=10)
