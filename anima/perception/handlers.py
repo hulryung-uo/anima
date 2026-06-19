@@ -1913,3 +1913,61 @@ def register_handlers(
         logger.debug("vendor_closed", serial=f"0x{serial:08X}")
 
     handler.register(0x3B, handle_close_vendor)
+
+    def handle_display_death(packet_id: int, data: bytes) -> None:
+        """0xAF DisplayDeath — a mobile just died (the authoritative kill signal).
+
+        Fixed 13-byte packet (ServUO DeathAnimation, Packets.cs:467; PACKET_LENGTHS
+        already declares 0xAF = 13):
+            [0xAF][killed_serial:u32][corpse_serial:u32][running:u32]
+
+        ServUO sends this the instant ``Mobile.OnDeath`` fires — BEFORE the corpse
+        item (0x2006) or the 0x1D Delete for the mobile arrives. ClassicUO's
+        DisplayDeath (PacketHandlers.cs:3693) consumes it to register the corpse
+        and play the death animation. We were dropping it entirely, so the only
+        way perception learned a foe died was its last-seen health bar reading
+        ``hits <= 0``. That signal is unreliable: ServUO normalises a NON-self
+        mobile's hits to a 0-25 scale (AttributeNormalizer, Packets.cs:3348), so a
+        foe at 1-3% HP truncates to ``(cur*25)//max == 0`` (false "dead" mid-fight)
+        while a foe killed between 0xA1 updates can leave its last bar at hits>0
+        and never flip ``MobileInfo.is_dead`` until a laggy 0x1D Delete — which
+        ``_confirm_kill`` (combat_loop.py) then cannot distinguish from a kiter
+        that simply left view, so a real kill is mis-credited as an escape (no
+        loot pass, no kill credit -> depressed COMBAT throughput).
+
+        Mirror ClassicUO: ignore self-death (handled by the resurrect flow) and
+        a mobile we have never seen (``owner == null`` there). For a known foe,
+        force its health bar to a real zero so ``MobileInfo.is_dead`` and
+        ``_confirm_kill``'s ``last_hits_max > 0 and last_hits <= 0`` arm both
+        fire deterministically, and emit MOBILE_DIED carrying the corpse serial
+        so the loot path can target the body.
+        """
+        if len(data) < 13:
+            return
+        r = PacketReader(data[1:])
+        serial = r.read_u32()
+        corpse_serial = r.read_u32()
+        # running (u32) — death-animation variant; unused by perception.
+
+        if serial == p.self_state.serial:
+            return  # own death is driven by the death screen / resurrect flow
+        mob = p.world.mobiles.get(serial)
+        if mob is None:
+            return  # never in view — nothing to mark (ClassicUO: owner == null)
+
+        # Authoritative death: pin the bar to zero. hits_max may be 0 if we never
+        # queried this foe; bump it to 1 so the `hits_max > 0` death guards fire.
+        if mob.hits_max <= 0:
+            mob.hits_max = 1
+        mob.hits = 0
+        p.emit(
+            GameEventType.MOBILE_DIED,
+            {"serial": serial, "corpse_serial": corpse_serial},
+        )
+        logger.debug(
+            "mobile_died",
+            serial=f"0x{serial:08X}",
+            corpse=f"0x{corpse_serial:08X}",
+        )
+
+    handler.register(0xAF, handle_display_death)

@@ -14,6 +14,7 @@ class GameEventType(Enum):
     MOBILE_APPEARED = auto()
     MOBILE_MOVED = auto()
     MOBILE_REMOVED = auto()
+    MOBILE_DIED = auto()
     ITEM_APPEARED = auto()
     ITEM_REMOVED = auto()
     SPEECH_HEARD = auto()
@@ -65,6 +66,7 @@ class EventStream:
         GameEventType.ITEM_REMOVED: "avatar.item_removed",
         GameEventType.MOBILE_APPEARED: "avatar.mobile_appeared",
         GameEventType.MOBILE_REMOVED: "avatar.mobile_removed",
+        GameEventType.MOBILE_DIED: "avatar.mobile_died",
         GameEventType.TARGET_REQUESTED: "avatar.target_requested",
     }
 
