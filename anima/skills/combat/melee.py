@@ -174,6 +174,21 @@ class MeleeAttack(Skill):
             last_hits = mob.hits
             last_hits_max = mob.hits_max
 
+            # Dead but still present: UO leaves a just-killed mob in
+            # world.mobiles (corpse/ghost body) until its 0x1D Delete arrives,
+            # which can lag many seconds. A known health bar at/below zero
+            # (hits_max > 0 and hits <= 0) is positive proof of death — mirror
+            # the procedures path (combat_loop: `current.hits_max > 0 and
+            # current.hits <= 0`) and credit the kill NOW. Without this the loop
+            # keeps re-sending build_attack at a corpse until COMBAT_TIMEOUT
+            # (30s) elapses, then returns success=False with a -5 reward for a
+            # foe we actually felled — wasting the whole engagement window and
+            # poisoning the Q-learning reward signal exactly inverted.
+            if last_hits_max > 0 and last_hits <= 0:
+                target_killed = True
+                logger.info("melee_target_down", target=target_name)
+                break
+
             # Bail if HP drops too low
             if ss.hp_percent < 15:
                 logger.warning("melee_retreat", hp=ss.hits)
