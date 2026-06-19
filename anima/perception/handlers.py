@@ -185,16 +185,25 @@ def register_handlers(
         """0x1A WorldItem — item on the ground (legacy)."""
         r = PacketReader(data[3:])  # variable: skip id + length
         serial = r.read_u32()
-        graphic = r.read_u16()
 
-        amount = 0
+        # The stack-amount flag lives in the serial's high bit, but the count
+        # itself is NOT on the wire here — it is read LATER, only after the
+        # graphic (and its optional graphic_inc byte). The old code read the
+        # u16 amount immediately, before the graphic block, so any ground item
+        # carrying BOTH a stack flag and an extended (0x8000) graphic — e.g. a
+        # stacked resource/reagent in the high-graphic art range — misaligned
+        # every following field (graphic_inc, x, y, z, hue). Match ClassicUO
+        # PacketHandlers.UpdateItem ordering exactly. (Ref: ClassicUO 0x1A.)
+        has_amount = bool(serial & 0x80000000)
         if serial & 0x80000000:
             serial &= 0x7FFFFFFF
-            amount = r.read_u16()
 
+        graphic = r.read_u16()
         if graphic & 0x8000:
             graphic &= 0x7FFF
             graphic += r.read_u8()  # graphic_inc
+
+        amount = r.read_u16() if has_amount else 0
 
         x = r.read_u16()
         y = r.read_u16()

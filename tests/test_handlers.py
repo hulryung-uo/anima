@@ -815,3 +815,109 @@ def test_character_status_aos_decodes_luck_and_damage():
     assert ss.luck == 300
     assert ss.damage_min == 7
     assert ss.damage_max == 19
+
+
+# ---------------------------------------------------------------------------
+# WorldItem (0x1A) — ground item field-order regression
+# ---------------------------------------------------------------------------
+
+
+def _build_world_item(
+    serial: int,
+    graphic: int,
+    *,
+    amount: int | None,
+    graphic_inc: int | None,
+    x: int,
+    y: int,
+    z: int,
+    hue: int | None,
+) -> bytes:
+    """Craft a 0x1A WorldItem packet on the wire.
+
+    Mirrors ClassicUO PacketHandlers.UpdateItem ordering:
+    serial -> graphic -> [graphic_inc] -> [amount u16] -> x -> y ->
+    [direction] -> z -> [hue].
+    """
+    buf = PacketWriter()
+    buf.write_u8(0x1A)
+    buf.write_u16(0)  # length placeholder
+
+    wire_serial = serial | 0x80000000 if amount is not None else serial
+    buf.write_u32(wire_serial)
+
+    wire_graphic = graphic | 0x8000 if graphic_inc is not None else graphic
+    buf.write_u16(wire_graphic)
+    if graphic_inc is not None:
+        buf.write_u8(graphic_inc)
+    if amount is not None:
+        buf.write_u16(amount)
+
+    buf.write_u16(x)  # no direction flag
+    wire_y = y | 0x8000 if hue is not None else y
+    buf.write_u16(wire_y)
+    buf.write_i8(z)
+    if hue is not None:
+        buf.write_u16(hue)
+
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_world_item_stack_and_extended_graphic_decode():
+    """Regression: a ground item with BOTH the stack-amount flag (serial high
+    bit) and an extended graphic (0x8000) must decode correctly. The old code
+    read the amount before the graphic_inc byte, misaligning every following
+    field. Order must match ClassicUO: graphic -> graphic_inc -> amount -> x.
+    """
+    h, p, w = _make_stack()
+    serial = 0x40001234
+
+    data = _build_world_item(
+        serial,
+        graphic=0x0E76,
+        amount=23,
+        graphic_inc=3,
+        x=1500,
+        y=2600,
+        z=-7,
+        hue=0x0042,
+    )
+    h.dispatch(0x1A, data)
+
+    item = p.world.items.get(serial)
+    assert item is not None
+    assert item.amount == 23
+    assert item.graphic == 0x0E76 + 3  # base + graphic_inc
+    assert item.x == 1500
+    assert item.y == 2600
+    assert item.z == -7
+    assert item.hue == 0x0042
+
+
+def test_world_item_plain_no_flags():
+    """A simple unstacked ground item (no flags) still decodes correctly."""
+    h, p, w = _make_stack()
+    serial = 0x40005678
+
+    data = _build_world_item(
+        serial,
+        graphic=0x1F1C,
+        amount=None,
+        graphic_inc=None,
+        x=100,
+        y=200,
+        z=5,
+        hue=None,
+    )
+    h.dispatch(0x1A, data)
+
+    item = p.world.items.get(serial)
+    assert item is not None
+    assert item.amount == 1  # defaults to 1 when no stack flag
+    assert item.graphic == 0x1F1C
+    assert item.x == 100
+    assert item.y == 200
+    assert item.z == 5
+    assert item.hue == 0
