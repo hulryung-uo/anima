@@ -283,7 +283,7 @@ def register_handlers(
         item.hue = hue
         item.amount = amount if amount else 1
         item.container = 0
-        _ = is_multi  # decoded for alignment/clarity; not yet surfaced on ItemInfo
+        item.is_multi = is_multi
 
         p.emit(GameEventType.ITEM_APPEARED, {"serial": serial, "x": x, "y": y})
 
@@ -293,7 +293,15 @@ def register_handlers(
         """0xF3 UpdateItemSA — modern item update."""
         r = PacketReader(data[1:])
         r.skip(2)  # unknown
-        r.read_u8()  # data_type: 0x00 = item, 0x02 = multi
+        # ServUO WorldItemHS (Packets.cs) tags the record with a data_type:
+        #   0x00 = ordinary item, 0x02 = BaseMulti, 0x03 = IDamageable.
+        # ClassicUO's UpdateItemSA forwards `type` to UpdateGameObject, which
+        # routes 0x02 to multi handling instead of the item list. We were
+        # discarding it, so every ground multi (house addons, signs, deco/house
+        # components) landed in world.items as a normal item — corrupting
+        # graphic-based identification and nearest-item lookups, exactly the
+        # regression the 0x1A handler already guards against. Surface it.
+        data_type = r.read_u8()
         serial = r.read_u32()
         graphic = r.read_u16()
         graphic_inc = r.read_u8()
@@ -314,6 +322,7 @@ def register_handlers(
         item.hue = hue
         item.amount = amount if amount else 1
         item.container = 0
+        item.is_multi = data_type == 0x02
 
         p.emit(GameEventType.ITEM_APPEARED, {"serial": serial, "x": x, "y": y})
 

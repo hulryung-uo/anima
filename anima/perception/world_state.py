@@ -57,6 +57,10 @@ class ItemInfo:
     container: int = 0  # 0 = on ground, else parent serial
     layer: int = 0
     name: str = ""
+    # True when the server tagged this as a BaseMulti (0x1A graphic bit 0x4000
+    # / 0xF3 data_type 0x02). Multis are house/addon components, not pickable
+    # items — callers filter them out of nearest-item / loot lookups.
+    is_multi: bool = False
     properties: list[str] = field(default_factory=list)  # OPL tooltip lines
 
 

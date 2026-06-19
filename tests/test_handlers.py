@@ -97,6 +97,82 @@ def test_context_menu_old_cliloc_flag_gated_words_keep_alignment():
 
 
 # ---------------------------------------------------------------------------
+# Ground-item multi flag (0x1A WorldItem / 0xF3 UpdateItemSA)
+# ---------------------------------------------------------------------------
+
+
+def _build_world_item_sa(serial: int, data_type: int, item_id: int) -> bytes:
+    """Build a 0xF3 WorldItemHS (26-byte) packet for one ground item.
+
+    Mirrors ServUO Packets.cs WorldItemHS layout:
+        [0xF3][0x0001 u16][data_type u8][serial u32][itemID u16][inc u8]
+        [amount u16][amount u16][x u16][y u16][z i8][light u8][hue u16]
+        [flags u8][0x0000 u16]
+    """
+    pkt = bytearray()
+    pkt.append(0xF3)
+    pkt += struct.pack(">H", 0x0001)   # unknown
+    pkt.append(data_type)              # 0x00 item, 0x02 multi
+    pkt += struct.pack(">I", serial)
+    pkt += struct.pack(">H", item_id)
+    pkt.append(0x00)                   # graphic_inc
+    pkt += struct.pack(">H", 1)        # amount
+    pkt += struct.pack(">H", 1)        # amount again
+    pkt += struct.pack(">H", 1000)     # x
+    pkt += struct.pack(">H", 1010)     # y
+    pkt += struct.pack(">b", -5)       # z
+    pkt.append(0x00)                   # light
+    pkt += struct.pack(">H", 0)        # hue
+    pkt.append(0x00)                   # flags
+    pkt += struct.pack(">H", 0x0000)   # trailing pad
+    assert len(pkt) == 26
+    return bytes(pkt)
+
+
+def test_update_item_sa_flags_multi():
+    """0xF3 data_type 0x02 must mark the item as a multi, 0x00 must not.
+
+    Regression: the data_type byte was read and discarded, so ground multis
+    (house addons/signs) were stored as ordinary items and polluted
+    nearest-item lookups — the same class of bug already fixed for 0x1A.
+    """
+    h, p, _ = _make_stack()
+
+    h.dispatch(0xF3, _build_world_item_sa(0x40000010, data_type=0x00, item_id=0x0EED))
+    h.dispatch(0xF3, _build_world_item_sa(0x40000011, data_type=0x02, item_id=0x0064))
+
+    plain = p.world.items[0x40000010]
+    multi = p.world.items[0x40000011]
+    assert plain.is_multi is False
+    assert plain.graphic == 0x0EED
+    assert multi.is_multi is True
+
+
+def test_world_item_1a_flags_multi():
+    """0x1A with the 0x4000 multi bit set must strip it and flag is_multi."""
+    h, p, _ = _make_stack()
+
+    # serial without the 0x80000000 stack flag; graphic carries the 0x4000
+    # multi bit (and NOT the 0x8000 inc bit), x/y with no high flags.
+    body = bytearray()
+    body += struct.pack(">I", 0x40000022)        # serial
+    body += struct.pack(">H", 0x4000 | 0x003F)   # graphic = multi flag | art id
+    body += struct.pack(">H", 1500)              # x
+    body += struct.pack(">H", 1600)              # y
+    body += struct.pack(">b", 0)                 # z
+    pkt = bytearray()
+    pkt.append(0x1A)
+    pkt += struct.pack(">H", 0)                  # length placeholder
+    pkt += body
+    struct.pack_into(">H", pkt, 1, len(pkt))
+
+    h.dispatch(0x1A, bytes(pkt))
+    it = p.world.items[0x40000022]
+    assert it.is_multi is True
+    assert it.graphic == 0x003F  # 0x4000 multi bit stripped
+
+
+# ---------------------------------------------------------------------------
 # MobileIncoming (0x78)
 # ---------------------------------------------------------------------------
 
