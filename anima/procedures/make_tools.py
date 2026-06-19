@@ -54,6 +54,37 @@ _CRAFT_TARGETS: dict[str, tuple[str, set[int]]] = {
 }
 
 
+def _journal_craft_outcome(journal, since: float) -> str | None:
+    """Classify the tinkering craft result from journal lines AFTER ``since``.
+
+    Returns ``"create"`` (a "you create ..." success), ``"fail"`` (a "you fail"
+    / "you don't have" failure), or ``None`` when no craft-result line has
+    landed since the button was pressed.
+
+    The ``since`` floor is load-bearing. ``make_tools`` re-suggests itself
+    (``next_suggestion="make_tools"``) and the planner runs it back-to-back, so
+    the journal routinely still holds the PREVIOUS attempt's result line within
+    the recent window. Without a timestamp gate (the old ``recent(count=5)``
+    scan), a stale "You create the item ..." from a prior *successful* craft is
+    mis-read as THIS craft's success — a phantom tool that was never made — which
+    also clears ``_make_tools_fails`` and skips the skill-too-low blacklist, so a
+    genuinely failing low-Tinkering smith never trips the 5-strike give-up /
+    buy-instead circuit breaker and loops on a craft it cannot land. Symmetrically
+    a stale "you fail" aborts a craft that actually succeeded. Mirrors the
+    ``entry.timestamp < start: continue`` reconciliation mine_ore / chop_wood /
+    smelt_ore use so every gather/craft procedure reads only its OWN swing.
+    """
+    for entry in journal:
+        if getattr(entry, "timestamp", 0.0) < since:
+            continue
+        tl = entry.text.lower()
+        if "you create" in tl:
+            return "create"
+        if "you fail" in tl or "you don't have" in tl:
+            return "fail"
+    return None
+
+
 class MakeTools(Procedure):
     name = "make_tools"
     description = "Craft tools (pickaxe, hatchet, tinker tools) using tinkering."
@@ -229,6 +260,11 @@ class MakeTools(Procedure):
                 message=f"'{craft_target}' not found in gump",
             )
 
+        # Stamp the moment we press the craft button: only journal lines AFTER
+        # this instant describe THIS craft. make_tools runs back-to-back, so an
+        # earlier attempt's "you create"/"you fail" is still in the journal and
+        # must not be attributed to this swing (see _journal_craft_outcome).
+        craft_start = time.time()
         ss.gumps.clear()
         await ctx.conn.send_packet(
             build_gump_response(
@@ -253,27 +289,28 @@ class MakeTools(Procedure):
                 next_suggestion="make_tools",
             )
 
-        # Also check journal as fallback
-        journal = ctx.perception.social.recent(count=5)
-        for entry in journal:
-            tl = entry.text.lower()
-            if "you create" in tl:
-                ctx.blackboard.pop("_make_tools_fails", None)
-                logger.info("make_tools_crafted_journal", item=craft_target)
-                await self._close_all_gumps(ctx)
-                return ProcedureResult(
-                    success=True,
-                    message=f"Crafted {craft_target}",
-                    next_suggestion="make_tools",
-                )
-            if "you fail" in tl or "you don't have" in tl:
-                logger.info("make_tools_craft_failed", item=craft_target, journal=entry.text)
-                await self._close_all_gumps(ctx)
-                return ProcedureResult(
-                    success=False,
-                    reason=FailureReason.BLOCKED,
-                    message=f"Craft failed: {entry.text}",
-                )
+        # Also check journal as fallback — but ONLY lines from THIS craft (after
+        # the button press), so a stale prior-attempt result can't be misread.
+        outcome = _journal_craft_outcome(
+            ctx.perception.social.recent(count=5), craft_start
+        )
+        if outcome == "create":
+            ctx.blackboard.pop("_make_tools_fails", None)
+            logger.info("make_tools_crafted_journal", item=craft_target)
+            await self._close_all_gumps(ctx)
+            return ProcedureResult(
+                success=True,
+                message=f"Crafted {craft_target}",
+                next_suggestion="make_tools",
+            )
+        if outcome == "fail":
+            logger.info("make_tools_craft_failed", item=craft_target)
+            await self._close_all_gumps(ctx)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=f"Craft failed for {craft_target}",
+            )
 
         # Read gump notices for server feedback (notice text at y≈295)
         gump_notice = ""
