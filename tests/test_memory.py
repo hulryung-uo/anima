@@ -593,3 +593,51 @@ class TestRetrievalLocationFraming:
         assert "costly" in block.lower() or "avoid" in block.lower()
         avoid_anchor = "costly" if "costly" in block else "avoid"
         assert block.index(avoid_anchor) < block.index("deathtrap")
+
+    @pytest.mark.asyncio
+    async def test_avoid_section_keeps_the_worst_losses_not_the_mildest(self) -> None:
+        """When a region has more than five net-negative activities, the avoid
+        warning must surface the *most* costly ones (lowest average reward), not
+        the mildest.
+
+        get_location_values returns rows ordered by average reward DESC, so the
+        negatives arrive least-costly first. Capping the avoid section by keeping
+        the first five negatives encountered would retain the mildest losses and
+        drop the genuinely lethal regions — the opposite of a warning's purpose.
+        """
+        from anima.memory.retrieval import retrieve_context
+
+        # Use a real in-memory SQLite store so the SQL ordering is exercised.
+        db = MemoryDB(":memory:")
+        await db.init()
+        try:
+            x, y = 1600, 1700
+            rx, ry = region_coords(x, y)
+            # Six net-negative activities of escalating cost. The two deadliest
+            # (-20, -18) must survive the five-row cap; the mildest (-2) must drop.
+            costs = {
+                "stub_toe": -2.0,
+                "lose_gold": -5.0,
+                "get_poisoned": -9.0,
+                "ambushed": -12.0,
+                "near_death": -18.0,
+                "deathtrap": -20.0,
+            }
+            for activity, reward in costs.items():
+                await db.update_location_value("Anima", rx, ry, activity, reward)
+
+            block = await retrieve_context(_retrieval_ctx(db, x, y))
+
+            avoid_anchor = "costly" if "costly" in block else "avoid"
+            avoid_block = block[block.index(avoid_anchor):]
+
+            # The deadliest activities must appear in the warning ...
+            assert "deathtrap" in avoid_block
+            assert "near_death" in avoid_block
+            # ... and the mildest loss must have been evicted by the cap, not the
+            # lethal ones.
+            assert "stub_toe" not in avoid_block
+            # Worst-first ordering: the deadliest appears before a milder loss.
+            assert avoid_block.index("deathtrap") < avoid_block.index("ambushed")
+        finally:
+            await db.close()

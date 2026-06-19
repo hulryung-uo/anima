@@ -117,11 +117,20 @@ async def retrieve_context(ctx: BrainContext) -> str:
     # told only where things pay off and never warned away from where it kept dying —
     # the exact failure this block's redesign claimed to prevent. Split first over the
     # full list, then cap each section independently.
+    #
+    # The cap direction also matters per section. get_location_values orders rows by
+    # average reward DESC, so the negative-average ("avoid") activities arrive
+    # least-costly first and the deadliest last. Capping the avoid section by simply
+    # keeping the first five negatives encountered therefore surfaces the *mildest*
+    # losses and silently discards the genuinely lethal ones — the opposite of what a
+    # warning is for. The pays-off section wants the top five highest averages (the
+    # natural DESC head); the avoid section wants the five *worst* averages, presented
+    # worst-first. Collect every negative row, then keep its lowest-average tail.
     rx, ry = region_coords(ss.x, ss.y)
     loc_values = await memory_db.get_location_values(agent_name, rx, ry)
     if loc_values:
         good_lines: list[str] = []
-        bad_lines: list[str] = []
+        bad_rows: list[tuple[float, str]] = []
         for activity, total_r, visits in loc_values:
             avg = total_r / visits if visits else 0
             line = f"  - {activity}: avg reward {avg:+.1f} ({visits} visits)"
@@ -129,8 +138,12 @@ async def retrieve_context(ctx: BrainContext) -> str:
                 if len(good_lines) < 5:
                     good_lines.append(line)
             elif avg < 0:
-                if len(bad_lines) < 5:
-                    bad_lines.append(line)
+                bad_rows.append((avg, line))
+        # Keep the five most costly (lowest average) activities, worst first, so the
+        # warning steers the agent away from where it has lost the most — not where
+        # it lost the least.
+        bad_rows.sort(key=lambda r: r[0])
+        bad_lines = [line for _, line in bad_rows[:5]]
         if good_lines:
             parts.append(
                 f"This area (region {rx},{ry}) pays off for:\n"
