@@ -559,7 +559,7 @@ class Planner:
     def _should_flee_swarm(self, ctx: AgentContext, ss) -> bool:
         """Priority 1b decision: flee a swarm now, or fall through to heal?
 
-        Returns True while the agent is wounded (HP < _FLEE_HP_PCT) AND swarmed
+        Returns True while the agent is wounded (HP < _FLEE_HP_PCT) or poisoned, AND swarmed
         (>= _FLEE_HOSTILE_COUNT live hostiles within 6 tiles) — UNLESS it has
         already chosen to flee _FLEE_MAX_CONSECUTIVE ticks in a row without
         breaking contact. A fully-surrounded agent cannot path away, but
@@ -570,10 +570,25 @@ class Planner:
         and let it bandage/heal: an interrupted bandage is a chance at survival,
         an infinite flee loop is not. The counter resets the moment the
         wounded+swarmed condition no longer holds (contact broken or healed up).
+
+        Poison is folded into the trigger alongside the HP floor. The Priority-1c
+        cure gate applies ``bandage_self`` in place the moment the agent is
+        poisoned (even at full HP), but a bandage — heal OR cure — is cancelled
+        by adjacent melee, the exact reason this flee branch exists. A poisoned
+        agent at >= _FLEE_HP_PCT HP surrounded by a swarm therefore slips past
+        the HP-only flee floor AND the heal-in-place floor, reaches the cure
+        gate, and re-attempts a cure-bandage every tick that the swarm keeps
+        interrupting — bleeding/poisoning to death without ever breaking
+        contact. Treat a poisoned-and-swarmed agent exactly like a wounded one:
+        flee first so the un-swarmed cure gate can actually land the bandage.
         """
+        if ss.hits_max <= 0:
+            self._flee_consecutive = 0
+            return False
+        too_wounded = ss.hits < ss.hits_max * _FLEE_HP_PCT
+        poisoned = bool(getattr(ss, "is_poisoned", False))
         swarmed = (
-            ss.hits_max > 0
-            and ss.hits < ss.hits_max * _FLEE_HP_PCT
+            (too_wounded or poisoned)
             and _count_hostiles(ctx, ss, dist=_FLEE_SCAN_DIST) >= _FLEE_HOSTILE_COUNT
         )
         if not swarmed:
