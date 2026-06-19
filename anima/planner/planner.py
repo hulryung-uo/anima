@@ -4629,6 +4629,10 @@ _FLEE_HOSTILE_COUNT = 3    # ...with at least this many hostiles, flee not heal
 # starvation breaker never demotes it) — without this cap the flee gate loops
 # forever and the agent never gets to bandage. 5 ticks ~= one full heal attempt.
 _FLEE_MAX_CONSECUTIVE = 5
+# Human body ids (male, female). A bare-gray (ATTACKABLE) human is NOT a foe the
+# warrior ever swings at — combat_loop._find_target / _adjacent_hostiles both
+# drop it — so the survival flee gate must drop it too (see _is_live_hostile).
+_HUMAN_BODIES = {0x0190, 0x0191}
 # Heal-in-place floor. Combat breaks off at RETREAT_HP_PCT (35%) and won't
 # re-engage until hunt_nearby.can_start clears 40%; the Priority-1b flee gate
 # only fires when SWARMED. Without matching this floor to the 40% re-engage
@@ -4662,10 +4666,27 @@ def _is_live_hostile(m, ss, attackable) -> bool:
     so a wounded agent flees from dead bodies instead of healing in place on a
     fight it has already won. ``is True`` (not just truthy) so SimpleNamespace /
     Mock test mobs that omit ``is_dead`` are treated as alive, never corpses.
+
+    The notoriety gate must also match combat's: ``combat_loop._find_target``
+    and ``_adjacent_hostiles`` both *exclude* a human body whose notoriety is
+    only bare ATTACKABLE (a gray townsperson / passer-by the warrior never
+    swings at — humans are engaged only when CRIMINAL/ENEMY/MURDERER). The flee
+    gate previously counted such grays as the "swarm", so a wounded agent could
+    be driven to flee (and have heal-in-place suppressed) by a crowd of harmless
+    gray humans it would never fight — a friend/foe asymmetry between who we
+    attack and who we run from. Mirror the combat filter here so the same
+    population drives both decisions. Mobs (non-human bodies) are unaffected;
+    test mobs that omit ``body`` default to 0 (non-human) and stay hostile.
     """
+    from anima.perception.enums import NotorietyFlag
+
     if getattr(m, "serial", None) == getattr(ss, "serial", None):
         return False
-    if getattr(m, "notoriety", None) not in attackable:
+    notoriety = getattr(m, "notoriety", None)
+    if notoriety not in attackable:
+        return False
+    # A bare-gray human is not a foe we ever attack -> not one we flee from.
+    if getattr(m, "body", 0) in _HUMAN_BODIES and notoriety == NotorietyFlag.ATTACKABLE:
         return False
     return getattr(m, "is_dead", False) is not True
 
