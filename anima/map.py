@@ -233,7 +233,11 @@ class MapReader:
         for i in range(64):
             pos = offset + i * 3
             if pos + 3 <= len(chunk_data):
-                tile_id = struct.unpack_from("<H", chunk_data, pos)[0]
+                # Land tile IDs are 14-bit; the top 2 bits are not part of the
+                # graphic. ClassicUO masks with 0x3FFF (Chunk.cs: TileID & 0x3FFF)
+                # before any tiledata/flag lookup. Without this, cells with high
+                # bits set miss the flag table and impassable land reads as walkable.
+                tile_id = struct.unpack_from("<H", chunk_data, pos)[0] & 0x3FFF
                 z = struct.unpack_from("<b", chunk_data, pos + 2)[0]
                 cells.append((tile_id, z))
             else:
