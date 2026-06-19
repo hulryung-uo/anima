@@ -38,10 +38,18 @@ GREATER_HEAL_MANA = 11
 BLESS_MANA = 9
 
 # Journal signals (ServUO Scripts/Spells/Base/Spell.cs clilocs
-# 502632 / 502625 / 502630)
+# 502632 / 502625 / 502630 / 500641)
 _FIZZLE = "fizzles"
 _NO_MANA = "Insufficient mana"
 _NO_REAGENTS = "More reagents are needed"
+# Taking damage (or being otherwise disturbed) *during the cast delay* ruins an
+# in-flight spell BEFORE the target cursor is ever sent — ServUO Spell.cs
+# OnDisturb emits cliloc 500641 "Your concentration is disturbed, thus ruining
+# thy spell." This is the single most common interrupt for an OFFENSIVE caster
+# standing in melee range. Crucially the mana for the cast was NOT yet
+# consumed, so the correct reaction is "recover and recast", not "out of
+# mana / out of reagents / give up" — hence its own dedicated flag below.
+_DISRUPTED = "concentration is disturbed"
 
 
 @dataclass
@@ -52,6 +60,7 @@ class CastResult:
     fizzled: bool = False
     no_mana: bool = False
     no_reagents: bool = False
+    disrupted: bool = False  # hurt/interrupted mid-cast — mana intact, safe to recast
     message: str = ""
 
 
@@ -67,6 +76,8 @@ async def cast_spell(
     target_serial=None targets self. Returns CastResult; `success` is
     True when the cast resolved (including fizzle — Magery gains on
     fizzle too). no_mana/no_reagents mean nothing was attempted/learned.
+    `disrupted` means the cast was interrupted by damage before the target
+    cursor arrived (mana not spent) — the caller should just recast.
     """
     ss = ctx.perception.self_state
     if mana_cost and ss.mana_max > 0 and ss.mana < mana_cost:
@@ -84,9 +95,13 @@ async def cast_spell(
     # delay plus slack; missing reagents/mana abort before the cursor.
     cursor = await wait_for_target(ctx, timeout=cast_delay + 2.0)
     if not cursor.success:
-        # No cursor — look for the abort reason in the journal
+        # No cursor — look for the abort reason in the journal. A mid-cast
+        # disruption (offensive caster hit in melee) ruins the spell with no
+        # cursor too, so check for it alongside the mana/reagent aborts; it is
+        # last in the list so an explicit mana/reagent line still wins.
         aborted = await wait_for_journal(
-            ctx, [_NO_MANA, _NO_REAGENTS, _FIZZLE], timeout=0.5, since=since,
+            ctx, [_NO_MANA, _NO_REAGENTS, _FIZZLE, _DISRUPTED],
+            timeout=0.5, since=since,
         )
         idx = aborted.data.get("index") if aborted.success else None
         return CastResult(
@@ -94,6 +109,7 @@ async def cast_spell(
             no_mana=(idx == 0),
             no_reagents=(idx == 1),
             fizzled=(idx == 2),
+            disrupted=(idx == 3),
             message=aborted.data.get("text", "No target cursor after cast"),
         )
 
