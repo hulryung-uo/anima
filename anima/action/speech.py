@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import unicodedata
 from typing import TYPE_CHECKING
 
 import structlog
@@ -16,6 +17,27 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 GREETINGS = {"hello", "hi", "hey", "greetings", "hail", "안녕", "반가워", "하이"}
+
+
+def _greeting_tokens(text: str) -> set[str]:
+    """Tokenize speech for greeting matching, stripping surrounding punctuation.
+
+    A bare ``text.lower().split()`` leaves punctuation glued to tokens, so the
+    most common greeting forms ("Hello!", "안녕!", "hey...", "Hail, friend")
+    never match GREETINGS and fall through to the (possibly absent) LLM tier.
+    Strip leading/trailing punctuation from each whitespace token so the cheap
+    tier-1 fast path still fires.
+    """
+    tokens: set[str] = set()
+    for raw in text.lower().split():
+        word = raw.strip("".join(
+            c for c in set(raw) if unicodedata.category(c).startswith("P")
+        ))
+        if word:
+            tokens.add(word)
+    return tokens
+
+
 GREETING_RESPONSES = [
     "Hello there!",
     "Hi! Nice to meet you.",
@@ -93,7 +115,7 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     is_korean = any("\uac00" <= c <= "\ud7a3" for c in text)
 
     # Tier 1: Pattern-match greetings
-    words = set(text.lower().split())
+    words = _greeting_tokens(text)
     if words & GREETINGS and len(words) <= 3:
         if is_korean:
             response = random.choice(GREETING_RESPONSES_KR)
