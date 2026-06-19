@@ -508,19 +508,25 @@ async def _loot_fresh_corpses(ctx: AgentContext) -> int:
         if corpse.serial in looted:
             continue
         result = await loot_corpse(ctx, corpse.serial)
-        if result.success:
-            gold += result.data.get("gold", 0)
-            # A weight-gated lift is PARTIAL — valuables remain in the corpse
-            # because the pack hit its headroom band mid-lift. Retiring it here
-            # would strand that remainder forever; instead leave it eligible so
-            # the next post-kill pass (after a sell/bank frees up weight) picks
-            # up where this one stopped. A corpse emptied to completion retires
-            # normally so we don't wastefully re-open it.
-            if result.data.get("weight_gated"):
-                attempts.pop(corpse.serial, None)
-            else:
-                looted.add(corpse.serial)
-                attempts.pop(corpse.serial, None)
+        gold += result.data.get("gold", 0)
+        # A weight-gated open is PARTIAL — valuables remain in the corpse
+        # because the pack hit its headroom band. Retiring it would strand
+        # that remainder forever; leave it eligible so the next post-kill
+        # pass (after a sell/bank frees up weight) picks up where this one
+        # stopped. Check this FIRST, ahead of ``result.success``: when the
+        # pack is so full that even the gold (sorted first) can't be lifted,
+        # ``loot_corpse`` lifts nothing and returns ``success=False`` while
+        # still flagging ``weight_gated=True``. Routing that through the
+        # empty-open branch below counted it toward LOOT_MAX_ATTEMPTS and
+        # retired a corpse that is NOT empty — only the pack was full —
+        # stranding its gold the moment weight later freed up. A weight-gated
+        # open, lifted-something or not, must never count as an empty open.
+        if result.data.get("weight_gated"):
+            attempts.pop(corpse.serial, None)
+        elif result.success:
+            # Emptied to completion — retire so we don't wastefully re-open it.
+            looted.add(corpse.serial)
+            attempts.pop(corpse.serial, None)
         else:
             # Empty open: count it, and only retire the corpse once it has
             # cost us LOOT_MAX_ATTEMPTS opens (so a genuinely-empty corpse

@@ -170,3 +170,42 @@ def test_complete_lift_retires_corpse(monkeypatch):
     assert asyncio.run(_loot_fresh_corpses(ctx)) == 100
     assert asyncio.run(_loot_fresh_corpses(ctx)) == 0  # skipped: retired
     assert calls["n"] == 1
+
+
+def test_fully_weight_gated_corpse_never_retired(monkeypatch):
+    """Pack so full even the gold can't be lifted: ``loot_corpse`` returns
+    ``success=False`` with ``weight_gated=True`` and nothing lifted.
+
+    Regression: that fell through to the empty-open branch, so after
+    LOOT_MAX_ATTEMPTS such opens the corpse was retired into
+    ``_looted_corpses`` forever — stranding its (untouched) gold the moment
+    weight later freed up. A weight-gated open must NEVER count as an empty
+    open, even when zero items were lifted.
+    """
+    ctx = _bb_ctx()
+    corpse = _corpse()
+    monkeypatch.setattr(
+        combat_loop, "find_corpses", lambda ctx, max_dist=2: [corpse]
+    )
+
+    calls = {"n": 0}
+
+    async def _loot(_ctx, _serial):
+        calls["n"] += 1
+        # Pack maxed out: gold (sorted first) itself won't fit, so the lift
+        # loop skips everything. Nothing lifted, but the corpse is NOT empty.
+        return SimpleNamespace(
+            success=False, message="Corpse had nothing useful",
+            data={"items": 0, "gold": 0, "weight_gated": True},
+        )
+
+    monkeypatch.setattr(combat_loop, "loot_corpse", _loot)
+
+    # Open it far more times than LOOT_MAX_ATTEMPTS would retire on.
+    for _ in range(combat_loop.LOOT_MAX_ATTEMPTS + 2):
+        assert asyncio.run(_loot_fresh_corpses(ctx)) == 0
+
+    # Never retired: it stays eligible so a future weight-freed pass collects it.
+    assert corpse.serial not in ctx.blackboard["_looted_corpses"]
+    # And it was never counted toward the empty-open retirement budget.
+    assert corpse.serial not in ctx.blackboard["_loot_attempts"]
