@@ -402,7 +402,10 @@ def register_handlers(
                 p.self_state.mana = r.read_u16()
                 p.self_state.mana_max = r.read_u16()
                 p.self_state.gold = r.read_u32()
-                p.self_state.armor = r.read_u16()
+                # Physical resist / armor rating: ServUO writes it as a signed
+                # (short) and ClassicUO decodes it signed — a negative resist
+                # must not wrap to ~65500. (Ref: ServUO MobileStatus 0x11.)
+                p.self_state.armor = r.read_i16()
                 p.self_state.weight = r.read_u16()
 
             if flag >= 5 and r.remaining >= 2:
@@ -432,10 +435,14 @@ def register_handlers(
             # damage_min/max were never decoded. A trailing tithing u32
             # follows and must be consumed so any type-6 tail stays aligned.
             if flag >= 4 and r.remaining >= 8:
-                p.self_state.resist_fire = r.read_u16()
-                p.self_state.resist_cold = r.read_u16()
-                p.self_state.resist_poison = r.read_u16()
-                p.self_state.resist_energy = r.read_u16()
+                # The four AOS resists are signed (short) on the wire (ServUO
+                # casts the int resist, which a negative ResistanceMod can push
+                # below zero, to short; ClassicUO reads them signed). Reading
+                # them unsigned turned e.g. -5 into 65531.
+                p.self_state.resist_fire = r.read_i16()
+                p.self_state.resist_cold = r.read_i16()
+                p.self_state.resist_poison = r.read_i16()
+                p.self_state.resist_energy = r.read_i16()
                 if r.remaining >= 6:
                     p.self_state.luck = r.read_u16()
                     p.self_state.damage_min = r.read_u16()

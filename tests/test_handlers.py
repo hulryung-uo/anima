@@ -1458,6 +1458,71 @@ def test_character_status_aos_decodes_luck_and_damage():
     assert ss.damage_max == 19
 
 
+def _build_status_aos_negative_resists(serial: int) -> bytes:
+    """0x11 type-4 (AOS) self-status carrying a negative physical/armor resist
+    and a negative fire resist, exactly as ServUO emits them: a signed (short)
+    cast, i.e. two's-complement bytes on the wire (write_u16 masks to 0xFFFF).
+    """
+    buf = PacketWriter()
+    buf.write_u8(0x11)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u32(serial)
+    buf.write_ascii("Tester", 30)
+    buf.write_u16(48)   # hits
+    buf.write_u16(50)   # hits_max
+    buf.write_u8(0)     # name_change_flag
+    buf.write_u8(4)     # type/flag = 4 (AOS)
+    # extended block (type >= 1)
+    buf.write_u8(0)     # sex
+    buf.write_u16(80)   # str
+    buf.write_u16(70)   # dex
+    buf.write_u16(60)   # int
+    buf.write_u16(45)   # stam
+    buf.write_u16(50)   # stam_max
+    buf.write_u16(40)   # mana
+    buf.write_u16(55)   # mana_max
+    buf.write_u32(1234) # gold
+    buf.write_u16(-3 & 0xFFFF)   # phys resist / armor (negative)
+    buf.write_u16(150)  # weight
+    # stat_cap + followers (always present for self)
+    buf.write_u16(225)  # stat_cap
+    buf.write_u8(2)     # followers
+    buf.write_u8(5)     # followers_max
+    # AOS block (type >= 4)
+    buf.write_u16(-5 & 0xFFFF)   # fire (negative)
+    buf.write_u16(12)   # cold
+    buf.write_u16(13)   # poison
+    buf.write_u16(14)   # energy
+    buf.write_u16(300)  # luck
+    buf.write_u16(7)    # damage_min
+    buf.write_u16(19)   # damage_max
+    buf.write_u32(99)   # tithing points
+
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_character_status_decodes_negative_resists_signed():
+    """Regression: ServUO/ClassicUO treat the physical and AOS resists as
+    signed (short). A negative resist (from a negative ResistanceMod) must
+    decode to its negative value, not wrap to ~65500.
+    """
+    h, p, w = _make_stack()
+    serial = p.self_state.serial
+
+    h.dispatch(0x11, _build_status_aos_negative_resists(serial))
+
+    ss = p.self_state
+    # Alignment unaffected: the following block still reads correctly.
+    assert ss.resist_cold == 12
+    assert ss.luck == 300
+    assert ss.damage_max == 19
+    # The fix: negatives stay negative instead of wrapping to 65533 / 65531.
+    assert ss.armor == -3
+    assert ss.resist_fire == -5
+
+
 def _build_status_ml(serial: int, *, female: bool, race: int) -> bytes:
     """Build a 0x11 type-5 (ML) self-status packet matching ServUO's
     MobileStatusExtended wire order: gender byte, extended stats, the
