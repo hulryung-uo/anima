@@ -8,6 +8,18 @@ from dataclasses import dataclass, field
 from anima.perception.enums import Direction, MobileFlags, NotorietyFlag
 
 
+# Ghost body graphics, exactly mirroring ClassicUO's Mobile.IsDead
+# (Game/GameObjects/Mobile.cs): the two on-foot human ghosts PLUS the
+# mounted/flying ghost bodies. A mobile that dies while mounted or flying
+# turns into 0x025F-0x0260 / 0x02B6 / 0x02B7 — never 0x0192/0x0193 — so a
+# check limited to the on-foot pair silently fails to flag a mounted enemy's
+# corpse as dead. That corpse then keeps counting as a live hostile in the
+# swarm tally, in _find_target focus-fire, and in heal-target selection.
+_GHOST_BODIES: frozenset[int] = frozenset(
+    {0x0192, 0x0193, 0x02B6, 0x02B7} | set(range(0x025F, 0x0261))
+)
+
+
 @dataclass
 class MobileInfo:
     serial: int
@@ -40,7 +52,9 @@ class MobileInfo:
         # hits<=0. Mobiles we have never queried default hits/hits_max to 0 —
         # those must NOT count as dead (hits_max==0 guard), otherwise every
         # un-inspected mob would be treated as a corpse.
-        if self.body in (0x0192, 0x0193):  # ghost bodies
+        # _GHOST_BODIES covers the on-foot AND mounted/flying ghost graphics,
+        # matching ClassicUO Mobile.IsDead.
+        if self.body in _GHOST_BODIES:
             return True
         return self.hits_max > 0 and self.hits <= 0
 

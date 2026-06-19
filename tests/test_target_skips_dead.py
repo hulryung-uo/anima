@@ -24,6 +24,21 @@ def test_is_dead_ghost_body():
     assert MobileInfo(serial=1, body=0x0193).is_dead is True
 
 
+def test_is_dead_mounted_ghost_body():
+    # A mobile that dies while mounted/flying turns into one of these ghost
+    # graphics, NOT 0x0192/0x0193. ClassicUO Mobile.IsDead recognizes them;
+    # MobileInfo.is_dead must too, or a mounted enemy's corpse keeps counting
+    # as a live hostile. (Ref: ClassicUO Game/GameObjects/Mobile.cs IsDead.)
+    for body in (0x025F, 0x0260, 0x02B6, 0x02B7):
+        assert MobileInfo(serial=1, body=body).is_dead is True, f"0x{body:04X}"
+
+
+def test_is_dead_living_body_near_ghost_range_is_alive():
+    # A live body id just outside the mounted-ghost range must NOT be dead.
+    assert MobileInfo(serial=1, body=0x0261, hits_max=50, hits=37).is_dead is False
+    assert MobileInfo(serial=1, body=0x025E, hits_max=50, hits=37).is_dead is False
+
+
 def test_is_dead_known_health_bar_at_zero():
     # Known bar (hits_max > 0) reading zero == dead.
     m = MobileInfo(serial=1, body=0x0021, hits_max=50, hits=0)
