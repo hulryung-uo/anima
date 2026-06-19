@@ -39,9 +39,17 @@ async def use_on_target(
         return result
 
     cursor_id = result.data.get("cursor_id", 0)
+    # Echo the server's cursor flag (0=neutral, 1=harmful, 2=helpful) back on
+    # the target response. ``wait_for_target`` surfaces it (commit 79042c3) and
+    # ``cast_spell`` already replays it (commit 7a60b31), but this primitive —
+    # the use-tool-on-tile path behind mining (pickaxe -> rock) and smelting
+    # (ore -> forge) — dropped it, defaulting to 0. Strict servers reject a
+    # response whose flag does not match the request, silently no-opping the
+    # whole action even though we returned success.
+    cursor_flag = result.data.get("cursor_flag", 0)
 
     # Respond with tile target
-    return await target_tile(ctx, cursor_id, x, y, z, graphic)
+    return await target_tile(ctx, cursor_id, x, y, z, graphic, cursor_flag)
 
 
 async def use_on_object(
@@ -59,7 +67,10 @@ async def use_on_object(
         return result
 
     cursor_id = result.data.get("cursor_id", 0)
-    return await target_object(ctx, cursor_id, target_serial)
+    # Echo the server's requested cursor flag — see use_on_target above. This
+    # is the use-tool-on-object path (smelt ore -> forge, tinker tool -> ...).
+    cursor_flag = result.data.get("cursor_flag", 0)
+    return await target_object(ctx, cursor_id, target_serial, cursor_flag)
 
 
 async def wait_for_target(

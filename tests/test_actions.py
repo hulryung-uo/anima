@@ -199,6 +199,76 @@ class TestTargetPrimitives:
         assert result.success
         assert result.data["serial"] == 0x40001234
 
+    @pytest.mark.asyncio
+    async def test_use_on_target_echoes_cursor_flag(self):
+        """use_on_target replays the server's cursor flag on the tile response.
+
+        Mirrors test_cast_spell_echoes_cursor_flag for the use-tool-on-tile
+        path (mining pickaxe -> rock). wait_for_target surfaces the flag; this
+        primitive must pass it through to target_tile, or strict servers reject
+        the response and the action silently no-ops.
+        """
+        from anima.actions import target as target_mod
+
+        ctx = MagicMock()
+        ctx.conn.send_packet = AsyncMock()
+        ctx.perception.self_state.pending_target = None
+
+        captured: dict = {}
+
+        async def fake_wait_for_target(_ctx, timeout=3.0):
+            return ActionResult(
+                success=True,
+                data={"cursor_id": 0x99, "target_type": 1, "cursor_flag": 1},
+            )
+
+        async def fake_target_tile(_ctx, cursor_id, x, y, z, graphic=0, cursor_flag=0):
+            captured["cursor_id"] = cursor_id
+            captured["cursor_flag"] = cursor_flag
+            return ActionResult(success=True)
+
+        with patch.object(target_mod, "wait_for_target", fake_wait_for_target), \
+             patch.object(target_mod, "target_tile", fake_target_tile):
+            res = await target_mod.use_on_target(
+                ctx, tool_serial=0x123, x=10, y=20, z=0, graphic=0x021A,
+            )
+
+        assert res.success
+        assert captured["cursor_id"] == 0x99
+        assert captured["cursor_flag"] == 1
+
+    @pytest.mark.asyncio
+    async def test_use_on_object_echoes_cursor_flag(self):
+        """use_on_object replays the server's cursor flag on the object response."""
+        from anima.actions import target as target_mod
+
+        ctx = MagicMock()
+        ctx.conn.send_packet = AsyncMock()
+        ctx.perception.self_state.pending_target = None
+
+        captured: dict = {}
+
+        async def fake_wait_for_target(_ctx, timeout=3.0):
+            return ActionResult(
+                success=True,
+                data={"cursor_id": 0x55, "target_type": 0, "cursor_flag": 2},
+            )
+
+        async def fake_target_object(_ctx, cursor_id, serial, cursor_flag=0):
+            captured["serial"] = serial
+            captured["cursor_flag"] = cursor_flag
+            return ActionResult(success=True)
+
+        with patch.object(target_mod, "wait_for_target", fake_wait_for_target), \
+             patch.object(target_mod, "target_object", fake_target_object):
+            res = await target_mod.use_on_object(
+                ctx, tool_serial=0x123, target_serial=0x4000ABCD,
+            )
+
+        assert res.success
+        assert captured["serial"] == 0x4000ABCD
+        assert captured["cursor_flag"] == 2
+
 
 class TestInventoryPrimitives:
     def test_find_in_backpack_found(self):
