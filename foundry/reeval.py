@@ -22,6 +22,31 @@ from foundry.kernel.eval import EvalConfig, run_eval_multi
 from foundry.orchestrator import _prepare_worktree
 
 
+def _replication_ratio(recorded: float, held_out: float) -> float:
+    """How much of ``recorded`` fitness the held-out re-run reproduced.
+
+    The verdict bands (>=0.8 replicates, 0.5-0.8 weak, <0.5 demote) read this as
+    "fraction of the archived score that came back". A bare ``held_out/recorded``
+    INVERTS the moment recorded fitness is non-positive — and it can be: fitness
+    is ``gate * inner`` where ``inner`` includes a net-worth term off
+    ``gold_delta``, so a genome that bled gold (COMBAT/economic loops) archives a
+    negative total. Then a held-out run that got WORSE (more negative) yields a
+    ratio > 1 ("replicates"), while one that IMPROVED yields a ratio < 1 ("does
+    not replicate") — exactly backwards for the one tool whose job is to surface
+    demotion evidence.
+
+    Use a shortfall form that is monotone in held_out and matches the old
+    positive-fitness behaviour exactly: ``1 - (recorded - held_out)/|recorded|``.
+    Higher held_out always scores higher; for recorded > 0 it reduces to
+    ``held_out / recorded``. A recorded fitness of exactly 0 has no scale to
+    normalise against, so a held_out that also recovered ~0 replicates (ratio 1)
+    while any positive recovery reads as a clean over-replication.
+    """
+    if recorded == 0.0:
+        return 1.0 if held_out <= 0.0 else float("inf")
+    return 1.0 - (recorded - held_out) / abs(recorded)
+
+
 def reeval_genome(arc: Archive, g: Genome, seeds: int, window_s: int,
                   slot: int = 0) -> dict:
     cfg_src = g.config or {}
@@ -58,7 +83,7 @@ def reeval_genome(arc: Archive, g: Genome, seeds: int, window_s: int,
         out["held_out"] = res.score
         out["held_out_seeds"] = res.per_seed_fitness
         out["held_out_cell"] = list(res.cell)
-        out["ratio"] = res.score / g.fitness if g.fitness else float("inf")
+        out["ratio"] = _replication_ratio(g.fitness, res.score)
     else:
         out["error"] = res.error
     return out
