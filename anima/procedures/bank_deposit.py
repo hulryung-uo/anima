@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -35,6 +36,36 @@ logger = structlog.get_logger()
 # Valorite 0x8AB) is a colored ingot. Source: ServUO Misc/ResourceInfo.cs.
 from anima.skills.crafting.smelt import INGOT_GRAPHICS
 IRON_HUE = 0
+
+
+def _reconcile_bank_after_deposit(ctx: AgentContext, *, deposited: int) -> None:
+    """Add freshly-deposited gold to the cached bank balance.
+
+    Mirror image of ``buy_from_vendor._reconcile_bank_after_buy``: a buy the
+    *bank* pays decrements the cache, so a deposit that moves backpack gold
+    *into* the bank must increment it by the same amount. Without this the cache
+    only ever shrinks, so after a gather->sell->bank leg the agent's recorded
+    bank balance lags reality by everything it just deposited.
+
+    Why that strands the loop: the restock leg (planner Priority 4c and
+    buy_from_vendor._available_funds/_spendable_per_source) reads this very
+    cache. If the last check_bank_balance read a small value *before* the
+    deposit, the entry is still inside the 600s freshness window, so the planner
+    trusts it: it sees bal_amount < tool cost and disables buys for 10 minutes
+    even though the agent just banked hundreds of gold. Bumping the cache by the
+    deposited amount (and refreshing its timestamp) keeps cache == reality.
+
+    Only touches an *existing* cache entry — like the buy-side helper. With no
+    prior reading we don't know the pre-deposit balance, so leaving it absent
+    lets the planner's "unknown balance" branch read it from a banker instead.
+    """
+    if deposited <= 0:
+        return
+    bal_cache = ctx.blackboard.get("bank_balance")
+    if not bal_cache:
+        return
+    bal_cache["amount"] = max(0, bal_cache.get("amount", 0)) + deposited
+    bal_cache["ts"] = time.time()
 
 
 def _is_colored_ingot(item) -> bool:
@@ -167,6 +198,7 @@ class BankDeposit(Procedure):
 
         if deposited_count > 0:
             actual_deposited = max(0, gold_before - ss.gold)
+            _reconcile_bank_after_deposit(ctx, deposited=actual_deposited)
             return ProcedureResult(
                 success=True,
                 message=f"Deposited {actual_deposited}gp, {deposited_count} items",
