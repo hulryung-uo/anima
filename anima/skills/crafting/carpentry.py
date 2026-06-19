@@ -60,7 +60,8 @@ def _get_button_id(btn_type: int, index: int) -> int:
 # group_index matches ServUO CraftGroup order in DefCarpentry.cs
 CRAFT_TARGETS = [
     # (display_name, group_index, item_index, min_skill, boards_needed)
-    # Sorted by min_skill ascending — agent picks the highest-skill item it can make
+    # NOT sorted — _pick_target() selects the highest-min_skill feasible item
+    # explicitly, so list order does not matter.
     # Group 0=Other, 1=Furniture, 2=Containers, 3=Weapons, 4=Armor, 5=Instruments
     ("Barrel Staves", 0, 0, 0.0, 5),        # Other
     ("Barrel Lid", 0, 1, 11.0, 4),          # Other
@@ -116,6 +117,43 @@ class CraftCarpentry(Skill):
             return False
         return True
 
+    @staticmethod
+    def _pick_target(
+        skill_val: float, boards_available: int,
+    ) -> tuple[tuple[str, int, int, int] | None, tuple[str, int] | None]:
+        """Choose what to craft from CRAFT_TARGETS.
+
+        Returns ``(target, best_feasible)`` where *target* is
+        ``(name, group_index, item_index, boards_needed)`` for the item to
+        craft now, or ``None`` if nothing is craftable with the boards on
+        hand. *best_feasible* is ``(name, boards_needed)`` for the
+        highest-skill item the carpenter is skilled enough for but lacks
+        boards to make (used to signal a material shortage), or ``None``.
+
+        Picks the item with the HIGHEST ``min_skill`` the carpenter qualifies
+        for and can afford — higher-skill items give better skill gains and
+        sell for more. CRAFT_TARGETS is not sorted, so this scans for the max
+        explicitly rather than relying on list order (the old loop kept the
+        last list-order match, which was not the highest-skill item — e.g. an
+        80-skill carpenter crafted the 63.1-skill Lap Harp instead of the
+        78.9-skill Shepherd's Crook, gaining almost no skill).
+        """
+        target: tuple[str, int, int, int] | None = None
+        target_skill = -1.0
+        best_feasible: tuple[str, int] | None = None
+        best_feasible_skill = -1.0
+        for name, grp_idx, item_idx, min_skill, boards in CRAFT_TARGETS:
+            if skill_val < min_skill:
+                continue
+            if boards_available >= boards:
+                if min_skill > target_skill:
+                    target = (name, grp_idx, item_idx, boards)
+                    target_skill = min_skill
+            elif min_skill > best_feasible_skill:
+                best_feasible = (name, boards)
+                best_feasible_skill = min_skill
+        return target, best_feasible
+
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state
         world = ctx.perception.world
@@ -141,16 +179,7 @@ class CraftCarpentry(Skill):
         skill_info = ss.skills.get(CARPENTRY_SKILL_ID)
         skill_val = skill_info.value if skill_info else 0.0
 
-        # Find the best item to craft — pick highest min_skill we can make
-        # (higher skill items give better gains and sell for more)
-        target = None
-        best_feasible = None
-        for name, grp_idx, item_idx, min_skill, boards in CRAFT_TARGETS:
-            if skill_val >= min_skill:
-                if boards_available >= boards:
-                    target = (name, grp_idx, item_idx, boards)  # keeps updating → last/highest wins
-                elif best_feasible is None:
-                    best_feasible = (name, boards)
+        target, best_feasible = self._pick_target(skill_val, boards_available)
 
         if not target:
             feed = ctx.blackboard.get("activity_feed")
