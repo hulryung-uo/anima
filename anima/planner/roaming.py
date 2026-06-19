@@ -112,14 +112,26 @@ def _find_waypoint_toward(sx, sy, tx, ty, locations) -> object | None:
     1. Is closer to the target than we are
     2. Is closer to us than the target is
     3. Is roughly on the path (not a big detour)
+
+    Every distance is measured to the waypoint's *navigable* point
+    (``nav_x``/``nav_y``) — the spot the agent will actually walk to and the
+    same basis the rest of the navigation stack uses (``nearest_locations``,
+    ``_MoveToProcedure(waypoint.name, waypoint.nav_x, waypoint.nav_y)``).
+    Scoring on the raw ``.x``/``.y`` (which for indoor locations is a point
+    *inside* a building, far from its outdoor approach point) let an indoor
+    waypoint look like clean on-path progress while its approach point was
+    actually a big detour — the agent then walked to ``nav_x``/``nav_y`` and
+    lost ground, defeating the long-path routing this helper exists to do.
     """
     current_dist = max(abs(tx - sx), abs(ty - sy))
     best = None
     best_score = float("inf")
 
     for loc in locations:
-        loc_to_target = max(abs(tx - loc.x), abs(ty - loc.y))
-        loc_to_us = max(abs(sx - loc.x), abs(sy - loc.y))
+        wx = getattr(loc, "nav_x", loc.x)
+        wy = getattr(loc, "nav_y", loc.y)
+        loc_to_target = max(abs(tx - wx), abs(ty - wy))
+        loc_to_us = max(abs(sx - wx), abs(sy - wy))
 
         # Must be closer to target than we are
         if loc_to_target >= current_dist:
