@@ -51,9 +51,9 @@ async def select_context_menu_entry(
     entry_index: int,
 ) -> ActionResult:
     """Select an entry from the context menu by index."""
-    from anima.client.packets import build_context_menu_response
+    from anima.client.packets import build_context_menu_selection
 
-    await ctx.conn.send_packet(build_context_menu_response(serial, entry_index))
+    await ctx.conn.send_packet(build_context_menu_selection(serial, entry_index))
     logger.debug("context_menu_selected", serial=f"0x{serial:08X}", index=entry_index)
     return ActionResult(success=True)
 
