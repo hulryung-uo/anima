@@ -157,6 +157,36 @@ class TestGoalStack:
         assert s.is_preferred("mine_ore") is False
         assert s.is_forbidden("mine_ore") is False
 
+    def test_forbidden_honoured_across_whole_stack(self):
+        # A base goal forbids selling the ingots it is collecting. When a
+        # transient interrupt sub-goal is pushed on top, the base goal's
+        # protective forbid must still hold — forbidding is an unconditional
+        # contract, not just the active goal's intent.
+        s = GoalStack()
+        base = Goal(
+            name="collect_iron", description="",
+            forbidden_procedures={"sell_to_vendor"},
+        )
+        interrupt = Goal(name="flee", description="")  # no forbids of its own
+        s.push(base)
+        s.push(interrupt)
+        assert s.active is interrupt
+        # Buried base goal still forbids the procedure.
+        assert s.is_forbidden("sell_to_vendor") is True
+        # An unrelated procedure is not forbidden by anyone.
+        assert s.is_forbidden("mine_ore") is False
+
+    def test_preferred_stays_top_only(self):
+        # Preferring is intent, not a contract: only the active (top) goal's
+        # preferences count, even though forbidding spans the stack.
+        s = GoalStack()
+        base = Goal(name="b", description="", preferred_procedures={"mine_ore"})
+        top = Goal(name="t", description="", preferred_procedures={"bank_deposit"})
+        s.push(base)
+        s.push(top)
+        assert s.is_preferred("bank_deposit") is True
+        assert s.is_preferred("mine_ore") is False
+
     def test_snapshot(self):
         s = GoalStack()
         s.push(Goal(name="a", description=""))

@@ -163,11 +163,21 @@ class GoalStack:
         return procedure_name in active.preferred_procedures
 
     def is_forbidden(self, procedure_name: str) -> bool:
-        """True if the active goal explicitly forbids this procedure."""
-        active = self.active
-        if active is None:
-            return False
-        return procedure_name in active.forbidden_procedures
+        """True if *any* goal on the stack forbids this procedure.
+
+        Forbidding is a protective contract, not an intent: a base goal that
+        forbids ``sell_to_vendor`` (so the ingots it is accumulating are not
+        sold out from under it) must keep that procedure off the table even
+        while a transient interrupt sub-goal (flee, deposit gold, seek
+        resurrection) sits on top of it. Consulting only ``self.active`` would
+        silently void the base goal's protection the instant anything is
+        pushed above it. This mirrors the unconditional, whole-stack treatment
+        expiry already gets in ``update`` — preferring (intent) stays top-only
+        via ``is_preferred``, but forbidding is honoured stack-wide.
+        """
+        return any(
+            procedure_name in g.forbidden_procedures for g in self._stack
+        )
 
     def snapshot(self) -> dict:
         """Diagnostic snapshot for logging / observability."""
