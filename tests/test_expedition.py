@@ -72,6 +72,39 @@ class TestMiningExpeditionBasics:
         exp.mark_pile_collected(phantom)
         assert exp.piles == []
 
+    def test_mark_pile_collected_rearms_progress_clock(self):
+        """Collecting a pile is COLLECTING-phase progress: it must re-arm the
+        watchdog so a long-but-productive collection tour is not wiped to IDLE.
+
+        Regression for the watchdog false-positive: `note_ore_mined` (the only
+        other progress signal) fires only during MINING, so without this the
+        COLLECTING phase has no way to mark progress and a tour that runs past
+        max_phase_s gets its remaining piles cleared mid-collect.
+        """
+        exp = MiningExpedition()
+        exp.note_ore_mined(x=2460, y=558, bank_key=(307, 69))
+        exp.transition_to(Phase.COLLECTING)  # clears last_progress_at to 0.0
+        now = time.time()
+        # A collection tour that entered the phase 11m40s ago with no progress
+        # recorded would trip the watchdog...
+        exp.phase_started_at = now - 700.0
+        assert exp.last_progress_at == 0.0
+        assert exp.watchdog_expired(max_phase_s=600.0) is True
+        # ...but collecting a pile is verified progress and re-arms it.
+        pile = exp.piles[0]
+        exp.mark_pile_collected(pile)
+        assert exp.last_progress_at >= now
+        assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+    def test_mark_pile_collected_noop_does_not_rearm(self):
+        """Removing a pile that isn't tracked is not progress — no re-arm."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.COLLECTING)
+        exp.last_progress_at = 0.0
+        phantom = PileRecord(x=0, y=0, bank_key=(0, 0), est_amount=1, last_seen_ts=time.time())
+        exp.mark_pile_collected(phantom)
+        assert exp.last_progress_at == 0.0
+
     def test_transition_to_updates_phase_started_at(self):
         exp = MiningExpedition()
         t0 = time.time()

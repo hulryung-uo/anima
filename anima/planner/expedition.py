@@ -114,9 +114,23 @@ class MiningExpedition:
         ))
 
     def mark_pile_collected(self, pile: PileRecord) -> None:
-        """Remove the pile from memory. No-op if not present."""
+        """Remove the pile from memory. No-op if not present.
+
+        Removing a pile is the COLLECTING phase's verified progress event —
+        it shortens the collection tour toward completion — so it re-arms the
+        staleness watchdog exactly the way ``note_ore_mined`` does for MINING.
+        Without this, COLLECTING has NO progress signal (`note_ore_mined` only
+        fires while MINING), so `last_progress_at` stays 0.0 and the watchdog
+        measures purely from `phase_started_at`; a legitimately long collection
+        tour (many piles + far forge trips + batch smelting) then trips the
+        600s watchdog and wipes every remaining pile back to IDLE mid-collect,
+        destroying accumulated ore while the agent is actively working.
+        Only re-arm when a pile was actually removed — a no-op (missing pile)
+        is not progress.
+        """
         try:
             self.piles.remove(pile)
+            self.last_progress_at = time.time()
         except ValueError:
             pass
 
