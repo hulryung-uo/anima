@@ -77,3 +77,47 @@ def test_negative_cached_amount_floored_before_add():
     ctx = _ctx(bank_amount=-50)
     _reconcile_bank_after_deposit(ctx, deposited=100)
     assert ctx.blackboard["bank_balance"]["amount"] == 100
+
+
+def test_deposit_clears_buy_disable_latch():
+    """A deposit that refills the bank lifts the 10-min buy-disable cooldown.
+
+    REGRESSION: bumping the balance cache alone did not resume restocking.
+    Planner Priority 4c checks ``time.time() >= _buy_disabled_until`` BEFORE it
+    reads the (now fresh + sufficient) cache, so an earlier empty-bank latch
+    kept the agent tool-less on top of a full bank for up to 10 minutes. The
+    deposit reconcile must drop the latch once the balance can afford a tool.
+    """
+    ctx = _ctx(bank_amount=0)
+    ctx.blackboard["_buy_disabled_until"] = time.time() + 600  # latched
+    ctx.blackboard["_buy_blind_walk_count"] = 3
+    _reconcile_bank_after_deposit(ctx, deposited=500)
+    assert ctx.blackboard["bank_balance"]["amount"] == 500
+    assert ctx.blackboard["_buy_disabled_until"] == 0
+    assert ctx.blackboard["_buy_blind_walk_count"] == 0
+
+
+def test_tiny_deposit_below_tool_floor_keeps_latch():
+    """A deposit too small to afford even the cheapest tool leaves the latch.
+
+    Releasing the latch when the balance still can't buy anything would just
+    invite a doomed buy attempt that re-latches — wasted round trips.
+    """
+    from anima.procedures.buy_from_vendor import _MIN_PURCHASE_FUNDS
+
+    ctx = _ctx(bank_amount=0)
+    latch = time.time() + 600
+    ctx.blackboard["_buy_disabled_until"] = latch
+    _reconcile_bank_after_deposit(ctx, deposited=_MIN_PURCHASE_FUNDS - 1)
+    assert ctx.blackboard["bank_balance"]["amount"] == _MIN_PURCHASE_FUNDS - 1
+    assert ctx.blackboard["_buy_disabled_until"] == latch
+
+
+def test_deposit_without_latch_does_not_fabricate_keys():
+    """When no buy-disable latch is set, the reconcile leaves the blackboard
+    free of the latch keys (no spurious state for the planner to read)."""
+    ctx = _ctx(bank_amount=10)
+    _reconcile_bank_after_deposit(ctx, deposited=500)
+    assert ctx.blackboard["bank_balance"]["amount"] == 510
+    assert "_buy_disabled_until" not in ctx.blackboard
+    assert "_buy_blind_walk_count" not in ctx.blackboard

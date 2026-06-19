@@ -92,6 +92,23 @@ def _reconcile_bank_after_deposit(ctx: AgentContext, *, deposited: int) -> None:
     bal_cache["amount"] = max(0, bal_cache.get("amount", 0)) + deposited
     bal_cache["ts"] = time.time()
 
+    # Lift the buy-disable latch once the refilled balance can afford a tool.
+    # _buy_disabled_until is a 10-min latch set by buy_from_vendor (no delivery)
+    # or the planner (cached balance below tool cost). Planner Priority 4c gates
+    # the restock branch on `time.time() >= _buy_disabled_until` BEFORE it reads
+    # the balance cache, so bumping the cache alone isn't enough — a deposit that
+    # just banked hundreds of gold still leaves the agent tool-less for the rest
+    # of the latch (the exact gather->sell->bank->restock stall, one gate deeper).
+    # Once the post-deposit balance clears the cheapest-tool floor, drop the latch
+    # (and the blind-walk counter) so the next plan tick re-evaluates buying.
+    from anima.procedures.buy_from_vendor import _MIN_PURCHASE_FUNDS
+
+    if bal_cache["amount"] >= _MIN_PURCHASE_FUNDS:
+        if ctx.blackboard.get("_buy_disabled_until", 0):
+            ctx.blackboard["_buy_disabled_until"] = 0
+        if ctx.blackboard.get("_buy_blind_walk_count", 0):
+            ctx.blackboard["_buy_blind_walk_count"] = 0
+
 
 def _is_colored_ingot(item) -> bool:
     """True if this item is an ingot with a non-iron hue."""
