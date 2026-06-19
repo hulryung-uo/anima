@@ -294,7 +294,23 @@ class MemoryDB:
         return row[0] if row else 0
 
     async def prune_episodes(self, agent_name: str, max_count: int) -> int:
-        """Delete oldest episodes beyond max_count. Returns number deleted."""
+        """Evict the *least memorable* episodes beyond max_count.
+
+        Returns the number deleted.
+
+        Pruning purely by ``timestamp ASC`` discards the oldest rows regardless
+        of how much they matter — so the rare high-signal episodes (a death or
+        heavy loss = large negative reward, a windfall = large positive reward;
+        the very ones ``reflect`` distills into knowledge and ``record_episode``
+        feeds into the location-value map) get thrown away while recent
+        zero-reward noise (neutral speech, no-op moves) is kept. That silently
+        erodes exactly the experiences future decision-making leans on, and
+        mirrors the already-fixed importance-aware journal prune.
+
+        Evict by ``ABS(reward) ASC, timestamp ASC`` instead: the flattest,
+        oldest episodes go first and high-magnitude memories are protected from
+        the cap in either reward direction.
+        """
         count = await self.count_episodes(agent_name)
         if count <= max_count:
             return 0
@@ -302,7 +318,7 @@ class MemoryDB:
         await self.db.execute(
             """DELETE FROM episodes WHERE id IN (
                  SELECT id FROM episodes WHERE agent_name = ?
-                 ORDER BY timestamp ASC LIMIT ?
+                 ORDER BY ABS(reward) ASC, timestamp ASC LIMIT ?
                )""",
             (agent_name, to_delete),
         )

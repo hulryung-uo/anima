@@ -78,6 +78,43 @@ class TestEpisodes:
         assert await db.count_episodes("Anima") == 5
 
     @pytest.mark.asyncio
+    async def test_prune_keeps_high_signal_episodes(self) -> None:
+        """Pruning must evict the flattest (|reward|~0) episodes first and
+        protect high-magnitude memories — a death (large negative reward) or a
+        windfall (large positive reward) — regardless of age. Uses in-memory
+        SQLite so the ordering, not a temp file, is what's under test."""
+        mem = MemoryDB(":memory:")
+        await mem.init()
+        try:
+            # A big-signal memory recorded FIRST (oldest): a near-death event.
+            death = await mem.record_episode(
+                "Anima", 0, 0, "melee_attack", "ettin", "death", reward=-20.0
+            )
+            # A big-signal windfall, also old.
+            windfall = await mem.record_episode(
+                "Anima", 0, 0, "loot", "corpse", "success", reward=15.0
+            )
+            # Then a flood of recent, zero-signal noise.
+            for i in range(8):
+                await mem.record_episode(
+                    "Anima", 0, 0, "speak", f"hello_{i}", "neutral", reward=0.0
+                )
+
+            # 10 episodes; keep only 2.
+            pruned = await mem.prune_episodes("Anima", max_count=2)
+            assert pruned == 8
+            assert await mem.count_episodes("Anima") == 2
+
+            survivors = await mem.query_episodes("Anima", limit=10)
+            survivor_ids = {ep.id for ep in survivors}
+            # The two high-|reward| memories survive even though they are the
+            # OLDEST rows; the recent zero-reward noise is what gets evicted.
+            assert survivor_ids == {death, windfall}
+            assert all(abs(ep.reward) > 0 for ep in survivors)
+        finally:
+            await mem.close()
+
+    @pytest.mark.asyncio
     async def test_agent_name_isolation(self, db: MemoryDB) -> None:
         await db.record_episode("Anima", 1000, 2000, "go", "tavern", "success")
         await db.record_episode("Other", 1000, 2000, "go", "bank", "success")
