@@ -4885,6 +4885,19 @@ def _is_live_hostile(m, ss, attackable) -> bool:
     attack and who we run from. Mirror the combat filter here so the same
     population drives both decisions. Mobs (non-human bodies) are unaffected;
     test mobs that omit ``body`` default to 0 (non-human) and stay hostile.
+
+    The same asymmetry exists for INVULNERABLE / blessed mobiles (yellow health
+    bar): ``combat_loop._find_target`` and ``_adjacent_hostiles`` both *skip* a
+    mobile whose ``is_yellow_health`` is set (a Healer / protected town NPC that
+    takes zero damage however long we swing). The flee gate previously counted
+    such an immortal mobile as part of the "swarm". Acutely relevant since the
+    survival-arena Healer NPC was co-located at the resurrection spot (kernel
+    commits K1+/K1/K3): once the agent clears the Ettins/HeadlessOnes, the
+    adjacent immortal Healer keeps the hostile count above the swarm floor, so a
+    wounded agent flees the unkillable Healer instead of healing in place on a
+    fight it has already won — the exact win-then-bleed-out failure this gate
+    exists to prevent. ``is True`` (not truthy) so test mobs lacking the field
+    aren't mis-excluded.
     """
     from anima.perception.enums import NotorietyFlag
 
@@ -4892,6 +4905,10 @@ def _is_live_hostile(m, ss, attackable) -> bool:
         return False
     notoriety = getattr(m, "notoriety", None)
     if notoriety not in attackable:
+        return False
+    # An invulnerable / blessed mobile (yellow health bar) can never be killed
+    # and is never a foe we fight, so it is never a foe we flee from either.
+    if getattr(m, "is_yellow_health", False) is True:
         return False
     # A bare-gray human is not a foe we ever attack -> not one we flee from.
     if getattr(m, "body", 0) in _HUMAN_BODIES and notoriety == NotorietyFlag.ATTACKABLE:
