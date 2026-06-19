@@ -143,10 +143,16 @@ class CharacterAppearance:
         shirt_hue = random.choice(CLOTHING_HUES)
         pants_hue = random.choice(CLOTHING_HUES)
 
-        # Randomize stats (total = 80)
+        # Randomize stats. Modern ServUO (NewCharacterCreation) requires each
+        # stat in 10..60 and the total to equal EXACTLY 90 — an off-target
+        # total is rescaled, and any stat pushed past 60 by the rescale resets
+        # the whole spread to 10/10/10 (see PERSONA_STATS note above). The
+        # legacy total of 80 silently triggered that reset, so we target 90 and
+        # clamp BOTH bounds of dexterity so intelligence (the remainder) also
+        # stays within 10..60.
         strength = random.randint(10, 60)
-        remaining = 80 - strength
-        dexterity = random.randint(10, min(60, remaining - 10))
+        remaining = 90 - strength
+        dexterity = random.randint(max(10, remaining - 60), min(60, remaining - 10))
         intelligence = remaining - dexterity
 
         return CharacterAppearance(
