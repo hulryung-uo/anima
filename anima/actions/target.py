@@ -166,6 +166,9 @@ async def cancel_target(ctx: AgentContext) -> ActionResult:
         return ActionResult(success=True, message="No target to cancel")
 
     cursor_id = ss.pending_target.get("cursor_id", 0)
+    # Echo back the request's type byte and cursor flag — see below.
+    target_type = ss.pending_target.get("target_type", 0)
+    cursor_flag = ss.pending_target.get("cursor_flag", 0)
     ss.pending_target = None
 
     # Send the canonical escape-cancel. ServUO recognises a cursor cancel ONLY
@@ -184,7 +187,21 @@ async def cancel_target(ctx: AgentContext) -> ActionResult:
     # so with TargetIDValidation enabled and a stale cursor_id the server
     # returns without cancelling and the cursor stays pending forever, wedging
     # every subsequent targeted action.
+    #
+    # The type byte and cursor flag must ECHO the original request, not be
+    # hardcoded to 0. ClassicUO's TargetManager.CancelTarget()
+    # (TargetManager.cs:210) sends
+    #   ``Send_TargetCancel(TargetingState, _targetCursorId, (byte)TargetingType)``
+    # i.e. the cursor's own type byte (CursorTarget) and its harmful/helpful
+    # flag (TargetingType), both captured when the 0x6C request arrived. The old
+    # code wrote type=0/flag=0 unconditionally, so the cancel for a ground
+    # cursor (request type 1) or a harmful/helpful cursor went out with the
+    # wrong header bytes — a mismatch a flag-validating server can reject,
+    # leaving the cursor open and wedging the next targeted action. The 0x6C
+    # handler already stashes both fields in ``pending_target`` (handlers.py
+    # ~1297), so replay them here.
     await ctx.conn.send_packet(build_target_response(
-        target_type=0, cursor_id=cursor_id, serial=0, x=0xFFFF, y=0xFFFF,
+        target_type=target_type, cursor_id=cursor_id, serial=0,
+        x=0xFFFF, y=0xFFFF, cursor_flag=cursor_flag,
     ))
     return ActionResult(success=True)
