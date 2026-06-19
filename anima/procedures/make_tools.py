@@ -78,21 +78,32 @@ class MakeTools(Procedure):
     def _decide_craft_target(self, ctx: AgentContext) -> str | None:
         """Decide what to craft based on what's missing and skill level.
 
-        If Tinkering is too low for tools, craft simple items to train first.
+        Priority is the *resource the planner routed us here to restock*, not
+        skill training: a worn-out pickaxe/hatchet stalls the entire
+        gather→smelt→craft loop (mine_ore.execute surfaces MISSING_RESOURCE and
+        the planner selects make_tools precisely to replace it). Both Pickaxe
+        and Hatchet are minSkill-0 recipes on this shard, so a low-skill smith
+        CAN craft one (low success, but it eventually lands); the old
+        ``skill < 25 → always Tinker's Tools`` short-circuit instead burned
+        ingots on tinker tools forever and never produced the missing tool, so
+        the gather loop never recovered. We only craft Tinker's Tools ahead of
+        a missing gather tool when we don't yet hold a spare (execute() uses
+        tools[0] and tinker tools wear out too — a self-replicating spare keeps
+        the chain alive).
         """
         tinker_skill = _get_tinker_skill(ctx)
 
-        # Very low skill → Tinker's Tools (self-replicating, requires ~0 skill)
-        if tinker_skill < 25.0:
+        # Bootstrap: keep a spare tinker tool (self-replicating, minSkill 0).
+        # execute() consumes tools[0]; without a spare a single break ends the
+        # whole tinkering chain.
+        if len(find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS)) < 2:
             return "Tinker's Tools"
 
-        # Mid+ skill → craft whatever is missing
+        # Restock the gather tool the planner is waiting on, at ANY skill.
         if not find_in_backpack(ctx, PICKAXE_GRAPHICS):
             return "Pickaxe"
         if not find_in_backpack(ctx, HATCHET_GRAPHICS):
             return "Hatchet"
-        if len(find_in_backpack(ctx, TINKER_TOOLS_GRAPHICS)) < 2:
-            return "Tinker's Tools"
 
         # Training mode — all tools present but Tinkering below target.
         # Craft extra pickaxes: useful (mining consumes them) and trains the
