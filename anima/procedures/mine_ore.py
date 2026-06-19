@@ -311,14 +311,24 @@ class MineOre(Procedure):
                     ground_pile=drop_verified,
                 )
 
-            # Track consecutive successful mines at the same (x, y).
-            # After SAME_SPOT_MINE_LIMIT hits, pause this bank so the
-            # agent walks to a fresh spot — ServUO banks respawn faster
-            # than natural depletion in low-skill windows.
+            # Track consecutive successful mines on the same *mined tile*
+            # (tx, ty), not the player's footing (ss.x, ss.y). The agent
+            # stands still and swings at a target up to SEARCH_RADIUS tiles
+            # away, so the player tile and the mined tile can fall into
+            # different ServUO 8x8 ore banks at a bank boundary. Keying the
+            # voluntary cooldown on the player tile pauses the wrong bank —
+            # the agent's footing bank — while the actually over-mined bank
+            # stays selectable and keeps getting hammered. Key on the mined
+            # tile so the pause lands on the bank that is being depleted,
+            # consistent with _trip_bank (which uses _bank_key(tx, ty)).
+            #
+            # After SAME_SPOT_MINE_LIMIT hits, pause that bank so the agent
+            # walks to a fresh spot — ServUO banks respawn faster than
+            # natural depletion in low-skill windows.
             same_spot = ctx.blackboard.setdefault(
                 "_mine_same_spot", {"pos": None, "count": 0}
             )
-            cur_pos = (ss.x, ss.y)
+            cur_pos = (tx, ty)
             if same_spot.get("pos") == cur_pos:
                 same_spot["count"] = same_spot.get("count", 0) + 1
             else:
@@ -328,12 +338,12 @@ class MineOre(Procedure):
                 voluntary_cd = ctx.blackboard.setdefault(
                     "_voluntary_cooldown_banks", {}
                 )
-                bk = _bank_key(ss.x, ss.y)
+                bk = _bank_key(tx, ty)
                 voluntary_cd[bk] = time.time()
                 logger.info(
                     "mine_same_spot_pause",
                     bank=str(bk),
-                    pos=f"({ss.x},{ss.y})",
+                    pos=f"({tx},{ty})",
                     after=same_spot["count"],
                 )
                 same_spot["pos"] = None
