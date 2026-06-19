@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import TYPE_CHECKING
@@ -69,5 +70,20 @@ async def wait_for_journal(
             if match:
                 idx, text = match
                 return ActionResult(success=True, data={"index": idx, "text": text})
+    else:
+        # No event bus available — poll the journal directly. Mirrors the
+        # fallback in target.py / vendor.py / check_bank_balance.py so this
+        # primitive still works when ctx.bus is None (e.g. headless evals,
+        # unit harnesses). Without this branch the function would return a
+        # failure immediately even if a matching entry already exists.
+        deadline = time.monotonic() + timeout
+        while True:
+            match = _check()
+            if match:
+                idx, text = match
+                return ActionResult(success=True, data={"index": idx, "text": text})
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.1)
 
     return ActionResult(success=False, message="Journal pattern timeout")

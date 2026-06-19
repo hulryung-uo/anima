@@ -410,3 +410,81 @@ class TestActionsFacade:
                 assert proc_name in doc, (
                     f"docs/actions.md missing procedure: {proc_name} ({py.name})"
                 )
+
+
+# ---------------------------------------------------------------------------
+# wait_for_journal — no-bus polling fallback
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForJournalNoBus:
+    """When ctx.bus is None the helper must still poll the journal instead of
+    failing instantly. Regression: the original code only had a bus branch, so
+    an already-present matching entry was reported as a timeout."""
+
+    def _make_ctx(self):
+        import time
+
+        from anima.perception.enums import MessageType
+        from anima.perception.social_state import SocialState
+
+        ctx = MagicMock()
+        ctx.bus = None
+        social = SocialState()
+        ctx.perception.social = social
+        return ctx, social, MessageType, time
+
+    @pytest.mark.asyncio
+    async def test_matches_existing_entry_without_bus(self):
+        from anima.actions.journal import wait_for_journal
+
+        ctx, social, MessageType, _time = self._make_ctx()
+        # Entry already present (timestamp in the future relative to `since`
+        # is guaranteed because add_speech stamps time.time() at call).
+        social.add_speech(
+            serial=1, name="Forge", text="You put the ore into the forge.",
+            msg_type=MessageType.SYSTEM,
+        )
+
+        result = await wait_for_journal(
+            ctx, ["into the forge"], timeout=1.0, since=0.0,
+        )
+        assert result.success
+        assert result.data["index"] == 0
+        assert "forge" in result.data["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_times_out_without_bus_when_no_match(self):
+        from anima.actions.journal import wait_for_journal
+
+        ctx, social, MessageType, _time = self._make_ctx()
+        social.add_speech(
+            serial=1, name="Forge", text="something unrelated",
+            msg_type=MessageType.SYSTEM,
+        )
+
+        result = await wait_for_journal(
+            ctx, ["into the forge"], timeout=0.2, since=0.0,
+        )
+        assert not result.success
+        assert "timeout" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_matches_entry_arriving_after_call_without_bus(self):
+        from anima.actions.journal import wait_for_journal
+
+        ctx, social, MessageType, _time = self._make_ctx()
+
+        async def _emit():
+            await asyncio.sleep(0.05)
+            social.add_speech(
+                serial=1, name="Forge", text="You smelt the ore.",
+                msg_type=MessageType.SYSTEM,
+            )
+
+        task = asyncio.create_task(_emit())
+        result = await wait_for_journal(
+            ctx, ["smelt the ore"], timeout=2.0, since=0.0,
+        )
+        assert result.success
+        await task
