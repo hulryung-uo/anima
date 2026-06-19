@@ -111,9 +111,17 @@ class TileInfo:
             top_z = s.z + s.height
 
             if s.impassable and not s.surface:
-                # Blocker — check if it overlaps with our body at current_z
-                # Our body occupies [current_z, current_z + char_height)
-                if top_z > current_z and s.z < current_z + char_height:
+                # Blocker — check if it overlaps with our body at current_z.
+                # Our body occupies [current_z, current_z + char_height).
+                # A great many impassable, non-surface statics (lava, statues,
+                # webs, grapevines: ~1000 graphics in tiledata) have height==0,
+                # so top_z == s.z. A naive `top_z > current_z` test then lets a
+                # blocker sitting flush at the agent's feet (s.z == current_z)
+                # read as walkable, and A* routes a path straight through it.
+                # A zero-height blocker still occupies its own z-plane, so its
+                # effective top is s.z + max(height, 1).
+                blocker_top = s.z + max(s.height, 1)
+                if blocker_top > current_z and s.z < current_z + char_height:
                     return False, current_z
             elif s.surface:
                 # Static surface (e.g. cave floor) — walkable even if land is void
