@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -421,6 +422,20 @@ class Avatar:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
             self._background_tasks = []
+        # Close the live TCP connection. main.py's reconnect loop calls
+        # avatar.close() in a `finally`, then loops back into Avatar.create()
+        # which builds a brand-new UoConnection. Without this the previous
+        # socket/StreamWriter is never closed and leaks an fd (and a half-open
+        # TCP session) on every reconnect. _close() is idempotent.
+        conn = getattr(self, "conn", None)
+        closer = getattr(conn, "_close", None)
+        if callable(closer):
+            try:
+                result = closer()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as e:  # never let cleanup mask the original error
+                logger.warning("conn_close_failed", error=str(e))
         if self.memory_db:
             await self.memory_db.close()
         if hasattr(self, "_log_sub"):

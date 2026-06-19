@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from unittest.mock import MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -69,4 +70,48 @@ async def test_close_is_idempotent_with_no_tasks():
     # No background tasks and no _log_sub — close() must not raise.
     await avatar.close()
     await avatar.close()
+    assert avatar._background_tasks == []
+
+
+@pytest.mark.asyncio
+async def test_close_closes_the_tcp_connection():
+    """Regression guard: close() must close the UoConnection.
+
+    main.py's reconnect loop calls avatar.close() then re-runs Avatar.create()
+    with a fresh UoConnection. If close() never closes the old connection the
+    socket/StreamWriter leaks an fd (and a half-open TCP session) per reconnect.
+    """
+    avatar = _bare_avatar()
+    avatar.memory_db = None
+
+    conn = MagicMock()
+    conn._close = AsyncMock()
+    avatar.conn = conn
+
+    await avatar.close()
+
+    conn._close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_survives_connection_close_error():
+    """A failure while closing the connection must not mask shutdown.
+
+    Background tasks must still be cancelled and the list cleared even when
+    conn._close() raises (e.g. writer already half-closed by the server).
+    """
+    avatar = _bare_avatar()
+    avatar.memory_db = None
+
+    conn = MagicMock()
+    conn._close = AsyncMock(side_effect=RuntimeError("writer already gone"))
+    avatar.conn = conn
+
+    task = asyncio.create_task(asyncio.sleep(3600))
+    avatar._background_tasks.append(task)
+
+    await avatar.close()  # must not raise
+
+    conn._close.assert_awaited_once()
+    assert task.cancelled()
     assert avatar._background_tasks == []
