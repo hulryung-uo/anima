@@ -483,9 +483,18 @@ async def _loot_fresh_corpses(ctx: AgentContext) -> int:
             continue
         result = await loot_corpse(ctx, corpse.serial)
         if result.success:
-            looted.add(corpse.serial)
-            attempts.pop(corpse.serial, None)
             gold += result.data.get("gold", 0)
+            # A weight-gated lift is PARTIAL — valuables remain in the corpse
+            # because the pack hit its headroom band mid-lift. Retiring it here
+            # would strand that remainder forever; instead leave it eligible so
+            # the next post-kill pass (after a sell/bank frees up weight) picks
+            # up where this one stopped. A corpse emptied to completion retires
+            # normally so we don't wastefully re-open it.
+            if result.data.get("weight_gated"):
+                attempts.pop(corpse.serial, None)
+            else:
+                looted.add(corpse.serial)
+                attempts.pop(corpse.serial, None)
         else:
             # Empty open: count it, and only retire the corpse once it has
             # cost us LOOT_MAX_ATTEMPTS opens (so a genuinely-empty corpse

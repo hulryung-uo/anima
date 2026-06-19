@@ -113,7 +113,7 @@ async def loot_corpse(ctx: AgentContext, corpse_serial: int) -> ActionResult:
     Sends DoubleClick on the corpse, waits for the server to stream the
     container contents (0x3C), then lifts gold (0x0EED) and
     vendor-sellable items one by one. Returns counts in ``data``
-    (``items``, ``gold``).
+    (``items``, ``gold``, ``weight_gated``).
     """
     ss = ctx.perception.self_state
     backpack = ss.equipment.get(LAYER_BACKPACK)
@@ -149,6 +149,14 @@ async def loot_corpse(ctx: AgentContext, corpse_serial: int) -> ActionResult:
             _loot_weight_est(it.graphic, it.amount),
         )
     )
+    # When the weight gate ``break``s the loop, valuables are still sitting in
+    # the corpse — the lift was PARTIAL, not complete. The caller's per-corpse
+    # dedup (``combat_loop._loot_fresh_corpses``) must NOT then retire the
+    # corpse forever, or the stranded gold/items are lost the moment the pack
+    # later frees up (sell/bank). Surface that distinction so the caller can
+    # keep a weight-gated corpse eligible for a retry, while still retiring a
+    # corpse that was emptied to completion.
+    weight_gated = False
     for it in candidates:
         is_gold = it.graphic == GOLD_GRAPHIC
         est = _loot_weight_est(it.graphic, it.amount)
@@ -159,6 +167,7 @@ async def loot_corpse(ctx: AgentContext, corpse_serial: int) -> ActionResult:
             ss.weight_max > 0
             and projected_weight + est > ss.weight_max - WEIGHT_HEADROOM
         ):
+            weight_gated = True
             break
         await ctx.conn.send_packet(build_pick_up(it.serial, it.amount))
         await asyncio.sleep(LIFT_DELAY_S)
@@ -183,5 +192,5 @@ async def loot_corpse(ctx: AgentContext, corpse_serial: int) -> ActionResult:
             if items_picked
             else "Corpse had nothing useful"
         ),
-        data={"items": items_picked, "gold": gold_picked},
+        data={"items": items_picked, "gold": gold_picked, "weight_gated": weight_gated},
     )
