@@ -405,15 +405,24 @@ class Planner:
 
     async def tick(self, ctx: AgentContext) -> ProcedureResult | None:
         """One planner cycle: select procedure → run it → return result."""
+        # A forced-fallback window is the liveness watchdog's last line of
+        # defense against a freeze, so it OUTRANKS the health break. The
+        # watchdog only opens this window after _WATCHDOG_STALL_S of no
+        # progress — and a 60s health break is itself a no-progress stall
+        # the watchdog is meant to break out of. Checking the health break
+        # first would swallow the forced fallback for the rest of the break,
+        # re-freezing the very agent the watchdog just tried to free.
+        force_fallback = _time.time() < self._force_fallback_until
+
         # Planner health break — after a loop was detected we pause
         # selection briefly so the environment has a chance to change.
-        if _time.time() < self._health_break_until:
+        if not force_fallback and _time.time() < self._health_break_until:
             return None
 
         # During a forced-fallback window (set by the liveness watchdog)
         # prefer a guaranteed-liveness activity over normal selection.
         proc = None
-        if _time.time() < self._force_fallback_until:
+        if force_fallback:
             proc = await self._fallback_procedure(ctx)
             if proc is not None:
                 logger.info("planner_fallback_selected", procedure=proc.name)
