@@ -10,6 +10,7 @@ import structlog
 
 from anima.client.packets import build_unicode_speech
 from anima.memory.rewards import get_reward
+from anima.perception.enums import MessageType
 
 if TYPE_CHECKING:
     from anima.brain.behavior_tree import BrainContext, Status
@@ -72,14 +73,26 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     text = speech.get("text", "").strip()
     speaker = speech.get("name", "someone")
     serial = speech.get("serial", 0)
+    msg_type = speech.get("type", 0)
 
     # Don't respond to our own speech, system messages, or NPCs
     if serial == ctx.perception.self_state.serial:
         return Status.FAILURE
     if serial == 0xFFFFFFFF or speaker.lower() == "system":
         return Status.FAILURE
-    if serial and serial < 0x40000000:
-        # NPC serial (not a player) — ignore, don't waste LLM calls
+    # In UO the 0x40000000 boundary separates MOBILES (serial < 0x40000000,
+    # both players AND NPCs) from ITEMS (serial >= 0x40000000) — it does NOT
+    # separate NPCs from players. The previous `serial < 0x40000000` guard was
+    # therefore inverted: it dropped EVERY player's speech, leaving the agent
+    # mute to all live interaction. Reject only the things that genuinely are
+    # not a person talking to us: item-range serials and SYSTEM-type lines
+    # (server-emitted text such as cliloc/region messages). REGULAR/EMOTE/
+    # WHISPER/YELL from a real mobile fall through and get a reply.
+    if serial and serial >= 0x40000000:
+        # Item/multi-range serial — not a mobile, can't be a person speaking.
+        return Status.FAILURE
+    if msg_type == MessageType.SYSTEM:
+        # Server system message routed through the speech path — not chatter.
         return Status.FAILURE
 
     # Publish to activity feed
