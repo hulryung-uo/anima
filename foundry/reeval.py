@@ -160,6 +160,37 @@ def _verdict(r: dict) -> str:
     return "; ".join(notes)
 
 
+def _is_cell_comparable(r: dict) -> bool:
+    """Whether ``r``'s held-out run is valid replication evidence for the cell
+    its archived fitness scores.
+
+    The replication ratio normalises the held-out score against the genome's
+    RECORDED fitness, which was earned in ``r["cell"]``. When the re-run DRIFTS
+    to a different behavioral cell (``held_out_cell != cell``) the two numbers
+    describe different niches, so the ratio is not a like-for-like replication
+    measure — exactly why ``_pool_confirmation`` (orchestrator) refuses to pool
+    an off-cell confirm round into the cell's reliability bound. A failed eval is
+    not comparable either.
+    """
+    return bool(r.get("ok")) and list(r.get("held_out_cell", [])) == list(r["cell"])
+
+
+def _comparable_ratios(results: list[dict]) -> tuple[list[float], int]:
+    """Split ok re-runs into (ratios that legitimately measure replication for
+    their archived cell, count of ok runs DROPPED for cell drift).
+
+    The cross-genome median is this tool's headline demotion-evidence number and
+    must summarise like-for-like replications only; an off-cell re-run's ratio
+    (e.g. a COMBAT|2 archive whose re-run landed COMBAT|1) compares two niches
+    and would skew that median the same way a doubled or ``inf`` entry would.
+    Drifted genomes are still reported per-line via ``_verdict`` ("CELL DRIFT");
+    they are only withheld from the aggregate.
+    """
+    ratios = [r["ratio"] for r in results if _is_cell_comparable(r)]
+    n_drift = sum(1 for r in results if r.get("ok") and not _is_cell_comparable(r))
+    return ratios, n_drift
+
+
 def _main(argv: list[str]) -> int:
     import argparse
 
@@ -199,7 +230,7 @@ def _main(argv: list[str]) -> int:
         print("nothing to re-eval (pass genome ids or --elites)")
         return 2
 
-    ratios = []
+    results: list[dict] = []
     for g in targets:
         print(f"[reeval] {g.id} cell={g.cell} recorded={g.fitness:.3f} "
               f"persona={g.config.get('persona')}/{g.config.get('fixed_start')} …")
@@ -208,13 +239,20 @@ def _main(argv: list[str]) -> int:
             print(f"[reeval] {g.id}: held-out {r['held_out']:.3f} "
                   f"(seeds {[round(v, 2) for v in r['held_out_seeds']]}) "
                   f"ratio {r['ratio']:.2f} → {_verdict(r)}")
-            ratios.append(r["ratio"])
+            results.append(r)
         else:
             print(f"[reeval] {g.id}: {_verdict(r)}")
 
+    # The headline median summarises like-for-like replications only: an off-cell
+    # re-run's ratio compares two different niches, so it is reported per-line
+    # (CELL DRIFT) but kept OUT of the aggregate.
+    ratios, n_drift = _comparable_ratios(results)
     summary = _summarize_ratios(ratios)
     if summary:
         print(f"\n[reeval] {summary}")
+    if n_drift:
+        print(f"[reeval] {n_drift} genome(s) excluded from the median: held-out "
+              f"cell drifted from the archived cell (not like-for-like)")
     return 0
 
 
