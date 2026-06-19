@@ -104,10 +104,22 @@ def history(archive: Archive, limit: int = 12) -> str:
     # for tricks)", steering the LLM mutator to copy the recipe the rest of the
     # pipeline deliberately distrusts. (Function-scope import mirrors
     # _archive_context_lines and avoids a select<->observe module cycle.)
-    from foundry.select import _selection_quality
+    from foundry.select import _selection_quality, targetable_cells
 
+    # Mirror the targetable-cell filter the rest of the pipeline already applies
+    # (select.TARGET_PROFESSIONS, _archive_context_lines, status.render): the
+    # kernel's archive.elites() still INCLUDES a NONE-fallback-row elite — a
+    # failed agent that gained no trade skill and banked a high-variance NONE
+    # score (the scoring artifact the held-out corrections flagged, e.g.
+    # g_00118). Listing it HERE under "the PROVEN recipes (mine these for
+    # tricks)" tells the LLM mutator to copy a recipe that produced NO
+    # profession progress — the exact recipe select never targets, the archive
+    # panel never counts, and status never tables. Drop the NONE row so the
+    # recipe list describes the same trusted universe as every other consumer.
+    targetable = {cell_to_str(c) for c in targetable_cells()}
+    proven = [g for g in archive.elites() if cell_to_str(g.cell) in targetable]
     lines = ["## Current cell elites — the PROVEN recipes (mine these for tricks)"]
-    for e in sorted(archive.elites(), key=lambda g: -_selection_quality(g)):
+    for e in sorted(proven, key=lambda g: -_selection_quality(g)):
         lines.append(f"- {e.cell} {e.fitness:.2f} ({e.id}): “{e.hypothesis}”")
     lines.append("")
     lines.append("## Prior mutations and what actually happened (learn from these)")
