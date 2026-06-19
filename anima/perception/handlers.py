@@ -1536,7 +1536,7 @@ def register_handlers(
     handler.register(0x88, handle_open_paperdoll)
 
     def handle_health_bar_status(packet_id: int, data: bytes) -> None:
-        """0x17 HealthBarStatusUpdate — color flags on a mobile's health bar.
+        """0x16/0x17 NewHealthbarUpdate — color flags on a mobile's health bar.
 
         Variable packet. Format (ServUO HealthbarPoison/HealthbarYellow,
         Packets.cs:3792-3838):
@@ -1585,7 +1585,17 @@ def register_handlers(
             mob.is_poisoned = poisoned
             mob.poison_level = poison_level
 
+    # ClassicUO routes BOTH 0x16 and 0x17 to the same NewHealthbarUpdate handler
+    # (PacketHandlers.cs:197-198) with an identical wire layout. ServUO sends the
+    # 0x16 EC variants (HealthbarPoisonEC / HealthbarYellowEC, Packets.cs:3840-3886)
+    # to Enhanced-Client sessions and the 0x17 variants otherwise. Registering only
+    # 0x17 leaves 0x16 unhandled, so any EC-flagged session loses all poison /
+    # yellow-bar status sync. Worse, 0x16 must be VARIABLE-length for CV_500A+
+    # clients (ClassicUO PacketsTable.cs:273-276 flips it from 1 -> -1); declaring it
+    # fixed-length 1 (the legacy default) mis-frames the rest of the stream and
+    # corrupts every subsequent self/world status update.
     handler.register(0x17, handle_health_bar_status)
+    handler.register(0x16, handle_health_bar_status)
 
     def handle_close_vendor(packet_id: int, data: bytes) -> None:
         """0x3B CloseVendorInterface — vendor buy window closed."""
