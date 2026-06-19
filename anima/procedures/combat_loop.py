@@ -83,6 +83,17 @@ BANDAGE_REAPPLY_S = 8.5  # min spacing — re-applying restarts the timer
 LOOT_RANGE = 2           # container-open range for corpses
 CORPSE_SPAWN_WAIT_S = 1.0  # kill → corpse item appears in world state
 
+# Anti-surround positioning. A melee mob can only swing the agent while it is
+# adjacent (Chebyshev distance 1), so each extra adjacent hostile is another
+# full damage stream every swing cycle — being boxed in on all sides is what
+# turns a survivable fight into an af<0.2 death (g_00022/16 at ~8 mobs). When
+# this many hostiles are already adjacent we step one tile away from their
+# centre of mass: the pack has to re-close to melee range, so for a step or two
+# fewer of them are landing hits (and the bandage started by _maybe_bandage has
+# room to resolve). We don't flee — we reposition and keep the engagement.
+SURROUND_COUNT = 3
+REPOSITION_STEP = 2      # tiles to back off from the hostile centroid
+
 
 def _bandage_trigger_pct(ctx: AgentContext, hp_pct: float, now: float) -> float:
     """Effective HP%% below which we should interleave a self-bandage.
@@ -138,6 +149,79 @@ async def _maybe_bandage(ctx: AgentContext) -> None:
         )
     else:
         logger.debug("combat_bandage_failed", message=used.message)
+
+
+def _adjacent_hostiles(ctx: AgentContext) -> list:
+    """Live attackable mobiles in melee range (Chebyshev distance <= 1).
+
+    These are the mobs that can actually swing the agent this tick. Reuses the
+    same notoriety / dead-body filtering as ``_find_target`` so a just-felled
+    corpse lingering in world.mobiles never inflates the surround count.
+    """
+    ss = ctx.perception.self_state
+    out = []
+    for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=1):
+        if getattr(m, "serial", None) == ss.serial:
+            continue
+        if m.notoriety not in ATTACKABLE_NOTORIETY:
+            continue
+        if getattr(m, "is_dead", False) is True:
+            continue
+        if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
+            continue
+        if max(abs(m.x - ss.x), abs(m.y - ss.y)) <= 1:
+            out.append(m)
+    return out
+
+
+def _reposition_dest(ss, hostiles: list) -> tuple[int, int] | None:
+    """Tile ``REPOSITION_STEP`` away from the hostile centroid, or None.
+
+    Returns None when the hostiles are perfectly balanced around the agent
+    (centroid == agent tile) — there is no "away" direction to take, so we
+    stand and keep swinging rather than pick an arbitrary tile.
+    """
+    if not hostiles:
+        return None
+    cx = sum(m.x for m in hostiles) / len(hostiles)
+    cy = sum(m.y for m in hostiles) / len(hostiles)
+    # Unit step directly away from the pack's centre of mass.
+    ax, ay = ss.x - cx, ss.y - cy
+    sx = (ax > 0) - (ax < 0)
+    sy = (ay > 0) - (ay < 0)
+    if sx == 0 and sy == 0:
+        return None
+    return ss.x + sx * REPOSITION_STEP, ss.y + sy * REPOSITION_STEP
+
+
+async def _reposition_if_surrounded(ctx: AgentContext) -> bool:
+    """Step out of the pile when boxed in. Returns True if a step was taken.
+
+    Only fires at/above ``SURROUND_COUNT`` adjacent hostiles. Best-effort: a
+    blocked or no-op move never fails the hunt — we just keep swinging.
+    """
+    from anima.action.movement import go_to
+
+    ss = ctx.perception.self_state
+    hostiles = _adjacent_hostiles(ctx)
+    if len(hostiles) < SURROUND_COUNT:
+        return False
+    dest = _reposition_dest(ss, hostiles)
+    if dest is None:
+        return False
+    logger.info(
+        "combat_reposition",
+        adjacent=len(hostiles),
+        pos=f"({ss.x},{ss.y})",
+        dest=f"({dest[0]},{dest[1]})",
+    )
+    # Interrupt the move the moment we're no longer surrounded — one or two
+    # tiles of separation is the whole point; don't walk out of the fight.
+    await go_to(
+        ctx, dest[0], dest[1], run=True,
+        interrupt_check=lambda: len(_adjacent_hostiles(ctx)) < SURROUND_COUNT,
+    )
+    return True
 
 
 async def _loot_fresh_corpses(ctx: AgentContext) -> int:
@@ -282,6 +366,12 @@ class HuntNearby(Procedure):
                 # Interleaved self-heal — sends bandage + self-target and
                 # returns; the heal resolves while we keep swinging.
                 await _maybe_bandage(ctx)
+
+                # Anti-surround: if the pack has boxed us in, step out so fewer
+                # of them are in melee range. Re-attack after, since stepping
+                # away can interrupt the current swing target.
+                if await _reposition_if_surrounded(ctx):
+                    await ctx.conn.send_packet(build_attack(target.serial))
 
                 current = ctx.perception.world.mobiles.get(target.serial)
                 # Dead = removed from the world, or a KNOWN health bar at
