@@ -392,3 +392,37 @@ class TestWatchdogTracksProgress:
         exp.last_progress_at = 0.0
         exp.phase_started_at = time.time() - 700.0
         assert exp.watchdog_expired(max_phase_s=600.0) is True
+
+    def test_first_mine_from_idle_arms_progress(self):
+        """The IDLE -> MINING first mine must record progress, not lose it.
+
+        Regression: `note_ore_mined` stamped `last_progress_at = now` BEFORE
+        running the IDLE -> MINING `transition_to`, which resets
+        `last_progress_at` to 0.0 — so the very mine that started the phase
+        left the progress clock at 0.0. The watchdog then fell back to
+        `phase_started_at` and, if the next mine was slow, could declare a
+        freshly-productive MINING phase "stuck".
+        """
+        exp = MiningExpedition()
+        assert exp.phase == Phase.IDLE
+        before = time.time()
+        exp.note_ore_mined(x=2460, y=558, bank_key=(307, 69))
+        # Transitioned into MINING and recorded REAL progress (not 0.0).
+        assert exp.phase == Phase.MINING
+        assert exp.last_progress_at >= before
+
+    def test_slow_second_mine_does_not_trip_watchdog_after_first_mine(self):
+        """End-to-end: a single mine from IDLE keeps the phase alive even as
+        the phase ages past max_phase_s while waiting on the next mine.
+
+        With the bug, `last_progress_at` was 0.0 after the first mine, so the
+        watchdog measured only from `phase_started_at`; backdating that past
+        the limit wrongly fired the watchdog despite verified progress.
+        """
+        exp = MiningExpedition()
+        exp.note_ore_mined(x=2460, y=558, bank_key=(307, 69))
+        # Simulate the phase having been entered a long time ago, but the
+        # last verified mine (progress) only a moment ago.
+        exp.phase_started_at = time.time() - 700.0
+        # last_progress_at was correctly armed by the mine -> phase is alive.
+        assert exp.watchdog_expired(max_phase_s=600.0) is False

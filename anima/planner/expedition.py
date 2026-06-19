@@ -95,13 +95,20 @@ class MiningExpedition:
         the forge/sell trip.
         """
         now = time.time()
-        # A successful mine is real progress — re-arm the watchdog so an
-        # actively-mining phase is never wiped for being "stuck".
-        self.last_progress_at = now
         if self.home_base is None:
             self.home_base = (x, y)
         if self.phase == Phase.IDLE:
             self.transition_to(Phase.MINING)
+        # A successful mine is real progress — re-arm the watchdog so an
+        # actively-mining phase is never wiped for being "stuck". This MUST
+        # run AFTER the IDLE -> MINING transition above: `transition_to`
+        # resets `last_progress_at` to 0.0 on every phase change, so stamping
+        # progress *before* the transition silently discarded the very first
+        # mine's timestamp. The watchdog then measured the brand-new MINING
+        # phase purely from `phase_started_at`, and if the second mine was
+        # slow (long walk, a fight, a far bank) the 600s watchdog could fire
+        # and wipe a phase that had in fact just produced ore.
+        self.last_progress_at = now
         if not ground_pile:
             return
         for pile in self.piles:
