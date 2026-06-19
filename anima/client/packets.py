@@ -421,9 +421,14 @@ def build_war_mode(war: bool) -> bytes:
     w = PacketWriter()
     w.write_u8(0x72)
     w.write_u8(1 if war else 0)
-    w.write_u8(0x00)  # unknown
-    w.write_u8(0x32)  # unknown
-    w.write_u8(0x00)  # unknown
+    # Wire layout per ClassicUO Send_ChangeWarMode: [ID][state][0x32][0x00],
+    # then a single zero pad byte to reach the fixed length of 5 (0x72 is a
+    # fixed-5 packet in PacketsTable). The 0x32 byte must come *immediately*
+    # after the war flag — the previous order (0x00, 0x32) shipped 0x32 one
+    # byte too late, so every war-mode toggle sent a malformed frame.
+    w.write_u8(0x32)  # magic (ClassicUO writes this right after the flag)
+    w.write_u8(0x00)  # magic
+    w.write_u8(0x00)  # pad to fixed length 5
     return w.to_bytes()
 
 
