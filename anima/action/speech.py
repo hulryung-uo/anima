@@ -10,7 +10,7 @@ import structlog
 
 from anima.client.packets import build_unicode_speech
 from anima.memory.rewards import get_reward
-from anima.perception.enums import MessageType
+from anima.perception.enums import MessageType, NotorietyFlag
 
 if TYPE_CHECKING:
     from anima.brain.behavior_tree import BrainContext, Status
@@ -18,6 +18,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 GREETINGS = {"hello", "hi", "hey", "greetings", "hail", "안녕", "반가워", "하이"}
+
+
+# Notoriety colors that mark the speaker as a foe, not a would-be friend:
+# gray criminals, orange enemies, red murderers.
+_HOSTILE_NOTORIETY = {NotorietyFlag.CRIMINAL, NotorietyFlag.ENEMY, NotorietyFlag.MURDERER}
 
 
 def _greeting_tokens(text: str) -> set[str]:
@@ -103,14 +108,30 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     # Record incoming speech in conversation history
     record_conversation(ctx, "user", f"{speaker}: {text}")
 
-    # Update relationship — someone is talking to us
+    # Update relationship — someone is talking to us.
+    #
+    # Disposition/trust are the friend/foe signal the LLM context is built from
+    # (memory/retrieval._disposition_word). The relationship table is *only* ever
+    # written from this speech path, so the sign chosen here is the agent's whole
+    # picture of a person. A flat positive bump on every line meant a red
+    # MURDERER or orange ENEMY who simply spammed chat steadily climbed toward
+    # "friendly" with rising trust — the exact inversion of reality, and nothing
+    # else ever recorded a negative disposition to correct it. Read the speaker's
+    # notoriety from the world state: a hostile color earns a negative delta (a
+    # foe talking at us makes us warier, not friendlier); everyone else keeps the
+    # original small positive bump.
     if ctx.memory_db and serial:
+        disp_delta, trust_delta = 0.05, 0.02
+        world = getattr(ctx.perception, "world", None)
+        mob = world.mobiles.get(serial) if world is not None else None
+        if mob is not None and mob.notoriety in _HOSTILE_NOTORIETY:
+            disp_delta, trust_delta = -0.05, -0.02
         await ctx.memory_db.update_relationship(
             agent_name=_agent_name(ctx),
             entity_serial=serial,
             entity_name=speaker,
-            disposition_delta=0.05,
-            trust_delta=0.02,
+            disposition_delta=disp_delta,
+            trust_delta=trust_delta,
             note=f"Spoke to me: {text[:50]}",
         )
         await ctx.memory_db.record_episode(
