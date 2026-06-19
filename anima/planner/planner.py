@@ -4865,7 +4865,10 @@ class _RecoverAfterDeath:
         from anima.action.movement import go_to
         from anima.actions.equip import equip_weapon_from_pack
         from anima.actions.loot import find_corpses, loot_corpse
-        from anima.procedures.combat_loop import WEAPON_GRAPHICS
+        from anima.procedures.combat_loop import (
+            ONE_HANDED_WEAPON_GRAPHICS,
+            TWO_HANDED_WEAPON_GRAPHICS,
+        )
 
         ss = ctx.perception.self_state
         looted = 0
@@ -4879,8 +4882,25 @@ class _RecoverAfterDeath:
 
         equipped = False
         if not (ss.equipment.get(1) or ss.equipment.get(2)):
-            eq = await equip_weapon_from_pack(ctx, WEAPON_GRAPHICS)
+            # Re-arm from the recovered gear. CRITICAL: a two-handed weapon
+            # (axe/polearm — among the most common monster drops a dead warrior
+            # looted back) reads its layer from ServUO tiledata and MUST go on
+            # the two-handed layer (2). Calling equip_weapon_from_pack with the
+            # full weapon set on the default one-handed layer strands a looted
+            # two-hander loose on the cursor and returns a *soft* success
+            # (equip_item PickUps it, the server refuses the wear) — so the
+            # agent believes it re-armed, stays disarmed, and re-dies: the exact
+            # die->res->naked->die loop this whole recovery path exists to break
+            # (same bug class as combat_loop commit 8f8ec37 / b33c9e4). Try a
+            # one-hander first (keeps the off-hand free for a shield), then fall
+            # back to a two-hander on the correct layer.
+            eq = await equip_weapon_from_pack(ctx, ONE_HANDED_WEAPON_GRAPHICS)
             equipped = bool(getattr(eq, "success", False))
+            if not equipped:
+                eq = await equip_weapon_from_pack(
+                    ctx, TWO_HANDED_WEAPON_GRAPHICS, two_handed=True
+                )
+                equipped = bool(getattr(eq, "success", False))
 
         # One bounded recovery pass — clear the post-death flag either way.
         ctx.blackboard["_was_dead"] = False

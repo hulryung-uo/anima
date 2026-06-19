@@ -112,6 +112,39 @@ class TestRecoverAfterDeath:
         assert "re-equipped=True" in result.message
         assert ctx.blackboard["_was_dead"] is False  # bounded: one pass, flag cleared
 
+    @pytest.mark.asyncio
+    async def test_run_equips_looted_two_hander_on_two_handed_layer(self, monkeypatch):
+        """A recovered two-handed axe must be worn on the two-handed layer."""
+        corpse = SimpleNamespace(serial=0x900, x=101, y=100)
+        monkeypatch.setattr(loot, "find_corpses", lambda ctx, max_dist=0: [corpse])
+        monkeypatch.setattr(loot, "loot_corpse",
+                            AsyncMock(return_value=SimpleNamespace(data={"items": 1})))
+        monkeypatch.setattr(movement, "go_to", AsyncMock())
+
+        from anima.procedures.combat_loop import (
+            ONE_HANDED_WEAPON_GRAPHICS,
+            TWO_HANDED_WEAPON_GRAPHICS,
+        )
+
+        calls = []
+
+        async def fake_equip(ctx, graphics, two_handed=False):
+            calls.append((graphics, two_handed))
+            if graphics is TWO_HANDED_WEAPON_GRAPHICS and two_handed:
+                return SimpleNamespace(success=True)
+            return SimpleNamespace(success=False, message="No weapon in backpack")
+
+        monkeypatch.setattr(equip, "equip_weapon_from_pack", fake_equip)
+
+        ctx = _ctx(armed=False)
+        ctx.blackboard["_was_dead"] = True
+        result = await _RecoverAfterDeath().run(ctx)
+
+        assert (TWO_HANDED_WEAPON_GRAPHICS, True) in calls
+        assert calls[0] == (ONE_HANDED_WEAPON_GRAPHICS, False)
+        assert "re-equipped=True" in result.message
+        assert ctx.blackboard["_was_dead"] is False
+
 
 class TestDeathArmsPostResRecovery:
     """Wiring regression: when the agent is dead, the planner's Priority 0
