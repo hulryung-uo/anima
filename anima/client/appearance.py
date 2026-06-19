@@ -8,6 +8,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
+import structlog
+
 from anima.client.codec import PacketWriter
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,11 @@ CLOTHING_HUES = list(range(0x0002, 0x03E9, 5))  # ~200 colors
 
 # fmt: on
 
+
+logger = structlog.get_logger()
+
+# Known-good persona used when an unknown persona name is requested.
+_DEFAULT_PERSONA = "adventurer"
 
 # ---------------------------------------------------------------------------
 # Persona-to-creation mapping
@@ -181,9 +188,25 @@ class CharacterAppearance:
 
         Appearance (gender, hair, skin, clothes) is randomized.
         Stats and skills are determined by the persona type.
+
+        An unknown persona name (e.g. a config typo) falls back to a known-good
+        persona rather than silently inheriting the dataclass default skill set
+        (Alchemy+Anatomy), which matches no defined persona and gets no starter
+        items. The fallback keeps the skill total at the EXACTLY-100 ServUO
+        ValidSkills() requires so creation skills/items are not silently dropped.
         """
         # Start with random appearance
         app = CharacterAppearance.random(name=character_name, city_index=city_index)
+
+        # Resolve unknown persona names to a known-good default. Both maps share
+        # the same keys, so testing one is sufficient.
+        if persona_name not in PERSONA_STATS:
+            logger.warning(
+                "unknown_persona_fallback",
+                requested=persona_name,
+                fallback=_DEFAULT_PERSONA,
+            )
+            persona_name = _DEFAULT_PERSONA
 
         # Apply persona-specific stats
         if persona_name in PERSONA_STATS:

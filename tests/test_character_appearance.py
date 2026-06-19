@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import random
 
-from anima.client.appearance import PERSONA_STATS, CharacterAppearance
+from anima.client.appearance import (
+    _DEFAULT_PERSONA,
+    PERSONA_SKILLS,
+    PERSONA_STATS,
+    CharacterAppearance,
+)
 
 
 class TestRandomStats:
@@ -46,3 +51,47 @@ class TestPersonaStats:
             app = CharacterAppearance.from_persona(name)
             total = app.strength + app.dexterity + app.intelligence
             assert total == 90, f"{name}: from_persona total {total} != 90"
+
+
+class TestUnknownPersonaFallback:
+    """An unknown persona name must resolve to a known-good persona, not the
+    arbitrary dataclass-default Alchemy+Anatomy skill set."""
+
+    def test_default_persona_is_a_real_persona(self) -> None:
+        assert _DEFAULT_PERSONA in PERSONA_STATS
+        assert _DEFAULT_PERSONA in PERSONA_SKILLS
+
+    def test_unknown_persona_uses_fallback_stats_and_skills(self) -> None:
+        random.seed(2024)
+        app = CharacterAppearance.from_persona("totally-bogus-typo")
+        # Stats and skills must match the known-good fallback persona exactly,
+        # NOT the random/default dataclass values.
+        assert (
+            app.strength,
+            app.dexterity,
+            app.intelligence,
+        ) == PERSONA_STATS[_DEFAULT_PERSONA]
+        assert app.skills == list(PERSONA_SKILLS[_DEFAULT_PERSONA])
+
+    def test_unknown_persona_does_not_keep_default_skills(self) -> None:
+        # The dataclass default skill set (Alchemy 50 + Anatomy 50) must never
+        # leak through for an unknown persona.
+        default_skills = CharacterAppearance().skills
+        app = CharacterAppearance.from_persona("nope-not-a-persona")
+        assert app.skills != default_skills
+
+    def test_unknown_persona_skill_total_is_100(self) -> None:
+        # ServUO ValidSkills() silently drops the whole skill set + starter
+        # items unless the values sum to EXACTLY 100 (or 120).
+        app = CharacterAppearance.from_persona("does-not-exist")
+        assert sum(v for _, v in app.skills) in (100, 120)
+
+    def test_known_persona_unaffected(self) -> None:
+        # Regression guard: a valid persona name still maps to itself.
+        app = CharacterAppearance.from_persona("mage")
+        assert app.skills == list(PERSONA_SKILLS["mage"])
+        assert (
+            app.strength,
+            app.dexterity,
+            app.intelligence,
+        ) == PERSONA_STATS["mage"]
