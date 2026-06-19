@@ -59,8 +59,20 @@ def cycle_text(cell: tuple, status: str, fitness: float,
                    f"and {soc}. It is a beginning — no one had kept this exact "
                    f"craft-and-temperament before me. I will build on it.")
     elif status == "improved":
-        gain = ("" if prev_fitness is None else
-                f" My work bettered my own best ({prev_fitness:.0f} → {fitness:.0f}).")
+        # The kernel promotes on the RELIABILITY bound (mean − λ·pstdev), not the
+        # raw point fitness — so an "improved" cycle can carry a point `fitness`
+        # that is LOWER than the displaced elite's `prev_fitness` (it won by being
+        # steadier, not higher). Claiming "bettered my best (200 → 150)" then prints
+        # a DECREASE while asserting a gain — a self-contradiction. Only narrate a
+        # numeric betterment when the point score actually rose; otherwise frame it
+        # as the steadier result the promotion rule actually rewarded.
+        if prev_fitness is None:
+            gain = ""
+        elif fitness > prev_fitness:
+            gain = f" My work bettered my own best ({prev_fitness:.0f} → {fitness:.0f})."
+        else:
+            gain = (f" No louder than my old best ({prev_fitness:.0f}), but steadier "
+                    f"hand to hand — and that is what held.")
         title = f"A better day at {trade}"
         outcome = (f"I {verb} at {place} and {soc}.{gain} Small change, real "
                    f"difference — the kind you only find by doing the thing again.")

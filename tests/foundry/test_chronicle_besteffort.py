@@ -8,6 +8,8 @@ into the evolution run instead of being swallowed as a failed post.
 """
 import urllib.request
 
+import pytest
+
 from foundry import chronicle
 
 
@@ -73,3 +75,47 @@ def test_happy_path_returns_true(monkeypatch):
 
     assert chronicle.post_cycle_note(("GATHERING", 0), "filled", 7.0, None) is True
     assert seen["url"] == "https://x/api/agent/posts"
+
+
+def test_improved_with_higher_point_fitness_narrates_a_gain():
+    # Genuine numeric betterment: point fitness rose — the "bettered" phrasing
+    # is correct and shows the arrow in the right direction.
+    _title, body = chronicle.cycle_text(
+        ("MAGIC", 1), "improved", fitness=200.0, prev_fitness=150.0)
+    assert "bettered my own best (150 → 200)" in body
+
+
+def test_improved_on_reliability_does_not_claim_a_numeric_increase():
+    # The kernel promotes on the reliability bound (mean − λ·pstdev), so an
+    # "improved" cycle can have a LOWER point fitness than the elite it displaced
+    # (it won by being steadier). The note must NOT assert a betterment whose
+    # numbers run backwards (the old "bettered my best (200 → 150)" bug).
+    _title, body = chronicle.cycle_text(
+        ("MAGIC", 1), "improved", fitness=150.0, prev_fitness=200.0)
+    # Never an arrow that goes down while claiming a gain.
+    assert "→ 150" not in body or "200 → 150" not in body
+    assert "bettered my own best (200 → 150)" not in body
+    # It still acknowledges the displaced score honestly...
+    assert "200" in body
+    # ...and frames the win as steadiness, not a higher number.
+    assert "steadier" in body
+
+
+def test_improved_equal_point_fitness_is_not_framed_as_a_gain():
+    # Tie on point fitness (promoted purely on lower variance) — same rule:
+    # do not claim the number went up.
+    _title, body = chronicle.cycle_text(
+        ("COMBAT", 0), "improved", fitness=100.0, prev_fitness=100.0)
+    assert "bettered my own best" not in body
+    assert "steadier" in body
+
+
+@pytest.mark.parametrize("prev", [None, 0.0])
+def test_improved_handles_missing_or_zero_prev(prev):
+    # prev_fitness None (legacy/odd record) renders no gain clause; a real 0.0
+    # prev with a positive new fitness is a genuine rise.
+    _title, body = chronicle.cycle_text(("CRAFTING", 2), "improved", 12.0, prev)
+    if prev is None:
+        assert "bettered" not in body and "steadier" not in body
+    else:
+        assert "bettered my own best (0 → 12)" in body
