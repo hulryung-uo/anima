@@ -356,6 +356,8 @@ class MetaController:
         self._started_at: float = time.monotonic()
         self._mode_history: list[str] = []
         # gold-rate tracking
+        # Samples track NET WORTH (backpack gold + last-known bank balance),
+        # not backpack gold, so a bank deposit is a wash not a phantom loss.
         self._gold_samples: list[tuple[float, int]] = []  # (monotonic, gold)
 
     @property
@@ -378,16 +380,37 @@ class MetaController:
         self._decide_task = asyncio.create_task(self._do_decide(ctx))
         return True
 
-    def _gold_rate_per_min(self, gold: int) -> float:
+    @staticmethod
+    def _net_worth(ctx: "AgentContext") -> int:
+        """Backpack gold + fresh banked gold.
+
+        The gold-earning loop ends in a bank deposit, which zeroes
+        ``ss.gold``. Measuring the rate on backpack gold alone therefore
+        reports a large *negative* rate immediately after a *successful*
+        economic cycle, which falsely trips the "economy: gold-rate flat →
+        relocate/offload" branch (HeuristicModePolicy, branch c). Counting
+        banked gold keeps a deposit a wash. The bank balance comes from the
+        ``bank_balance`` cache that ``check_bank_balance`` writes
+        (``{"amount", "ts"}``); we honour the same 10-minute freshness
+        window the buy/restock path uses (buy_from_vendor._BANK_CACHE_TTL).
+        """
+        ss = ctx.perception.self_state
+        bal_cache = ctx.blackboard.get("bank_balance") or {}
+        amount = bal_cache.get("amount")
+        ts = bal_cache.get("ts", 0)
+        bank = amount if (amount is not None and time.time() - ts <= 600) else 0
+        return ss.gold + int(bank)
+
+    def _gold_rate_per_min(self, net_worth: int) -> float:
         now = time.monotonic()
-        self._gold_samples.append((now, gold))
+        self._gold_samples.append((now, net_worth))
         # keep a ~10-minute window
         self._gold_samples = [(t, g) for (t, g) in self._gold_samples if now - t <= 600]
         if len(self._gold_samples) < 2:
             return 0.0
         t0, g0 = self._gold_samples[0]
         dt_min = (now - t0) / 60.0
-        return (gold - g0) / dt_min if dt_min > 0 else 0.0
+        return (net_worth - g0) / dt_min if dt_min > 0 else 0.0
 
     async def _do_decide(self, ctx: "AgentContext") -> None:
         # The living state (gold-rate / session / history) is LLM-independent,
@@ -401,7 +424,7 @@ class MetaController:
             ss = ctx.perception.self_state
             state = build_living_state(
                 ctx,
-                gold_rate_per_min=self._gold_rate_per_min(ss.gold),
+                gold_rate_per_min=self._gold_rate_per_min(self._net_worth(ctx)),
                 session_minutes=(time.monotonic() - self._started_at) / 60.0,
                 last_modes=self._mode_history,
             )
