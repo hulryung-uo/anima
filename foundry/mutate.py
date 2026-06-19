@@ -61,6 +61,39 @@ def head(repo: str | Path) -> str:
 _LEFTOVER_COMMIT_SUBJECT = "foundry-mutation: (auto-commit leftover changes)"
 
 
+def _genome_leftovers(repo: str | Path) -> list[str]:
+    """Uncommitted paths that represent the mutator's OWN genome work.
+
+    The leftover fold (``mutate_with_claude``) exists to capture edits the
+    mutator made but forgot to commit. The genome body is the ``anima/``
+    package and the mutator may only touch tracked files there. But a *reused*
+    worktree slot keeps preserved untracked junk around — ``_prepare_worktree``
+    runs ``git clean -e data -e .venv``, so prior cycles' untracked, non-ignored
+    ``data/`` files (e.g. ``data/cliloc.*.json``) survive into the next cycle.
+
+    Committing that junk as a "leftover" made ``after != before`` even when
+    claude changed nothing (timed out / errored before editing), so the cycle
+    reported ``changed=True``, burned a full eval window on a parent-identical
+    variant, and planted a near-duplicate genome labelled with the placeholder
+    hypothesis. Only count REAL mutation content: any tracked change (status
+    other than ``??``) or an untracked file under ``anima/``.
+    """
+    out: list[str] = []
+    for line in _git(repo, "status", "--porcelain").stdout.splitlines():
+        if not line.strip():
+            continue
+        status, path = line[:2], line[3:].strip()
+        # Rename entries are "R  old -> new"; the new path is what matters.
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if status == "??":
+            if path.startswith("anima/"):
+                out.append(path)
+        else:  # tracked modification / addition / deletion / rename
+            out.append(path)
+    return out
+
+
 def _commit_all(repo: str | Path, message: str) -> tuple[bool, str]:
     """Stage everything and commit. Returns (committed, head_sha)."""
     if not _git(repo, "status", "--porcelain").stdout.strip():
@@ -271,8 +304,14 @@ def mutate_with_claude(
     except FileNotFoundError:
         return MutationResult(False, error="claude CLI not found")
 
-    # fold any uncommitted leftovers into a variant commit
-    _commit_all(repo, _LEFTOVER_COMMIT_SUBJECT)
+    # Fold the mutator's OWN uncommitted leftovers into a variant commit — but
+    # ONLY genome content. Preserved untracked junk from a reused worktree slot
+    # (e.g. data/*.json) must not masquerade as a mutation, or a claude run that
+    # edited nothing gets scored as a real (parent-identical) variant.
+    leftovers = _genome_leftovers(repo)
+    if leftovers:
+        _git(repo, "add", "--", *leftovers)
+        _git(repo, "commit", "-m", _LEFTOVER_COMMIT_SUBJECT)
     after = head(repo)
     if after == before:
         return MutationResult(False, code_ref=after, error="no commit produced")
