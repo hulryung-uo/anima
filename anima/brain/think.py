@@ -683,7 +683,21 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
 
         is_turn = (current_dir != direction)
 
-        ctx.walker._pending_step_tile = (next_x, next_y)
+        if is_turn:
+            # A turn-only walk packet carries NO position. If we leave
+            # _pending_step_tile pointing at the next tile, the turn's own
+            # ConfirmWalk (0x22) — whose seq matches the one stamped below —
+            # makes walker.confirm_walk() snap the avatar onto a tile it only
+            # *turned* toward but never walked onto, desyncing SelfState from
+            # the server and corrupting every subsequent re-path from the
+            # phantom origin. Route the facing through _pending_direction so it
+            # is applied on the turn's confirm instead. go_to / wander_action /
+            # _walk_one_step already guard this; the brain's main per-tick move
+            # loop must too.
+            ctx.walker._pending_step_tile = None
+            ctx.walker._pending_direction = direction
+        else:
+            ctx.walker._pending_step_tile = (next_x, next_y)
         seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
         pkt = build_walk_request(direction, seq, fastwalk)
