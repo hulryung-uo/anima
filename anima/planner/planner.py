@@ -561,6 +561,12 @@ class Planner:
         # If the agent is dead (HP=0), nothing else can work — every action
         # returns "I am dead and cannot do that". Walk to a healer NPC.
         if not ss.is_alive:
+            # Arm post-resurrection recovery here, in the branch that actually
+            # fires on death. Priority 1's dead-branch (which used to set this)
+            # is unreachable while dead — Priority 0 returns first — so without
+            # this the agent revives naked next to an un-looted corpse and
+            # resumes the profession loop unarmed → immediate re-death.
+            ctx.blackboard["_was_dead"] = True
             seek_fails = self._repeat_counter.get("seek_resurrection", 0)
             DEATH_ESCALATE_THRESHOLD = 5
             if seek_fails >= DEATH_ESCALATE_THRESHOLD:

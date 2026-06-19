@@ -111,3 +111,36 @@ class TestRecoverAfterDeath:
         assert result.success is True
         assert "re-equipped=True" in result.message
         assert ctx.blackboard["_was_dead"] is False  # bounded: one pass, flag cleared
+
+
+class TestDeathArmsPostResRecovery:
+    """Wiring regression: when the agent is dead, the planner's Priority 0
+    branch (the one that actually fires) must arm `_was_dead`. Otherwise the
+    whole post-resurrection corpse-recovery / re-equip path is dead code and
+    the agent revives naked → immediate re-death.
+    """
+
+    def _planner_and_dead_ctx(self):
+        from anima.procedures.base import ProcedureRegistry
+        from anima.planner.planner import Planner
+
+        planner = Planner(ProcedureRegistry())
+        ss = SimpleNamespace(
+            is_alive=False, hits=0, hits_max=100, x=100, y=100, serial=0x1,
+            equipment={},
+        )
+        ctx = SimpleNamespace(
+            perception=SimpleNamespace(self_state=ss, world=None),
+            blackboard={},
+            bus=None,
+        )
+        return planner, ctx
+
+    @pytest.mark.asyncio
+    async def test_dead_arms_was_dead_and_seeks_resurrection(self):
+        planner, ctx = self._planner_and_dead_ctx()
+        proc = await planner.select_procedure(ctx)
+        # Priority 0 must route to resurrection...
+        assert getattr(proc, "name", None) == "seek_resurrection"
+        # ...and arm the post-res recovery flag in the branch that fires.
+        assert ctx.blackboard.get("_was_dead") is True
