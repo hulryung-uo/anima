@@ -62,8 +62,16 @@ def render(arc: Archive) -> str:
     lines.append("")
 
     # elites with lineage chains
+    # Iterate the SAME active-cell elite set the headline (filled/qd-score/best)
+    # and the grid table use -- NOT the raw arc.elites(). A grid cell whose
+    # profession/sociability is outside the active enumeration (a profession
+    # dropped or renamed across an evolution) is excluded from the headline
+    # figures and never tabulated above; listing it HERE (and, since it is
+    # sorted by fitness, possibly AT THE TOP) reintroduces the very
+    # headline-vs-body contradiction the filled/qd-score/best fixes removed --
+    # the report would name a "best" lineage the headline and table both deny.
     lines.append("elites (lineage ← parents):")
-    for g in sorted(arc.elites(), key=lambda g: -g.fitness):
+    for g in sorted(active_elites, key=lambda g: -g.fitness):
         chain = []
         cur = g
         seen = set()

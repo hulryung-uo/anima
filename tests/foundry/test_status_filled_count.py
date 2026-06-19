@@ -110,3 +110,46 @@ def test_qd_score_and_best_match_kernel_on_clean_grid(tmp_path):
     s = arc.summary()
     assert _headline_value(header, "qd-score") == round(s["qd_score"], 3)
     assert _headline_value(header, "best") == round(s["best_fitness"], 3)
+
+
+def _elites_section(rendered: str) -> str:
+    # Everything from the "elites (lineage ..." header to the end of the report.
+    lines = rendered.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("elites ("))
+    return "\n".join(lines[start:])
+
+
+def test_elites_lineage_excludes_cell_outside_active_grid(tmp_path):
+    # Same headline-vs-body integrity invariant as the filled/qd-score/best
+    # figures, applied to the elites LINEAGE listing: an elite OUTSIDE the active
+    # enumeration is excluded from the filled count, the qd-score/best headline,
+    # AND the grid table -- so it must not surface in the lineage section either.
+    # It is given the HIGHEST fitness so the bug (sorting arc.elites() by fitness)
+    # would list it FIRST, contradicting a headline "best" that no longer sees it.
+    arc = Archive(tmp_path)
+    arc.add(_g("g_00001", ("MAGIC", 0), 10.0))            # active
+    arc.add(_g("g_00002", ("GATHERING", 2), 4.0))         # active
+    arc.add(_g("g_00003", ("LEGACYPROF", 0), 99.0))       # outside enumeration
+
+    rendered = status.render(arc)
+    section = _elites_section(rendered)
+
+    # The stray (highest-fitness) elite must NOT appear in the lineage listing...
+    assert "g_00003" not in section
+    assert "99.000" not in section
+    # ...while the genuine active elites still do.
+    assert "g_00001" in section
+    assert "g_00002" in section
+    # And the headline's "best" agrees with the lineage top (both exclude 99).
+    header = rendered.splitlines()[0]
+    assert _headline_value(header, "best") == 10.0
+
+
+def test_elites_lineage_unchanged_on_clean_grid(tmp_path):
+    # No stray cells: every elite is active, so the lineage section lists them all.
+    arc = Archive(tmp_path)
+    arc.add(_g("g_00001", ("MAGIC", 0), 10.0))
+    arc.add(_g("g_00002", ("COMBAT", 1), 20.0))
+
+    section = _elites_section(status.render(arc))
+    assert "g_00001" in section and "g_00002" in section
