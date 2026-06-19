@@ -54,6 +54,24 @@ _QUALITY_TIEBREAK_MAX = 0.9 * _FRONTIER_STEP  # < one frontier step, by design
 _QUALITY_HALF = 60.0  # quality at which the tiebreak reaches half its ceiling
 
 
+def _id_order(gid: str) -> tuple[int, str]:
+    """Creation order of a genome id, robust to id WIDTH changes.
+
+    The code-recency tiebreak (choose_parent_for_target) ranks row members by
+    "genome id is monotonic → newer carries newer base-code fixes". The kernel
+    mints ids as ``g_{n:05d}`` (archive.next_id), so a plain string sort matches
+    creation order ONLY while every id is the same width. Past the 5-digit field
+    the id rolls to 6 digits and a lexicographic sort INVERTS: ``"g_100000"`` <
+    ``"g_99999"`` (the chars ``'1' < '9'``), so genome #100000 (the NEWEST) sorts
+    as the OLDEST and the freshest-lineage nudge points at stale code — the exact
+    opposite of the tiebreak's contract. Sort on the numeric suffix instead so
+    recency stays correct at any id width; fall back to the raw string for any
+    non-conforming id (older/hand lineages) so the key total-orders regardless.
+    """
+    digits = gid.rsplit("_", 1)[-1]
+    return (int(digits), "") if digits.isdigit() else (1 << 62, gid)
+
+
 def _quality_tiebreak(q: float) -> float:
     """Bounded, monotone quality bonus in ``[0, _QUALITY_TIEBREAK_MAX)``."""
     q = max(0.0, q)
@@ -205,7 +223,7 @@ def choose_parent_for_target(archive: Archive, target: tuple | None,
             # (matching how the module treats every secondary signal): among
             # near-equal-quality elites the fresher one is still favoured, but
             # a clearly better parent is no longer outvoted on age alone.
-            by_age = sorted(row, key=lambda g: g.id)
+            by_age = sorted(row, key=lambda g: _id_order(g.id))
             rank = {g.id: i for i, g in enumerate(by_age)}
             n = len(row)
             weights = [
