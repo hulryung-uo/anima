@@ -963,8 +963,16 @@ class Planner:
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
                 return proc
             # Bandages heal too (and grind Healing) — combat personas
-            # carry them from creation.
-            proc = _get_proc("bandage_self")
+            # carry them from creation. Fetch it DIRECTLY (not via _get_proc)
+            # so the anti-thrash starvation breaker cannot silence the
+            # last-resort survival heal: a bandage interrupted by an adjacent
+            # mob fails, so under sustained pressure the breaker demotes
+            # bandage_self — and with heal_self also unavailable (no potions),
+            # both survival heals would return None and the critically-wounded
+            # agent falls straight through to the profession / mining loop and
+            # bleeds to death. Survival is non-negotiable; mirror heal_self's
+            # own direct fetch above.
+            proc = self.registry.get("bandage_self")
             if proc and await proc.can_start(ctx):
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 붕대 치료")
                 return proc
