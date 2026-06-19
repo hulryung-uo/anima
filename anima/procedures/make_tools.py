@@ -291,8 +291,20 @@ class MakeTools(Procedure):
 
         # Also check journal as fallback — but ONLY lines from THIS craft (after
         # the button press), so a stale prior-attempt result can't be misread.
+        # Feed the WHOLE journal: the ``craft_start`` timestamp floor inside
+        # _journal_craft_outcome already scopes the scan to this craft, so the
+        # arbitrary ``recent(count=5)`` tail it used to receive only ever HURT —
+        # the craft spends ~4s waiting (asyncio.sleep above), during which other
+        # journal traffic (gump craft chatter, combat keepalive, ambient speech)
+        # routinely pushes THIS craft's own "you create" line past the last five
+        # entries. The inventory check above can also race the 0x25 container
+        # update (the same late-item race mine/smelt/chop grace-poll for), making
+        # this journal scan the real safety net — so a windowed scan silently
+        # mis-booked a genuine craft as a failure, ticking _make_tools_fails
+        # toward the 5-strike give-up that makes the planner buy instead of
+        # crafting. Let the timestamp gate alone decide relevance.
         outcome = _journal_craft_outcome(
-            ctx.perception.social.recent(count=5), craft_start
+            ctx.perception.social.journal, craft_start
         )
         if outcome == "create":
             ctx.blackboard.pop("_make_tools_fails", None)
