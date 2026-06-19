@@ -378,6 +378,7 @@ class MineOre(Skill):
         if ore_gained > 0:
             # Reset fail counter on success
             ctx.blackboard.pop("_mine_consec_fail", None)
+            ctx.blackboard.pop("_mine_consec_fail_bank", None)
 
             # Drop ore on the ground at feet — stacks with existing ore
             for item in world.items.values():
@@ -405,7 +406,17 @@ class MineOre(Skill):
                 duration_ms=elapsed,
             )
         else:
-            # Track consecutive failures at this spot
+            # Track consecutive failures keyed to the *mined* ServUO ore bank.
+            # A bare global counter let a miss at one bank push the running
+            # streak across a later, freshly-arrived bank — so a SINGLE missed
+            # swing at a perfectly live bank could reach the threshold and trip
+            # its depletion breaker, retiring good ore. When the bank under the
+            # pick changes, the streak belongs to a different pool, so restart
+            # it at this swing instead of inheriting the old bank's count.
+            bk = _bank_key(tx, ty)
+            if ctx.blackboard.get("_mine_consec_fail_bank") != bk:
+                ctx.blackboard["_mine_consec_fail"] = 0
+                ctx.blackboard["_mine_consec_fail_bank"] = bk
             fails = ctx.blackboard.get("_mine_consec_fail", 0) + 1
             ctx.blackboard["_mine_consec_fail"] = fails
             if fails >= 3:
@@ -421,6 +432,7 @@ class MineOre(Skill):
                 if breaker is not None:
                     breaker.trip(bk)
                 ctx.blackboard["_mine_consec_fail"] = 0
+                ctx.blackboard.pop("_mine_consec_fail_bank", None)
                 logger.info(
                     "mine_bank_depleted",
                     pos=f"({tx},{ty})", bank=f"{bk}", fails=fails,
