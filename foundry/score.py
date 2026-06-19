@@ -51,6 +51,15 @@ def main(argv: list[str]) -> int:
             score_one(path)
         except FileNotFoundError:
             print(f"  (not found: {path})")
+        except Exception as e:  # noqa: BLE001 — batch tool: one bad file must not abort the rest
+            # The docstring advertises a glob batch (`*.jsonl`). A single
+            # unreadable / truncated / non-file trajectory raises something
+            # OTHER than FileNotFoundError (e.g. IsADirectoryError on a stray
+            # directory match, or a parser error on a half-written JSONL). Only
+            # FileNotFoundError was caught, so one such file aborted the loop and
+            # silently dropped every trajectory queued after it. Report it and
+            # keep scoring the remaining files.
+            print(f"  (error scoring {path}: {type(e).__name__}: {e})")
     return 0
 
 
