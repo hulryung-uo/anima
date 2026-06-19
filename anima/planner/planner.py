@@ -1202,9 +1202,21 @@ class Planner:
                     return move
 
             # 4b: Has tinker tools + ingots → try craft tools
-            #     Skip if Tinkering gave up (skill too low)
+            #     Skip if Tinkering gave up (skill too low) OR the
+            #     skill-too-low block latch make_tools itself arms is still
+            #     live. make_tools sets BOTH _make_tools_gave_up AND
+            #     _tinkering_blocked_until on a "required skill" gump refusal,
+            #     but deadlock recovery (deadlock.py strategy 4) and the
+            #     mining-tool toggle (Priority 7) pop _make_tools_gave_up on
+            #     their own — leaving _tinkering_blocked_until live yet
+            #     un-honored here. Without this, a no-pickaxe smith below the
+            #     Pickaxe minSkill re-selects make_tools every tick, opens the
+            #     tinkering gump, hits "required skill" again, re-arms the 300s
+            #     latch, and never reaches the 4c buy path — a tight gump loop.
+            #     The 5e training gate already honors this latch; 4b must too.
             if (has_tinker_tools and ingot_count >= 4
-                    and not ctx.blackboard.get("_make_tools_gave_up")):
+                    and not ctx.blackboard.get("_make_tools_gave_up")
+                    and time.time() >= ctx.blackboard.get("_tinkering_blocked_until", 0)):
                 proc = _get_proc("make_tools")
                 if proc and await proc.can_start(ctx):
                     _intent(f"곡괭이 없음, 주석도구+주괴 {ingot_count}개 → 도구 제작")

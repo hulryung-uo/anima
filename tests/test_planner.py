@@ -142,6 +142,60 @@ class TestGameplayLoop:
         )
 
     @pytest.mark.asyncio
+    async def test_tinkering_block_latch_skips_make_tools_replacement(self):
+        """A live _tinkering_blocked_until latch must keep the no-pickaxe 4b
+        path off make_tools even after _make_tools_gave_up was cleared.
+
+        make_tools arms BOTH flags on a "required skill" gump refusal, but
+        deadlock recovery / the mining-tool toggle pop _make_tools_gave_up
+        on their own. With only that flag gating 4b, a sub-minSkill smith
+        re-selected make_tools every tick (re-arming the 300s latch in a
+        gump loop). 4b must honor the same latch the 5e training gate does.
+        """
+        from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
+
+        reg = ProcedureRegistry()
+        # Only make_tools is registered — if 4b fires it is the one returned.
+        reg.register(StubProcedure("make_tools"))
+        planner = Planner(reg)
+
+        # No pickaxe (enters the Priority-4 no-mining-tool branch), tinker
+        # tools + plenty of ingots (4b's craft preconditions), no ore so the
+        # 4a smelt sub-branch is skipped, no gold.
+        ctx = _make_ctx(gold=0)
+        _add_item(ctx, 1, next(iter(TINKER_TOOLS_GRAPHICS)))
+        _add_item(ctx, 2, INGOT, amount=21)
+        # _make_tools_gave_up was cleared (e.g. by deadlock recovery), but the
+        # skill-too-low block latch make_tools set is still in the future.
+        ctx.blackboard["_tinkering_blocked_until"] = time.time() + 300
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is None or proc.name != "make_tools", (
+            f"4b ignored _tinkering_blocked_until and re-selected make_tools "
+            f"(got {proc.name if proc else None})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_make_tools_replacement_runs_when_latch_expired(self):
+        """Sanity: with the block latch in the past, 4b still crafts."""
+        from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
+
+        reg = ProcedureRegistry()
+        reg.register(StubProcedure("make_tools"))
+        planner = Planner(reg)
+
+        ctx = _make_ctx(gold=0)
+        _add_item(ctx, 1, next(iter(TINKER_TOOLS_GRAPHICS)))
+        _add_item(ctx, 2, INGOT, amount=21)
+        ctx.blackboard["_tinkering_blocked_until"] = time.time() - 1
+
+        proc = await planner.select_procedure(ctx)
+        assert proc is not None and proc.name == "make_tools", (
+            f"expected make_tools once latch expired, got "
+            f"{proc.name if proc else None}"
+        )
+
+    @pytest.mark.asyncio
     async def test_has_ingots_no_tongs_no_gold_sells_raw(self):
         """No tongs + no gold + many ingots → sell raw as last resort to fund tongs."""
         from anima.planner.expedition import Phase
