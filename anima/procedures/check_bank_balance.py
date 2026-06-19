@@ -32,6 +32,9 @@ logger = structlog.get_logger()
 
 
 _NUM_RE = re.compile(r"([\d,]+)")
+# A comma-grouped integer immediately preceding the word "gold" — the
+# spendable-gold field of any balance reply that mentions platinum.
+_GOLD_FIELD_RE = re.compile(r"([\d,]+)\s*gold", re.IGNORECASE)
 
 
 def _parse_balance(text: str) -> int | None:
@@ -39,13 +42,30 @@ def _parse_balance(text: str) -> int | None:
 
     Known cliloc forms after server-side tilde substitution:
       - 1042759: "Thy current bank balance is 1,234 gold."
-      - 1155855 (AccountGold): "Platinum 5 Gold 1,234"
+      - 1155855 (AccountGold): "...is 5 platinum and 1,234 gold."
       - 1155848 (AccountGold secure): a secondary line "...1,234"
 
-    All three contain the balance as a comma-separated integer. We take
-    the largest integer found — platinum counts are typically small and
-    never outweigh gold, so max() picks the gold amount reliably.
+    ServUO's AccountGold banker (Banker.cs, case 0x0001) renders 1155855 as
+    ``String.Format("{0}\t{1}", TotalPlat, TotalGold)`` — platinum is the
+    FIRST argument, gold the SECOND.  ``TotalPlat`` is whole platinum units
+    and ``TotalGold`` is only the sub-platinum gold REMAINDER (0 .. threshold-1,
+    Account.cs), so the two are independent magnitudes: a ``max()`` over every
+    number in the line returns the platinum count whenever it exceeds the gold
+    remainder (e.g. "50 platinum and 30 gold" -> 50, not 30).  The spendable
+    bank-gold figure the caller needs is always the amount labelled "gold", so
+    extract that field explicitly and only fall back to a lone integer.
     """
+    # Prefer the explicitly gold-labelled amount (handles the platinum form
+    # where another, larger number — the platinum count — also appears).
+    gold_matches = _GOLD_FIELD_RE.findall(text)
+    if gold_matches:
+        raw = gold_matches[-1].replace(",", "")
+        if raw:
+            try:
+                return int(raw)
+            except ValueError:
+                pass
+
     nums: list[int] = []
     for match in _NUM_RE.finditer(text):
         raw = match.group(1).replace(",", "")
@@ -57,6 +77,11 @@ def _parse_balance(text: str) -> int | None:
             pass
     if not nums:
         return None
+    # No "gold" label (e.g. a bare secure-account line) — a single integer is
+    # unambiguous; otherwise fall back to the largest, which preserved the old
+    # behaviour for forms we don't recognise.
+    if len(nums) == 1:
+        return nums[0]
     return max(nums)
 
 
