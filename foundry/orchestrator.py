@@ -464,7 +464,13 @@ def run(rc: RunConfig) -> Archive:
             # --- anti-gaming: discard any kernel change before anything else
             safety.revert_kernel(wt, pinned)
             if mr.changed and not safety.kernel_is_clean(wt, pinned):
-                mutate._commit_all(wt, "foundry: restore pinned kernel")
+                # Commit the kernel revert + genome body ONLY. `git add -A` here
+                # would also sweep any uncommitted NON-genome edits (e.g.
+                # foundry/select.py, personas/*.yaml) into the variant commit —
+                # the very leak `_genome_leftovers` scopes out — and carry them
+                # into the genome's code_ref and every descendant worktree.
+                mutate._commit_paths(
+                    wt, "foundry: restore pinned kernel", "foundry/kernel", "anima/")
                 out.mutation = mutate.MutationResult(
                     True, code_ref=mutate.head(wt), hypothesis=mr.hypothesis)
 

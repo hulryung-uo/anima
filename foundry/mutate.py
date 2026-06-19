@@ -111,6 +111,33 @@ def _commit_all(repo: str | Path, message: str) -> tuple[bool, str]:
     return r.returncode == 0, head(repo)
 
 
+def _commit_paths(repo: str | Path, message: str, *pathspecs: str) -> tuple[bool, str]:
+    """Stage ONLY ``pathspecs`` and commit. Returns (committed, head_sha).
+
+    The orchestrator's kernel-restore step used ``_commit_all`` (``git add -A``),
+    which sweeps EVERY uncommitted working-tree change into the commit — including
+    the non-genome edits ``_genome_leftovers`` deliberately leaves uncommitted
+    (e.g. ``personas/*.yaml`` or non-kernel Foundry machinery like
+    ``foundry/select.py`` that ``safety.revert_kernel`` does NOT undo). Folding
+    those into the variant's "restore pinned kernel" commit carries them into the
+    genome's ``code_ref`` and on into every descendant worktree — the exact
+    integrity hole ``_genome_leftovers`` exists to close, leaking through the
+    kernel-restore path. Restrict staging to the kernel revert + genome body so
+    the restore commit captures only the pinned kernel and real genome content;
+    any stray non-genome leftover stays uncommitted (the next ``_prepare_worktree``
+    cleans it). Commits even when nothing under ``pathspecs`` is staged-dirty? No:
+    if the targeted pathspecs have no changes there is nothing to commit, so we
+    no-op (matching ``_commit_all``'s empty-tree short-circuit).
+    """
+    _git(repo, "add", "--", *pathspecs)
+    # Anything actually staged for THESE paths?
+    staged = _git(repo, "diff", "--cached", "--name-only", "--", *pathspecs)
+    if not staged.stdout.strip():
+        return False, head(repo)
+    r = _git(repo, "commit", "-m", message)
+    return r.returncode == 0, head(repo)
+
+
 def _extract_hypothesis(repo: str | Path, before: str, after: str) -> str:
     """Read the mutator's hypothesis from the commits it produced.
 
