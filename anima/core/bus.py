@@ -108,12 +108,17 @@ class EventBus:
 
     def recent(self, count: int = 50, topic_filter: str = "*") -> list[Event]:
         """Get recent events, optionally filtered by topic pattern."""
+        if count <= 0:
+            return []
         if topic_filter == "*":
             return self._history[-count:]
-        return [
-            e for e in self._history[-count * 2:]
-            if fnmatch.fnmatch(e.topic, topic_filter)
-        ][-count:]
+        # Scan the whole retained history (already capped at _history_max) for
+        # matches, not a count*2 tail. A fixed count*2 lookback silently drops
+        # matching events whenever they are sparse or older than that window —
+        # e.g. recent(40, "avatar.*") could return 0 even with 40 such events
+        # still in history. _history is bounded, so a full scan is cheap.
+        matched = [e for e in self._history if fnmatch.fnmatch(e.topic, topic_filter)]
+        return matched[-count:]
 
     @property
     def subscriber_count(self) -> int:

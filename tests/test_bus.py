@@ -143,3 +143,43 @@ def test_callback_can_subscribe_during_publish():
     # But it is wired for subsequent events.
     bus.publish("test.event", {})
     assert late == ["late"]
+
+
+
+def test_recent_filter_returns_matches_outside_count2_window():
+    """recent(count, topic_filter) must search the whole retained history,
+    not a count*2 tail. With many newer non-matching events, the matching
+    ones still in history must be returned rather than silently dropped."""
+    bus = EventBus()
+    # 40 matching events, then 100 non-matching newer ones.
+    for i in range(40):
+        bus.publish("avatar.hp", {"i": i})
+    for _ in range(100):
+        bus.publish("noise.x", {})
+    # All 40 matching events are still in history (cap is 500); ask for 40.
+    got = bus.recent(40, topic_filter="avatar.*")
+    assert len(got) == 40
+    assert [e.data["i"] for e in got] == list(range(40))
+
+
+def test_recent_filter_sparse_matches_among_noise():
+    """Sparse matches interleaved with a large count of noise must all be
+    returned up to `count`, regardless of the count*2 heuristic."""
+    bus = EventBus()
+    for i in range(50):
+        bus.publish("avatar.hp", {"i": i})
+        for _ in range(3):
+            bus.publish("noise.x", {})
+    # 50 matching events spread thin; request the last 50.
+    got = bus.recent(50, topic_filter="avatar.*")
+    assert len(got) == 50
+    assert got[-1].data["i"] == 49
+    assert got[0].data["i"] == 0
+
+
+def test_recent_zero_or_negative_count_returns_empty():
+    bus = EventBus()
+    bus.publish("avatar.hp", {})
+    bus.publish("noise.x", {})
+    assert bus.recent(0) == []
+    assert bus.recent(-1, topic_filter="avatar.*") == []
