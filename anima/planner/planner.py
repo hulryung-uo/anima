@@ -2037,40 +2037,54 @@ class Planner:
             if self.command_bus and self.command_bus.paused:
                 self._last_progress_ts = _time.monotonic()
                 continue
-            ss = ctx.perception.self_state
-            if (ss.x, ss.y) != last_pos:
-                last_pos = (ss.x, ss.y)
-                self._last_progress_ts = _time.monotonic()
-            stalled_s = _time.monotonic() - self._last_progress_ts
-            if stalled_s <= self._WATCHDOG_STALL_S:
-                continue
+            # The watchdog is the planner's last line of defense against a
+            # freeze: it runs as a detached, never-awaited task, so an
+            # unhandled exception here would kill it *silently* and leave the
+            # agent able to stall undetected for the rest of the session
+            # (crushing the liveness/fitness metrics). A transient perception
+            # glitch, a bus publish error, etc. must not tear the watchdog
+            # down. The asyncio.sleep at the top of the loop also keeps a
+            # persistent fault from busy-spinning. A real shutdown
+            # (CancelledError) still propagates.
+            try:
+                ss = ctx.perception.self_state
+                if (ss.x, ss.y) != last_pos:
+                    last_pos = (ss.x, ss.y)
+                    self._last_progress_ts = _time.monotonic()
+                stalled_s = _time.monotonic() - self._last_progress_ts
+                if stalled_s <= self._WATCHDOG_STALL_S:
+                    continue
 
-            logger.warning(
-                "planner_watchdog_stall",
-                stalled_s=f"{stalled_s:.0f}",
-                procedure=self._last_procedure,
-            )
-            task = self._current_proc_task
-            cancelled_running = False
-            if task is not None and not task.done():
-                self._watchdog_cancelled = True
-                task.cancel()
-                cancelled_running = True
-            # Only blame the procedure if we actually killed one mid-run.
-            # An idle stall (nothing selectable) is not its fault — the
-            # forced fallback below is the remedy there.
-            if cancelled_running and self._last_procedure:
-                self._proc_breaker.record_failure(self._last_procedure)
-            self._force_fallback_until = _time.time() + self._FALLBACK_WINDOW_S
-            self._last_progress_ts = _time.monotonic()  # re-arm
-            if ctx.bus:
-                ctx.bus.publish("system.stuck", {
-                    "message": (
-                        f"Watchdog: no progress for {stalled_s:.0f}s — "
-                        f"forcing fallback activity"
-                    ),
-                    "importance": 2,
-                })
+                logger.warning(
+                    "planner_watchdog_stall",
+                    stalled_s=f"{stalled_s:.0f}",
+                    procedure=self._last_procedure,
+                )
+                task = self._current_proc_task
+                cancelled_running = False
+                if task is not None and not task.done():
+                    self._watchdog_cancelled = True
+                    task.cancel()
+                    cancelled_running = True
+                # Only blame the procedure if we actually killed one mid-run.
+                # An idle stall (nothing selectable) is not its fault — the
+                # forced fallback below is the remedy there.
+                if cancelled_running and self._last_procedure:
+                    self._proc_breaker.record_failure(self._last_procedure)
+                self._force_fallback_until = _time.time() + self._FALLBACK_WINDOW_S
+                self._last_progress_ts = _time.monotonic()  # re-arm
+                if ctx.bus:
+                    ctx.bus.publish("system.stuck", {
+                        "message": (
+                            f"Watchdog: no progress for {stalled_s:.0f}s — "
+                            f"forcing fallback activity"
+                        ),
+                        "importance": 2,
+                    })
+            except asyncio.CancelledError:
+                raise  # real shutdown — propagate
+            except Exception as e:
+                logger.warning("planner_watchdog_error", error=str(e))
 
     async def _fallback_procedure(self, ctx: AgentContext):
         """Pick a guaranteed-liveness activity for the fallback window.
