@@ -20,16 +20,39 @@ def find_in_backpack(
     ctx: AgentContext,
     graphics: set[int],
 ) -> list[ItemInfo]:
-    """Find items in backpack matching any of the given graphic IDs."""
+    """Find items in the backpack matching any of the given graphic IDs.
+
+    Scans recursively: items nested inside sub-containers (a bag of
+    reagents, a pouch, an ore beetle's pack, etc.) that themselves sit in
+    the backpack are included. Without this, counts of reagents/bandages/
+    ore stored in an inner bag silently read as zero and procedures stall.
+    """
     ss = ctx.perception.self_state
     world = ctx.perception.world
     backpack = ss.equipment.get(0x15)  # Layer.BACKPACK
     if not backpack:
         return []
 
+    # All container serials reachable from the backpack (the backpack plus
+    # every sub-container nested within it, to any depth). BFS over the
+    # parent->child item graph; ``seen`` guards against malformed worlds
+    # with a container cycle so we never loop forever.
+    reachable: set[int] = {backpack}
+    frontier: list[int] = [backpack]
+    seen: set[int] = set()
+    while frontier:
+        parent = frontier.pop()
+        if parent in seen:
+            continue
+        seen.add(parent)
+        for item in world.items.values():
+            if item.container == parent and item.serial not in reachable:
+                reachable.add(item.serial)
+                frontier.append(item.serial)
+
     return [
         item for item in world.items.values()
-        if item.container == backpack and item.graphic in graphics
+        if item.container in reachable and item.graphic in graphics
     ]
 
 
