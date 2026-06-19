@@ -444,7 +444,22 @@ def build_unicode_speech(
     Automatically detects keywords (bank, vendor sell, etc.) and
     encodes them using the 12-bit keyword format that ServUO expects.
     Without keyword encoding, NPC speech handlers won't trigger.
+
+    ServUO's ``UnicodeSpeech`` handler trims the text and then *silently
+    drops the whole packet* when ``text.Length > 128`` (PacketHandlers.cs:
+    ``if (text.Length <= 0 || text.Length > 128) return;``). The LLM reply
+    path caps responses at 200 chars, so any 129-200 char reply was framed,
+    sent, and discarded server-side — the agent looked like it answered but
+    said nothing. Clamp the body to 128 UTF-16 code units (the server's own
+    measure) up front, mirroring the 239-cap gump-text precedent below. The
+    cap is applied before keyword matching so a clamped reply can still carry
+    a banker/vendor keyword that survived the truncation.
     """
+    # Server measures length in UTF-16 code units (C# String.Length); clamp on
+    # the same unit so astral chars (2 units) can't push the trimmed text over.
+    if len(text.encode("utf-16-be")) // 2 > 128:
+        units = text.encode("utf-16-be")[: 128 * 2]
+        text = units.decode("utf-16-be", errors="ignore")
     keywords = _match_keywords(text)
 
     w = PacketWriter()
