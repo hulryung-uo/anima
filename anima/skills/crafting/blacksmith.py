@@ -34,6 +34,10 @@ ALL_TOOL_GRAPHICS = SMITH_HAMMER_GRAPHICS | TONGS_GRAPHICS
 # Material: ingots
 INGOT_GRAPHIC = 0x1BF2
 INGOT_GRAPHICS = {0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1}
+# Iron ingots carry the default (no) hue; colored metals (Dull Copper, Gold,
+# Verite, …) carry a non-zero hue. This skill forces the Iron material below,
+# so only hue-0 ingots are actually usable — colored stacks must not count.
+IRON_HUE = 0
 
 BLACKSMITH_SKILL_ID = 7
 
@@ -120,9 +124,13 @@ class CraftBlacksmith(Skill):
         if not (bp_graphics & ALL_TOOL_GRAPHICS):
             return False
 
-        # Need at least 8 ingots for cheapest recipe
+        # Need at least 8 IRON ingots for the cheapest recipe. We force the
+        # Iron material in execute(), so colored (non-zero hue) ingots are not
+        # usable here — counting them would gate True then loop on the server's
+        # "insufficient metal" notice without ever crafting.
         ingots = sum(
-            it.amount for it in bp_items if it.graphic in INGOT_GRAPHICS
+            it.amount for it in bp_items
+            if it.graphic in INGOT_GRAPHICS and it.hue == IRON_HUE
         )
         if ingots < 8:
             return False
@@ -152,10 +160,12 @@ class CraftBlacksmith(Skill):
         if not tool:
             return SkillResult(success=False, reward=-1.0, message="No smith hammer")
 
-        # Count ingots
+        # Count only Iron ingots (hue 0) — execute() forces the Iron material,
+        # so colored-metal stacks cannot satisfy a recipe.
         ingots_available = sum(
             it.amount for it in world.items.values()
             if it.container == backpack and it.graphic in INGOT_GRAPHICS
+            and it.hue == IRON_HUE
         )
 
         # Pick what to craft
