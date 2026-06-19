@@ -127,7 +127,17 @@ PACKET_LENGTHS: dict[int, int] = {
     0x95: 9,
     0x97: 2,
     0x98: 0,
-    0x99: 0,
+    # 0x99 MultiTargetReq (server asks us to place a multi / house addon).
+    # It is a FIXED-length packet, NOT variable. We report 7.0.102.3
+    # (>= CV_7090), so ServUO emits MultiTargetReqHS (Packets.cs:2746,
+    # base(0x99, 30)) — 30 bytes — and ClassicUO's PacketsTable sets
+    # _packetsTable[0x99] = 0x1E (30) for CV_7090+. Declaring it variable (0)
+    # made the framer read bytes 1-2 (the AllowGround bool + the high byte of
+    # TargetID) as a u16 length: a tiny/zero length trips the malformed-frame
+    # guard, which discards only the 3-byte header and reinterprets the
+    # remaining 27 packet-body bytes as fresh packet ids — desyncing the whole
+    # decompressed game stream until a lucky resync. Frame it as fixed 30.
+    0x99: 30,
     0x9A: 0,
     0x9B: 258,
     0x9E: 0,
