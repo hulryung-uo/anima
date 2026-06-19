@@ -757,6 +757,22 @@ def register_handlers(
         item.x = x
         item.y = y
 
+        # An item moving INTO a container is no longer worn. When the agent
+        # disarms / swaps a weapon by dragging it from a hand layer into the
+        # backpack, the server does NOT 0x1D-Delete the item (it still exists)
+        # — it sends THIS 0x25 with the item now parented to the bag. ClassicUO
+        # mirrors this in UpdateContainedItem via World.RemoveItemFromContainer,
+        # which drops a player-worn item off the paperdoll and clears its Layer.
+        # Without the symmetric clear here, self_state.equipment[layer] keeps
+        # pointing at the now-in-pack serial, so the "hand already occupied /
+        # already equipped" guards in combat_loop (ss.equipment.get(1/2)) and
+        # equip_weapon_from_pack see a phantom worn weapon and never re-arm —
+        # the agent fights bare-handed after the first disarm/swap. Drop any
+        # equipment slot whose serial just entered a container.
+        for worn_layer, worn in list(p.self_state.equipment.items()):
+            if worn == serial:
+                del p.self_state.equipment[worn_layer]
+
     handler.register(0x25, handle_add_item_to_container)
 
     def handle_container_display(packet_id: int, data: bytes) -> None:
