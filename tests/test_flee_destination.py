@@ -22,8 +22,13 @@ from anima.planner.planner import (
 from anima.procedures.base import Procedure, ProcedureRegistry, ProcedureResult
 
 
-def _mob(serial, x, y, notoriety=NotorietyFlag.ENEMY, is_dead=False):
-    return SimpleNamespace(serial=serial, x=x, y=y, notoriety=notoriety, is_dead=is_dead)
+def _mob(serial, x, y, notoriety=NotorietyFlag.ENEMY, is_dead=False, body=0x0021):
+    # body 0x0021 = a non-human creature so _find_target (human-only-when-hostile
+    # filter) treats it as a valid target. hits/hits_max present for focus-fire.
+    return SimpleNamespace(
+        serial=serial, x=x, y=y, notoriety=notoriety, is_dead=is_dead,
+        body=body, hits=50, hits_max=50,
+    )
 
 
 def _ss(x=100, y=100, serial=0x1):
@@ -186,6 +191,7 @@ def _planner_ctx(hits: int, mobiles):
     ss = SimpleNamespace(
         x=100, y=100, z=0, serial=0x1,
         hits=hits, hits_max=100,
+        hp_percent=hits / 100.0 * 100.0,  # _bandage_should_yield_to_combat reads this
         weight=100, weight_max=400, gold=50,
         is_alive=True,
         equipment={0x15: 0x101},
