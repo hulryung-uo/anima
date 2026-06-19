@@ -61,8 +61,11 @@ class TestFlee:
             dest["x"], dest["y"] = x, y
 
         monkeypatch.setattr(movement, "go_to", fake_go_to)
-        # hostiles to the EAST (x>100) → agent should flee WEST (x<100)
-        ctx = _ctx(mobiles=[_mob(0x2, 108, 100), _mob(0x3, 110, 102), _mob(0x4, 109, 98)])
+        # hostiles to the EAST (x>100) → agent should flee WEST (x<100).
+        # Within _FLEE_SCAN_DIST (6) of (100,100): the flee scan now uses the
+        # same close radius the swarm count uses, so a real flee engages only
+        # hostiles actually near enough to threaten.
+        ctx = _ctx(mobiles=[_mob(0x2, 104, 100), _mob(0x3, 105, 102), _mob(0x4, 104, 98)])
         result = await _FleeFromHostiles().run(ctx)
         assert result.success is True
         assert result.next_suggestion == "bandage_self"
