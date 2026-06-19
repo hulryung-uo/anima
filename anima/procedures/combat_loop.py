@@ -621,6 +621,7 @@ class HuntNearby(Procedure):
         kills = 0
         gold_looted = 0
         retreated = False
+        died = False
         leashed = False
         try:
             await ctx.conn.send_packet(build_war_mode(True))
@@ -630,6 +631,24 @@ class HuntNearby(Procedure):
 
             while time.monotonic() < deadline and ctx.conn.connected:
                 await asyncio.sleep(TICK_S)
+
+                # Death short-circuit. ``can_start`` gates on ``is_alive`` but the
+                # engagement loop did not — so if the agent is *killed* mid-fight
+                # (hits hit 0 → ghost) nothing here noticed: the loop kept spinning
+                # up to the full 45s ENGAGEMENT_CAP_S, firing attack/bandage/potion
+                # packets as a corpse (all rejected server-side) while the planner's
+                # Priority-0 death branch — which runs seek_resurrection — sat
+                # blocked behind this still-executing procedure. The retreat check
+                # below can't cover this: it is HP-*floor* logic debounced over
+                # RETREAT_CONFIRM_TICKS, so a 0-HP death actually takes TWO ticks to
+                # trip it, and even then routes to bandage_self (a ghost can't
+                # bandage) instead of resurrection. Death is a terminal state, not a
+                # low-HP blip: bail immediately so control returns to the planner.
+                # ``hits_max > 0`` guards the un-queried/test default where HP is
+                # simply unknown (is_alive already treats hits_max==0 as alive).
+                if ss.hits_max > 0 and not ss.is_alive:
+                    died = True
+                    break
 
                 # Emergency instant top-up: a heal potion runs on its own timer
                 # so it can rescue HP in the ~8s a bandage takes to resolve.
@@ -756,7 +775,11 @@ class HuntNearby(Procedure):
         # leash promise the loop won't do. So we gate the walk-back on actual
         # displacement: if we're still standing on the anchor (the common kill-
         # fest case that never chased anywhere) it's a no-op; otherwise we return.
-        if (ss.x, ss.y) != anchor:
+        # A dead agent is the exception: a ghost can't meaningfully path back to
+        # the arena anchor and the planner's Priority-0 death branch owns movement
+        # now (it walks to a healer), so skip the walk-back entirely on death and
+        # hand control straight back.
+        if not died and (ss.x, ss.y) != anchor:
             await go_to(ctx, *anchor, run=True)
 
         sw = ss.skills.get(SKILL_SWORDS)
@@ -766,17 +789,27 @@ class HuntNearby(Procedure):
         # A leash break is not a failure: the agent is healthy and has merely
         # let a kiter go and re-centred on the anchor, so it should keep hunting
         # (hunt_nearby), unlike a low-HP retreat which hands off to bandage_self.
+        # A death is neither: control must fall through to the planner's death
+        # branch (seek_resurrection), so we report a plain INTERRUPTED failure
+        # with no re-hunt/bandage suggestion to chain off of.
         return ProcedureResult(
-            success=not retreated or kills > 0,
-            reason=FailureReason.INTERRUPTED if retreated and kills == 0 else None,
+            success=not died and (not retreated or kills > 0),
+            reason=(
+                FailureReason.INTERRUPTED
+                if died or (retreated and kills == 0)
+                else None
+            ),
             message=(
                 f"Combat: {kills} kills, +{gained:.1f} weapon/tactics"
                 + (f", looted {gold_looted} gold" if gold_looted else "")
                 + (" (retreated low HP)" if retreated else "")
+                + (" (died — yielding to death recovery)" if died else "")
                 + (" (leashed back to anchor)" if leashed else "")
             ),
             skill_gains={SKILL_SWORDS: gained} if gained else {},
-            next_suggestion="bandage_self" if retreated else "hunt_nearby",
+            next_suggestion=(
+                None if died else ("bandage_self" if retreated else "hunt_nearby")
+            ),
         )
 
 
