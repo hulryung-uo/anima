@@ -1815,6 +1815,43 @@ def test_mobile_incoming_equipment_always_has_hue():
     assert len(equip_items) == len(equipment)
 
 
+def test_mobile_incoming_reentry_purges_stale_worn_items():
+    """A 0x78 is an authoritative loadout for ANY mobile, mirroring ClassicUO's
+    UpdateObject: it strips the entity's worn items (except the backpack,
+    Layer 0x15) before replaying the new equipment list.
+
+    Without the purge, an NPC/player that swaps gear off-screen and re-enters
+    view leaks its OLD worn serials into world.items forever (the gear item
+    gets no 0x1D Delete), corrupting per-mobile equipment lookups.
+    """
+    h, p, w = _make_stack()
+    mob_serial = 0x00000099
+
+    # First sighting: a sword (layer 1) + a backpack (layer 0x15).
+    first = [
+        (0x40000001, 0x13B9, 0x01, 0x0000),  # sword, layer 1
+        (0x4000000B, 0x0E75, 0x15, 0x0000),  # backpack, layer 0x15
+    ]
+    h.dispatch(0x78, _build_mobile_incoming(mob_serial, first))
+    assert p.world.items.get(0x40000001) is not None  # sword present
+    assert p.world.items.get(0x4000000B) is not None  # backpack present
+
+    # Re-entry: the mobile dropped the sword and now wields an axe (layer 1),
+    # keeping the same backpack serial. The stale sword is NOT in this list.
+    second = [
+        (0x40000002, 0x0F45, 0x01, 0x0000),  # axe, layer 1
+        (0x4000000B, 0x0E75, 0x15, 0x0000),  # same backpack
+    ]
+    h.dispatch(0x78, _build_mobile_incoming(mob_serial, second))
+
+    # The stale sword must be purged; the new axe present; backpack preserved.
+    assert p.world.items.get(0x40000001) is None, "stale worn item leaked"
+    assert p.world.items.get(0x40000002) is not None
+    assert p.world.items.get(0x4000000B) is not None
+    worn = [it.serial for it in p.world.items.values() if it.container == mob_serial]
+    assert sorted(worn) == [0x40000002, 0x4000000B]
+
+
 # ---------------------------------------------------------------------------
 # Damage (0x0B) — combat-result decode + zero-damage (parry) gating
 # ---------------------------------------------------------------------------

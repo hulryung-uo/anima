@@ -131,6 +131,27 @@ def register_handlers(
             mob.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
             if 1 <= notoriety <= 7:
                 mob.notoriety = NotorietyFlag(notoriety)
+            # A 0x78 is a FULL, authoritative loadout for ANY mobile, not just
+            # self. ClassicUO's UpdateObject strips every worn item off the
+            # entity (except an opened container / the backpack at Layer 0x15)
+            # BEFORE replaying the item loop, so a layer no longer present in
+            # the new list is dropped (PacketHandlers.UpdateObject). The self
+            # branch above already mirrors this for our own gear; the non-self
+            # branch did not. So when an NPC/player swaps gear off-screen and
+            # re-enters view — or the server refreshes its appearance on an
+            # equip change — the OLD worn serials lingered in world.items with
+            # container==serial forever (the gear item itself often gets no
+            # 0x1D Delete). Those orphans corrupt graphic-based equipment
+            # lookups for that mobile and leak memory across a long eval run,
+            # the same class of bug the 0x3C container refresh already guards.
+            # Purge this mobile's worn items (keep the backpack, Layer 0x15)
+            # before the shared equipment loop below refills them.
+            for stale in [
+                it.serial
+                for it in p.world.items.values()
+                if it.container == serial and it.layer != 0x15
+            ]:
+                p.world.remove(stale)
 
         # Parse equipment items that follow. ServUO's NewMobileIncoming
         # (the default 0x78 format for modern/ClassicUO clients, protocol
