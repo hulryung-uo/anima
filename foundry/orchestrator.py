@@ -141,6 +141,31 @@ def _pin_ref(gid: str, sha: str) -> None:
         _git(REPO, "update-ref", f"refs/foundry/{gid}", sha)
 
 
+def _pool_confirmation(first: EvalResult, confirm: EvalResult) -> EvalResult:
+    """Pool a confirm-on-promotion round into ``first`` ONLY if it corroborates
+    the SAME behavioral cell.
+
+    merge_confirmation (kernel) keeps ``first``'s descriptor/cell but blindly
+    pools per_seed_fitness from BOTH rounds. confirm-on-promotion deliberately
+    targets would-be winners, and those concentrate in the high-variance
+    professions (COMBAT's bimodal survival gate, CRAFTING's gump-timing
+    throughput) — exactly the evals whose descriptor is most likely to DRIFT to
+    a neighbouring sociability bin on a re-run. When that happens, pooling the
+    drifted round's seeds folds off-cell evidence into the cell's reliability
+    bound (mean − λ·pstdev) — the very number the kernel promotes on — so a
+    genome can crown (or be denied) a cell on seeds that didn't behave like that
+    cell. A failed confirm is already dropped by the kernel; a confirm that
+    landed somewhere ELSE is no more valid corroboration for THIS cell, so we
+    drop it the same way and keep ``first`` intact (single-round evidence,
+    honestly labelled). Cells matching → pool as before.
+    """
+    if not confirm.ok or confirm.fitness is None:
+        return first  # merge_confirmation would drop it too; be explicit
+    if tuple(confirm.cell) != tuple(first.cell):
+        return first  # off-cell re-run: not evidence for first's cell
+    return merge_confirmation(first, confirm)
+
+
 # --- genome assembly --------------------------------------------------------
 
 def _genome_from(arc: Archive, res: EvalResult, parent: str | None,
@@ -399,7 +424,7 @@ def run(rc: RunConfig) -> Archive:
                                   persona=out.persona, fixed_start=out.fixed_start),
                         seeds=rc.seeds, max_seeds=rc.max_seeds, cv_high=rc.cv_high,
                     )
-                    out.result = merge_confirmation(out.result, confirm)
+                    out.result = _pool_confirmation(out.result, confirm)
         except Exception as e:  # noqa: BLE001 — a broken cycle must not kill the run
             out.error = f"{type(e).__name__}: {e}"
         finally:
