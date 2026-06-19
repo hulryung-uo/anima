@@ -198,6 +198,28 @@ def test_build_drop_item_to_ground_layout():
     assert data[11:15] == bytes([0xFF, 0xFF, 0xFF, 0xFF])  # no container
 
 
+def test_build_drop_item_clamps_out_of_range_z():
+    # z is an sbyte on the wire; a world/spawn-spot altitude outside
+    # [-128, 127] must clamp (drop at the nearest valid height) rather
+    # than raise struct.error and abort the pick-up -> drop sequence.
+    from anima.client.packets import build_drop_item
+
+    # Above the sbyte ceiling -> clamp to +127 (0x7F), not a struct.error
+    # and NOT a two's-complement wrap (200 -> -56 -> 0xC8).
+    data = build_drop_item(0x40002222, x=1000, y=2000, z=200)
+    assert len(data) == 15
+    assert data[9] == 0x7F
+
+    # Below the sbyte floor -> clamp to -128 (0x80).
+    data = build_drop_item(0x40002222, x=1000, y=2000, z=-200)
+    assert len(data) == 15
+    assert data[9] == 0x80
+
+    # An in-range negative z is still written verbatim as two's complement.
+    data = build_drop_item(0x40002222, x=1000, y=2000, z=-5)
+    assert data[9] == 0xFB
+
+
 def test_build_equip_item_layout():
     # 0x13: item serial, layer byte, wearer serial — 10 bytes total.
     # ServUO EquipReq seeks past serial(4)+layer(1) then reads the wearer.

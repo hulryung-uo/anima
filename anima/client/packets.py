@@ -625,13 +625,22 @@ def build_drop_item(
     z: int = 0,
     container: int = 0xFFFFFFFF,
 ) -> bytes:
-    """Build DropItem packet (0x08, 15 bytes)."""
+    """Build DropItem packet (0x08, 15 bytes).
+
+    ``z`` is the drop altitude, an sbyte on the wire (ClassicUO
+    ``Send_DropRequest`` ``WriteInt8``). World/spawn-spot z values flow
+    in straight from ``WorldState`` as plain Python ints; a value outside
+    the signed-byte range would make ``write_i8``'s ``struct.pack('b', ...)``
+    raise ``struct.error`` and abort the whole drop. Clamp to [-128, 127]
+    so an extreme altitude lands the item at the nearest valid height
+    instead of crashing the pick-up -> drop sequence mid-flight.
+    """
     w = PacketWriter()
     w.write_u8(0x08)
     w.write_u32(serial)
     w.write_u16(x)
     w.write_u16(y)
-    w.write_i8(z)
+    w.write_i8(max(-128, min(z, 127)))
     w.write_u8(0x00)  # grid index
     w.write_u32(container)
     return w.to_bytes()
