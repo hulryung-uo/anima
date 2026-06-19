@@ -45,7 +45,20 @@ def _valuable_graphics() -> set[int]:
 
     Lazy imports — these modules import action primitives themselves,
     so resolving them at call time avoids import cycles.
+
+    Includes the agent's own combat gear (``WEAPON_GRAPHICS`` /
+    ``SHIELD_GRAPHICS``): when a warrior dies, the weapon it was wielding
+    drops into its corpse, and the post-resurrection recovery path
+    (``planner._RecoverAfterDeath``) loots the corpse and then re-equips
+    via ``equip_weapon_from_pack(ctx, WEAPON_GRAPHICS)``. Most weapon
+    graphics (all mace-fighting weapons, plus several sword/fencing
+    variants) are NOT in ``ITEM_VENDOR_MAP``, so without them here
+    ``loot_corpse`` left the weapon rotting in the corpse, the backpack
+    stayed empty, the re-equip found nothing, and the agent resumed the
+    profession loop unarmed → immediate re-death.
     """
+    from anima.actions.equip import SHIELD_GRAPHICS
+    from anima.procedures.combat_loop import WEAPON_GRAPHICS
     from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
     from anima.procedures.vendor_knowledge import ITEM_VENDOR_MAP
     from anima.skills.crafting.smelt import INGOT_GRAPHICS
@@ -60,6 +73,8 @@ def _valuable_graphics() -> set[int]:
         | shovel_graphics
         | TINKER_TOOLS_GRAPHICS
         | TONGS_GRAPHICS
+        | WEAPON_GRAPHICS
+        | SHIELD_GRAPHICS
         | set(ITEM_VENDOR_MAP.keys())
     )
 
