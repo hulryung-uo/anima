@@ -540,10 +540,24 @@ class TestCombatKillDetection:
 
         ctx.perception.world.nearby_mobiles = MagicMock(side_effect=_nearby)
         ctx.perception.world.mobiles = {}  # already removed → check the corpse
-        # Corpse on the ground next to the agent = positive death evidence.
-        ctx.perception.world.items = {
-            0xC0: MagicMock(serial=0xC0, x=101, y=200, container=0, graphic=0x2006)
-        }
+
+        # The corpse must be a body THIS engagement dropped — i.e. it appears
+        # AFTER the loop snapshots the pre-existing corpses at engagement start
+        # (an earlier kill's lingering corpse would already be in the snapshot
+        # and must NOT confirm a later kiter). Model that timing: world.items is
+        # empty for the opening baseline read, then the fresh corpse streams in.
+        fresh = MagicMock(serial=0xC0, x=101, y=200, container=0, graphic=0x2006)
+
+        class _Items:
+            def __init__(self):
+                self._reads = 0
+
+            def values(self):
+                self._reads += 1
+                # First read = the engagement-start baseline snapshot (empty).
+                return [] if self._reads <= 1 else [fresh]
+
+        ctx.perception.world.items = _Items()
 
         proc = cl.HuntNearby()
         with patch.object(cl, "ENGAGEMENT_CAP_S", 0.25), \

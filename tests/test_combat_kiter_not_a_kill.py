@@ -91,12 +91,29 @@ def _freeze_clock(monkeypatch):
 def test_confirm_kill_requires_evidence():
     # Healthy last reading + no corpse -> left view, NOT a kill.
     ctx = _ctx({}, items={})
-    assert _confirm_kill(ctx, last_hits=50, last_hits_max=50) is False
+    assert _confirm_kill(ctx, last_hits=50, last_hits_max=50, known_corpses=set()) is False
     # Last-seen health bar at zero -> watched it die -> kill.
-    assert _confirm_kill(ctx, last_hits=0, last_hits_max=50) is True
-    # No known health bar but a corpse on the ground -> kill.
+    assert _confirm_kill(ctx, last_hits=0, last_hits_max=50, known_corpses=set()) is True
+    # No known health bar but a NEW corpse on the ground -> kill.
     ctx2 = _ctx({}, items={0xC0: _corpse(0xC0, 101, 100)})
-    assert _confirm_kill(ctx2, last_hits=0, last_hits_max=0) is True
+    assert _confirm_kill(ctx2, last_hits=0, last_hits_max=0, known_corpses=set()) is True
+
+
+def test_confirm_kill_ignores_a_pre_existing_corpse():
+    # A corpse (0xC0) was already on the ground when this target was engaged
+    # (e.g. an earlier kill's body that a full pack failed to loot). A target
+    # that merely kites out of view with a HEALTHY last reading must NOT be
+    # credited just because that stale corpse is still lying there.
+    items = {0xC0: _corpse(0xC0, 101, 100)}
+    ctx = _ctx({}, items=items)
+    assert _confirm_kill(
+        ctx, last_hits=40, last_hits_max=50, known_corpses={0xC0}
+    ) is False
+    # But a genuinely NEW body (different serial) is still positive evidence.
+    items[0xC1] = _corpse(0xC1, 99, 100)
+    assert _confirm_kill(
+        ctx, last_hits=40, last_hits_max=50, known_corpses={0xC0}
+    ) is True
 
 
 @pytest.mark.asyncio
@@ -176,3 +193,44 @@ async def test_real_kill_with_corpse_is_credited(monkeypatch):
 
     assert "1 kills" in result.message, result.message
     loot_mock.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_kiter_over_a_stale_corpse_is_not_a_kill(monkeypatch):
+    # A corpse from an EARLIER fight is already lying on the ground (an unlooted
+    # full-pack body) when this engagement starts. The live foe then kites out
+    # of view with a healthy last reading and NO new corpse appears. The stale
+    # body must NOT confirm the kill — otherwise every subsequent kiter is
+    # falsely credited (and re-looted) for as long as that corpse lingers.
+    stale = _corpse(0xBEEF, 101, 100)
+    foe = _mob(0x2, 101, 100, hits=50, hits_max=50)
+    mobiles = {foe.serial: foe}
+    items = {stale.serial: stale}
+    ctx = _ctx(mobiles, items=items)
+
+    monkeypatch.setattr(movement, "go_to", AsyncMock(return_value=True))
+    monkeypatch.setattr(cl, "equip_shield_from_pack", AsyncMock(
+        return_value=SimpleNamespace(success=False, data=None)))
+    loot_mock = AsyncMock(return_value=0)
+    monkeypatch.setattr(cl, "_loot_fresh_corpses", loot_mock)
+
+    clock = _freeze_clock(monkeypatch)
+
+    ticks = {"n": 0}
+
+    async def _sleep(_):
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            # Foe leaves view (0x1D Delete / prune). No NEW corpse spawns — the
+            # only body on the ground is the pre-existing stale one.
+            mobiles.pop(foe.serial, None)
+        clock["t"] += cl.ENGAGEMENT_CAP_S / 5.0
+        return None
+
+    monkeypatch.setattr(cl.asyncio, "sleep", _sleep)
+
+    result = await HuntNearby().execute(ctx)
+
+    # The stale corpse must not have credited a phantom kill or triggered loot.
+    assert "0 kills" in result.message, result.message
+    loot_mock.assert_not_awaited()

@@ -494,7 +494,21 @@ async def _request_target_status(ctx: AgentContext, serial: int) -> bool:
     return True
 
 
-def _confirm_kill(ctx: AgentContext, last_hits: int, last_hits_max: int) -> bool:
+def _corpse_serials(ctx: AgentContext) -> set[int]:
+    """Serials of every corpse (graphic 0x2006) on the ground within range now.
+
+    Snapshotted when a target is first engaged so ``_confirm_kill`` can tell a
+    body THIS fight dropped from one that was already lying there.
+    """
+    return {c.serial for c in find_corpses(ctx, max_dist=ENGAGE_RANGE)}
+
+
+def _confirm_kill(
+    ctx: AgentContext,
+    last_hits: int,
+    last_hits_max: int,
+    known_corpses: set[int],
+) -> bool:
     """True when a target that left ``world.mobiles`` actually DIED.
 
     A mobile is dropped from ``world.mobiles`` by ``World.remove`` on a 0x1D
@@ -512,14 +526,29 @@ def _confirm_kill(ctx: AgentContext, last_hits: int, last_hits_max: int) -> bool
 
       * the target's LAST-KNOWN health bar was a real reading at/below zero
         (``last_hits_max > 0 and last_hits <= 0``) — we watched it die; or
-      * a corpse (graphic 0x2006) is on the ground within ``ENGAGE_RANGE`` —
-        the body the killing blow dropped.
+      * a *new* corpse (graphic 0x2006) is on the ground within ``ENGAGE_RANGE``
+        — i.e. a corpse whose serial was NOT already present (``known_corpses``)
+        when this target was engaged.
+
+    The corpse arm must only count a body THIS fight dropped. Corpses linger in
+    ``world.items`` until they are looted and ``World.remove``'d — and a loot
+    can fail (full pack / weight gate broke before lifting, see
+    ``_loot_fresh_corpses``), leaving an earlier kill's corpse on the ground for
+    the rest of the engagement. With a bare ``find_corpses(...)`` truthiness
+    check, that stale body falsely confirms EVERY subsequent target that merely
+    kites out of view as a kill — re-inflating the exact COMBAT-throughput
+    metric the kiter-not-a-kill guard exists to protect, and firing a phantom
+    re-loot pass on the already-emptied corpse each time. Requiring a serial
+    absent from the pre-engagement snapshot closes that hole.
 
     Otherwise the target merely left view: not a kill.
     """
     if last_hits_max > 0 and last_hits <= 0:
         return True
-    return bool(find_corpses(ctx, max_dist=ENGAGE_RANGE))
+    return any(
+        c.serial not in known_corpses
+        for c in find_corpses(ctx, max_dist=ENGAGE_RANGE)
+    )
 
 
 def _find_target(ctx: AgentContext):
@@ -674,6 +703,11 @@ class HuntNearby(Procedure):
         # (0x1D Delete / stale prune). Reset whenever the target changes.
         last_target_hits = 0
         last_target_hits_max = 0
+        # Corpses already on the ground when THIS target was engaged. A kill is
+        # confirmed off corpse evidence only for a body absent from this set, so
+        # an earlier kill's un-looted (full-pack) corpse can't falsely credit a
+        # later kiter that merely left view. Re-snapshotted on every re-pick.
+        known_corpses = _corpse_serials(ctx)
         try:
             await ctx.conn.send_packet(build_war_mode(True))
             await _request_target_status(ctx, target.serial)
@@ -742,7 +776,7 @@ class HuntNearby(Procedure):
                     target_dead = current.hits_max > 0 and current.hits <= 0
                 else:
                     target_dead = _confirm_kill(
-                        ctx, last_target_hits, last_target_hits_max
+                        ctx, last_target_hits, last_target_hits_max, known_corpses
                     )
                     if not target_dead:
                         # Target left view without dying — re-pick a closer live
@@ -764,6 +798,10 @@ class HuntNearby(Procedure):
                         break
                     last_target_hits = 0
                     last_target_hits_max = 0
+                    # Re-baseline so the just-dropped corpse (and any unlooted
+                    # earlier body) counts as pre-existing for the NEW target —
+                    # only a corpse this next fight drops will confirm its kill.
+                    known_corpses = _corpse_serials(ctx)
                     await _request_target_status(ctx, target.serial)
                     await ctx.conn.send_packet(build_attack(target.serial))
                     deadline = time.monotonic() + ENGAGEMENT_CAP_S
