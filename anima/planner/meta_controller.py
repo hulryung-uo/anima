@@ -167,7 +167,12 @@ class HeuristicModePolicy:
     # gold (travel→sell/offload) rather than keep grinding. Above the
     # comfortable-grind band (0.5, pinned by tests) and below the hard
     # overweight cutoff (0.9, branch b). Skill-grinders reach economy ONLY here.
-    _MID_ECONOMY_WEIGHT = 0.75
+    # The late phase ("socialize/tidy up") shares this offload gate: tidying up
+    # a haul before socializing is exactly the late-day routine, and without it
+    # a late-phase avatar carrying a near-full pack drifts straight to socialize
+    # and never converts the haul (branch b only catches >= 0.9 overweight).
+    _ECONOMY_WEIGHT = 0.75
+    _ECONOMY_PHASES: frozenset[str] = frozenset({"mid", "late"})
 
     async def choose(self, state: LivingState) -> ModeDecision:  # type: ignore[override]
         actual = state.actual_mode if state.actual_mode in MODES else "mining"
@@ -227,17 +232,22 @@ class HeuristicModePolicy:
                 )
 
         # (e) day-phase default (docs §5 principle 5): early=skill grind,
-        # mid=economy, late=socialize/tidy. The mid economy routine was
-        # previously unimplemented (mid mapped to `actual`, identical to early),
-        # so a heavy-laden avatar in the mid phase — especially a pure
-        # skill-grinder, which branch (c) deliberately excludes — never got
-        # steered to convert its haul. When mid-phase and carrying a
-        # heavy-but-not-overweight pack, travel to sell/offload.
-        if state.phase == "mid" and state.weight_frac >= self._MID_ECONOMY_WEIGHT:
+        # mid=economy, late=socialize/tidy. The economy routine was previously
+        # unimplemented (mid mapped to `actual`, identical to early), so a
+        # heavy-laden avatar — especially a pure skill-grinder, which branch (c)
+        # deliberately excludes — never got steered to convert its haul. Both
+        # the mid (economy) and late (tidy-up) phases run this offload: a
+        # late-phase avatar with a near-full pack must convert/offload the haul
+        # before drifting to socialize, otherwise it socializes overweight and
+        # the haul never becomes gold (branch b only catches >= 0.9 overweight).
+        if (
+            state.phase in self._ECONOMY_PHASES
+            and state.weight_frac >= self._ECONOMY_WEIGHT
+        ):
             return ModeDecision(
                 mode="travel",
                 rationale=(
-                    f"day-phase: mid economy → offload "
+                    f"day-phase: {state.phase} economy → offload "
                     f"(weight={state.weight_frac:.0%})"
                 ),
                 goal=None,
