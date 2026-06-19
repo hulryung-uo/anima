@@ -85,3 +85,73 @@ async def test_health_break_without_fallback_still_pauses():
     assert result is None
     assert calls["fallback"] == 0
     assert calls["select"] == 0
+
+
+def _ctx_hp(hits: int, hits_max: int = 100, poisoned: bool = False):
+    return SimpleNamespace(
+        perception=SimpleNamespace(
+            self_state=SimpleNamespace(
+                x=10, y=20, gold=0,
+                hits=hits, hits_max=hits_max, is_poisoned=poisoned,
+            )
+        ),
+        blackboard={},
+        bus=None,
+        memory_db=None,
+        persona=None,
+    )
+
+
+def test_survival_pending_detects_wounded_dead_and_poisoned():
+    planner, _ = _make_planner()
+    # Healthy, not poisoned -> no survival need.
+    assert planner._survival_pending(_ctx_hp(hits=100)) is False
+    # Wounded below the 40% heal-in-place floor -> survival need.
+    assert planner._survival_pending(_ctx_hp(hits=30)) is True
+    # Dead (hits <= 0) -> survival need.
+    assert planner._survival_pending(_ctx_hp(hits=0)) is True
+    # Poisoned at full HP -> survival need (poison is invisible to HP gates).
+    assert planner._survival_pending(_ctx_hp(hits=100, poisoned=True)) is True
+    # A minimal self_state (no hits fields) must not raise -> no survival need.
+    assert planner._survival_pending(_ctx()) is False
+
+
+@pytest.mark.asyncio
+async def test_health_break_does_not_suppress_survival():
+    """A wounded agent during a health break must still reach select_procedure.
+
+    Regression: the survival ladder (flee/heal/cure/resurrect) lives inside
+    select_procedure, but tick() returned None for the whole 60s health break
+    without calling it. A non-productive loop that tripped a break therefore
+    left a wounded or poisoned agent unable to defend itself and bleeding out.
+    Survival now pierces the break the same way the forced fallback does.
+    """
+    planner, calls = _make_planner()
+    ctx = _ctx_hp(hits=25)  # below the 40% heal-in-place floor
+
+    now = _time.time()
+    planner._health_break_until = now + 60.0   # health break active
+    planner._force_fallback_until = 0.0        # no watchdog window
+
+    await planner.tick(ctx)
+
+    # The break must NOT have short-circuited tick(): survival selection ran.
+    assert calls["select"] == 1
+    # And the forced-fallback path was never used (no watchdog window).
+    assert calls["fallback"] == 0
+
+
+@pytest.mark.asyncio
+async def test_health_break_still_pauses_a_poisoned_then_cured_agent():
+    """Healthy + un-poisoned during a plain health break still pauses (control)."""
+    planner, calls = _make_planner()
+    ctx = _ctx_hp(hits=100, poisoned=False)
+
+    now = _time.time()
+    planner._health_break_until = now + 60.0
+    planner._force_fallback_until = 0.0
+
+    result = await planner.tick(ctx)
+
+    assert result is None
+    assert calls["select"] == 0

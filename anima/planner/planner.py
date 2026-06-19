@@ -421,8 +421,17 @@ class Planner:
         force_fallback = _time.time() < self._force_fallback_until
 
         # Planner health break — after a loop was detected we pause
-        # selection briefly so the environment has a chance to change.
-        if not force_fallback and _time.time() < self._health_break_until:
+        # selection briefly so the environment has a chance to change. Survival
+        # OUTRANKS the break the same way the forced fallback does: the entire
+        # flee/heal/cure/resurrect ladder lives inside select_procedure, so a
+        # break that short-circuits tick() would leave a wounded or poisoned
+        # agent unable to defend itself for up to 60s. Let survival through; a
+        # healthy agent still pauses as designed.
+        if (
+            not force_fallback
+            and not self._survival_pending(ctx)
+            and _time.time() < self._health_break_until
+        ):
             return None
 
         # During a forced-fallback window (set by the liveness watchdog)
@@ -649,6 +658,42 @@ class Planner:
         level, so the agent stops everything and cure-bandages the moment it is
         poisoned, instead of only reacting once the poison has nearly killed it.
         """
+        return bool(getattr(ss, "is_poisoned", False))
+
+    def _survival_pending(self, ctx: AgentContext) -> bool:
+        """True when the Priority-1 survival block has something to do.
+
+        The 60s planner health break (``_health_break_until``) is meant to
+        pause *productive* selection so a stuck/thrashing loop has a chance to
+        unstick. But the whole survival ladder (death → resurrect, flee a
+        swarm, heal-in-place, cure poison) lives INSIDE ``select_procedure``,
+        and ``tick()`` returns ``None`` for the entire break without ever
+        calling it. So a non-productive loop that trips a health break also
+        suppresses fleeing/healing/curing for up to 60s — long enough for a
+        wounded or poisoned agent under attack to bleed out while the planner
+        "rests". Survival is non-negotiable and must pierce the break exactly
+        the way the liveness watchdog's forced fallback already does.
+
+        Reads only fields the survival block reacts to, all via ``getattr`` so
+        a minimal/partial self_state (tests, early boot) reports "no survival
+        need" rather than raising. Mirrors the dead check at Priority 1, the
+        heal-in-place floor (``_HEAL_IN_PLACE_HP_PCT``), and the poison gate —
+        the flee gate shares that same HP floor, so a flee-eligible agent is
+        always heal-in-place-pending here too (no need to re-run the
+        side-effecting ``_should_flee_swarm`` counter from this read).
+        """
+        try:
+            ss = ctx.perception.self_state
+        except Exception:
+            return False
+        hits = getattr(ss, "hits", None)
+        hits_max = getattr(ss, "hits_max", None)
+        if isinstance(hits_max, (int, float)) and hits_max > 0 \
+                and isinstance(hits, (int, float)):
+            if hits <= 0:
+                return True  # dead — needs resurrection
+            if hits < hits_max * _HEAL_IN_PLACE_HP_PCT:
+                return True  # wounded below the heal-in-place floor
         return bool(getattr(ss, "is_poisoned", False))
 
     async def select_procedure(self, ctx: AgentContext):
