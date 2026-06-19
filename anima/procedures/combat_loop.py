@@ -556,6 +556,36 @@ class HuntNearby(Procedure):
                     deadline = time.monotonic() + ENGAGEMENT_CAP_S
                     continue
 
+                # Re-evaluate the focus-fire pick before committing to a chase.
+                # The loop otherwise locks onto whatever target it first picked
+                # and only re-runs _find_target when *that* mob dies — so a fast
+                # kiter (or one that pathed away) drags the agent across the map
+                # chasing it while a closer, reachable hostile stands adjacent
+                # and swings freely. _find_target already encodes the right
+                # priority (lowest HP fraction, nearest as tiebreak); we just
+                # consult it the moment a chase would begin. If it names a
+                # *different* live candidate strictly closer than the current
+                # target, switch the swing to it rather than running the fleeing
+                # one down. Strictly-closer only, so a mob merely tied on
+                # distance never causes attack-packet thrash.
+                cur_dist = max(abs(current.x - ss.x), abs(current.y - ss.y))
+                if cur_dist > 1:
+                    best = _find_target(ctx)
+                    if best is not None and best.serial != target.serial:
+                        best_dist = max(abs(best.x - ss.x), abs(best.y - ss.y))
+                        if best_dist < cur_dist:
+                            logger.info(
+                                "combat_switch_target",
+                                from_=f"0x{target.serial:08X}",
+                                to=f"0x{best.serial:08X}",
+                                from_dist=cur_dist,
+                                to_dist=best_dist,
+                            )
+                            target = best
+                            current = best
+                            await _request_target_status(ctx, target.serial)
+                            await ctx.conn.send_packet(build_attack(target.serial))
+
                 # Close the gap if the target moved away. Run, don't walk: a
                 # chased mob is almost always inside ENGAGE_RANGE (< 8 tiles), so
                 # go_to's auto-run policy (run=None) walks the whole leg at
