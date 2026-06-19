@@ -675,7 +675,16 @@ async def wander_action(ctx: BrainContext) -> Status:
         pkt = build_walk_request(direction, seq, fastwalk)
         await ctx.conn.send_packet(pkt)
         ctx.walker.steps_count += 1
-        ctx.perception.self_state.direction = direction
+        # Do NOT eagerly write the new facing here. The turn is unconfirmed:
+        # confirm_walk() applies _pending_direction on the matching ConfirmWalk
+        # (0x22), and deny_walk() rolls it back to the server-authoritative
+        # facing on a DenyWalk (0x21). An eager write races the server — if the
+        # turn lands during the send (the fake-server/synchronous case) or is
+        # refused (Frozen/paralyzed/blocked facing), this line overwrites
+        # deny_walk()'s sync_position() correction and leaves SelfState.direction
+        # pinned to a facing the server rejected, desyncing every later step that
+        # reads it. go_to / _walk_one_step never touch self_state.direction in
+        # their turn branch for exactly this reason; wander_action must match.
         # Brief pause for server to process the turn
         await asyncio.sleep(0.1)
 
