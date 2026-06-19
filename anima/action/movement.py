@@ -323,7 +323,7 @@ async def go_to(
             fastwalk = ctx.walker.pop_fast_walk_key()
             await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
             ctx.walker.steps_count += 1
-            ctx.walker.last_step_time = asyncio.get_event_loop().time() * 1000 + 50
+            ctx.walker.mark_turn()
             # Wait for turn confirm before sending move
             await asyncio.sleep(step_delay + 0.05)
             await asyncio.sleep(0)  # yield to process confirm
@@ -710,7 +710,7 @@ async def _walk_one_step(
         fastwalk = ctx.walker.pop_fast_walk_key()
         await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
         ctx.walker.steps_count += 1
-        ctx.walker.last_step_time = asyncio.get_event_loop().time() * 1000 + 50
+        ctx.walker.mark_turn()
         await asyncio.sleep(0.05)
         for _ in range(5):
             if ctx.walker.can_walk():

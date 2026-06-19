@@ -187,6 +187,20 @@ class WalkerManager:
             {"seq": seq, "x": x, "y": y, "z": z},
         )
 
+    def mark_turn(self) -> None:
+        """Apply the post-turn movement throttle.
+
+        A pure facing change (the first walk packet when the requested
+        direction differs from the current facing) must hold for the full
+        ``TURN_DELAY_MS`` before the follow-up move packet is allowed, exactly
+        as ClassicUO does (``PlayerMobile.Walk`` keeps ``walkTime`` at
+        ``Constants.TURN_DELAY`` for a turn).  The previous call sites baked in
+        a 50 ms magic number, which cleared the throttle ~half the turn delay
+        early and risked the server-side movement throttling that delay exists
+        to avoid.
+        """
+        self.last_step_time = _now_ms() + TURN_DELAY_MS
+
     def sync_position(self, x: int, y: int, z: int, direction: int) -> None:
         """Sync position to SelfState (called on MobileUpdate, DenyWalk, etc.)."""
         self._self_state.x = x
