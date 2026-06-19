@@ -313,7 +313,7 @@ class Planner:
                     if (expedition is not None
                             and getattr(expedition.phase, "value", "idle") != "idle"):
                         self._health.reset()
-                    elif dominant and self._repeat_counter.get(dominant, 0) == 0:
+                    elif self._is_productive_grind(dominant, result):
                         # PRODUCTIVE grind repeats by design (hunt_nearby landing
                         # kills, a practice loop gaining skill) — like an active
                         # expedition. The 60s break is only for a STUCK loop (the
@@ -2105,6 +2105,40 @@ class Planner:
     _IDLE_ESCALATE = 150  # ~30s → try deadlock resolution
     _IDLE_FORUM = 600     # ~2min → post to forum for help + pause
     _REPEAT_FAIL_LIMIT = 10  # same procedure failing 10x → stop trying
+
+    def _is_productive_grind(
+        self,
+        dominant: str | None,
+        last_result: "ProcedureResult | None",
+    ) -> bool:
+        """Decide whether a low-diversity window is a productive grind.
+
+        The health watchdog flags any low-diversity selection window as a
+        loop. A *productive* mono-procedure grind (hunt_nearby landing kills,
+        a practice loop gaining skill) repeats by design and must NOT eat the
+        60s health break — but a *stuck* loop (the dominant procedure failing
+        over and over) must.
+
+        The previous test ``repeat_counter[dominant] == 0`` was wrong: that
+        counter is only updated on the tick a procedure actually ran, so a
+        stale ``0`` survives across many idle/thrash ticks where ``dominant``
+        has not been re-run. A window that is thrashing between a *failing*
+        procedure and a fallback could keep the dominant's stale counter at 0
+        and suppress the break forever. The live signal — whether the most
+        recent tick actually produced a successful result — is authoritative:
+        if the latest run failed (or nothing ran), this is a stuck loop, not a
+        productive grind, regardless of the stale per-procedure counter.
+        """
+        if not dominant:
+            return False
+        # Most recent tick must have succeeded — the freshest evidence that
+        # the grind is making progress rather than spinning on failures.
+        if last_result is None or not last_result.success:
+            return False
+        # And the dominant procedure must not be carrying consecutive
+        # failures (belt-and-suspenders: a success on a *different* procedure
+        # should not exempt a dominant one that keeps failing).
+        return self._repeat_counter.get(dominant, 0) == 0
 
     async def _check_stuck(self, ctx: AgentContext) -> None:
         """Detect stuck loops and deadlocks, escalate progressively."""
