@@ -25,6 +25,19 @@ GREETINGS = {"hello", "hi", "hey", "greetings", "hail", "안녕", "반가워", "
 _HOSTILE_NOTORIETY = {NotorietyFlag.CRIMINAL, NotorietyFlag.ENEMY, NotorietyFlag.MURDERER}
 
 
+# Message types that are NOT a person talking to us and must never draw a
+# spoken reply: server SYSTEM lines, single-click LABEL responses ("Hastin the
+# baker"), and FOCUS prompts. These ride the SAME 0x1C/0x1D/0xC1/0xCC speech
+# packets a real utterance does and surface as SPEECH_HEARD with a mobile-range
+# serial, so the bare ``serial >= 0x40000000`` item guard does not catch them.
+# think._build_recent_speech already excludes exactly this set from the LLM
+# conversation window; the *reply* path must reject it too, or the agent talks
+# aloud to a name label / cliloc line — an obvious bot tell.
+_NON_CONVERSATIONAL_TYPES = frozenset(
+    {MessageType.SYSTEM, MessageType.LABEL, MessageType.FOCUS}
+)
+
+
 def _greeting_tokens(text: str) -> set[str]:
     """Tokenize speech for greeting matching, stripping surrounding punctuation.
 
@@ -96,8 +109,11 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
     if serial and serial >= 0x40000000:
         # Item/multi-range serial — not a mobile, can't be a person speaking.
         return Status.FAILURE
-    if msg_type == MessageType.SYSTEM:
-        # Server system message routed through the speech path — not chatter.
+    if msg_type in _NON_CONVERSATIONAL_TYPES:
+        # SYSTEM / LABEL / FOCUS lines routed through the speech path are not
+        # chatter (a single-click name label or a server prompt), even when
+        # they carry a mobile-range serial. Mirror _build_recent_speech's
+        # filter so we never reply aloud to one.
         return Status.FAILURE
 
     # Publish to activity feed
