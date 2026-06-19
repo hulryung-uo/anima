@@ -983,8 +983,18 @@ class Planner:
         # (where combat_loop's in-fight poison-bandage override no longer runs).
         # Cure-bandage NOW so the agent doesn't keep grinding while it bleeds to
         # death. bandage_self.can_start admits a poisoned agent even at full HP.
+        #
+        # Fetch bandage_self DIRECTLY (not via _get_proc), mirroring the
+        # critically-wounded heal-in-place block above: a cure is a survival
+        # action, and the anti-thrash starvation breaker must never silence it.
+        # Poison most often lands in combat, where an adjacent mob keeps
+        # interrupting the bandage — exactly the failure pattern that demotes
+        # bandage_self in self._proc_breaker. Routing the poison cure through
+        # _get_proc let that demotion return None, dropping the agent straight
+        # into the profession/mining loop to bleed to death from the very
+        # poison this gate exists to clear. Survival is non-negotiable.
         if self._should_cure_poison(ss):
-            proc = _get_proc("bandage_self")
+            proc = self.registry.get("bandage_self")
             if proc and await proc.can_start(ctx):
                 _intent(
                     f"중독 (lvl {getattr(ss, 'poison_level', 0)}) → 해독 붕대"
