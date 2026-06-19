@@ -522,7 +522,11 @@ def register_handlers(
             # expansion. They must be read together or the resist block
             # below misaligns. (Ref: ServUO MobileStatus, ClassicUO 0x11.)
             if r.remaining >= 4:
-                p.self_state.stat_cap = r.read_u16()
+                # StatCap is written as a signed (short) on the wire (ServUO
+                # Packets.cs `(short)beheld.StatCap`) and ClassicUO reads it
+                # signed (`StatsCap = (short)ReadUInt16BE`). A stat-loss curse
+                # can push it below zero; reading unsigned wrapped it to ~65500.
+                p.self_state.stat_cap = r.read_i16()
                 p.self_state.followers = r.read_u8()
                 p.self_state.followers_max = r.read_u8()
 
@@ -542,9 +546,14 @@ def register_handlers(
                 p.self_state.resist_poison = r.read_i16()
                 p.self_state.resist_energy = r.read_i16()
                 if r.remaining >= 6:
+                    # Luck is unsigned on the wire; damage min/max are signed
+                    # (short) — ServUO writes `(short)min`/`(short)max` and
+                    # ClassicUO reads `DamageMin/Max = (short)ReadUInt16BE`.
+                    # A negative weapon damage modifier must stay negative
+                    # rather than wrap to ~65500.
                     p.self_state.luck = r.read_u16()
-                    p.self_state.damage_min = r.read_u16()
-                    p.self_state.damage_max = r.read_u16()
+                    p.self_state.damage_min = r.read_i16()
+                    p.self_state.damage_max = r.read_i16()
                 if r.remaining >= 4:
                     r.skip(4)  # tithing points (u32)
 
