@@ -47,8 +47,16 @@ def direction_to(fx: int, fy: int, tx: int, ty: int) -> int:
 
 
 def _octile_distance(x1: int, y1: int, x2: int, y2: int) -> float:
-    # Manhattan distance — admissible for 8-dir with diagonal cost=2, cardinal cost=1
-    return abs(x2 - x1) + abs(y2 - y1)
+    # True octile distance — admissible AND consistent for 8-directional
+    # movement with cardinal cost=1 and diagonal cost=SQRT2. A diagonal step is
+    # a single UO walk packet (same throttle as a cardinal step), so it must be
+    # cheaper than two cardinal steps; otherwise A* is indifferent between a
+    # diagonal and an L-shaped detour and can return a path with MORE walk
+    # steps than necessary. octile = (dx+dy) + (SQRT2-2)*min(dx,dy), i.e.
+    # max(dx,dy) + (SQRT2-1)*min(dx,dy).
+    dx = abs(x2 - x1)
+    dy = abs(y2 - y1)
+    return (dx + dy) + (SQRT2 - 2.0) * min(dx, dy)
 
 
 def _is_walkable(
@@ -205,7 +213,7 @@ def _astar_core(
             if not can_walk:
                 continue
 
-            move_cost = 2.0 if is_diagonal else 1.0
+            move_cost = SQRT2 if is_diagonal else 1.0
             tentative_g = g_score[(cx, cy)] + move_cost
 
             if tentative_g < g_score.get((nx, ny), float("inf")):

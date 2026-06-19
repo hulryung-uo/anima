@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from anima.pathfinding import DIRECTION_DELTAS, direction_to, find_path
+from anima.pathfinding import DIRECTION_DELTAS, SQRT2, _octile_distance, direction_to, find_path
 
 # ---------------------------------------------------------------------------
 # Mock map reader for testing
@@ -209,6 +209,65 @@ class TestFindPath:
         assert path[-1] == (3, 3)
         for x, y in path:
             assert (x, y) not in denied
+
+    def test_octile_heuristic_values_diagonal_aware(self) -> None:
+        """The heuristic must reflect SQRT2 diagonal cost, not Manhattan.
+
+        For a pure diagonal the cost-to-go is min(dx,dy)*SQRT2, NOT dx+dy.
+        Manhattan (the previous, misnamed implementation) overstated this.
+        """
+        # Pure diagonal 3x3: true octile == 3*SQRT2, Manhattan would be 6.
+        assert _octile_distance(0, 0, 3, 3) == 3 * SQRT2
+        # Mixed: dx=4, dy=2 -> 2 diagonals + 2 cardinals = 2*SQRT2 + 2.
+        assert _octile_distance(0, 0, 4, 2) == 2 * SQRT2 + 2.0
+        # Pure cardinal stays integral.
+        assert _octile_distance(0, 0, 5, 0) == 5.0
+
+    def test_prefers_fewer_walk_steps_over_l_detour(self) -> None:
+        """Regression: a diagonal route must beat an equal-Manhattan-length
+        cardinal staircase in *walk-step count*.
+
+        With the old cost model (diagonal cost == 2 == two cardinals) A* was
+        indifferent, and on this obstacle layout it returned an 8-step path
+        where a 7-step diagonal route exists. Each saved step is one fewer
+        UO walk packet (and ~one throttle interval of travel time).
+        """
+        m = MockMapReader()
+        for bx, by in [(0, 1), (1, 0), (1, 5), (2, 1), (2, 8), (3, 6), (5, 0)]:
+            m.block(bx, by)
+        path = find_path(m, 0, 0, 3, 4)
+        assert path, "expected a path to (3, 4)"
+        assert path[-1] == (3, 4)
+        for x, y in path:
+            assert (x, y) not in m.blocked
+        # BFS gives the true minimum walk-step count for this layout.
+        assert len(path) == _min_walk_steps(m, 0, 0, 3, 4)
+
+
+def _min_walk_steps(m: "MockMapReader", sx: int, sy: int, tx: int, ty: int) -> int:
+    """Minimum number of 8-directional walk steps, honoring corner-cut rules."""
+    from collections import deque
+
+    def walkable(x: int, y: int) -> bool:
+        return (x, y) not in m.blocked
+
+    q: deque[tuple[int, int, int]] = deque([(sx, sy, 0)])
+    seen: set[tuple[int, int]] = {(sx, sy)}
+    while q:
+        x, y, d = q.popleft()
+        if (x, y) == (tx, ty):
+            return d
+        for dx, dy in DIRECTION_DELTAS.values():
+            nx, ny = x + dx, y + dy
+            if (nx, ny) in seen:
+                continue
+            if dx != 0 and dy != 0 and not (walkable(x + dx, y) and walkable(x, y + dy)):
+                continue
+            if not walkable(nx, ny):
+                continue
+            seen.add((nx, ny))
+            q.append((nx, ny, d + 1))
+    raise AssertionError("target unreachable in mock map")
 
 
 class TestWalkerDeniedTiles:
