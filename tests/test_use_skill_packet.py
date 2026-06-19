@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from anima.client.packets import build_use_skill
+from anima.client.packets import MAX_SKILL_ID, build_use_skill
 
 
 def _unpack_use_skill(data: bytes) -> tuple[int, int, int, str]:
@@ -31,7 +31,7 @@ def _unpack_use_skill(data: bytes) -> tuple[int, int, int, str]:
     return pid, length, subtype, text
 
 
-@pytest.mark.parametrize("skill_id", [0, 9, 21, 46, 47, 255])
+@pytest.mark.parametrize("skill_id", [0, 9, 21, 46, 47, MAX_SKILL_ID])
 def test_use_skill_layout_and_length(skill_id: int) -> None:
     data = build_use_skill(skill_id)
     pid, length, subtype, text = _unpack_use_skill(data)
@@ -61,5 +61,17 @@ def test_negative_skill_id_rejected(bad_id: int) -> None:
     # ClassicUO GameActions.UseSkill refuses index < 0; building such a
     # packet would yield a server-discarded no-op that the action layer
     # would still report as a successful "skill used".
+    with pytest.raises(ValueError):
+        build_use_skill(bad_id)
+
+
+@pytest.mark.parametrize("bad_id", [MAX_SKILL_ID + 1, 58, 100, 255])
+def test_out_of_range_high_skill_id_rejected(bad_id: int) -> None:
+    # ServUO Skills.UseSkill only acts when skillID < SkillInfo.Table.Length
+    # (Skills.cs:906). An id at/above the table length (last stock entry is
+    # 57 = Throwing) is silently dropped on the wire, so the negative-id
+    # guard alone leaves a symmetric false-success hole at the top end:
+    # build the packet, action layer reports "skill used", server no-ops,
+    # zero skill gain. Reject it at the source like the negative case.
     with pytest.raises(ValueError):
         build_use_skill(bad_id)

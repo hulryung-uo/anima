@@ -616,6 +616,13 @@ def build_target_response(
     return w.to_bytes()
 
 
+# Highest valid ServUO SkillName index (Server/Skills.cs SkillInfo.Table):
+# 57 = Throwing. ServUO's Skills.UseSkill only acts when
+# ``0 <= skillID < SkillInfo.Table.Length`` (Skills.cs:906), so an id at or
+# above the table length is silently dropped on the wire just like a negative.
+MAX_SKILL_ID = 57
+
+
 def build_use_skill(skill_id: int) -> bytes:
     """Build UseSkill packet (0x12 TextCommand, sub-type 0x24, variable).
 
@@ -626,13 +633,19 @@ def build_use_skill(skill_id: int) -> bytes:
 
     ClassicUO ``GameActions.UseSkill`` refuses to send for ``index < 0``,
     and ServUO ``Skills.UseSkill`` discards any ``skillID`` outside
-    ``[0, SkillInfo.Table.Length)``. A negative id therefore produces a
-    packet the server silently drops while the action layer still reports
-    success — a false "skill used". Reject it at the source instead so the
-    bug surfaces here rather than as an invisible no-op on the wire.
+    ``[0, SkillInfo.Table.Length)``. An id outside that range — negative OR
+    at/above the table length (e.g. a typo'd 255 or a SkillName from a newer
+    expansion the shard doesn't carry) — produces a packet the server
+    silently drops while the action layer still reports success: a false
+    "skill used" that surfaces only as missing skill gain. Reject both ends
+    at the source so the bug surfaces here, not as an invisible no-op on the
+    wire. ``MAX_SKILL_ID`` (57 = Throwing) is the last entry in the stock
+    ServUO ``SkillInfo.Table``.
     """
-    if skill_id < 0:
-        raise ValueError(f"skill_id must be >= 0, got {skill_id}")
+    if not 0 <= skill_id <= MAX_SKILL_ID:
+        raise ValueError(
+            f"skill_id must be in [0, {MAX_SKILL_ID}], got {skill_id}"
+        )
     w = PacketWriter()
     w.write_u8(0x12)
     w.write_u16(0)  # length placeholder
