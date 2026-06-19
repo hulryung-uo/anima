@@ -75,6 +75,23 @@ WEAPON_GRAPHICS = {
 ENGAGE_RANGE = 10        # tiles to scan for targets
 ENGAGEMENT_CAP_S = 45.0  # per-target time box
 RETREAT_HP_PCT = 35.0    # break off and retreat below this
+# Chase leash. The combat anchor (set at engagement start) is the centre of the
+# bounded arena this loop is meant to fight in — but the gap-closing chase below
+# follows the target wherever it goes, bounded *only* by the HP retreat interrupt
+# and the 45s cap. A fast/kiting mob that stays just out of melee yet inside
+# ENGAGE_RANGE therefore drags the agent unboundedly far from the anchor: tile by
+# tile the chase re-targets the mob's new position, the mob steps again, and the
+# agent is walked clean out of the arena (past where the WANDER_RADIUS roam would
+# ever have searched) chasing one kiter — exactly the "drift away from the anchor"
+# the loop's docstring and WanderForCombat ("orbit the anchor, not drift away")
+# promise it won't do. So we leash the chase: never chase a target whose tile is
+# more than this many tiles (Chebyshev) from the anchor. Sized ENGAGE_RANGE +
+# WANDER_RADIUS so a mob anywhere the agent could legitimately have engaged or
+# roamed to is still chaseable, but a kiter that has left the arena is let go —
+# the engagement breaks and the agent returns to the anchor to re-center.
+# (Literal 18 == ENGAGE_RANGE(10) + WANDER_RADIUS(8); WANDER_RADIUS is defined
+# further down so we can't reference it here at module load.)
+MAX_CHASE_FROM_ANCHOR = 18
 # Flee-threshold hysteresis. HP%% is read off mobile-status packets and can dip
 # for a single tick — a damage packet landing just before the bandage it
 # triggered resolves, or a momentary status-bar reading — only to recover on the
@@ -508,6 +525,7 @@ class HuntNearby(Procedure):
         kills = 0
         gold_looted = 0
         retreated = False
+        leashed = False
         try:
             await ctx.conn.send_packet(build_war_mode(True))
             await _request_target_status(ctx, target.serial)
@@ -597,6 +615,26 @@ class HuntNearby(Procedure):
                 # breaks the chase the instant HP crosses the floor.
                 dist = max(abs(current.x - ss.x), abs(current.y - ss.y))
                 if dist > 1:
+                    # Leash the chase to the arena: if the target's tile is
+                    # beyond MAX_CHASE_FROM_ANCHOR from the anchor, it has kited
+                    # out of bounds — don't follow it across the map. Break the
+                    # engagement and let go_to(anchor) below re-center the agent
+                    # (a closer reachable hostile, if any, is re-picked next time
+                    # hunt_nearby runs). Without this the chase re-targets the
+                    # fleeing mob's new tile every tick and drifts the agent
+                    # unboundedly off the anchor.
+                    from_anchor = max(
+                        abs(current.x - anchor[0]), abs(current.y - anchor[1])
+                    )
+                    if from_anchor > MAX_CHASE_FROM_ANCHOR:
+                        logger.info(
+                            "combat_chase_leashed",
+                            target=f"0x{target.serial:08X}",
+                            from_anchor=from_anchor,
+                            leash=MAX_CHASE_FROM_ANCHOR,
+                        )
+                        leashed = True
+                        break
                     await go_to(
                         ctx, current.x, current.y, run=True,
                         interrupt_check=lambda: (
@@ -611,13 +649,16 @@ class HuntNearby(Procedure):
             except Exception:
                 pass
 
-        if retreated:
+        if retreated or leashed:
             await go_to(ctx, *anchor, run=True)
 
         sw = ss.skills.get(SKILL_SWORDS)
         tc = ss.skills.get(SKILL_TACTICS)
         gained = max(0.0, (sw.value if sw else 0.0) + (tc.value if tc else 0.0) - before)
 
+        # A leash break is not a failure: the agent is healthy and has merely
+        # let a kiter go and re-centred on the anchor, so it should keep hunting
+        # (hunt_nearby), unlike a low-HP retreat which hands off to bandage_self.
         return ProcedureResult(
             success=not retreated or kills > 0,
             reason=FailureReason.INTERRUPTED if retreated and kills == 0 else None,
@@ -625,6 +666,7 @@ class HuntNearby(Procedure):
                 f"Combat: {kills} kills, +{gained:.1f} weapon/tactics"
                 + (f", looted {gold_looted} gold" if gold_looted else "")
                 + (" (retreated low HP)" if retreated else "")
+                + (" (leashed back to anchor)" if leashed else "")
             ),
             skill_gains={SKILL_SWORDS: gained} if gained else {},
             next_suggestion="bandage_self" if retreated else "hunt_nearby",
