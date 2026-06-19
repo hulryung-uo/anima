@@ -205,9 +205,12 @@ def _parse_forum_post(text: str, fallback_author: str) -> tuple[str, str]:
     body = text
 
     lines = text.splitlines()
+    title_idx: int | None = None
+    found_body = False
     for i, line in enumerate(lines):
         if line.upper().startswith("TITLE:"):
             title = line[6:].strip()
+            title_idx = i
         elif line.upper().startswith("BODY:"):
             # Body is everything after the BODY: line
             rest = line[5:].strip()
@@ -216,7 +219,16 @@ def _parse_forum_post(text: str, fallback_author: str) -> tuple[str, str]:
             else:
                 body = "\n".join(lines[i + 1:])
             body = body.strip()
+            found_body = True
             break
+
+    # LLMs frequently emit the TITLE: line but skip the BODY: marker, writing
+    # the body prose directly underneath. Without this, the raw "TITLE: ..."
+    # scaffolding line leaks into the posted body (and duplicates the title).
+    # When a title was parsed but no BODY: marker terminated the scan, drop the
+    # title line and use everything after it as the body.
+    if not found_body and title_idx is not None:
+        body = "\n".join(lines[title_idx + 1:]).strip()
 
     return title, body
 
