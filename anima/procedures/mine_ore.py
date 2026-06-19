@@ -127,7 +127,12 @@ class MineOre(Procedure):
         # Wait for mining animation + check for "no metal here" via bus
         import time as _time
         mine_start = _time.time()
-        _mine_flags = {"depleted": False, "los_fail": False, "too_far": False}
+        _mine_flags = {
+            "depleted": False,
+            "los_fail": False,
+            "too_far": False,
+            "tool_broke": False,
+        }
 
         def _check_speech(_topic: str, data: dict) -> None:
             text = data.get("text", "")
@@ -138,6 +143,10 @@ class MineOre(Procedure):
                 _mine_flags["los_fail"] = True
             elif "too far away" in tl:
                 _mine_flags["too_far"] = True
+            # 1044038 "You have worn out your tool!" — ServUO HarvestSystem
+            # deletes the pickaxe/shovel when UsesRemaining hits 0.
+            elif "worn out" in tl:
+                _mine_flags["tool_broke"] = True
 
         sub = None
         if ctx.bus:
@@ -162,6 +171,7 @@ class MineOre(Procedure):
             "can't mine",
             "too far away",
             "moved too far away",
+            "worn out your tool",
         )
 
         def _ore_in_pack() -> int:
@@ -192,6 +202,31 @@ class MineOre(Procedure):
         if sub and ctx.bus:
             ctx.bus.unsubscribe(sub)
             ctx.bus.unsubscribe(sub2)  # type: ignore[possibly-undefined]
+
+        # A worn-out tool can arrive on the journal even when no bus is wired
+        # (the bus is optional). Reconcile from the journal so the restock
+        # signal fires regardless of transport.
+        if not _mine_flags["tool_broke"]:
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < mine_start:
+                    continue
+                if "worn out" in entry.text.lower():
+                    _mine_flags["tool_broke"] = True
+                    break
+
+        if _mine_flags["tool_broke"]:
+            # The pickaxe is gone — this is NOT a depleted bank and NOT a
+            # skill-check miss. Surfacing it as MISSING_RESOURCE (mirroring
+            # craft_blacksmith's tool_broke path) lets the planner route to
+            # make_tools / buy_from_vendor. Re-suggesting mine_ore here would
+            # loop against a perfectly good vein with no tool to swing.
+            logger.warning("mine_tool_broke", pos=f"({tx},{ty})")
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="Mining tool worn out — need a replacement pickaxe/shovel",
+                details={"tile": (tx, ty), "tool_broke": True},
+            )
 
         if _mine_flags["depleted"]:
             bk = _trip_bank(ctx, tx, ty)
