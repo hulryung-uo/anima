@@ -161,6 +161,13 @@ class HeuristicModePolicy:
     _GOLD_EARNING: frozenset[str] = frozenset({"mining", "smithing", "combat"})
     # How many identical recent stints trigger a balance rotation.
     _BALANCE_STINTS = 3
+    # Mid-phase "economy" day-phase routine (docs/meta-controller.md §5
+    # principle 5: early=grind, mid=economy, late=socialize). A heavy-but-not-
+    # overweight pack in the mid phase means it is time to convert the haul to
+    # gold (travel→sell/offload) rather than keep grinding. Above the
+    # comfortable-grind band (0.5, pinned by tests) and below the hard
+    # overweight cutoff (0.9, branch b). Skill-grinders reach economy ONLY here.
+    _MID_ECONOMY_WEIGHT = 0.75
 
     async def choose(self, state: LivingState) -> ModeDecision:  # type: ignore[override]
         actual = state.actual_mode if state.actual_mode in MODES else "mining"
@@ -219,9 +226,22 @@ class HeuristicModePolicy:
                     goal=None,
                 )
 
-        # (e) day-phase default. early/mid = keep grinding the actual mode;
-        # late = socialize/tidy up. Clamp to actual_mode if the mapping ever
-        # yields a non-mode (defensive — every value here is already valid).
+        # (e) day-phase default (docs §5 principle 5): early=skill grind,
+        # mid=economy, late=socialize/tidy. The mid economy routine was
+        # previously unimplemented (mid mapped to `actual`, identical to early),
+        # so a heavy-laden avatar in the mid phase — especially a pure
+        # skill-grinder, which branch (c) deliberately excludes — never got
+        # steered to convert its haul. When mid-phase and carrying a
+        # heavy-but-not-overweight pack, travel to sell/offload.
+        if state.phase == "mid" and state.weight_frac >= self._MID_ECONOMY_WEIGHT:
+            return ModeDecision(
+                mode="travel",
+                rationale=(
+                    f"day-phase: mid economy → offload "
+                    f"(weight={state.weight_frac:.0%})"
+                ),
+                goal=None,
+            )
         phase_mode = {"early": actual, "mid": actual, "late": "socialize"}.get(
             state.phase, actual
         )

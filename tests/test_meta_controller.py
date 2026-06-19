@@ -198,6 +198,59 @@ class TestHeuristicModePolicy:
         assert a.mode == b.mode  # pure / no randomness
 
     @pytest.mark.asyncio
+    async def test_mid_phase_heavy_pack_travels_to_offload(self):
+        # docs/meta-controller.md §5 principle 5: mid=economy. A heavy-but-not-
+        # overweight pack in the mid phase must steer to travel (sell/offload),
+        # NOT keep grinding like the early phase. Previously mid mapped to the
+        # actual mode, so this economy routine never fired.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.8,
+                        danger_nearby=False, phase="mid",
+                        gold_rate_per_min=3.0,  # profitable: branch (c) won't fire
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "travel"
+        assert d.mode in MODES
+        assert d.goal is None
+        assert "economy" in d.rationale
+
+    @pytest.mark.asyncio
+    async def test_mid_phase_skill_grinder_heavy_pack_offloads(self):
+        # Pure skill-grinders (magery) are excluded from the branch (c) economy
+        # lever (flat gold rate is expected), so the mid day-phase routine is
+        # the ONLY way they offload a full pack. It must fire here.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="magery", hp_frac=0.9, weight_frac=0.85,
+                        danger_nearby=False, phase="mid",
+                        gold_rate_per_min=0.0,
+                        last_modes=["magery", "combat"]))
+        assert d.mode == "travel"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_mid_phase_light_pack_keeps_grinding(self):
+        # Below the economy weight threshold the mid phase stays productive —
+        # the existing comfortable-grind behaviour is preserved.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.5,
+                        danger_nearby=False, phase="mid",
+                        gold_rate_per_min=3.0,
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "mining"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_early_phase_heavy_pack_still_grinds(self):
+        # The economy routine is mid-only; an early-phase heavy pack keeps
+        # grinding (economy is a mid-phase concern per the day-phase mapping).
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.8,
+                        danger_nearby=False, phase="early",
+                        gold_rate_per_min=3.0,
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "mining"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
     async def test_late_phase_socializes(self):
         d = await HeuristicModePolicy().choose(
             _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.2,
