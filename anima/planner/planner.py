@@ -198,6 +198,12 @@ class Planner:
         self._watchdog_cancelled = False
         self._last_progress_ts: float = _time.monotonic()
         self._force_fallback_until: float = 0.0
+        # Consecutive ticks the Priority-1b flee gate has chosen _FleeFromHostiles
+        # while still wounded+swarmed. _FleeFromHostiles.run reports success even
+        # on a no-op move, so the starvation breaker never demotes it; this
+        # counter is the only thing that lets a trapped agent stop fleeing in
+        # place and fall through to heal-in-place. Reset when no longer swarmed.
+        self._flee_consecutive: int = 0
 
     # Anti-freeze knobs. A mutated procedure that blocks forever (awaiting
     # a packet that never comes) used to wedge the whole planner loop —
@@ -541,6 +547,39 @@ class Planner:
 
         return result
 
+    def _should_flee_swarm(self, ctx: AgentContext, ss) -> bool:
+        """Priority 1b decision: flee a swarm now, or fall through to heal?
+
+        Returns True while the agent is wounded (HP < _FLEE_HP_PCT) AND swarmed
+        (>= _FLEE_HOSTILE_COUNT live hostiles within 6 tiles) — UNLESS it has
+        already chosen to flee _FLEE_MAX_CONSECUTIVE ticks in a row without
+        breaking contact. A fully-surrounded agent cannot path away, but
+        _FleeFromHostiles.run() still reports success on the no-op move, so the
+        unconditional gate used to re-select flee every tick forever — the agent
+        "fled in place" while the swarm beat it to death, never reaching the
+        heal-in-place block right below the gate. After the cap we stop fleeing
+        and let it bandage/heal: an interrupted bandage is a chance at survival,
+        an infinite flee loop is not. The counter resets the moment the
+        wounded+swarmed condition no longer holds (contact broken or healed up).
+        """
+        swarmed = (
+            ss.hits_max > 0
+            and ss.hits < ss.hits_max * _FLEE_HP_PCT
+            and _count_hostiles(ctx, ss, dist=6) >= _FLEE_HOSTILE_COUNT
+        )
+        if not swarmed:
+            self._flee_consecutive = 0
+            return False
+        self._flee_consecutive += 1
+        if self._flee_consecutive > _FLEE_MAX_CONSECUTIVE:
+            logger.warning(
+                "planner_flee_gave_up",
+                consecutive=self._flee_consecutive,
+                hp=f"{ss.hits}/{ss.hits_max}",
+            )
+            return False
+        return True
+
     async def select_procedure(self, ctx: AgentContext):
         """Select the highest-priority procedure based on gameplay loop.
 
@@ -844,8 +883,7 @@ class Planner:
         # inside the <30% block) and bandaged in place, where melee cancels the
         # bandage and the agent dies. Fleeing across the full 30–40% band
         # closes that death zone.
-        if (ss.hits_max > 0 and ss.hits < ss.hits_max * _FLEE_HP_PCT
-                and _count_hostiles(ctx, ss, dist=6) >= _FLEE_HOSTILE_COUNT):
+        if self._should_flee_swarm(ctx, ss):
             _intent("HP 위험 + 다수 적 → 후퇴 후 치료")
             return _FleeFromHostiles()
 
@@ -4565,6 +4603,12 @@ class _DeathEscalate:
 # adjacent swarm cancels the bandage). 0.40 covers the whole 30–40% band.
 _FLEE_HP_PCT = 0.40        # below this HP fraction...
 _FLEE_HOSTILE_COUNT = 3    # ...with at least this many hostiles, flee not heal
+# After this many consecutive flee selections without breaking contact, stop
+# fleeing and fall through to heal-in-place. A fully-surrounded agent can't path
+# away (and _FleeFromHostiles reports success on the no-op move, so the
+# starvation breaker never demotes it) — without this cap the flee gate loops
+# forever and the agent never gets to bandage. 5 ticks ~= one full heal attempt.
+_FLEE_MAX_CONSECUTIVE = 5
 _HOSTILE_NOTORIETY = None  # set lazily (avoid import at module load)
 
 
