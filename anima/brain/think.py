@@ -435,7 +435,11 @@ async def llm_think(ctx: BrainContext) -> Status:
         # flow into ``find_location`` → ``name.strip()`` → AttributeError,
         # aborting the whole decision tick. Coerce null/non-str to "".
         place_name = action.get("place") or ""
-        loc = find_location(place_name)
+        # Resolve ambiguous partial names (e.g. "provisioner", "bank") to the
+        # location NEAREST the agent. format_locations_for_llm only lists places
+        # close to (ss.x, ss.y), so an abbreviated pick must stay in the region
+        # the LLM was actually shown, not jump to a same-named shop in Britain.
+        loc = find_location(place_name, near=(ss.x, ss.y))
         if loc:
             # Use approach point for indoor locations
             nav_x, nav_y = loc.nav_x, loc.nav_y

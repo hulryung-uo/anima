@@ -109,7 +109,7 @@ ALL_LOCATIONS: list[Location] = BRITAIN_LOCATIONS + MINOC_LOCATIONS
 _LOCATIONS_BY_NAME: dict[str, Location] = {loc.name.lower(): loc for loc in ALL_LOCATIONS}
 
 
-def find_location(name: str) -> Location | None:
+def find_location(name: str, near: tuple[int, int] | None = None) -> Location | None:
     """Find a location by name (case-insensitive partial match)."""
     # An empty / whitespace-only name must NOT match anything. The partial-match
     # loop below tests ``name_lower in key`` and ``"" in key`` is *always* True,
@@ -125,11 +125,28 @@ def find_location(name: str) -> Location | None:
     # Exact match first
     if name_lower in _LOCATIONS_BY_NAME:
         return _LOCATIONS_BY_NAME[name_lower]
-    # Partial match
-    for key, loc in _LOCATIONS_BY_NAME.items():
-        if name_lower in key or key in name_lower:
-            return loc
-    return None
+    # Partial match. Many keys share a discriminating prefix only ("Britain
+    # Provisioner" vs "Minoc Provisioner", "...Guild North" vs "...Guild
+    # South"), so an abbreviated LLM place name ("provisioner", "bank",
+    # "blacksmith") matches several locations. Returning the *first* in dict
+    # (== list) order silently sent the agent to whichever city happens to be
+    # declared first in ALL_LOCATIONS (Britain), even when it is standing in
+    # Minoc and was shown only Minoc places — abandoning its whole region to
+    # walk thousands of tiles to the wrong shop. Collect every partial
+    # candidate and, when the caller supplies the agent's position, prefer the
+    # geographically nearest (Chebyshev to nav point — the tile actually walked
+    # to). With no position the legacy first-match order is preserved.
+    candidates = [
+        loc
+        for key, loc in _LOCATIONS_BY_NAME.items()
+        if name_lower in key or key in name_lower
+    ]
+    if not candidates:
+        return None
+    if near is not None:
+        ax, ay = near
+        candidates.sort(key=lambda loc: max(abs(loc.nav_x - ax), abs(loc.nav_y - ay)))
+    return candidates[0]
 
 
 def nearest_locations(x: int, y: int, count: int = 5) -> list[tuple[Location, int]]:
