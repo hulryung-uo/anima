@@ -70,6 +70,26 @@ WEAPON_GRAPHICS = {
     0x13B3, 0x13B4,  # club
     0x143A, 0x143B,  # maul
     0x1406, 0x1407,  # war mace
+    # axes (Swordsmanship in ServUO — every axe rolls the Swords skill on a
+    # swing, so they grind the same COMBAT stream as the swords above). These
+    # are among the most common monster/corpse weapon drops, so an adventurer
+    # who loots one but has no equipped weapon must be able to START a fight
+    # with it. Without these graphics here, HuntNearby.can_start /
+    # WanderForCombat.can_start both see has_weapon=False and the warrior falls
+    # straight through to the mining/smelt chain (the single biggest COMBAT-
+    # uptime leak this loop exists to plug). Graphics verified against ServUO
+    # Scripts/Items/Weapons/Axes/*.cs base(0x....) constructors and cross-
+    # checked with vendor_knowledge._AXES.
+    0x0F43, 0x0F44,  # hatchet
+    0x0F45, 0x0F46,  # executioner's axe
+    0x0F47, 0x0F48,  # battle axe
+    0x0F49, 0x0F4A,  # axe
+    0x0F4B, 0x0F4C,  # double axe
+    0x0F4D, 0x0F4E,  # bardiche (polearm)
+    0x13AF, 0x13B0,  # war axe
+    0x13FA, 0x13FB,  # large battle axe
+    0x143E, 0x143F,  # halberd (polearm)
+    0x1443, 0x1444,  # two-handed axe
 }
 
 ENGAGE_RANGE = 10        # tiles to scan for targets
