@@ -574,7 +574,7 @@ class Planner:
         swarmed = (
             ss.hits_max > 0
             and ss.hits < ss.hits_max * _FLEE_HP_PCT
-            and _count_hostiles(ctx, ss, dist=6) >= _FLEE_HOSTILE_COUNT
+            and _count_hostiles(ctx, ss, dist=_FLEE_SCAN_DIST) >= _FLEE_HOSTILE_COUNT
         )
         if not swarmed:
             self._flee_consecutive = 0
@@ -4727,6 +4727,16 @@ _FLEE_HOSTILE_COUNT = 3    # ...with at least this many hostiles, flee not heal
 # starvation breaker never demotes it) — without this cap the flee gate loops
 # forever and the agent never gets to bandage. 5 ticks ~= one full heal attempt.
 _FLEE_MAX_CONSECUTIVE = 5
+# Radius (Chebyshev tiles) of the swarm that drives BOTH the flee decision and
+# the flee *direction*. The gate (``_should_flee_swarm``) counts hostiles within
+# this radius; ``_FleeFromHostiles.run`` must compute its escape centroid over
+# the SAME population. Scanning a wider radius for the centroid lets a distant
+# hostile on the far side of the agent skew the away-vector — in the worst case
+# flipping it so the agent flees straight INTO the close swarm that wounded it
+# (e.g. 3 mobs hugging the agent + 1 mob 11 tiles behind: the far mob drags the
+# centroid past the agent, and the "away" direction now points at the 3). Pin
+# both to one radius so the swarm we run from is exactly the swarm we measured.
+_FLEE_SCAN_DIST = 6
 # Human body ids (male, female). A bare-gray (ATTACKABLE) human is NOT a foe the
 # warrior ever swings at — combat_loop._find_target / _adjacent_hostiles both
 # drop it — so the survival flee gate must drop it too (see _is_live_hostile).
@@ -4848,7 +4858,7 @@ class _FleeFromHostiles:
         ss = ctx.perception.self_state
         attackable = _attackable_set()
         hostiles = [
-            m for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
+            m for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=_FLEE_SCAN_DIST)
             if _is_live_hostile(m, ss, attackable)
         ]
         if not hostiles:
