@@ -616,6 +616,32 @@ def test_equipment_self():
     assert 0x40001234 in p.world.items
 
 
+def test_equipment_graphic_increment_applied():
+    # ClassicUO EquipItem computes graphic = base_u16 + signed_i8. The byte
+    # after the base graphic is a signed increment, not padding. A nonzero
+    # increment must shift item.graphic AND keep every following field aligned.
+    h, p, w = _make_stack()
+
+    buf = PacketWriter()
+    buf.write_u8(0x2E)
+    buf.write_u32(0x40005678)  # item serial
+    buf.write_u16(0x1F00)      # base graphic
+    buf.write_i8(3)            # signed graphic increment (+3)
+    buf.write_u8(0x02)         # layer = TWO_HANDED
+    buf.write_u32(0x00000001)  # parent = player
+    buf.write_u16(0x0021)      # hue
+
+    h.dispatch(0x2E, buf.to_bytes())
+
+    item = p.world.items[0x40005678]
+    # graphic carries the increment ...
+    assert item.graphic == 0x1F03
+    # ... and the trailing fields stay aligned (no desync).
+    assert item.layer == 0x02
+    assert item.hue == 0x0021
+    assert p.self_state.equipment.get(0x02) == 0x40005678
+
+
 # ---------------------------------------------------------------------------
 # PacketHandler dispatch
 # ---------------------------------------------------------------------------

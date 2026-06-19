@@ -557,8 +557,13 @@ def register_handlers(
         """0x2E Equipped item (worn by a mobile)."""
         r = PacketReader(data[1:])
         serial = r.read_u32()
-        graphic = r.read_u16()
-        r.skip(1)  # unknown
+        # ClassicUO EquipItem: graphic = ReadUInt16BE() + ReadInt8().
+        # The byte after the base graphic is a SIGNED graphic-id increment,
+        # not a padding/unknown byte. Discarding it (the old r.skip(1)) left
+        # item.graphic wrong for every worn item shipped with a nonzero
+        # increment (e.g. dyed/variant art). Add it and wrap to u16 to mirror
+        # the C# (ushort) cast.
+        graphic = (r.read_u16() + r.read_i8()) & 0xFFFF
         layer = r.read_u8()
         parent_serial = r.read_u32()
         hue = r.read_u16()
