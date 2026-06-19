@@ -1704,7 +1704,15 @@ def register_handlers(
         wire flag is level + 1, so flag 0 = cured -> level -1) on the mobile /
         self_state. Severity matters: a basic cure spell can fail against a
         higher-level poison, so the cure trigger needs the level, not just a
-        boolean.
+        boolean.  status_type 2 (the yellow/blessed bar) is the dynamic
+        invulnerable signal ClassicUO exposes as Mobile.IsYellowHits
+        (Mobile.cs:118): ServUO sends it as a separate HealthbarYellow packet
+        (Packets.cs:3817, count=1, status_type=2, flag=1 set / 0 cleared) for
+        m.Blessed || m.YellowHealthbar.  Dropping it left is_yellow_health
+        stuck at False, so a town-healer / blessed NPC that flips its bar mid-
+        session was indistinguishable from an ordinary attackable/healable
+        mobile by anything that doesn't already see the static INVULNERABLE
+        notoriety.  We record it alongside the poison decode.
         """
         if len(data) < 9:
             return
@@ -1716,7 +1724,9 @@ def register_handlers(
 
         # poison_level: None = this packet carried no poison entry; -1 = cured;
         # 0..N = ServUO Poison.Level (flag - 1).
+        # yellow: None = no yellow/blessed entry in this packet; else the bool.
         poison_level: int | None = None
+        yellow: bool | None = None
         for _ in range(count):
             if r.remaining < 3:
                 break
@@ -1724,18 +1734,25 @@ def register_handlers(
             flag = r.read_u8()
             if status_type == 1:  # poison bar
                 poison_level = flag - 1  # flag 0 (cured) -> -1
+            elif status_type == 2:  # yellow / blessed bar
+                yellow = flag != 0
 
-        if poison_level is None:
-            return  # only yellow/blessed bars in this packet — nothing to do
+        if poison_level is None and yellow is None:
+            return  # unrecognized status entry — nothing to do
 
-        poisoned = poison_level >= 0
         if serial == p.self_state.serial:
-            p.self_state.is_poisoned = poisoned
-            p.self_state.poison_level = poison_level
+            target = p.self_state
         else:
-            mob = p.world.get_or_create_mobile(serial)
-            mob.is_poisoned = poisoned
-            mob.poison_level = poison_level
+            target = p.world.get_or_create_mobile(serial)
+
+        # Each ServUO Healthbar* packet carries exactly ONE status kind, so
+        # only update the field its entry was present for — never clobber the
+        # other from a packet that didn't mention it.
+        if poison_level is not None:
+            target.is_poisoned = poison_level >= 0
+            target.poison_level = poison_level
+        if yellow is not None:
+            target.is_yellow_health = yellow
 
     # ClassicUO routes BOTH 0x16 and 0x17 to the same NewHealthbarUpdate handler
     # (PacketHandlers.cs:197-198) with an identical wire layout. ServUO sends the

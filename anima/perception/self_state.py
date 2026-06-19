@@ -84,6 +84,10 @@ class SelfState:
 
         # Health-bar status flags (synced from 0x17 HealthBarStatusUpdate)
         self.is_poisoned: bool = False
+        # Yellow / blessed health bar (0x17 status_type 2). True while the
+        # server reports us blessed or yellow-barred. Mirrors MobileInfo so
+        # self and foes share one field name for the dynamic invulnerable flag.
+        self.is_yellow_health: bool = False
         # 0-based ServUO Poison.Level (0=Lesser .. 4=Lethal; special poisons
         # report higher raw values). -1 = not poisoned. Tracks the wire flag
         # minus one so the cure trigger can scale to severity.

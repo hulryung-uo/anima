@@ -35,6 +35,10 @@ class MobileInfo:
     hits_max: int = 0
     hits: int = 0
     is_poisoned: bool = False
+    # Yellow / blessed health bar (ServUO 0x17 status_type 2 = m.Blessed ||
+    # m.YellowHealthbar). The dynamic invulnerable signal — ClassicUO's
+    # Mobile.IsYellowHits. Distinct from the static INVULNERABLE notoriety.
+    is_yellow_health: bool = False
     # 0-based ServUO Poison.Level (0=Lesser .. 4=Lethal). -1 = not poisoned.
     poison_level: int = -1
     # time.monotonic() of the last packet that touched this mobile. The UO
