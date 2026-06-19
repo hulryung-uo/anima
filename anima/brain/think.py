@@ -743,9 +743,20 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
         steps_sent += 1
 
         if is_turn:
-            # Turn only — no delay, immediately send step in same direction
+            # Turn only — no delay, immediately send step in same direction.
+            # Advance only the LOCAL loop facing so the follow-up packet this
+            # tick is emitted as a move (is_turn False), not another turn.
+            # Do NOT eagerly write self_state.direction: the turn is unconfirmed.
+            # confirm_walk() applies _pending_direction on the matching
+            # ConfirmWalk (0x22); deny_walk() rolls it back to the server facing
+            # on a DenyWalk (0x21). Writing it here races the server — a refused
+            # turn (Frozen/paralyzed/blocked facing) is resynced by deny_walk()'s
+            # sync_position(), and this eager write (which runs AFTER the
+            # synchronous deny) would clobber that correction, desyncing every
+            # later step that reads the facing. go_to / wander_action /
+            # _walk_one_step never touch self_state.direction in their turn
+            # branch for exactly this reason; this mover must match.
             current_dir = direction
-            ctx.perception.self_state.direction = direction
             # Don't update last_step_time so can_walk() stays True
         else:
             # Actual move — apply walk delay
