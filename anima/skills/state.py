@@ -91,10 +91,22 @@ def _player_presence(ctx: BrainContext) -> str:
 
 
 def _enemy_presence(ctx: BrainContext) -> str:
+    """Detect a *live* hostile mobile nearby.
+
+    A freshly-killed mob keeps its ATTACKABLE(3)/ENEMY(5)/MURDERER(6) notoriety
+    until the corpse despawns, so counting notoriety alone leaves the state key
+    stuck on ``enemies`` long after the threat is cleared — the Q-table never
+    observes the "field is now safe" state and survival/healing gating reacts to
+    phantom enemies. Skip dead mobiles, matching the combat loop which already
+    treats ``MobileInfo.is_dead`` (ghost body, or known health bar at zero) as
+    the source of truth for "this target is dead".
+    """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
     has_enemies = any(
-        m.notoriety is not None and m.notoriety.value in (3, 5, 6)
+        not getattr(m, "is_dead", False)
+        and m.notoriety is not None
+        and m.notoriety.value in (3, 5, 6)
         for m in nearby
     )
     return "enemies" if has_enemies else "safe"

@@ -264,6 +264,50 @@ class TestStateEncoder:
 
         assert encode_state(ctx).split("|")[1] == "alone"
 
+    def test_live_enemy_counts_as_enemies(self) -> None:
+        """A live hostile mob nearby encodes the enemy component as 'enemies'."""
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+
+        ctx = make_ctx()
+        ctx.perception.self_state.serial = 0x01
+        ctx.perception.world.nearby_mobiles.return_value = [
+            SimpleNamespace(
+                serial=0x10, body=0x0021,
+                notoriety=NotorietyFlag.ENEMY, is_dead=False,
+            ),
+        ]
+
+        assert encode_state(ctx).split("|")[2] == "enemies"
+
+    def test_dead_enemy_does_not_count_as_enemies(self) -> None:
+        """A corpse keeps its hostile notoriety but must not register as a threat.
+
+        Regression: after clearing the survival arena the slain mobs retain
+        ATTACKABLE/ENEMY/MURDERER notoriety until despawn. Counting them kept the
+        state key pinned to 'enemies' so the Q-table never observed the cleared
+        field. ``MobileInfo.is_dead`` is the source of truth (matches combat).
+        """
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+
+        ctx = make_ctx()
+        ctx.perception.self_state.serial = 0x01
+        ctx.perception.world.nearby_mobiles.return_value = [
+            SimpleNamespace(
+                serial=0x10, body=0x0021,
+                notoriety=NotorietyFlag.ENEMY, is_dead=True,
+            ),
+            SimpleNamespace(
+                serial=0x11, body=0x0009,
+                notoriety=NotorietyFlag.MURDERER, is_dead=True,
+            ),
+        ]
+
+        assert encode_state(ctx).split("|")[2] == "safe"
+
     def test_region_coords(self) -> None:
         assert region_coords(1000, 2000) == (31, 62)
         assert region_coords(0, 0) == (0, 0)
