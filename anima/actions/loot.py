@@ -79,6 +79,18 @@ def _valuable_graphics() -> set[int]:
     )
 
 
+def _loot_weight_est(graphic: int, amount: int) -> int:
+    """Conservative per-lift weight estimate (stones) for a corpse item.
+
+    Gold is ~1 stone / 100 coins (floored at 1 so a tiny pile still costs
+    something); every other valuable is a flat minimum. Pulled out of the
+    lift loop so the pre-lift sort and the gate share one estimator.
+    """
+    if graphic == GOLD_GRAPHIC:
+        return max(1, (amount + 99) // 100)
+    return WEIGHT_PER_ITEM_EST
+
+
 def find_corpses(ctx: AgentContext, max_dist: int = 3) -> list[ItemInfo]:
     """Corpses (graphic 0x2006) on the ground near the agent, nearest first."""
     ss = ctx.perception.self_state
@@ -118,18 +130,28 @@ async def loot_corpse(ctx: AgentContext, corpse_serial: int) -> ActionResult:
     # weight and advanced per lift so the gate stops BEFORE the next stale
     # 0x11 status update would arrive.
     projected_weight = ss.weight
-    for it in list(ctx.perception.world.items.values()):
-        if it.container != corpse_serial:
-            continue
+    # Lift order matters under the weight gate: once a projected lift would
+    # cross the headroom band we ``break``, abandoning the rest of the
+    # corpse. In raw ``world.items`` iteration order a heavy ore/ingot can
+    # come BEFORE the gold pile, trip the gate, and strand the gold — the
+    # single most valuable, near-weightless thing on the corpse and a direct
+    # gold-rate loss. Sort gold first, then lightest-to-heaviest, so gold is
+    # never sacrificed for a heavy item and the budget lifts the most items.
+    candidates = [
+        it
+        for it in ctx.perception.world.items.values()
+        if it.container == corpse_serial
+        and (it.graphic == GOLD_GRAPHIC or it.graphic in valuable)
+    ]
+    candidates.sort(
+        key=lambda it: (
+            0 if it.graphic == GOLD_GRAPHIC else 1,
+            _loot_weight_est(it.graphic, it.amount),
+        )
+    )
+    for it in candidates:
         is_gold = it.graphic == GOLD_GRAPHIC
-        if not (is_gold or it.graphic in valuable):
-            continue
-        # Estimate what this lift adds: gold ~1 stone / 100 coins (>=1),
-        # everything else a flat conservative minimum.
-        if is_gold:
-            est = max(1, (it.amount + 99) // 100)
-        else:
-            est = WEIGHT_PER_ITEM_EST
+        est = _loot_weight_est(it.graphic, it.amount)
         # Gate on the PROJECTED post-lift weight (>=, so the headroom band
         # is honoured exactly) using the freshest server reading available.
         projected_weight = max(projected_weight, ss.weight)
