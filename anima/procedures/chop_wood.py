@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# ServUO harvest range for lumberjacking is 2 tiles (HarvestSystem). The
+# procedure swings from the agent's current footing without walking closer,
+# so a tree the picker returns from up to SEARCH_RADIUS (8) tiles away is
+# choppable only when it is already within this range.
+CHOP_RANGE = 2
+
 
 class ChopWood(Procedure):
     timeout_s = 600.0  # full gather tours run long — generous anti-freeze cap
@@ -32,7 +38,21 @@ class ChopWood(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         if not find_in_backpack(ctx, HATCHET_GRAPHICS):
             return False
-        return _find_nearby_tree(ctx) is not None
+        # _find_nearby_tree scans out to SEARCH_RADIUS (8) tiles, but this
+        # procedure never walks to the tree — it swings from the current
+        # footing. A tree beyond CHOP_RANGE draws a server "too far away"
+        # reply, which execute() then parks in depleted_trees for the full
+        # ~20-minute DEPLETED_COOLDOWN. Standing still and firing on every
+        # 3-8-tile tree therefore blacklists every reachable tree in turn
+        # and the agent chops nothing. Only start when the nearest tree is
+        # genuinely in chop range (mirrors MineOre.can_start), and let the
+        # planner's deadlock path walk us toward the forest otherwise.
+        tree = _find_nearby_tree(ctx)
+        if tree is None:
+            return False
+        tx, ty = tree[0], tree[1]
+        ss = ctx.perception.self_state
+        return max(abs(tx - ss.x), abs(ty - ss.y)) <= CHOP_RANGE
 
     # ServUO Lumberjacking result lines (Scripts/Skills/Lumberjacking.cs +
     # the harvest system). Any of these means the swing has RESOLVED, so the
