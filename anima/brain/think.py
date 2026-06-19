@@ -189,11 +189,16 @@ async def llm_think(ctx: BrainContext) -> Status:
     now = time.time()
     last_think = ctx.blackboard.get("last_think_time", 0.0)
 
-    # Pause during active conversation
+    # An active conversation pauses *fresh* strategising (don't wander off /
+    # re-decide while someone is talking to us) — but it must NOT freeze a walk
+    # already in progress. The gate used to sit ahead of the goal block, so any
+    # nearby utterance (including a hostile mob's, which also stamps
+    # last_player_speech) stranded the agent mid-route for the whole
+    # CONVERSATION_TIMEOUT window. Evaluate it here and apply it only to the
+    # new-think path below, after the active-goal movement block has had its
+    # turn to keep stepping toward the destination.
     last_player_speech = ctx.blackboard.get("last_player_speech", 0.0)
     in_conversation = (now - last_player_speech) < CONVERSATION_TIMEOUT
-    if in_conversation and not ctx.blackboard.get("pending_speech"):
-        return Status.SUCCESS
 
     # ---- Active goal: keep pursuing until done or definitively failed ----
     goal = ctx.blackboard.get("current_goal")
@@ -281,6 +286,13 @@ async def llm_think(ctx: BrainContext) -> Status:
 
         # goal exists but no move_target and can't restore — abandon
         _finish_goal(ctx, goal, "failure")
+
+    # Someone is talking to us and we have no goal to keep pursuing — wait and
+    # observe rather than starting a fresh think (which could pick a new place
+    # and walk away mid-conversation). A pending reply is handled by the social
+    # branch, not here, so it skips this wait.
+    if in_conversation and not ctx.blackboard.get("pending_speech"):
+        return Status.SUCCESS
 
     # If skills are succeeding, don't rethink
     if ctx.blackboard.get("skill_consecutive_fails", 0) == 0:
