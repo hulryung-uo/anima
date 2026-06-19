@@ -3275,11 +3275,37 @@ class _WanderAndScavenge:
 
     WANDER_STEPS = 20
     STEP_DELAY = 0.6  # seconds between wander steps
+    WANDER_RADIUS = 20  # tiles — keep the sweep "near town", never drift away
 
     def __init__(self, ss) -> None:
         self.name = "wander_and_scavenge"
         self.description = "Wander around town scanning for items"
         self._start_pos = (ss.x, ss.y)
+
+    @classmethod
+    def _next_target(cls, start_x, start_y, cur_x, cur_y, rng):
+        """Pick the next wander stop: a ±5..15 hop from the current spot,
+        clamped so it never strays beyond WANDER_RADIUS of the anchor.
+
+        The old code added a fresh random ±5..15 offset to the *current*
+        position every step (target = cur ± rand), so the offsets compounded:
+        20 steps could march the agent 100-300 tiles into wilderness/water,
+        well past the "±5-15 tiles near town" the docstring promises and far
+        from the town items the scavenge exists to grab. Anchoring to the
+        start position (like WanderForCombat orbits its combat_anchor) keeps
+        the sweep inside the radius it claims to cover.
+        """
+        dx = rng.choice([-1, 1]) * rng.randint(5, 15)
+        dy = rng.choice([-1, 1]) * rng.randint(5, 15)
+        target_x = cur_x + dx
+        target_y = cur_y + dy
+        # Clamp the target back inside the anchor radius. When a hop would
+        # leave the box, pin it to the boundary so the next step is pulled
+        # back toward town rather than compounding the drift.
+        r = cls.WANDER_RADIUS
+        target_x = max(start_x - r, min(start_x + r, target_x))
+        target_y = max(start_y - r, min(start_y + r, target_y))
+        return target_x, target_y
 
     async def can_start(self, ctx) -> bool:
         return True
@@ -3303,13 +3329,13 @@ class _WanderAndScavenge:
         picked = 0
         spots_visited = 0
 
+        start_x, start_y = self._start_pos
         for _ in range(self.WANDER_STEPS):
-            # Pick a random nearby position (±5..15 tiles) and walk there
+            # Pick the next stop near the town anchor (bounded, never drifts)
             ss = ctx.perception.self_state
-            dx = random.choice([-1, 1]) * random.randint(5, 15)
-            dy = random.choice([-1, 1]) * random.randint(5, 15)
-            target_x = ss.x + dx
-            target_y = ss.y + dy
+            target_x, target_y = self._next_target(
+                start_x, start_y, ss.x, ss.y, random,
+            )
 
             await go_to(ctx, target_x, target_y)
             spots_visited += 1
