@@ -437,7 +437,19 @@ class ActivityJournal:
         return {r["category"]: r["cnt"] for r in rows}
 
     async def prune(self, max_entries: int = 1000) -> int:
-        """Delete oldest entries beyond max_entries."""
+        """Evict the *least valuable* entries once the agent passes max_entries.
+
+        Pruning purely by ``timestamp ASC`` discards the oldest rows regardless
+        of how memorable they are — so the rare ``importance=3`` events (a death,
+        a windfall, a first sighting; the very ones ``result_to_importance``
+        deliberately marks so they survive ``recent_entries(min_importance=2)``)
+        get thrown away while recent routine ``importance=1`` noise is kept.
+        That silently erodes exactly the memories that drive the forum essays
+        and self-reflection ``compile_narrative`` reads.
+
+        Evict by ``importance ASC, timestamp ASC`` instead: the cheapest, oldest
+        entries go first and significant memories are protected from the cap.
+        """
         await self._ensure_table()
 
         cursor = await self._db.db.execute(
@@ -454,7 +466,7 @@ class ActivityJournal:
         await self._db.db.execute(
             """DELETE FROM journal WHERE id IN (
                  SELECT id FROM journal WHERE agent_name = ?
-                 ORDER BY timestamp ASC LIMIT ?
+                 ORDER BY importance ASC, timestamp ASC LIMIT ?
                )""",
             (self._agent_name, to_delete),
         )

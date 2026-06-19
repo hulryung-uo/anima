@@ -200,3 +200,42 @@ class TestActivityJournal:
 
         entries = await journal.recent_entries(limit=100)
         assert len(entries) == 5
+
+    @pytest.mark.asyncio
+    async def test_prune_preserves_significant_memories(self, journal):
+        # Record a handful of OLD but significant events (importance=3), then a
+        # flood of NEWER routine noise (importance=1). Pruning past the cap must
+        # drop the routine noise, not the meaningful memories — even though the
+        # significant events are the oldest rows by timestamp.
+        big = SkillResult(success=True, reward=10.0, message="windfall")  # importance=3
+        routine = SkillResult(success=False, reward=-1.0, message="miss")  # importance=1
+        assert result_to_importance(big) == 3
+        assert result_to_importance(routine) == 1
+
+        significant_titles = []
+        for i in range(3):
+            entry = await journal.record_event(
+                f"기념비적 사건 {i}",
+                category="event",
+                title=f"milestone-{i}",
+                mood="excited",
+                importance=3,
+            )
+            significant_titles.append(entry.title)
+        # A flood of newer, routine entries.
+        for _ in range(20):
+            await journal.record_skill("chop_wood", routine)
+
+        # 23 entries -> keep only 5.
+        deleted = await journal.prune(max_entries=5)
+        assert deleted == 18
+
+        survivors = await journal.recent_entries(limit=100, min_importance=1)
+        assert len(survivors) == 5
+        kept_titles = {e.title for e in survivors}
+        # All three significant memories must survive the prune.
+        for t in significant_titles:
+            assert t in kept_titles
+        # And at least one survived purely on importance, not recency, proving
+        # the prune isn't just keeping the newest rows.
+        assert any(e.importance == 3 for e in survivors)
