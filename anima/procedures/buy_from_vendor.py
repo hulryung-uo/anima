@@ -168,6 +168,40 @@ def _buy_quantity(ctx: AgentContext, item, budget: int) -> int:
     return max(1, want)
 
 
+def _reconcile_bank_after_buy(
+    ctx: AgentContext,
+    *,
+    price: int,
+    delivered: int,
+    gold_spent: int,
+    bank_before: int,
+) -> None:
+    """Decrement the cached bank balance by the gold the BANK actually paid.
+
+    Only runs when the purchase was bank-paid (``gold_spent == 0`` yet the
+    item arrived) and a positive bank balance was cached. The charge is
+    ``price * delivered`` where ``delivered`` is the real backpack-count
+    delta (``qty_after - qty_before``), NOT the planned ``buy_qty``.
+
+    ServUO clamps delivery to the vendor's *current* stock, and the stock
+    figure we planned against came from an earlier 0x74/0x3C snapshot that a
+    competing buyer or a restock-timer tick can stale out. When the server
+    delivers fewer units than we planned, charging the cache for the planned
+    quantity over-decrements it, which then makes the *next* affordability
+    decision believe there is less bank gold than there really is — exactly
+    the cache-corruption the buy-quantity stock cap was meant to avoid, but
+    which the cap alone cannot prevent once stock goes stale. Charging the
+    delivered amount keeps the cache == reality.
+    """
+    if not (delivered > 0 and gold_spent == 0 and bank_before > 0):
+        return
+    bal_cache = ctx.blackboard.get("bank_balance")
+    if bal_cache:
+        bal_cache["amount"] = max(
+            0, bal_cache.get("amount", 0) - price * delivered,
+        )
+
+
 class BuyFromVendor(Procedure):
     name = "buy_from_vendor"
     description = "Buy tools from a nearby NPC vendor."
@@ -417,12 +451,13 @@ class BuyFromVendor(Procedure):
         bl.pop(vendor.serial, None)
         # Invalidate bank cache if payment likely came from bank so the
         # next buy re-checks the real balance instead of over-spending.
-        if item_gained and gold_spent == 0 and bank_before > 0:
-            bal_cache = ctx.blackboard.get("bank_balance")
-            if bal_cache:
-                bal_cache["amount"] = max(
-                    0, bal_cache.get("amount", 0) - target_item.price * buy_qty,
-                )
+        _reconcile_bank_after_buy(
+            ctx,
+            price=target_item.price,
+            delivered=qty_after - qty_before,
+            gold_spent=gold_spent,
+            bank_before=bank_before,
+        )
         pay_note = f"{gold_spent}gp" if gold_spent > 0 else "bank"
         return ProcedureResult(
             success=True,
