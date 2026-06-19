@@ -89,6 +89,15 @@ PACKET_LENGTHS: dict[int, int] = {
     0x49: 63,
     0x4E: 6,
     0x4F: 2,
+    # 0x51 CompactServerInfo (ServUO Scripts/Services/RemoteAdmin/Packets.cs:136
+    # base(0x51) — single-arg => VARIABLE; ClassicUO PacketsTable 0x51 = -1,
+    # which ClassicUO frames as variable, reading bytes 1-2 as the BE length).
+    # Absent here it defaulted to -1 (unknown), and the game framer discards
+    # only ONE byte on an unknown id (connection.py "unknown_game_packet" ->
+    # del recv_buffer[:1]), misreading the length-prefix bytes as a fresh
+    # packet id and desyncing the rest of the decompressed stream. Frame it
+    # variable (0) so the length-prefixed path consumes the whole frame.
+    0x51: 0,
     # 0x53 PopupMessage (ServUO Packets.cs:3156 base(0x53, 2); ClassicUO
     # PacketsTable 0x53 = 0x0002). FIXED 2 bytes. Absent here it defaulted to
     # -1 (unknown), and the game framer discards only ONE byte on an unknown id
@@ -221,6 +230,15 @@ PACKET_LENGTHS: dict[int, int] = {
     0xD7: 0,
     0xD8: 0,
     0xD9: 0,
+    # 0xDA Mahjong relay (ServUO Scripts/Items/Containers/Mahjong/Packets.cs
+    # MahjongJoinGame/MahjongPlayersInfo/... all base(0xDA) — single-arg =>
+    # VARIABLE, the body carries its own u16 length via EnsureCapacity;
+    # ClassicUO PacketsTable 0xDA = -1, framed as variable). Without an entry
+    # it defaulted to -1 (unknown): the framer would drop a single byte and
+    # reinterpret the length-prefix bytes as packet ids, desyncing the whole
+    # decompressed game stream until a lucky resync. We have no handler for
+    # Mahjong, but framing it variable (0) keeps the stream in sync regardless.
+    0xDA: 0,
     0xDB: 0,
     0xDC: 9,
     0xDD: 0,
