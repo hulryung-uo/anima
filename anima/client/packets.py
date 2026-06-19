@@ -524,6 +524,19 @@ def build_unicode_speech(
     """
     # Server measures length in UTF-16 code units (C# String.Length); clamp on
     # the same unit so astral chars (2 units) can't push the trimmed text over.
+    #
+    # Order matters: ServUO's UnicodeSpeech handler does ``text = text.Trim()``
+    # *before* the ``Length <= 0 || Length > 128`` gate (PacketHandlers.cs).
+    # Clamping the raw, un-trimmed body the way we used to mis-spent the 128-unit
+    # budget on surrounding whitespace: a reply like " <128 real chars> " had its
+    # trailing content chopped here even though the server would have trimmed the
+    # spaces and accepted all 128 — and a whitespace-only reply was framed and
+    # sent only for the server's Trim() to reduce it to length 0 and silently
+    # drop the whole packet (the agent "spoke" but said nothing). Strip first on
+    # the same edges C#'s String.Trim() does (leading/trailing Unicode
+    # whitespace), then clamp, so the bytes we send match exactly what the server
+    # keeps after its own trim.
+    text = text.strip()
     if len(text.encode("utf-16-be")) // 2 > 128:
         units = text.encode("utf-16-be")[: 128 * 2]
         text = units.decode("utf-16-be", errors="ignore")
