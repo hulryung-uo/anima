@@ -332,8 +332,16 @@ class CraftBlacksmith(Procedure):
         ServUO renders the notice at AddHtmlLocalized(170, 295, …)
         (CraftGump.cs); skip the "NOTICES" header label at x=10, y=302
         (cliloc 1044012).
+
+        Iterate gumps newest-first (descending gump_id) so the notice is
+        read from the SAME gump the batch loop drives MAKE LAST on
+        (``ss.gumps[max(keys)]``). A stale CraftGump left over from a prior
+        attempt would otherwise win arbitrary dict-iteration order and the
+        current attempt's outcome gets read off the previous notice
+        (e.g. a success classified as the prior "You failed to create …").
         """
-        for g in ss.gumps.values():
+        for gid in sorted(ss.gumps.keys(), reverse=True):
+            g = ss.gumps[gid]
             for t in g.texts:
                 if 280 <= t.y <= 310 and t.x >= 150:
                     text = g.get_text(t.text_id)
