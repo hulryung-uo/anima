@@ -57,6 +57,40 @@ class SellToVendor(Procedure):
         return keep
 
     @staticmethod
+    def _pick_protected_serials(
+        sell_list: list,
+        tool_groups: list[set[int]],
+    ) -> tuple[set[int], set[int]]:
+        """Choose which surplus-tool serials to KEEP (protect) per group.
+
+        Returns ``(protected_serials, relaxed_graphics)``:
+        - ``protected_serials`` — the one serial per group we will NOT sell,
+        - ``relaxed_graphics`` — graphics whose KEEP protection is lifted so
+          the surplus duplicates can be sold.
+
+        A tool group spans multiple graphics (e.g. hatchet = 6 graphics,
+        pickaxe = 2) and the vendor pays a *different* price per graphic.
+        When we must keep exactly one unit and sell the rest, keeping the
+        first-listed unit (the old behaviour) can retain the highest-priced
+        duplicate and sell a cheaper one — leaving gold on the table.
+        Keep the unit the vendor values *least* (and, on a tie, the one
+        with the smallest stack) so the surplus we send earns the most.
+        """
+        protected_serials: set[int] = set()
+        relaxed_graphics: set[int] = set()
+        for group in tool_groups:
+            group_items = [si for si in sell_list if si.graphic in group]
+            if len(group_items) >= 2:
+                # Keep the cheapest unit, allow selling the higher-value rest.
+                keep_item = min(
+                    group_items,
+                    key=lambda si: (si.price, si.amount, si.serial),
+                )
+                protected_serials.add(keep_item.serial)
+                relaxed_graphics |= group
+        return protected_serials, relaxed_graphics
+
+    @staticmethod
     def _select_sellable(
         sell_list: list,
         effective_keep: set[int],
@@ -289,14 +323,10 @@ class SellToVendor(Procedure):
         )
 
         _TOOL_GROUPS = [_TONGS_GFX, _TINKER_GFX, _PICK_GFX, _HATCH_GFX, _SAW_GFX]
-        protected_serials: set[int] = set()
-        relaxed_graphics: set[int] = set()
-        for group in _TOOL_GROUPS:
-            group_items = [si for si in sell_list if si.graphic in group]
-            if len(group_items) >= 2:
-                # Keep 1, allow selling the rest
-                protected_serials.add(group_items[0].serial)
-                relaxed_graphics |= group
+        protected_serials, relaxed_graphics = self._pick_protected_serials(
+            sell_list,
+            _TOOL_GROUPS,
+        )
 
         # Effective keep: original keep minus relaxed (surplus) tool graphics
         effective_keep = keep - relaxed_graphics
