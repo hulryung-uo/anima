@@ -23,6 +23,7 @@ from anima.client.packets import (
     build_account_login,
     build_client_version,
     build_delete_character,
+    build_game_seed,
     build_game_login,
     build_play_character,
     build_seed,
@@ -267,8 +268,11 @@ class UoConnection:
         logger.info("login_phase2_start")
         await self._connect(host, port)
 
-        # Send seed with auth_key
-        game_seed = build_seed(seed=auth_key)
+        # Send the phase-2 seed: a bare 4-byte Big-Endian auth key (NOT the
+        # 21-byte 0xEF Seed packet used in phase 1). A stock UO/ServUO game
+        # server reads exactly 4 bytes here as the key; sending the full 0xEF
+        # packet leaves 17 stray bytes that corrupt the following 0x91 parse.
+        game_seed = build_game_seed(auth_key)
         await self._send_raw(game_seed)
 
         # Switch to game mode (Huffman decompression for incoming)

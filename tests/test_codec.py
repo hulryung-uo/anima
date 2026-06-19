@@ -86,6 +86,26 @@ def test_packet_build_seed():
     assert r.read_u32() == 3
 
 
+def test_packet_build_game_seed_is_raw_4_bytes():
+    """Phase-2 game-server seed is a bare 4-byte BE key, not a 0xEF packet.
+
+    Matches ClassicUO LoginScene.HandleRelayServerPacket, which sends the raw
+    seed bytes before Send_SecondLogin on the game connection.
+    """
+    from anima.client.packets import build_game_seed, build_seed
+
+    auth_key = 0x9C69B58C
+    data = build_game_seed(auth_key)
+
+    # Exactly 4 bytes, Big-Endian, and crucially NOT the 21-byte 0xEF packet.
+    assert len(data) == 4
+    assert data == bytes([0x9C, 0x69, 0xB5, 0x8C])
+    assert data[0] != 0xEF
+    assert PacketReader(data).read_u32() == auth_key
+    assert data != build_seed(seed=auth_key)
+    assert len(build_seed(seed=auth_key)) == 21
+
+
 def test_packet_build_account_login():
     from anima.client.packets import build_account_login
 

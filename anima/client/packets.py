@@ -228,6 +228,20 @@ def build_seed(seed: int, major: int = 7, minor: int = 0, rev: int = 102, patch:
     return w.to_bytes()
 
 
+def build_game_seed(seed: int) -> bytes:
+    """Build the phase-2 game-server seed: a bare 4-byte Big-Endian key.
+
+    The phase-1 (account) connection opens with the 21-byte 0xEF Seed packet
+    (``build_seed``). The phase-2 (game) connection, however, is prefixed with
+    only the raw 4-byte auth key from the 0x8C relay — there is NO 0xEF header
+    and no version fields. See ClassicUO ``LoginScene.HandleRelayServerPacket``,
+    which writes ``{seed>>24, seed>>16, seed>>8, seed}`` before ``Send_SecondLogin``.
+    """
+    w = PacketWriter()
+    w.write_u32(seed)
+    return w.to_bytes()
+
+
 def build_account_login(username: str, password: str) -> bytes:
     """Build AccountLogin packet (0x80, 62 bytes)."""
     w = PacketWriter()
