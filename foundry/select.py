@@ -35,6 +35,31 @@ TARGET_PROFESSIONS: tuple[str, ...] = tuple(
 )
 
 
+# Per-empty-neighbour frontier weight in choose_parent: one fillable neighbour is
+# worth this much. The frontier bias is the PRIMARY parent signal (the module
+# docstring: pure fitness-greedy selection collapses diversity), so the quality
+# tiebreak below must never reorder parents ACROSS frontier levels.
+_FRONTIER_STEP = 2.0
+# A genome's selection quality spans ~[0, 235] on the live grid, so a raw
+# ``0.1 * quality`` term reaches ~23 — far larger than a full frontier bonus
+# (_FRONTIER_STEP * 2 = 4.0). That made choose_parent effectively fitness-greedy
+# whenever a high-fitness elite existed, defeating the frontier bias and the
+# MAP-Elites diversity it protects (cf. commit c8952ba, which shrank the recency
+# multiplier in choose_parent_for_target for the symmetric "secondary signal
+# eclipsed quality" reason). Saturate the quality contribution into a bounded
+# band STRICTLY below one frontier step so it stays a genuine *mild tiebreak*:
+# monotone in quality (a steadier/higher elite still wins among equal-frontier
+# parents) but unable to outvote even a single fillable neighbour.
+_QUALITY_TIEBREAK_MAX = 0.9 * _FRONTIER_STEP  # < one frontier step, by design
+_QUALITY_HALF = 60.0  # quality at which the tiebreak reaches half its ceiling
+
+
+def _quality_tiebreak(q: float) -> float:
+    """Bounded, monotone quality bonus in ``[0, _QUALITY_TIEBREAK_MAX)``."""
+    q = max(0.0, q)
+    return _QUALITY_TIEBREAK_MAX * (q / (q + _QUALITY_HALF))
+
+
 def _selection_quality(g: Genome) -> float:
     """Variance-aware parent quality that ALSO honors human held-out corrections.
 
@@ -143,9 +168,12 @@ def choose_parent(archive: Archive, seed: int = 0) -> Genome | None:
     weights = []
     for g in elites:
         fp = _frontier_potential(g.cell, filled)
-        # variance-aware quality that honors held-out corrections (see
-        # _selection_quality) — don't favour volatile lucky / re-inflated parents.
-        weights.append(1.0 + 2.0 * fp + 0.1 * max(0.0, _selection_quality(g)))
+        # Frontier bias is PRIMARY; variance-aware quality (held-out-honouring;
+        # see _selection_quality) is a bounded MILD tiebreak that can never
+        # reorder parents across frontier levels (see _quality_tiebreak). A raw
+        # 0.1*quality term reached ~23 at live fitness magnitudes and swamped the
+        # ≤4.0 frontier bonus — turning selection fitness-greedy.
+        weights.append(1.0 + _FRONTIER_STEP * fp + _quality_tiebreak(_selection_quality(g)))
     return rng.choices(elites, weights=weights, k=1)[0]
 
 
