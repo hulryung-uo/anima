@@ -116,6 +116,25 @@ class WorldState:
         return self.items[serial]
 
     def remove(self, serial: int) -> None:
+        # Removing a container (a corpse despawning, a dropped bag destroyed,
+        # a backpack on a vanishing mobile) must also drop everything that
+        # lived INSIDE it. ClassicUO's World.RemoveItem / RemoveMobile walk
+        # the entity's child list and recursively RemoveItem each one
+        # (Game/World.cs). We don't keep a forward child list, so we scan
+        # world.items for anything whose `container` points at the serial
+        # being removed and recurse into those (a child may itself be a
+        # nested container, e.g. a bag inside a corpse).
+        #
+        # Without this, orphaned children linger forever with a dangling
+        # `container` pointer: they pollute nearby_items / container-content
+        # lookups, corrupt the 0x74 vendor buy-list correlation (which
+        # collects items by `it.container == container_serial`), and leak
+        # memory across a long eval run.
+        children = [
+            child for child, it in self.items.items() if it.container == serial
+        ]
+        for child in children:
+            self.remove(child)
         self.mobiles.pop(serial, None)
         self.items.pop(serial, None)
         # Intentionally keep opl_names/opl_properties — see
