@@ -575,14 +575,31 @@ class HuntNearby(Procedure):
         before = (sw.value if sw else 0.0) + (tc.value if tc else 0.0)
 
         equipped_two_handed = False
-        if not ss.equipment.get(1) and not ss.equipment.get(2):
+        # The WEAPON hand is layer 1; layer 2 is the off-hand (shield / the second
+        # half of a two-hander). Gate the weapon equip on the WEAPON hand being
+        # empty — NOT on both hands being empty. The old `not get(1) and not
+        # get(2)` guard skipped the whole equip block whenever layer 2 was already
+        # occupied — e.g. a shield left equipped from a previous engagement (the
+        # Parrying stream raises one and nothing ever takes it off) while the
+        # weapon was disarmed/looted/lost so layer 1 is empty. can_start still
+        # passes (a weapon sits in the pack), but execute saw the off-hand full,
+        # skipped equipping, and the agent fought BARE-HANDED holding only a
+        # shield: every swing rolls Wrestling, never the measured COMBAT stream
+        # (Swords/Tactics/Anatomy), the exact disarm leak the two-handed-layer fix
+        # (commit 8f8ec37) and the axe-graphics fix (b33c9e4) exist to plug. So we
+        # equip a one-handed weapon into the free layer-1 even when a shield holds
+        # layer 2. The two-hander fallback still needs BOTH hands, so it only runs
+        # when layer 2 is also free (and equip_weapon_from_pack(two_handed=True)
+        # additionally refuses if layer 1 somehow re-filled).
+        if not ss.equipment.get(1):
             # Prefer a one-handed weapon so the off-hand stays free for a shield
             # (Parrying stream). Only fall back to a two-hander when that's all
-            # the pack holds — and then wear it on the TWO-handed layer, because
-            # ServUO reads an axe/polearm's layer from its tiledata and refuses
-            # to wear it one-handed (it would strand on the cursor, disarming us).
+            # the pack holds AND the off-hand is free — and then wear it on the
+            # TWO-handed layer, because ServUO reads an axe/polearm's layer from
+            # its tiledata and refuses to wear it one-handed (it would strand on
+            # the cursor, disarming us).
             equipped = await equip_weapon_from_pack(ctx, ONE_HANDED_WEAPON_GRAPHICS)
-            if not equipped.success:
+            if not equipped.success and not ss.equipment.get(2):
                 equipped = await equip_weapon_from_pack(
                     ctx, TWO_HANDED_WEAPON_GRAPHICS, two_handed=True
                 )
