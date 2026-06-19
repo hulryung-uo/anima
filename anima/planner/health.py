@@ -30,6 +30,24 @@ class PlannerHealth:
         """Record a procedure that was actually selected and run."""
         self._selections.append(procedure)
 
+    def record_run(self, procedure: str, *, ran: bool) -> None:
+        """Record a procedure ONLY if it actually ran this tick.
+
+        Loop detection must reflect what the planner is *doing*, not what it
+        last did. On an idle tick (the planner selected nothing — ``tick()``
+        returned ``None``) the caller has no fresh procedure to report, and
+        feeding the previous tick's stale procedure name into the window
+        manufactures a phantom mono-procedure "loop": after ``window // 2``
+        idle ticks ``is_looping()`` trips on a procedure that never ran, the
+        productive-grind exemption rejects it (no successful result), and the
+        planner takes a 60s health break that resets the idle-tick counter —
+        starving the idle/deadlock escalation that is the actual recovery for a
+        None-returning planner. Idle is already tracked by ``_idle_ticks``; it
+        must not pollute the loop-detection window.
+        """
+        if ran and procedure:
+            self._selections.append(procedure)
+
     def record_skip(self, procedure: str) -> None:
         """Record a procedure that was filtered out.
 

@@ -316,11 +316,17 @@ class Planner:
                     self._idle_ticks += 1
 
                 # --- Planner health / loop detection ---
+                # Only feed loop-detection a procedure that ACTUALLY ran this
+                # tick. An idle tick (result is None) has no fresh procedure;
+                # falling back to self._last_procedure would record a stale
+                # name that did not run, manufacturing a phantom mono-procedure
+                # "loop" out of pure idleness — which trips a 60s health break
+                # that resets _idle_ticks and starves the idle/deadlock
+                # escalation meant to recover a None-returning planner.
                 proc_name_for_health = (
-                    getattr(result, '_proc_name', '') if result else ''
-                ) or self._last_procedure
-                if proc_name_for_health:
-                    self._health.record(proc_name_for_health)
+                    getattr(result, '_proc_name', '') or self._last_procedure
+                ) if result else ''
+                self._health.record_run(proc_name_for_health, ran=result is not None)
 
                 if (self._health.is_looping()
                         and _time.time() > self._health_break_until):

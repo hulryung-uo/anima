@@ -53,3 +53,47 @@ class TestPlannerHealth:
         for _ in range(50):
             h.record_skip("mine_ore")  # doesn't affect is_looping
         assert h.is_looping() is False
+
+
+class TestRecordRun:
+    """record_run must only count procedures that actually ran this tick.
+
+    Regression: the run loop used to fall back to the *previous* tick's
+    procedure name on an idle tick (planner returned None), feeding the
+    loop-detection window with a procedure that did not run. After window//2
+    idle ticks is_looping() tripped on that phantom, which fired a 60s health
+    break that reset the idle-tick escalation timer — so a genuinely idle /
+    deadlocked agent ping-ponged between health breaks and never escalated to
+    deadlock recovery.
+    """
+
+    def test_idle_tick_does_not_record(self):
+        h = PlannerHealth(window=20, min_diversity=0.2)
+        # Simulate an agent that ran one procedure then went idle: the old
+        # loop replayed "mine_ore" on every idle tick.
+        h.record_run("mine_ore", ran=True)
+        for _ in range(40):
+            h.record_run("mine_ore", ran=False)  # idle ticks: must NOT record
+        # Only the single real run is in the window — nowhere near enough data
+        # to call a loop, and certainly not a phantom mine_ore loop.
+        assert h.is_looping() is False
+        assert h.dominant_procedure() == "mine_ore"
+
+    def test_phantom_idle_replay_would_have_looped(self):
+        """Document the bug: replaying the stale name on idle DOES look like a
+        loop (this is what record_run prevents)."""
+        h = PlannerHealth(window=20, min_diversity=0.2)
+        for _ in range(20):
+            h.record("mine_ore")  # the buggy path: phantom replay each idle tick
+        assert h.is_looping() is True
+
+    def test_record_run_counts_real_runs(self):
+        h = PlannerHealth(window=20, min_diversity=0.2)
+        for _ in range(20):
+            h.record_run("mine_ore", ran=True)
+        assert h.is_looping() is True
+
+    def test_record_run_ignores_empty_name(self):
+        h = PlannerHealth(window=20)
+        h.record_run("", ran=True)
+        assert h.dominant_procedure() is None
