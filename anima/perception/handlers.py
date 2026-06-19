@@ -125,7 +125,16 @@ def register_handlers(
         notoriety = r.read_u8()
 
         if serial == p.self_state.serial:
-            return  # self position tracked by confirm_walk / deny_walk / 0x20
+            # Position for self is tracked by confirm_walk / deny_walk / 0x20,
+            # but the flags byte still matters: ServUO sends 0x77 for our own
+            # mobile (Mobile.cs SendEverything `ourState`) whenever a movement
+            # OR a flag delta (war mode, frozen/paralyzed, flying, hidden) is
+            # processed. ClassicUO's UpdateCharacter assigns `mobile.Flags`
+            # for self here too; dropping it left self_state.in_war_mode /
+            # .hidden stale until the next 0x78/0x20.
+            p.self_state.body = body
+            p.self_state.flags = MobileFlags(flags & 0xFF)
+            return
 
         mob = p.world.get_or_create_mobile(serial)
         mob.body = body

@@ -93,6 +93,44 @@ def test_mobile_moving():
     assert any(e.type == GameEventType.MOBILE_MOVED for e in events)
 
 
+def test_mobile_moving_self_updates_flags():
+    """0x77 for our own serial must refresh self_state.flags.
+
+    ServUO pushes 0x77 MobileMoving to a mobile's own client on flag deltas
+    (war mode, frozen, hidden, flying) — not just position. The handler used
+    to early-return for self and drop the flags byte, leaving in_war_mode /
+    hidden stale. Verify both directions of a war-mode toggle land.
+    """
+    from anima.perception.enums import MobileFlags
+
+    h, p, w = _make_stack()
+    self_serial = p.self_state.serial
+
+    def _moving(flags: int) -> bytes:
+        buf = PacketWriter()
+        buf.write_u8(0x77)
+        buf.write_u32(self_serial)
+        buf.write_u16(0x0190)   # body
+        buf.write_u16(123)      # x
+        buf.write_u16(456)      # y
+        buf.write_i8(0)         # z
+        buf.write_u8(2)         # direction = EAST
+        buf.write_u16(0)        # hue
+        buf.write_u8(flags)     # flags
+        buf.write_u8(1)         # notoriety
+        return buf.to_bytes()
+
+    # Enter war mode (0x40).
+    h.dispatch(0x77, _moving(MobileFlags.WAR_MODE))
+    assert p.self_state.in_war_mode is True
+    assert p.self_state.body == 0x0190
+
+    # Leave war mode again — stale flag must clear.
+    h.dispatch(0x77, _moving(MobileFlags.NONE))
+    assert p.self_state.in_war_mode is False
+    assert p.self_state.hidden is False
+
+
 # ---------------------------------------------------------------------------
 # MobileUpdate (0x20) — self
 # ---------------------------------------------------------------------------
