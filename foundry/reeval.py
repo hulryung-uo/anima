@@ -19,7 +19,7 @@ import statistics
 
 from foundry.kernel.archive import Archive, Genome
 from foundry.kernel.eval import EvalConfig, run_eval_multi
-from foundry.orchestrator import _prepare_worktree
+from foundry.orchestrator import LANE_BUDGET, _prepare_worktree
 
 
 def _replication_ratio(recorded: float, held_out: float) -> float:
@@ -47,12 +47,36 @@ def _replication_ratio(recorded: float, held_out: float) -> float:
     return 1.0 - (recorded - held_out) / abs(recorded)
 
 
+def _lane_safe_seeds(seeds: int, slot: int) -> int:
+    """Largest seed count whose per-slot expanded lane block fits the GM table.
+
+    run_eval_multi fans seed k onto ``cfg.lane + k`` (k in 0..seeds-1) and the GM
+    indexes the workplace as ``LANE_SPOTS[lane % len(LANE_SPOTS)]`` (gm.py). With
+    ``lane = slot * seeds`` the highest expanded lane is ``(slot+1)*seeds - 1``;
+    once that reaches ``LANE_BUDGET`` (== len(LANE_SPOTS)) the lane wraps modulo
+    and two of THIS genome's concurrent seed evals share one workplace — the
+    multi-hour fixed-start collision the orchestrator's lane budget exists to
+    prevent. The orchestrator clamps ``parallel*seeds``; reeval had no equivalent
+    guard, so ``reeval --seeds N`` with N (or (slot+1)*N) > LANE_BUDGET silently
+    wedged. Bound the block to the table: ``(slot+1)*seeds <= LANE_BUDGET``.
+    """
+    return max(1, min(seeds, LANE_BUDGET // (slot + 1)))
+
+
 def reeval_genome(arc: Archive, g: Genome, seeds: int, window_s: int,
                   slot: int = 0) -> dict:
     cfg_src = g.config or {}
     persona = cfg_src.get("persona", "miner")
     fixed_start = cfg_src.get("fixed_start", "miner")
     wt = _prepare_worktree(slot, g.code_ref or "HEAD")
+
+    # Clamp seeds so this slot's expanded lane block stays inside the GM table
+    # (no modulo wrap → no co-located fixed-start setups). See _lane_safe_seeds.
+    safe_seeds = _lane_safe_seeds(seeds, slot)
+    if safe_seeds != seeds:
+        print(f"[reeval] seeds {seeds} would overrun the GM lane budget "
+              f"({LANE_BUDGET} lanes, slot {slot}); clamping seeds -> {safe_seeds}")
+    seeds = safe_seeds
 
     # Each slot owns a contiguous block of `seeds` lanes AND ports: run_eval_multi
     # fans out the seeds as lane+k / proxy_port+k / web_port+k for k in 0..seeds-1.
