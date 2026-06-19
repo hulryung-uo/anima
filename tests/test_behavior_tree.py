@@ -191,6 +191,96 @@ class TestSequence:
         assert await node.tick(make_ctx()) == Status.RUNNING
 
     @pytest.mark.asyncio
+    async def test_running_resumes_without_reexecuting_prior_children(self) -> None:
+        """A RUNNING child must not cause earlier children to re-fire next tick.
+
+        Regression guard: previously Sequence.tick always restarted from the
+        first child, so a side-effecting Action ahead of a long-RUNNING Action
+        executed once per tick instead of once per sequence run.
+        """
+        prior_calls = 0
+        running_ticks = 0
+
+        async def prior_action(ctx: BrainContext) -> Status:
+            nonlocal prior_calls
+            prior_calls += 1
+            return Status.SUCCESS
+
+        async def long_running_action(ctx: BrainContext) -> Status:
+            nonlocal running_ticks
+            running_ticks += 1
+            # Stay RUNNING for the first two ticks, then succeed.
+            return Status.RUNNING if running_ticks < 3 else Status.SUCCESS
+
+        node = Sequence(
+            "seq",
+            [
+                Action("prior", prior_action),
+                Action("worker", long_running_action),
+            ],
+        )
+        ctx = make_ctx()
+
+        assert await node.tick(ctx) == Status.RUNNING
+        assert await node.tick(ctx) == Status.RUNNING
+        assert await node.tick(ctx) == Status.SUCCESS
+
+        # The side-effecting prior child fired exactly once for the whole run,
+        # not once per tick.
+        assert prior_calls == 1
+        assert running_ticks == 3
+
+    @pytest.mark.asyncio
+    async def test_resume_index_resets_after_completion(self) -> None:
+        """After a sequence finishes, the next run starts from the first child."""
+        prior_calls = 0
+        running_ticks = 0
+
+        async def prior_action(ctx: BrainContext) -> Status:
+            nonlocal prior_calls
+            prior_calls += 1
+            return Status.SUCCESS
+
+        async def worker_action(ctx: BrainContext) -> Status:
+            nonlocal running_ticks
+            running_ticks += 1
+            return Status.RUNNING if running_ticks == 1 else Status.SUCCESS
+
+        node = Sequence("seq", [Action("prior", prior_action), Action("worker", worker_action)])
+        ctx = make_ctx()
+
+        assert await node.tick(ctx) == Status.RUNNING  # suspends on worker
+        assert await node.tick(ctx) == Status.SUCCESS  # resumes worker, completes
+        assert prior_calls == 1
+
+        # Fresh run: index was reset, so prior fires again.
+        assert await node.tick(ctx) == Status.SUCCESS
+        assert prior_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_failure_resets_resume_index(self) -> None:
+        """A FAILURE mid-run clears the resume index (next run restarts)."""
+        results = iter([Status.RUNNING, Status.FAILURE])
+
+        async def flip(ctx: BrainContext) -> Status:
+            return next(results)
+
+        prior_calls = 0
+
+        async def prior_action(ctx: BrainContext) -> Status:
+            nonlocal prior_calls
+            prior_calls += 1
+            return Status.SUCCESS
+
+        node = Sequence("seq", [Action("prior", prior_action), Action("flip", flip)])
+        ctx = make_ctx()
+
+        assert await node.tick(ctx) == Status.RUNNING
+        assert await node.tick(ctx) == Status.FAILURE
+        # Next run must restart from the top.
+        assert node._running_index == 0
+
+    @pytest.mark.asyncio
     async def test_condition_gates_action(self) -> None:
         """Sequence with Condition + Action: condition false → FAILURE, action not called."""
         call_count = 0

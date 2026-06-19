@@ -41,17 +41,35 @@ class Selector(Node):
 
 
 class Sequence(Node):
-    """Run children in order; all must succeed."""
+    """Run children in order; all must succeed.
+
+    Stateful RUNNING handling: when a child returns RUNNING the sequence
+    remembers that child's index and *resumes* there on the next tick, rather
+    than restarting from the first child. Without this, every already-completed
+    child (Conditions and side-effecting Actions alike) is re-executed on each
+    tick while a later child is still RUNNING — firing packet sends, resource
+    spends, etc. more than once. The resume index is cleared on SUCCESS or
+    FAILURE so a fresh sequence run always starts from the beginning.
+    """
 
     def __init__(self, name: str, children: list[Node]) -> None:
         self.name = name
         self.children = children
+        self._running_index = 0
 
     async def tick(self, ctx: BrainContext) -> Status:
-        for child in self.children:
+        start = self._running_index
+        for index in range(start, len(self.children)):
+            child = self.children[index]
             result = await child.tick(ctx)
-            if result in (Status.FAILURE, Status.RUNNING):
+            if result is Status.RUNNING:
+                # Suspend here; resume at this child next tick.
+                self._running_index = index
                 return result
+            if result is Status.FAILURE:
+                self._running_index = 0
+                return result
+        self._running_index = 0
         return Status.SUCCESS
 
 
