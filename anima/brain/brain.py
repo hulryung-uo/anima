@@ -16,7 +16,7 @@ from anima.brain.behavior_tree import (
     Sequence,
     Status,
 )
-from anima.brain.think import llm_think
+from anima.brain.think import _record_episode, llm_think
 from anima.perception.enums import MessageType
 from anima.perception.event_stream import GameEventType
 
@@ -213,17 +213,26 @@ async def _skill_action(ctx: BrainContext) -> Status:
     # Q-learning disabled — skip Q-value update
     await selector.update(ctx, skill, result, agent_name)
 
-    # Record episode in memory
+    # Record episode in memory.
+    #
+    # Route through the shared _record_episode helper rather than calling
+    # memory_db.record_episode directly: the skill-execution path is the agent's
+    # *only* source of rewarded episodes (combat, gathering, crafting all flow
+    # here), and a bare record_episode writes the episodes row but feeds neither
+    # the action-stats reward buckets nor the location-value map. The think path
+    # that owned _record_episode only ever produced reward-0.0 "speak" episodes,
+    # which update_location_value explicitly skips — so the location-value map
+    # ("This area pays off / avoid ...") and the per-context action stats stayed
+    # permanently empty in practice. Sharing the helper also keeps the
+    # reflection/prune episode counters honest by counting these episodes too.
     if ctx.memory_db:
         ss = ctx.perception.self_state
-        await ctx.memory_db.record_episode(
-            agent_name=agent_name,
-            location_x=ss.x,
-            location_y=ss.y,
-            action=skill.name,
-            target=result.message[:50],
-            outcome="success" if result.success else "failure",
-            reward=result.reward,
+        await _record_episode(
+            ctx,
+            skill.name,
+            result.message[:50],
+            "success" if result.success else "failure",
+            result.reward,
             summary=result.message,
         )
 
