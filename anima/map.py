@@ -292,6 +292,24 @@ class MapReader:
 
     def get_tile(self, x: int, y: int) -> TileInfo:
         """Get full tile info at world coordinates."""
+        # Off-map coordinates have no land block. Python floor-division/modulo
+        # do NOT clamp here: x=-1 yields bx=-1, cx=7, so block_num goes negative,
+        # block_in_chunk wraps to a *real but wrong* block (e.g. -512 -> chunk -1,
+        # block_in_chunk 3584) and the cache key ((bx<<16)|by) collides with
+        # other negatives. The wrong block (or the empty graphic-0 fallback when
+        # the chunk lookup misses) is NOT impassable, so the void reads as
+        # WALKABLE. A* then happily expands nodes off the west/north edge of the
+        # world and path_is_traversable would confirm a route that walks off the
+        # map. UO has no tiles outside [0,MAP_WIDTH) x [0,MAP_HEIGHT); return an
+        # impassable void tile so every map-edge query is correctly blocked.
+        if x < 0 or y < 0 or x >= MAP_WIDTH or y >= MAP_HEIGHT:
+            return TileInfo(
+                x=x,
+                y=y,
+                land=LandTile(graphic=0, z=0, flags=FLAG_IMPASSABLE),
+                statics=[],
+            )
+
         bx = x // BLOCK_SIZE
         by = y // BLOCK_SIZE
         cx = x % BLOCK_SIZE
