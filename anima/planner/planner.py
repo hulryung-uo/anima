@@ -2092,7 +2092,24 @@ class Planner:
                 _intent("색상 주괴 보유 → 은행으로 이동")
             else:
                 _intent(f"금화 {ss.gold}g 보유 → 은행으로 이동")
-            return await self._roaming.move_to_location(ctx, "bank")
+            move = await self._roaming.move_to_location(ctx, "bank")
+            if move is not None:
+                return move
+            # No bank reachable right now. A large gold pile has no in-pack
+            # use, so hoarding it stays the priority — return idle and wait
+            # for a bank to become reachable. But colored ingots are a passive
+            # byproduct of ordinary mining (ore spawns at random hues): if the
+            # ONLY reason we entered this branch is a stray colored stack, a
+            # blocked bank must NOT idle a tool-equipped miner who could keep
+            # earning. Fall through to the mining loop (Priority 7) and carry
+            # the ingots until a bank is reachable, instead of going dark.
+            if ss.gold > 200:
+                _intent(f"금화 {ss.gold}g 보유, 은행 도달 불가 → 대기")
+                return None
+            logger.info(
+                "planner_colored_ingot_bank_unreachable_continue",
+                pos=f"({ss.x},{ss.y})",
+            )
 
         # --- Mining exhaustion guard ---
         # When all veins were depleted (10 consecutive failures), skip mining
