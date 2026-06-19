@@ -122,7 +122,21 @@ def targetable_cells() -> list[tuple]:
 
 
 def _neighbors(cell: tuple) -> list[tuple]:
-    """Ordinal neighbors along sociability (profession is categorical, no order)."""
+    """Ordinal neighbors along sociability (profession is categorical, no order).
+
+    Tolerates a MALFORMED cell (no neighbours) instead of raising. A genome whose
+    eval produced no descriptor records ``eval["cell"] = []`` (``_genome_from``:
+    ``list(d.cell) if d else []``), so its ``Genome.cell`` is the empty tuple
+    ``()``. ``choose_parent`` is documented — and pinned by
+    test_select_no_none_parent.test_falls_back_to_none_only_when_grid_is_all_none —
+    to STAY TOTAL (return a parent, never crash) on a degenerate grid. Its
+    ``targetable or elites`` fallback can hand such an empty-cell elite straight
+    here via ``_frontier_potential``, where ``prof, soc = ()`` would raise
+    ``ValueError: not enough values to unpack`` and abort the whole cycle. A cell
+    that isn't a (profession, soc) pair simply has no ordinal neighbour.
+    """
+    if len(cell) != 2:
+        return []
     prof, soc = cell
     out = []
     for ds in (-1, 1):
