@@ -161,7 +161,7 @@ async def retrieve_context(ctx: BrainContext) -> str:
     return "== Your Memory ==\n" + "\n\n".join(parts)
 
 
-def _format_action_stats(stats: list[ActionStat]) -> list[str]:
+def _format_action_stats(stats: list[ActionStat], limit: int = 8) -> list[str]:
     """Render action stats as LLM lines, ranked by the metric we display.
 
     ``get_action_stats`` returns rows ordered by raw ``total_reward`` (DESC),
@@ -186,7 +186,7 @@ def _format_action_stats(stats: list[ActionStat]) -> list[str]:
             )
         )
     rendered.sort(key=lambda r: r[0], reverse=True)
-    return [line for _, line in rendered]
+    return [line for _, line in rendered[:limit]]
 
 
 def _agent_name(ctx: BrainContext) -> str:

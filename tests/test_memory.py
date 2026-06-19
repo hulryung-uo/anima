@@ -342,6 +342,36 @@ class TestActionStatFormatting:
         lines = _format_action_stats(stats)
         assert lines == ['  - "go": 2/4 success (avg reward: +1.0)']
 
+    def test_block_is_capped_like_every_other_retrieval_channel(self) -> None:
+        # One row per distinct action accumulates in a context bucket over a run.
+        # The action-stats block is the only retrieval channel that was uncapped,
+        # so a long-lived agent floods the LLM prompt with its full action ledger.
+        # Ten distinct actions, each one try, with avg reward = its index so the
+        # ranking (avg DESC) is unambiguous.
+        stats = [
+            self._stat(f"act{i}", successes=1, failures=0, total_reward=float(i))
+            for i in range(10)
+        ]
+        lines = _format_action_stats(stats)
+        # Default cap matches the q-values sibling ([:8]).
+        assert len(lines) == 8
+        actions = self._action_order(lines)
+        # Highest-avg action surfaces first; the two lowest-avg are evicted.
+        assert actions[0] == "act9"
+        assert "act0" not in actions
+        assert "act1" not in actions
+        # Everything that survived is genuinely better than what was dropped.
+        assert set(actions) == {f"act{i}" for i in range(2, 10)}
+
+    def test_limit_is_overridable(self) -> None:
+        stats = [
+            self._stat(f"act{i}", successes=1, failures=0, total_reward=float(i))
+            for i in range(5)
+        ]
+        lines = _format_action_stats(stats, limit=2)
+        assert len(lines) == 2
+        assert self._action_order(lines) == ["act4", "act3"]
+
 
 # ---------------------------------------------------------------------------
 # Location value tests
