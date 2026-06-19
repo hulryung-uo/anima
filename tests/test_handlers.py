@@ -740,3 +740,78 @@ def test_container_content_does_not_clear_other_containers():
     }
     assert by_container.get(container_a) == 0x60000001
     assert by_container.get(container_b) == 0x50000002
+
+
+# ---------------------------------------------------------------------------
+# CharacterStatus (0x11) — self full stat update
+# ---------------------------------------------------------------------------
+
+
+def _build_status_aos(serial: int) -> bytes:
+    """Build a 0x11 type-4 (AOS) self-status packet matching ServUO's
+    MobileStatus wire order: extended block, stat_cap+followers, then the
+    resist/luck/damage/tithing run.
+    """
+    buf = PacketWriter()
+    buf.write_u8(0x11)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u32(serial)
+    buf.write_ascii("Tester", 30)
+    buf.write_u16(48)   # hits
+    buf.write_u16(50)   # hits_max
+    buf.write_u8(0)     # name_change_flag
+    buf.write_u8(4)     # type/flag = 4 (AOS)
+    # extended block (type >= 1)
+    buf.write_u8(0)     # sex
+    buf.write_u16(80)   # str
+    buf.write_u16(70)   # dex
+    buf.write_u16(60)   # int
+    buf.write_u16(45)   # stam
+    buf.write_u16(50)   # stam_max
+    buf.write_u16(40)   # mana
+    buf.write_u16(55)   # mana_max
+    buf.write_u32(1234) # gold
+    buf.write_u16(20)   # phys resist / armor
+    buf.write_u16(150)  # weight
+    # stat_cap + followers (always present for self)
+    buf.write_u16(225)  # stat_cap
+    buf.write_u8(2)     # followers
+    buf.write_u8(5)     # followers_max
+    # AOS block (type >= 4)
+    buf.write_u16(11)   # fire
+    buf.write_u16(12)   # cold
+    buf.write_u16(13)   # poison
+    buf.write_u16(14)   # energy
+    buf.write_u16(300)  # luck
+    buf.write_u16(7)    # damage_min
+    buf.write_u16(19)   # damage_max
+    buf.write_u32(99)   # tithing points
+
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_character_status_aos_decodes_luck_and_damage():
+    """Regression: on a stock AOS shard (type 4) luck/damage_min/damage_max
+    were gated behind flag>=6 and never decoded, and stat_cap/followers
+    framing must stay aligned so the resist block reads correctly.
+    """
+    h, p, w = _make_stack()
+    serial = p.self_state.serial  # _make_stack uses 0x00000001
+
+    h.dispatch(0x11, _build_status_aos(serial))
+
+    ss = p.self_state
+    assert ss.strength == 80
+    assert ss.stat_cap == 225
+    assert ss.followers == 2
+    assert ss.followers_max == 5
+    assert ss.resist_fire == 11
+    assert ss.resist_cold == 12
+    assert ss.resist_poison == 13
+    assert ss.resist_energy == 14
+    # These three were silently dropped before the fix.
+    assert ss.luck == 300
+    assert ss.damage_min == 7
+    assert ss.damage_max == 19

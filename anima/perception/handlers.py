@@ -299,23 +299,32 @@ def register_handlers(
                 # Calculate weight_max from STR (UOR formula)
                 p.self_state.weight_max = 7 * (p.self_state.strength // 2) + 40
 
-            if flag >= 2 and r.remaining >= 2:
+            # stat_cap + followers form one contiguous block that ServUO
+            # writes for every self-status (type >= 1), regardless of
+            # expansion. They must be read together or the resist block
+            # below misaligns. (Ref: ServUO MobileStatus, ClassicUO 0x11.)
+            if r.remaining >= 4:
                 p.self_state.stat_cap = r.read_u16()
-
-            if flag >= 3 and r.remaining >= 2:
                 p.self_state.followers = r.read_u8()
                 p.self_state.followers_max = r.read_u8()
 
+            # AOS+ block (type >= 4): four resists, luck, and the damage
+            # range are a single contiguous run on the wire — luck/damage
+            # are NOT a separate type-6 field. The old code gated them on
+            # flag >= 6, so on a stock AOS/ML shard (type 4 or 5) luck and
+            # damage_min/max were never decoded. A trailing tithing u32
+            # follows and must be consumed so any type-6 tail stays aligned.
             if flag >= 4 and r.remaining >= 8:
                 p.self_state.resist_fire = r.read_u16()
                 p.self_state.resist_cold = r.read_u16()
                 p.self_state.resist_poison = r.read_u16()
                 p.self_state.resist_energy = r.read_u16()
-
-            if flag >= 6 and r.remaining >= 4:
-                p.self_state.luck = r.read_u16()
-                p.self_state.damage_min = r.read_u16()
-                p.self_state.damage_max = r.read_u16()
+                if r.remaining >= 6:
+                    p.self_state.luck = r.read_u16()
+                    p.self_state.damage_min = r.read_u16()
+                    p.self_state.damage_max = r.read_u16()
+                if r.remaining >= 4:
+                    r.skip(4)  # tithing points (u32)
 
             p.emit(GameEventType.STATS_CHANGED, {"serial": serial})
             logger.debug(
