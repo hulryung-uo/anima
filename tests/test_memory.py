@@ -480,3 +480,86 @@ class TestEpisodeLocationValueWiring:
         rx, ry = region_coords(x, y)
         values = await db.get_location_values("Anima", rx, ry)
         assert values == []
+
+
+# ---------------------------------------------------------------------------
+# retrieve_context: location-value block framing
+# ---------------------------------------------------------------------------
+
+
+def _retrieval_ctx(memory_db: MemoryDB, x: int, y: int):
+    """A minimal BrainContext stand-in for retrieve_context.
+
+    retrieve_context reads ctx.memory_db, ctx.blackboard (persona lookup),
+    ctx.perception.self_state.{x,y,hp_percent,serial,equipment,weight,
+    weight_max}, and ctx.perception.world.{nearby_mobiles,nearby_items,items}.
+    Empty world + no backpack short-circuits steps 1-5 so the location block
+    (step 6) is exercised in isolation against the real db.
+    """
+    ctx = MagicMock()
+    ctx.memory_db = memory_db
+    ctx.blackboard = {}  # no persona -> agent name defaults to "Anima"
+    ss = ctx.perception.self_state
+    ss.x = x
+    ss.y = y
+    ss.hp_percent = 100
+    ss.serial = 1
+    ss.equipment = {}  # no backpack -> _inventory_state short-circuits
+    ss.weight = 0
+    ss.weight_max = 0
+    ctx.perception.world.nearby_mobiles.return_value = []
+    ctx.perception.world.nearby_items.return_value = []
+    ctx.perception.world.items = {}
+    return ctx
+
+
+class TestRetrievalLocationFraming:
+    @pytest.mark.asyncio
+    async def test_negative_average_activity_is_a_warning_not_advice(
+        self, db: MemoryDB
+    ) -> None:
+        """A region where an activity only ever lost reward must be framed as a
+        cost to avoid, never under a "pays off" recommendation header."""
+        from anima.memory.retrieval import retrieve_context
+
+        x, y = 1600, 1700
+        # "fight": repeatedly net-negative (the agent kept dying here).
+        for _ in range(3):
+            await db.update_location_value("Anima", *region_coords(x, y), "fight", -5.0)
+
+        block = await retrieve_context(_retrieval_ctx(db, x, y))
+
+        assert "fight" in block
+        # The costly activity must appear under the avoid/costly header, not
+        # under a pays-off recommendation.
+        assert "costly" in block.lower() or "avoid" in block.lower()
+        assert "pays off" not in block
+
+    @pytest.mark.asyncio
+    async def test_positive_and_negative_activities_are_separated(
+        self, db: MemoryDB
+    ) -> None:
+        """Profitable and money-losing activities in the same region land in
+        distinct sections so the LLM gets a clear directional signal."""
+        from anima.memory.retrieval import retrieve_context
+
+        x, y = 1600, 1700
+        rx, ry = region_coords(x, y)
+        await db.update_location_value("Anima", rx, ry, "mine", 8.0)   # pays off
+        await db.update_location_value("Anima", rx, ry, "fight", -6.0)  # costly
+
+        block = await retrieve_context(_retrieval_ctx(db, x, y))
+
+        assert "pays off" in block
+        assert "costly" in block.lower() or "avoid" in block.lower()
+
+        # "mine" must sit in the pays-off section and "fight" in the avoid one,
+        # never the other way round.
+        pays_idx = block.index("pays off")
+        avoid_anchor = "costly" if "costly" in block else "avoid"
+        avoid_idx = block.index(avoid_anchor)
+        mine_idx = block.index("mine")
+        fight_idx = block.index("fight")
+        # mine appears in the pays-off block (before the avoid header);
+        # fight appears in the avoid block (after it).
+        assert pays_idx < mine_idx < avoid_idx < fight_idx

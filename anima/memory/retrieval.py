@@ -90,19 +90,46 @@ async def retrieve_context(ctx: BrainContext) -> str:
             f"Skill learning ({state_key}):\n" + "\n".join(q_lines[:8])
         )
 
-    # 6. Best locations for current activities
+    # 6. What this region is good (and bad) for.
+    #
+    # ``get_location_values`` tallies *every* non-zero-reward episode here,
+    # including net-losses (dying to a mob pack, a failed/blocked action), and
+    # returns them ranked by average reward. The block used to flatten all of
+    # them under one neutral "This area" header showing ``avg reward +/-X.X``.
+    # The sign was buried mid-line, so a region the agent only ever lost in
+    # read to the LLM identically to a region that reliably paid off — the
+    # whole point of this channel (the sibling accessor is literally named
+    # ``get_best_locations``) is to tell the agent where activities *work*.
+    # Worse, when every activity in a region is net-negative the least-bad
+    # loss surfaced first, framed exactly like a recommendation, nudging the
+    # agent back toward a place that has only ever harmed it.
+    #
+    # Split by sign: positive-average activities are surfaced as "pays off"
+    # (a recommendation), negative-average ones as "costly — avoid" (a
+    # warning). Neither list is dropped, so the warning signal in the losses
+    # is preserved instead of masquerading as advice.
     rx, ry = region_coords(ss.x, ss.y)
     loc_values = await memory_db.get_location_values(agent_name, rx, ry)
     if loc_values:
-        loc_lines = []
+        good_lines: list[str] = []
+        bad_lines: list[str] = []
         for activity, total_r, visits in loc_values[:5]:
             avg = total_r / visits if visits else 0
-            loc_lines.append(
-                f"  - {activity}: avg reward {avg:+.1f} ({visits} visits)"
+            line = f"  - {activity}: avg reward {avg:+.1f} ({visits} visits)"
+            if avg > 0:
+                good_lines.append(line)
+            elif avg < 0:
+                bad_lines.append(line)
+        if good_lines:
+            parts.append(
+                f"This area (region {rx},{ry}) pays off for:\n"
+                + "\n".join(good_lines)
             )
-        parts.append(
-            f"This area (region {rx},{ry}):\n" + "\n".join(loc_lines)
-        )
+        if bad_lines:
+            parts.append(
+                f"This area (region {rx},{ry}) has been costly — avoid:\n"
+                + "\n".join(bad_lines)
+            )
 
     if not parts:
         return ""
