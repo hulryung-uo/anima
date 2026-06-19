@@ -20,6 +20,20 @@ from foundry.kernel.archive import Archive, Genome, cell_to_str
 
 SOC_BINS = 3  # Phase-0 active grid: profession_focus × sociability (3 bins)
 
+# Professions the selection policy may AIM a mutation at. uoconst.NONE is the
+# descriptor *fallback* — it means the eval produced no livelihood-skill gain
+# (a failed/degenerate agent that just wandered or died), not a behavioral
+# niche. Telling the mutator to "land in cell NONE|x" is incoherent (you cannot
+# deliberately gain no profession), and the backlog flags NONE cells as a
+# high-variance scoring artifact (g_00118 failed its profession, wandered, and
+# banked a volatile NONE score). The kernel archive still RECORDS a NONE elite
+# if one evals there (promotion is kernel-owned and untouched); we just never
+# spend an EXPLORE/IMPROVE cycle reaching for one. all_active_cells() keeps the
+# full enumeration so status.py's filled-cell denominator is unchanged.
+TARGET_PROFESSIONS: tuple[str, ...] = tuple(
+    p for p in uoconst.PROFESSION_BINS if p != uoconst.NONE
+)
+
 
 def _selection_quality(g: Genome) -> float:
     """Variance-aware parent quality that ALSO honors human held-out corrections.
@@ -55,7 +69,13 @@ def _row_best_quality(elites: list[Genome]) -> dict[str, float]:
 
 
 def all_active_cells() -> list[tuple]:
+    """Every grid cell (incl. the NONE fallback row) — display/denominator use."""
     return [(prof, soc) for prof in uoconst.PROFESSION_BINS for soc in range(SOC_BINS)]
+
+
+def targetable_cells() -> list[tuple]:
+    """Cells a mutation may be aimed at (excludes the NONE fallback row)."""
+    return [(prof, soc) for prof in TARGET_PROFESSIONS for soc in range(SOC_BINS)]
 
 
 def _neighbors(cell: tuple) -> list[tuple]:
@@ -70,8 +90,11 @@ def _neighbors(cell: tuple) -> list[tuple]:
 
 
 def empty_cells(archive: Archive) -> list[tuple]:
+    """Empty cells worth exploring — never the NONE fallback row (see
+    TARGET_PROFESSIONS). This list feeds both suggest_target_cell and the
+    observe-step 'empty cells to explore' prompt."""
     filled = set(archive.grid.keys())
-    return [c for c in all_active_cells() if cell_to_str(c) not in filled]
+    return [c for c in targetable_cells() if cell_to_str(c) not in filled]
 
 
 def _frontier_potential(cell: tuple, filled: set[str]) -> int:
@@ -165,7 +188,11 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
         elites = archive.elites()
         if not elites:
             return None
-        cells = [g.cell for g in elites]
+        # Don't aim an IMPROVE cycle at a NONE-fallback elite (see
+        # TARGET_PROFESSIONS); fall back to the unfiltered set only if the grid
+        # somehow holds nothing but NONE elites.
+        cells = [g.cell for g in elites if g.cell and g.cell[0] != uoconst.NONE]
+        cells = cells or [g.cell for g in elites]
         weights = [
             1.0 + max(0.0, row_best[c[0]] - _selection_quality(archive.get_elite(c)))
             for c in cells
