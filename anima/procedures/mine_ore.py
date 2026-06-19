@@ -148,12 +148,20 @@ class MineOre(Procedure):
         # Event-driven cadence: instead of a flat 3s nap per swing, poll
         # until the swing resolves — new ore in the pack OR a mining-result
         # journal line — and only burn the full window on a true timeout.
+        # Snippets are matched (lower-cased substring) against the real
+        # ServUO mining result clilocs so every resolved swing breaks the
+        # poll immediately. Missing the "someone has gotten to the metal"
+        # (503042 race-loss) and "moved too far away" (503041) lines made
+        # those common busy-bank swings stall the whole 3.5s deadline,
+        # which is the dominant dead-time sink in low-skill gather windows.
         _result_snippets = (
             "you dig some",
             "you loosen some rocks",
             "there is no metal here",
+            "someone has gotten to the metal",
             "can't mine",
             "too far away",
+            "moved too far away",
         )
 
         def _ore_in_pack() -> int:
