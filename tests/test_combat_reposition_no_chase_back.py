@@ -67,15 +67,16 @@ def _patch_one_tick(monkeypatch):
 
     monkeypatch.setattr(cl.asyncio, "sleep", _instant_sleep)
 
-    # Return 0.0 for the first two reads (deadline calc + the first while-check)
-    # then a value past the deadline forever after, so EXACTLY one iteration runs
-    # no matter how many monotonic reads the body makes (robust vs a fixed-length
-    # iterator, which StopIteration'd when the loop read monotonic >3 times).
+    # Return 0.0 for the first three reads (the engage _send_attack timestamp,
+    # the deadline calc, and the first while-check) then a value past the
+    # deadline forever after, so EXACTLY one iteration runs no matter how many
+    # monotonic reads the body makes (robust vs a fixed-length iterator, which
+    # StopIteration'd when the loop read monotonic too many times).
     _mstate = {"n": 0}
 
     def _mono() -> float:
         _mstate["n"] += 1
-        return 0.0 if _mstate["n"] <= 2 else cl.ENGAGEMENT_CAP_S + 100.0
+        return 0.0 if _mstate["n"] <= 3 else cl.ENGAGEMENT_CAP_S + 100.0
 
     monkeypatch.setattr(cl.time, "monotonic", _mono)
 

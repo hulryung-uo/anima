@@ -144,6 +144,26 @@ ONE_HANDED_WEAPON_GRAPHICS = WEAPON_GRAPHICS - TWO_HANDED_WEAPON_GRAPHICS
 
 ENGAGE_RANGE = 10        # tiles to scan for targets
 ENGAGEMENT_CAP_S = 45.0  # per-target time box
+# Attack-request resend cadence. The combat loop sends the 0x05 attack request
+# once per target — on engage, and again on a re-pick / focus-fire switch — and
+# then relies on the server's ``Mobile.Combatant`` staying set to keep the swing
+# timer running. But a target adjacent the whole fight hits NONE of the re-send
+# paths (the switch and chase branches only fire at dist > 1), so for a target
+# that stays in melee range the attack request is sent exactly ONCE for up to
+# the full ENGAGEMENT_CAP_S. If that single request is dropped or raced — sent in
+# the same tick as build_war_mode(True) before war mode has registered, or the
+# combatant cleared by a momentary LOS/range blip mid-fight — nothing ever
+# re-arms it: the agent stands in war mode beside a live mob landing ZERO swings
+# until the 45s cap, and the whole COMBAT skill stream (Swords/Tactics/Anatomy/
+# Parrying) never rolls. A real client periodically re-issues the attack request
+# as a keepalive; ServUO treats a repeat 0x05 for the current combatant as a
+# cheap no-op and a fresh one as a re-acquire, so re-sending is always safe. We
+# re-send for a live adjacent target once this many seconds have elapsed since
+# the last attack packet (engage / re-pick / switch / chase / reposition all
+# refresh the timer, so the keepalive only fires when nothing else already
+# re-attacked). Sized a touch above a swing cycle so it never throttles a healthy
+# fight, only rescues a stalled one.
+ATTACK_RESEND_S = 5.0
 RETREAT_HP_PCT = 35.0    # break off and retreat below this
 # Chase leash. The combat anchor (set at engagement start) is the centre of the
 # bounded arena this loop is meant to fight in — but the gap-closing chase below
@@ -773,10 +793,14 @@ class HuntNearby(Procedure):
         # an earlier kill's un-looted (full-pack) corpse can't falsely credit a
         # later kiter that merely left view. Re-snapshotted on every re-pick.
         known_corpses = _corpse_serials(ctx)
+
+        async def _send_attack(serial: int) -> None:
+            await ctx.conn.send_packet(build_attack(serial))
+            ctx.blackboard["_attack_last_ts"] = time.monotonic()
         try:
             await ctx.conn.send_packet(build_war_mode(True))
             await _request_target_status(ctx, target.serial)
-            await ctx.conn.send_packet(build_attack(target.serial))
+            await _send_attack(target.serial)
             deadline = time.monotonic() + ENGAGEMENT_CAP_S
 
             while time.monotonic() < deadline and ctx.conn.connected:
@@ -819,7 +843,7 @@ class HuntNearby(Procedure):
                 # away can interrupt the current swing target.
                 repositioned = await _reposition_if_surrounded(ctx)
                 if repositioned:
-                    await ctx.conn.send_packet(build_attack(target.serial))
+                    await _send_attack(target.serial)
 
                 current = ctx.perception.world.mobiles.get(target.serial)
                 # Dead = a KNOWN health bar at zero, or gone from the world with
@@ -868,9 +892,20 @@ class HuntNearby(Procedure):
                     # only a corpse this next fight drops will confirm its kill.
                     known_corpses = _corpse_serials(ctx)
                     await _request_target_status(ctx, target.serial)
-                    await ctx.conn.send_packet(build_attack(target.serial))
+                    await _send_attack(target.serial)
                     deadline = time.monotonic() + ENGAGEMENT_CAP_S
                     continue
+
+                # Attack-request keepalive. A target that stays in melee range the
+                # whole fight reaches neither the focus-fire switch nor the chase
+                # re-attack below (both gated on dist > 1), so the only 0x05 it
+                # ever got was the engage send — if that was dropped/raced the
+                # agent stands here in war mode landing no swings. Re-issue the
+                # attack on a cadence so the combatant is re-armed within a few
+                # seconds; any other re-attack this tick already refreshed the
+                # timer, so this only fires when nothing else did.
+                if time.monotonic() - ctx.blackboard.get("_attack_last_ts", 0.0) >= ATTACK_RESEND_S:
+                    await _send_attack(target.serial)
 
                 # Re-evaluate the focus-fire pick before committing to a chase.
                 # The loop otherwise locks onto whatever target it first picked
@@ -916,7 +951,7 @@ class HuntNearby(Procedure):
                             last_target_hits_max = 0
                             known_corpses = _corpse_serials(ctx)
                             await _request_target_status(ctx, target.serial)
-                            await ctx.conn.send_packet(build_attack(target.serial))
+                            await _send_attack(target.serial)
 
                 # Close the gap if the target moved away. Run, don't walk: a
                 # chased mob is almost always inside ENGAGE_RANGE (< 8 tiles), so
@@ -966,7 +1001,7 @@ class HuntNearby(Procedure):
                             ss.hits_max > 0 and ss.hp_percent < RETREAT_HP_PCT
                         ),
                     )
-                    await ctx.conn.send_packet(build_attack(target.serial))
+                    await _send_attack(target.serial)
         finally:
             # Never leave war mode on — it blocks vendors/meditation/etc.
             try:
