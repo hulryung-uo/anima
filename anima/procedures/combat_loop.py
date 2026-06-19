@@ -684,7 +684,8 @@ class HuntNearby(Procedure):
                 # Anti-surround: if the pack has boxed us in, step out so fewer
                 # of them are in melee range. Re-attack after, since stepping
                 # away can interrupt the current swing target.
-                if await _reposition_if_surrounded(ctx):
+                repositioned = await _reposition_if_surrounded(ctx)
+                if repositioned:
                     await ctx.conn.send_packet(build_attack(target.serial))
 
                 current = ctx.perception.world.mobiles.get(target.serial)
@@ -745,8 +746,19 @@ class HuntNearby(Procedure):
                 # reposition and wander legs already do) runs the target down and
                 # restores swings-per-engagement. The retreat interrupt still
                 # breaks the chase the instant HP crosses the floor.
+                #
+                # ...but NOT on a tick we just repositioned. _reposition_if_
+                # surrounded deliberately steps REPOSITION_STEP (2) tiles away
+                # from the hostile centroid to thin the pack — which by
+                # construction leaves the primary target at dist>1. Running the
+                # gap-closing chase in the same iteration walks straight back
+                # onto that target's tile, re-entering the pile and undoing the
+                # reposition before a single swing-cycle of separation lands (the
+                # whole point of the anti-surround step, and the mechanism behind
+                # the af<0.2 surrounded-warrior deaths it exists to prevent). Let
+                # the separation hold for this tick; the pack re-closes on its own.
                 dist = max(abs(current.x - ss.x), abs(current.y - ss.y))
-                if dist > 1:
+                if dist > 1 and not repositioned:
                     # Leash the chase to the arena: if the target's tile is
                     # beyond MAX_CHASE_FROM_ANCHOR from the anchor, it has kited
                     # out of bounds — don't follow it across the map. Break the
