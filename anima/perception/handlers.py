@@ -50,6 +50,27 @@ def _resolve_cliloc_text(cliloc_num: int, args: str) -> str:
     return re.sub(r"~\d+[^~]*~", "", text).strip()
 
 
+def _decode_notoriety(raw: int) -> NotorietyFlag:
+    """Decode a wire notoriety byte into a NotorietyFlag, mirroring ClassicUO.
+
+    The notoriety byte on 0x77 / 0x78 / 0x20 / 0x22 may carry the 0x40
+    "temporary"/overlay bit on top of the 1..7 flag value (ClassicUO's
+    ConfirmWalk strips it with ``noto & ~0x40``; UpdateGameObject assigns the
+    flag unconditionally). The mobile handlers previously gated the assignment
+    behind ``1 <= notoriety <= 7`` and so SILENTLY DROPPED any byte with the
+    0x40 bit set (e.g. 0x46 = MURDERER|0x40, 0x44 = CRIMINAL|0x40, 0x47 =
+    INVULNERABLE|0x40). The mobile then kept its stale default INNOCENT, and the
+    combat / flee / social notoriety gates that read ``mob.notoriety`` saw a red
+    murderer as a blue innocent. Strip the overlay and coerce an out-of-range
+    value (0 or >=8) back to INNOCENT — identical to the existing 0x22
+    ConfirmWalk decode for the player's own notoriety.
+    """
+    noto = raw & ~0x40
+    if noto == 0 or noto >= 8:
+        noto = 1
+    return NotorietyFlag(noto)
+
+
 def register_handlers(
     handler: PacketHandler,
     perception: Perception,
@@ -129,8 +150,7 @@ def register_handlers(
             mob.hue = hue
             mob.flags = MobileFlags(flags & 0xFF)
             mob.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
-            if 1 <= notoriety <= 7:
-                mob.notoriety = NotorietyFlag(notoriety)
+            mob.notoriety = _decode_notoriety(notoriety)
             # A 0x78 is a FULL, authoritative loadout for ANY mobile, not just
             # self. ClassicUO's UpdateObject strips every worn item off the
             # entity (except an opened container / the backpack at Layer 0x15)
@@ -230,8 +250,7 @@ def register_handlers(
         mob.hue = hue
         mob.flags = MobileFlags(flags & 0xFF)
         mob.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
-        if 1 <= notoriety <= 7:
-            mob.notoriety = NotorietyFlag(notoriety)
+        mob.notoriety = _decode_notoriety(notoriety)
 
         p.emit(GameEventType.MOBILE_MOVED, {"serial": serial, "x": x, "y": y})
 
