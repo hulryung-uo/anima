@@ -195,6 +195,73 @@ class TestPracticeHidingResolvedSlots:
         assert len(hide_calls) == ph.MAX_ATTEMPTS
         assert f"0/{ph.ATTEMPTS_PER_RUN} hidden" in result.message
 
+    @pytest.mark.asyncio
+    async def test_stealth_steps_count_only_actual_movement(self):
+        # A walk that doesn't change position triggers no server-side
+        # PlayerMobile.OnMove → no Stealth roll. Such steps must NOT be
+        # counted as harvested stealth steps, and a stuck walker stops the
+        # stealth-walk loop early.
+        from anima.actions.result import ActionResult
+        from anima.procedures import practice_hiding as ph
+        from anima.procedures.practice_hiding import PracticeHiding
+
+        ctx = _make_ctx()
+        ctx.cfg.movement.walk_delay_ms = 450
+        ss = ctx.perception.self_state
+        ss.hidden = True  # stay hidden so _stealth_walk keeps trying to step
+
+        with (
+            patch.object(ph, "use_skill", new=AsyncMock()),
+            # Always hide successfully so _stealth_walk runs every attempt.
+            patch.object(ph, "wait_for_journal", new=AsyncMock(
+                return_value=ActionResult(success=True, data={"index": 0}))),
+            # Every walk is blocked: position never changes.
+            patch.object(ph, "_walk_one_step",
+                         new=AsyncMock(return_value=False)) as walk_mock,
+            patch.object(ph, "time") as tmock,
+            patch.object(ph, "asyncio") as aio,
+        ):
+            aio.sleep = AsyncMock()
+            # Keep monotonic frozen well before lockout_end so the time guard
+            # never short-circuits the loop — isolate the movement check.
+            tmock.time.return_value = 0.0
+            tmock.monotonic.return_value = 0.0
+            result = await PracticeHiding().execute(ctx)
+
+        # Zero stealth steps harvested despite STEALTH_STEPS_MAX attempts.
+        assert "0 stealth steps" in result.message
+        # Stuck walker breaks out after the first blocked step each run,
+        # so we never spin the full STEALTH_STEPS_MAX walk calls per attempt.
+        assert walk_mock.await_count == ph.ATTEMPTS_PER_RUN
+
+    @pytest.mark.asyncio
+    async def test_stealth_steps_count_moved_steps(self):
+        # Sanity: when walks do move, those steps ARE counted.
+        from anima.actions.result import ActionResult
+        from anima.procedures import practice_hiding as ph
+        from anima.procedures.practice_hiding import PracticeHiding
+
+        ctx = _make_ctx()
+        ctx.cfg.movement.walk_delay_ms = 450
+        ss = ctx.perception.self_state
+        ss.hidden = True
+
+        with (
+            patch.object(ph, "use_skill", new=AsyncMock()),
+            patch.object(ph, "wait_for_journal", new=AsyncMock(
+                return_value=ActionResult(success=True, data={"index": 0}))),
+            patch.object(ph, "_walk_one_step",
+                         new=AsyncMock(return_value=True)),
+            patch.object(ph, "time") as tmock,
+            patch.object(ph, "asyncio") as aio,
+        ):
+            aio.sleep = AsyncMock()
+            tmock.time.return_value = 0.0
+            tmock.monotonic.return_value = 0.0
+            result = await PracticeHiding().execute(ctx)
+
+        assert "0 stealth steps" not in result.message
+
 
 class TestProcedureGates:
     @pytest.mark.asyncio

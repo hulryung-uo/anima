@@ -150,7 +150,15 @@ class PracticeHiding(Procedure):
             if time.monotonic() + step_delay >= lockout_end:
                 break  # lockout over — go back to Hiding rolls
             direction = _DIR_EAST if i % 2 == 0 else _DIR_WEST
-            await _walk_one_step(ctx, direction, step_delay)
+            moved = await _walk_one_step(ctx, direction, step_delay)
+            if not moved:
+                # No position change → PlayerMobile.OnMove never fired on the
+                # server, so NO Stealth.OnUse roll happened. Counting it would
+                # inflate the reported stealth-step harvest (and a step that
+                # didn't move means the walker is blocked/stuck — it won't
+                # recover inside this short hidden window, so stop walking and
+                # idle out the rest of the Hiding lockout instead of spinning).
+                break
             steps += 1
             await asyncio.sleep(STEALTH_STEP_PAUSE_S)
 
