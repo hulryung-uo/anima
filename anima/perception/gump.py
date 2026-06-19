@@ -157,6 +157,39 @@ def _safe_int(s: str, default: int = 0) -> int:
         return default
 
 
+# Matches a cliloc placeholder ``~N~`` or ``~N_label~`` (label is ignored;
+# the embedded index N drives the substitution).
+_CLILOC_ARG_RE = re.compile(r"~(\d+)(?:_[^~]*)?~")
+
+
+def _resolve_cliloc_tok(cliloc_num: int, args: str) -> str:
+    """Resolve an ``xmfhtmltok`` cliloc + tab-separated args into text.
+
+    Mirrors ClassicUO ClilocLoader.Translate (the same logic the 0xD6 / 0xC1 /
+    0xCC handlers use): each ``~N~`` / ``~N_label~`` placeholder is filled by the
+    (N-1)th tab-separated arg, keyed off the index *embedded in the placeholder*
+    — never by positional order — so out-of-order and repeated placeholders both
+    resolve, and every occurrence is replaced (not just the first).
+
+    The previous loop only matched the literal label ``~N_val~`` and did a bogus
+    ``#N`` replacement against the base text. Real crafting/tooltip clilocs use
+    labels like ``~1_AMOUNT~`` / bare ``~1~``, so item names and quantities in
+    crafting menus were left as raw ``~1_AMOUNT~`` placeholders and never matched
+    by find_button_near_text.
+    """
+    base_text = cliloc_text(cliloc_num)
+    if base_text and args:
+        parts = args.split("\t")
+
+        def _sub(m: "re.Match[str]") -> str:
+            idx = int(m.group(1)) - 1
+            return parts[idx] if 0 <= idx < len(parts) else m.group(0)
+
+        base_text = _CLILOC_ARG_RE.sub(_sub, base_text)
+    # Strip any unresolved placeholders (ClassicUO renders them empty).
+    return re.sub(r"~\d+[^~]*~", "", base_text).strip()
+
+
 def parse_layout(layout: str, text_lines: list[str]) -> GumpData:
     """Parse a raw layout string into a :class:`GumpData` (without serial/gump_id/x/y).
 
@@ -252,15 +285,16 @@ def parse_layout(layout: str, text_lines: list[str]) -> GumpData:
 
         elif cmd == "xmfhtmltok" and len(tokens) >= 9:
             # xmfhtmltok x y width height background scrollbar hue cliloc_num @args@
-            cliloc_num = _safe_int(tokens[8])
-            resolved = cliloc_text(cliloc_num)
-            # Substitute @args@ into the cliloc text
-            if resolved and len(tokens) > 9:
-                args_str = " ".join(tokens[9:])
-                parts = args_str.strip("@").split("\t")
-                for i, part in enumerate(parts):
-                    resolved = resolved.replace(f"~{i+1}_val~", part.strip())
-                    resolved = resolved.replace(f"#{i+1}", part.strip())
+            # ClassicUO strips a leading '#' off the cliloc id (PacketHandlers.cs).
+            cliloc_num = _safe_int(tokens[8].replace("#", ""))
+            # ClassicUO joins the arg tokens with '\t', then trims the surrounding
+            # '@' and turns each in-token '@' separator into '\t' before handing
+            # the blob to Translate. Replicate that so multi-arg tooltips split.
+            if len(tokens) > 9:
+                args = "\t".join(tokens[9:]).strip("@").replace("@", "\t")
+                resolved = _resolve_cliloc_tok(cliloc_num, args)
+            else:
+                resolved = _resolve_cliloc_tok(cliloc_num, "")
             if resolved:
                 idx = len(text_lines)
                 text_lines.append(resolved)

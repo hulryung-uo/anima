@@ -8,6 +8,7 @@ from anima.client.codec import PacketReader, PacketWriter
 from anima.client.handler import PacketHandler
 from anima.client.packets import build_gump_response
 from anima.perception import Perception
+from anima.perception import gump as gump_module
 from anima.perception.event_stream import GameEventType
 from anima.perception.gump import parse_layout
 from anima.perception.handlers import register_handlers
@@ -73,6 +74,44 @@ class TestParseLayout:
         te = gump.text_entries[0]
         assert te.entry_id == 0
         assert te.initial_text == "initial"
+
+    def test_xmfhtmltok_embedded_label_and_hash_id(self, monkeypatch):
+        # ClassicUO Translate fills ~N_label~ by embedded index; the leading '#'
+        # on the cliloc id is stripped. The old code only matched the literal
+        # ~N_val~ (and did a bogus #N replace), so a real ~1_AMOUNT~ tooltip was
+        # left unresolved — breaking find_button_near_text for crafting menus.
+        monkeypatch.setattr(
+            gump_module, "cliloc_text", lambda n: "Boards (~1_AMOUNT~)" if n == 1062760 else ""
+        )
+        # button at (8,20) sits next to the tok label at (10,20)
+        layout = (
+            "{ button 8 20 4005 4007 1 0 7 }"
+            "{ xmfhtmltok 10 20 100 18 0 0 0 #1062760 @5@ }"
+        )
+        gump = parse_layout(layout, [])
+        assert gump.get_text(gump.texts[0].text_id) == "Boards (5)"
+        btn = gump.find_button_near_text("Boards")
+        assert btn is not None and btn.button_id == 7
+
+    def test_xmfhtmltok_repeated_and_out_of_order_args(self, monkeypatch):
+        # A cliloc that references one arg twice (and out of positional order)
+        # must fill EVERY occurrence by embedded index — ClassicUO Translate.
+        monkeypatch.setattr(
+            gump_module,
+            "cliloc_text",
+            lambda n: "~2_B~ then ~1_A~ then ~2_B~" if n == 1156056 else "",
+        )
+        layout = "{ xmfhtmltok 0 0 0 0 0 0 0 1156056 @first@second@ }"
+        gump = parse_layout(layout, [])
+        assert gump.get_text(gump.texts[0].text_id) == "second then first then second"
+
+    def test_xmfhtmltok_no_args_uses_base_string(self, monkeypatch):
+        monkeypatch.setattr(
+            gump_module, "cliloc_text", lambda n: "Make Last" if n == 1015295 else ""
+        )
+        layout = "{ xmfhtmltok 0 0 0 0 0 0 0 1015295 }"
+        gump = parse_layout(layout, [])
+        assert gump.get_text(gump.texts[0].text_id) == "Make Last"
 
     def test_checkbox(self):
         layout = "{ checkbox 10 20 210 211 1 100 }"
