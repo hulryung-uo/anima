@@ -36,6 +36,24 @@ def _selection_quality(g: Genome) -> float:
     return min(g.fitness, g.reliability)
 
 
+def _row_best_quality(elites: list[Genome]) -> dict[str, float]:
+    """True per-profession best selection-quality, honoring negative values.
+
+    A genome's _selection_quality can be < 0 (a low-fitness, high-variance
+    elite: reliability = mean − λ·pstdev drops below zero). Seeding the running
+    max at 0.0 poisons any row whose elites are all negative — it reports a
+    phantom 0.0 ceiling that no genome reached, which then mis-states the
+    FULL-GRID "gap to row best" so the row-best cell (true headroom 0) gets a
+    positive, inflated exploration weight. Take the real max instead.
+    """
+    best: dict[str, float] = {}
+    for g in elites:
+        prof = g.cell[0]
+        q = _selection_quality(g)
+        best[prof] = q if prof not in best else max(best[prof], q)
+    return best
+
+
 def all_active_cells() -> list[tuple]:
     return [(prof, soc) for prof in uoconst.PROFESSION_BINS for soc in range(SOC_BINS)]
 
@@ -124,11 +142,11 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
     """
     empties = empty_cells(archive)
     row_filled: dict[str, int] = {}
-    row_best: dict[str, float] = {}
-    for g in archive.elites():
+    elites_all = archive.elites()
+    row_best = _row_best_quality(elites_all)
+    for g in elites_all:
         prof = g.cell[0]
         row_filled[prof] = row_filled.get(prof, 0) + 1
-        row_best[prof] = max(row_best.get(prof, 0.0), _selection_quality(g))
     if not empties:
         # FULL GRID: target the cells with the largest gap to their row's
         # best — proven headroom (the row best's machinery exists; it just
@@ -142,14 +160,14 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
             return None
         cells = [g.cell for g in elites]
         weights = [
-            1.0 + max(0.0, row_best.get(c[0], 0.0) - _selection_quality(archive.get_elite(c)))
+            1.0 + max(0.0, row_best[c[0]] - _selection_quality(archive.get_elite(c)))
             for c in cells
         ]
         return random.Random(seed).choices(cells, weights=weights, k=1)[0]
     weights = [
         1.0
         + 2.0 * row_filled.get(c[0], 0)              # proven machinery
-        + min(2.0, row_best.get(c[0], 0.0) / 20.0)   # row quality, capped
+        + min(2.0, max(0.0, row_best.get(c[0], 0.0)) / 20.0)   # row quality, capped (no negative bonus)
         for c in empties
     ]
     return random.Random(seed).choices(empties, weights=weights, k=1)[0]
