@@ -131,6 +131,16 @@ def _find_target(ctx: AgentContext):
     for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=ENGAGE_RANGE):
         if m.notoriety not in ATTACKABLE_NOTORIETY:
             continue
+        # Skip mobiles that are already dead. A just-killed mob lingers in
+        # world.mobiles (with a known health bar at zero, or a ghost body)
+        # until its 0x1D Delete arrives. Without this guard, focus-fire — which
+        # sorts the lowest-HP mob first — re-selects the corpse we just felled
+        # (hp_frac==0 sorts to the very top) instead of finding a live target.
+        # `is True` (not just truthy) so MagicMock/SimpleNamespace test mobs that
+        # don't define is_dead aren't spuriously treated as corpses — only a real
+        # MobileInfo.is_dead bool counts.
+        if getattr(m, "is_dead", False) is True:
+            continue
         if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
             continue
         candidates.append(m)

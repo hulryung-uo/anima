@@ -25,7 +25,15 @@ class MobileInfo:
 
     @property
     def is_dead(self) -> bool:
-        return self.body in (0x0192, 0x0193)  # ghost bodies
+        # A mobile is dead if it has turned into a ghost body, OR if a KNOWN
+        # health bar reads zero. The latter is the exact criterion the combat
+        # loop uses for "this target is dead" (combat_loop.py): hits_max>0 and
+        # hits<=0. Mobiles we have never queried default hits/hits_max to 0 —
+        # those must NOT count as dead (hits_max==0 guard), otherwise every
+        # un-inspected mob would be treated as a corpse.
+        if self.body in (0x0192, 0x0193):  # ghost bodies
+            return True
+        return self.hits_max > 0 and self.hits <= 0
 
 
 @dataclass
