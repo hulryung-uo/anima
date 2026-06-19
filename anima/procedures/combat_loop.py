@@ -311,9 +311,19 @@ async def _maybe_bandage(ctx: AgentContext) -> None:
     """
     ss = ctx.perception.self_state
     now = time.monotonic()
-    trigger_pct = _bandage_trigger_pct(ctx, ss.hp_percent, now)
+    # Unknown HP (hits_max == 0, e.g. the agent's own 0x11/0x16 status has not
+    # streamed in yet at engagement start) is NOT a real reading. ``hp_percent``
+    # returns a 100.0 *placeholder* in that case (SelfState.hp_percent), so
+    # feeding it to ``_bandage_trigger_pct`` seeds the cross-tick DPS trajectory
+    # with a phantom 100%. The next tick, when real HP finally arrives (say 60%),
+    # the estimator reads a ~40 pct/s "drop" that never happened and latches the
+    # heavy-DPS trigger (98%) off noise — defeating the very baseline that
+    # ``_reset_engagement_state`` pops the trajectory to establish cleanly. Bail
+    # BEFORE touching the trajectory so an unknown-HP tick neither reads nor
+    # writes the DPS baseline; the first *known* reading is the clean baseline.
     if ss.hits_max <= 0:
         return
+    trigger_pct = _bandage_trigger_pct(ctx, ss.hp_percent, now)
     poisoned = bool(getattr(ss, "is_poisoned", False))
     # Poison forces a cure-bandage even at high HP; otherwise gate on the
     # (DPS-adaptive) HP trigger as before.
