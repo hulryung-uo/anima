@@ -144,3 +144,53 @@ class TestDeathArmsPostResRecovery:
         assert getattr(proc, "name", None) == "seek_resurrection"
         # ...and arm the post-res recovery flag in the branch that fires.
         assert ctx.blackboard.get("_was_dead") is True
+
+
+class TestSeekResurrectionCounterClearedOnRevive:
+    """A resurrection that happens out of band (wandering healer / another
+    player / a gump answered during the _DeathEscalate forum wait) brings the
+    agent back alive WITHOUT seek_resurrection's own success tick — so its
+    consecutive-fail counter is never zeroed. Left stale, the NEXT death
+    escalates to the forum after far fewer than DEATH_ESCALATE_THRESHOLD
+    failures. The dead→alive transition (Priority 1a) must clear it.
+    """
+
+    def _alive_ctx(self):
+        # Alive, backpack equipped + a weapon so _RecoverAfterDeath.can_start
+        # is False unless a corpse is present; empty world so the inventory
+        # snapshot reads clean and we reach Priority 1a.
+        ss = SimpleNamespace(
+            is_alive=True, hits=100, hits_max=100, x=100, y=100, z=0,
+            serial=0x1, gold=0, weight=0, weight_max=400,
+            equipment={0x15: 0x500, 1: 0x999},
+        )
+        world = SimpleNamespace(
+            items={},
+            nearby_mobiles=lambda x, y, distance=0: [],
+        )
+        return SimpleNamespace(
+            perception=SimpleNamespace(self_state=ss, world=world),
+            blackboard={"_was_dead": True},
+            bus=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_revive_zeroes_stale_seek_resurrection_counter(self, monkeypatch):
+        from anima.procedures.base import ProcedureRegistry
+        from anima.planner.planner import Planner
+
+        # A corpse is present → Priority 1a returns _RecoverAfterDeath and
+        # select_procedure stops there, right after the counter-clear runs.
+        corpse = SimpleNamespace(serial=0x900, x=100, y=100)
+        monkeypatch.setattr(loot, "find_corpses", lambda ctx, max_dist=0: [corpse])
+
+        planner = Planner(ProcedureRegistry())
+        # Simulate 4 failed seek_resurrection attempts surviving across death.
+        planner._repeat_counter["seek_resurrection"] = 4
+
+        ctx = self._alive_ctx()
+        proc = await planner.select_procedure(ctx)
+
+        assert getattr(proc, "name", None) == "recover_after_death"
+        # The stale escalation counter must be zeroed on the dead→alive crossing.
+        assert planner._repeat_counter.get("seek_resurrection", 0) == 0

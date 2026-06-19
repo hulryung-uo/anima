@@ -887,6 +887,16 @@ class Planner:
         # its corpse. Recover the gear and re-equip before resuming, instead of
         # running the profession loop unarmed (→ immediate re-death).
         if ctx.blackboard.get("_was_dead") and ss.is_alive:
+            # The dead→alive transition is the one reliable place to clear the
+            # death-recovery escalation counter. It is bumped on every failed
+            # seek_resurrection (Priority 0) and only zeroed on that procedure's
+            # own success tick — but a resurrection that happens out of band (a
+            # wandering healer, another player, or a gump answered during the
+            # _DeathEscalate forum wait) brings us back alive WITHOUT that tick,
+            # leaving a stale count behind. Next death then escalates to the
+            # forum after far fewer than DEATH_ESCALATE_THRESHOLD failures —
+            # dragging the agent into a 5-minute help-wait it doesn't need.
+            self._repeat_counter["seek_resurrection"] = 0
             recover = _RecoverAfterDeath()
             if await recover.can_start(ctx):
                 _intent("부활 직후 — 시체 회수 + 재장착")
