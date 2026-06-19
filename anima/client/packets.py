@@ -614,8 +614,18 @@ def build_gump_response(
     w.write_u32(len(text_entries))
     for entry_id, text in text_entries:
         w.write_u16(entry_id)
+        # The server reads `char_len` UTF-16 code units; if it exceeds 239 it
+        # treats the response as malformed and *disconnects* the client
+        # (ServUO PacketHandlers: `if (textLength > 239) { ...disconnecting... }`).
+        # ClassicUO clamps identically via `Math.Min(239, text.Length)`, so we
+        # truncate on encoded code-unit count and keep the declared count in
+        # sync with the bytes actually written (correct even for astral chars,
+        # which occupy two UTF-16 units).
         encoded = text.encode("utf-16-be")
-        char_len = len(text)
+        char_len = len(encoded) // 2
+        if char_len > 239:
+            char_len = 239
+            encoded = encoded[: char_len * 2]
         w.write_u16(char_len)
         w.write_bytes(encoded)
 

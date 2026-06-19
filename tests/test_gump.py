@@ -238,6 +238,48 @@ class TestBuildGumpResponse:
         text1 = r.read_unicode_be(5)
         assert text1 == "World"
 
+    def test_text_entry_clamped_to_239(self):
+        # ServUO disconnects the client if a text-entry length exceeds 239
+        # UTF-16 code units; ClassicUO clamps to 239. Verify we do too, and
+        # that the declared count stays in sync with the bytes written.
+        long_text = "A" * 300
+        pkt = build_gump_response(
+            serial=0x00000001,
+            gump_id=0xABCD,
+            button_id=1,
+            text_entries=[(7, long_text)],
+        )
+        r = PacketReader(pkt[3:])
+        r.skip(4 + 4 + 4)  # serial + gump_id + button_id
+        assert r.read_u32() == 0  # switch count
+        assert r.read_u32() == 1  # text count
+        assert r.read_u16() == 7  # entry_id
+        char_len = r.read_u16()
+        assert char_len == 239
+        text = r.read_unicode_be(char_len)
+        assert text == "A" * 239
+        # Nothing trailing: the declared count consumed exactly the payload.
+        assert r.remaining == 0
+
+    def test_text_entry_astral_char_count_matches_bytes(self):
+        # A non-BMP (astral) char occupies two UTF-16 code units; the declared
+        # char count must equal encoded_bytes // 2, never the Python str length.
+        text = "x\U0001F600y"  # 'x', emoji (2 units), 'y' -> 4 UTF-16 units
+        pkt = build_gump_response(
+            serial=0x00000001,
+            gump_id=0xABCD,
+            button_id=1,
+            text_entries=[(0, text)],
+        )
+        r = PacketReader(pkt[3:])
+        r.skip(4 + 4 + 4)
+        assert r.read_u32() == 0  # switch count
+        assert r.read_u32() == 1  # text count
+        assert r.read_u16() == 0  # entry_id
+        char_len = r.read_u16()
+        assert char_len == 4  # code units, not len(text) == 3
+        assert r.remaining == char_len * 2
+
     def test_cancel(self):
         pkt = build_gump_response(
             serial=0x00000001,
