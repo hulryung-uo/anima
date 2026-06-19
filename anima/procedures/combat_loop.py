@@ -25,7 +25,12 @@ from anima.actions.equip import equip_shield_from_pack, equip_weapon_from_pack
 from anima.actions.inventory import find_in_backpack
 from anima.actions.loot import find_corpses, loot_corpse
 from anima.actions.target import use_on_object
-from anima.client.packets import build_attack, build_double_click, build_war_mode
+from anima.client.packets import (
+    build_attack,
+    build_double_click,
+    build_status_request,
+    build_war_mode,
+)
 from anima.perception.enums import NotorietyFlag
 from anima.procedures.bandage_self import BANDAGE_GRAPHICS
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
@@ -331,6 +336,26 @@ async def _loot_fresh_corpses(ctx: AgentContext) -> int:
     return gold
 
 
+# StatusRequest type 4 = basic stats (carries the mobile's hits/hits_max). A
+# real client fires this when it puts up a mobile's health bar; ServUO does not
+# stream a foe's hits/hits_max otherwise, so without it ``MobileInfo.hits``/
+# ``hits_max`` stay at their 0 default for the whole fight. That silently breaks
+# two things in this loop: the focus-fire sort key in ``_find_target`` (every
+# un-queried mob looks full-HP at hp_frac 1.0) and the health-bar death check
+# (``current.hits_max > 0 and current.hits <= 0`` can never fire). We request it
+# once per serial — gated through the blackboard so it isn't re-sent every tick,
+# mirroring ClassicUO's ``HitsRequest == Pending`` de-dup.
+async def _request_target_status(ctx: AgentContext, serial: int) -> bool:
+    """Send a 0x34 status request for ``serial`` once. Returns True if sent."""
+    requested: set[int] = ctx.blackboard.setdefault("combat_status_requested", set())
+    if serial in requested:
+        return False
+    requested.add(serial)
+    await ctx.conn.send_packet(build_status_request(4, serial))
+    logger.debug("hunt_status_request", target=f"0x{serial:08X}")
+    return True
+
+
 def _find_target(ctx: AgentContext):
     """Nearest attackable non-human mobile (humans only when hostile)."""
     ss = ctx.perception.self_state
@@ -445,6 +470,7 @@ class HuntNearby(Procedure):
         retreated = False
         try:
             await ctx.conn.send_packet(build_war_mode(True))
+            await _request_target_status(ctx, target.serial)
             await ctx.conn.send_packet(build_attack(target.serial))
             deadline = time.monotonic() + ENGAGEMENT_CAP_S
 
@@ -485,6 +511,7 @@ class HuntNearby(Procedure):
                     target = _find_target(ctx)
                     if target is None:
                         break
+                    await _request_target_status(ctx, target.serial)
                     await ctx.conn.send_packet(build_attack(target.serial))
                     deadline = time.monotonic() + ENGAGEMENT_CAP_S
                     continue
