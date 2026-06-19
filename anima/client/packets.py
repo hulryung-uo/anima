@@ -455,12 +455,43 @@ SPEECH_KEYWORDS: dict[str, list[int]] = {
 }
 
 
+def _phrase_at_word_boundary(text_lower: str, phrase: str) -> bool:
+    """True if ``phrase`` occurs in ``text_lower`` bounded by non-letters.
+
+    Mirrors ClassicUO's ``SpeechesLoader.IsMatch`` (the client that ServUO's
+    keyword dispatch was written against): a keyword only counts when the char
+    immediately before and after it is the string edge, whitespace, or any
+    non-letter ("bank", " bank ", "!bank", "bank!" — but never "embankment").
+    Python ``str.isalpha`` matches C#'s ``char.IsLetter`` for this purpose, and
+    digits/punctuation are treated as boundaries just as ClassicUO does.
+    """
+    start = text_lower.find(phrase)
+    while start != -1:
+        end = start + len(phrase)
+        before_ok = start == 0 or not text_lower[start - 1].isalpha()
+        after_ok = end >= len(text_lower) or not text_lower[end].isalpha()
+        if before_ok and after_ok:
+            return True
+        start = text_lower.find(phrase, start + 1)
+    return False
+
+
 def _match_keywords(text: str) -> list[int]:
-    """Match text against known speech keywords."""
+    """Match text against known speech keywords.
+
+    Uses word-boundary matching (see ``_phrase_at_word_boundary``) rather than a
+    raw substring test. A naive ``phrase in text`` fired on incidental
+    substrings — "embankment" matched ``bank`` (0x2), "checking"/"checkout"
+    matched ``check`` (0x3), "rebalance" matched ``balance`` (0x1) — which
+    flipped an ordinary social reply into a UTF-8 *keyword-encoded* 0xAD frame
+    (type |= 0xC0). ServUO then routes that to NPC keyword dispatch (banker,
+    etc.) instead of displaying it as normal player speech, silently corrupting
+    the agent's conversations. Only genuine standalone keywords should encode.
+    """
     text_lower = text.lower()
     matched: list[int] = []
     for phrase, ids in SPEECH_KEYWORDS.items():
-        if phrase in text_lower:
+        if _phrase_at_word_boundary(text_lower, phrase):
             matched.extend(ids)
     return sorted(set(matched))
 
