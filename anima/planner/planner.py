@@ -580,6 +580,26 @@ class Planner:
             return False
         return True
 
+    def _should_heal_in_place(self, ss) -> bool:
+        """Priority-1 decision: heal/bandage in place because we're too
+        wounded to keep fighting.
+
+        The floor is _HEAL_IN_PLACE_HP_PCT, deliberately raised to combat's
+        re-engage floor (hunt_nearby.can_start needs >= 40% HP) rather than the
+        old hardcoded 0.30. Combat breaks off at RETREAT_HP_PCT (35%) and will
+        not re-hunt until 40%, while the Priority-1b flee gate above only fires
+        when SWARMED (>= _FLEE_HOSTILE_COUNT hostiles). That left a real dead
+        zone: at 30–40% HP with only one or two hostiles (or a kiting mob just
+        out of melee), the agent could neither re-hunt (too wounded), nor flee
+        (not swarmed), nor heal (gate was < 0.30) — so it fell through to the
+        profession / mining loop and wandered wounded until it re-aggroed and
+        died. Healing across the whole 30–40% band closes that zone for every
+        persona, not just the adventurer (whose PROFESSION_LOOPS happens to lead
+        with bandage_self). Mirrors the flee gate's own 0.40 floor so the two
+        survival branches agree on what "too wounded to fight" means.
+        """
+        return ss.hits_max > 0 and ss.hits < ss.hits_max * _HEAL_IN_PLACE_HP_PCT
+
     async def select_procedure(self, ctx: AgentContext):
         """Select the highest-priority procedure based on gameplay loop.
 
@@ -887,7 +907,7 @@ class Planner:
             _intent("HP 위험 + 다수 적 → 후퇴 후 치료")
             return _FleeFromHostiles()
 
-        if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:
+        if self._should_heal_in_place(ss):
             logger.warning("agent_low_hp", hp=ss.hits, hp_max=ss.hits_max)
             if ctx.bus is not None:
                 try:
@@ -4609,6 +4629,13 @@ _FLEE_HOSTILE_COUNT = 3    # ...with at least this many hostiles, flee not heal
 # starvation breaker never demotes it) — without this cap the flee gate loops
 # forever and the agent never gets to bandage. 5 ticks ~= one full heal attempt.
 _FLEE_MAX_CONSECUTIVE = 5
+# Heal-in-place floor. Combat breaks off at RETREAT_HP_PCT (35%) and won't
+# re-engage until hunt_nearby.can_start clears 40%; the Priority-1b flee gate
+# only fires when SWARMED. Without matching this floor to the 40% re-engage
+# floor, a non-swarmed agent at 30–40% HP would neither re-hunt, flee, nor heal
+# (the old gate was a hardcoded 0.30) and fell through to the profession loop
+# wounded. Pinned to _FLEE_HP_PCT so both survival branches share one floor.
+_HEAL_IN_PLACE_HP_PCT = _FLEE_HP_PCT  # 0.40
 _HOSTILE_NOTORIETY = None  # set lazily (avoid import at module load)
 
 
