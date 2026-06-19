@@ -258,8 +258,24 @@ class PacketReader:
         return self.read_remaining().split(b"\x00", 1)[0].decode("ascii", errors="replace")
 
     def read_unicode_remaining(self) -> str:
+        # ServUO speech (0xAE UnicodeMessage) writes the text with WriteBigUniNull:
+        # big-endian UTF-16 terminated by a 0x0000 code unit. ClassicUO reads it
+        # with ReadUnicodeBE(), which STOPS at the first NUL code unit — it does
+        # not keep anything past the terminator. The old `rstrip("\x00")` only
+        # trimmed *trailing* NULs, so an embedded NUL (or any alignment/padding
+        # byte the variable-length frame carries after the terminator) leaked
+        # into the decoded string (e.g. "Hello\x00XYZ" instead of "Hello"),
+        # diverging from what the real client shows and polluting the speech the
+        # social/LLM layer consumes. Mirror ReadUnicodeBE: read whole code units
+        # and break on the first 0x0000.
         raw = self.read_remaining()
-        return raw.decode("utf-16-be", errors="replace").rstrip("\x00")
+        chars: list[str] = []
+        for off in range(0, len(raw) - 1, 2):
+            ch = (raw[off] << 8) | raw[off + 1]
+            if ch == 0:
+                break
+            chars.append(chr(ch))
+        return "".join(chars)
 
     def skip(self, n: int) -> None:
         self._pos += n

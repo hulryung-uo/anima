@@ -1942,3 +1942,41 @@ def test_delete_unrelated_item_leaves_equipment_intact():
     p.self_state.equipment[1] = 0x40001111
     h.dispatch(0x1D, _build_delete(0x4000DEAD))
     assert p.self_state.equipment.get(1) == 0x40001111
+
+
+
+def _build_unicode_talk(serial: int, text_payload: bytes,
+                        name: str = "Guard", lang: str = "ENU") -> bytes:
+    """Build a 0xAE UnicodeMessage packet (variable length).
+
+    Layout (ServUO UnicodeMessage): serial(u32) graphic(u16) type(u8)
+    hue(u16) font(u16) lang(ascii 4) name(ascii 30) text(utf16-be, raw bytes).
+    """
+    body = bytearray()
+    body += struct.pack(">I", serial)
+    body += struct.pack(">H", 0x0190)  # graphic
+    body.append(0x00)                  # msg_type (regular)
+    body += struct.pack(">H", 0x03B2)  # hue
+    body += struct.pack(">H", 0x0003)  # font
+    body += lang.encode("ascii").ljust(4, b"\x00")[:4]
+    body += name.encode("ascii").ljust(30, b"\x00")[:30]
+    body += text_payload
+    pkt = bytearray()
+    pkt.append(0xAE)
+    pkt += struct.pack(">H", 0)  # length placeholder
+    pkt += body
+    struct.pack_into(">H", pkt, 1, len(pkt))
+    return bytes(pkt)
+
+
+def test_unicode_talk_truncates_at_nul_terminator():
+    """0xAE speech text must stop at ServUO's WriteBigUniNull terminator
+    (ClassicUO ReadUnicodeBE). A terminator followed by trailing bytes used to
+    leak into the journal as 'Hello\\x00XYZ'; it must decode to 'Hello'."""
+    h, p, _ = _make_stack()
+    payload = "Hello".encode("utf-16-be") + b"\x00\x00" + "XYZ".encode("utf-16-be")
+    h.dispatch(0xAE, _build_unicode_talk(0x00000099, payload))
+    assert len(p.social.journal) == 1
+    entry = p.social.journal[0]
+    assert entry.text == "Hello"
+    assert "\x00" not in entry.text

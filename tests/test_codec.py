@@ -46,6 +46,25 @@ def test_packet_reader_signed():
     assert r2.read_i16() == -2
 
 
+def test_read_unicode_remaining_stops_at_first_nul():
+    """read_unicode_remaining must mirror ClassicUO ReadUnicodeBE: stop at the
+    first 0x0000 UTF-16 code unit, not merely rstrip trailing NULs. ServUO's
+    WriteBigUniNull terminates speech text with a 0x0000; anything after that
+    terminator (an embedded NUL plus text, or frame padding) must be dropped."""
+    # "Hello" + NUL terminator + trailing junk code units.
+    raw = "Hello".encode("utf-16-be") + b"\x00\x00" + "XYZ".encode("utf-16-be")
+    r = PacketReader(raw)
+    assert r.read_unicode_remaining() == "Hello"
+
+    # A plain NUL-terminated string with no trailing bytes still works.
+    r2 = PacketReader("Bjorn".encode("utf-16-be") + b"\x00\x00")
+    assert r2.read_unicode_remaining() == "Bjorn"
+
+    # No terminator at all: consume the whole buffer.
+    r3 = PacketReader("end".encode("utf-16-be"))
+    assert r3.read_unicode_remaining() == "end"
+
+
 def test_huffman_roundtrip():
     """Verify Huffman decompression works with known data.
 
