@@ -16,7 +16,7 @@ from anima.data import item_name
 from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
 from anima.memory.retrieval import retrieve_context
 from anima.memory.rewards import get_reward
-from anima.pathfinding import direction_to, find_path
+from anima.pathfinding import direction_to, find_path, path_is_traversable
 from anima.world_knowledge import find_location, format_locations_for_llm
 
 if TYPE_CHECKING:
@@ -419,12 +419,28 @@ def _get_cached_path(
     try:
         idx = cached_path.index((sx, sy))
         trimmed = cached_path[idx + 1:]
-        return trimmed if trimmed else None
+        candidate = trimmed if trimmed else None
     except ValueError:
         # Current position not on cached path — might be 1 step ahead
         if cached_path and abs(sx - cached_path[0][0]) <= 1 and abs(sy - cached_path[0][1]) <= 1:
-            return cached_path
+            candidate = cached_path
+        else:
+            candidate = None
+
+    if not candidate:
         return None
+
+    # A tile on the remaining route may have become blocked since the path
+    # was planned (mob moved onto it, DenyWalk recorded it). Reusing it would
+    # send the agent straight into a now-impassable tile — replan instead.
+    if ctx.map_reader is not None:
+        denied = set(ctx.walker.denied_tiles.keys()) | _impassable_world_items(ctx)
+        sz = ctx.perception.self_state.z
+        if not path_is_traversable(
+            ctx.map_reader, sx, sy, candidate, denied_tiles=denied, current_z=sz,
+        ):
+            return None
+    return candidate
 
 
 # ------------------------------------------------------------------

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from anima.pathfinding import DIRECTION_DELTAS, SQRT2, _octile_distance, direction_to, find_path
+from anima.pathfinding import (
+    DIRECTION_DELTAS,
+    SQRT2,
+    _octile_distance,
+    direction_to,
+    find_path,
+    path_is_traversable,
+)
 
 # ---------------------------------------------------------------------------
 # Mock map reader for testing
@@ -242,6 +249,67 @@ class TestFindPath:
             assert (x, y) not in m.blocked
         # BFS gives the true minimum walk-step count for this layout.
         assert len(path) == _min_walk_steps(m, 0, 0, 3, 4)
+
+
+class TestPathIsTraversable:
+    """path_is_traversable re-validates a cached path against the live map."""
+
+    def test_empty_path_is_traversable(self) -> None:
+        m = MockMapReader()
+        assert path_is_traversable(m, 5, 5, []) is True
+
+    def test_clear_path_stays_valid(self) -> None:
+        m = MockMapReader()
+        path = find_path(m, 0, 0, 3, 0)
+        assert path_is_traversable(m, 0, 0, path) is True
+
+    def test_tile_blocked_mid_path_invalidates(self) -> None:
+        """A tile that becomes impassable after planning fails revalidation."""
+        m = MockMapReader()
+        path = find_path(m, 0, 0, 4, 0)
+        assert path_is_traversable(m, 0, 0, path) is True
+        # A mob/static now occupies a tile on the route.
+        m.block(*path[2])
+        assert path_is_traversable(m, 0, 0, path) is False
+
+    def test_denied_tile_invalidates(self) -> None:
+        """A DenyWalk-recorded tile on the route invalidates the path."""
+        m = MockMapReader()
+        path = find_path(m, 0, 0, 4, 0)
+        blocked_tile = path[1]
+        assert path_is_traversable(m, 0, 0, path) is True
+        assert (
+            path_is_traversable(m, 0, 0, path, denied_tiles={blocked_tile})
+            is False
+        )
+
+    def test_diagonal_corner_cut_invalidates(self) -> None:
+        """A diagonal hop whose corner became blocked is not traversable."""
+        m = MockMapReader()
+        # A clean NE diagonal path.
+        path = [(1, -1), (2, -2)]
+        assert path_is_traversable(m, 0, 0, path) is True
+        # Block a perpendicular corner of the first diagonal step.
+        m.block(1, 0)  # east tile of the (0,0)->(1,-1) NE move
+        assert path_is_traversable(m, 0, 0, path) is False
+
+    def test_non_contiguous_path_rejected(self) -> None:
+        """A path with a >1 tile jump (stale/teleported) is not traversable."""
+        m = MockMapReader()
+        assert path_is_traversable(m, 0, 0, [(2, 0)]) is False
+
+    def test_zero_length_hop_rejected(self) -> None:
+        m = MockMapReader()
+        assert path_is_traversable(m, 0, 0, [(0, 0)]) is False
+
+    def test_matches_find_path_corner_rules(self) -> None:
+        """Any path find_path returns must validate as traversable."""
+        m = MockMapReader()
+        for bx, by in [(2, 0), (2, 1), (1, 2)]:
+            m.block(bx, by)
+        path = find_path(m, 0, 0, 4, 0)
+        assert path
+        assert path_is_traversable(m, 0, 0, path) is True
 
 
 def _min_walk_steps(m: "MockMapReader", sx: int, sy: int, tx: int, ty: int) -> int:

@@ -229,6 +229,85 @@ def _astar_core(
     return []
 
 
+def path_is_traversable(
+    map_reader: "MapReader",
+    sx: int,
+    sy: int,
+    path: list[tuple[int, int]],
+    denied_tiles: set[tuple[int, int]] | None = None,
+    current_z: int | None = None,
+    doors_passable: bool = True,
+    door_tiles: set[tuple[int, int]] | None = None,
+) -> bool:
+    """Re-validate a previously computed ``path`` against the *current* map.
+
+    A* runs once and its result is cached, but the world changes underneath
+    it: a mob walks onto a tile, a static is revealed, or the walker records a
+    DenyWalk that lands a tile in ``denied_tiles``. Stepping blindly into a
+    now-blocked tile costs a server round-trip (DenyWalk) and a stall. This
+    helper lets a caller cheaply decide whether to reuse the cached path or
+    replan *before* sending the next walk packet.
+
+    Walking from ``(sx, sy)`` it verifies, for every node in ``path``:
+      * the node is reachable in a single 8-directional step from the
+        previous node, and
+      * the destination tile is walkable, and
+      * for a diagonal step both perpendicular tiles are walkable (the same
+        corner-cutting rule A* enforces, since the server denies a diagonal
+        that clips an impassable corner).
+
+    Returns ``True`` only if the whole path is still walkable, ``False`` as
+    soon as any step is blocked (or the path is malformed / non-contiguous).
+    An empty path is vacuously traversable.
+    """
+    if not path:
+        return True
+
+    z_at: dict[tuple[int, int], int] = {}
+    if current_z is not None:
+        z_at[(sx, sy)] = current_z
+
+    cx, cy = sx, sy
+    for nx, ny in path:
+        dx, dy = nx - cx, ny - cy
+        # Each hop must be a single 8-directional step.
+        if dx == 0 and dy == 0:
+            return False
+        if abs(dx) > 1 or abs(dy) > 1:
+            return False
+
+        z_arg = z_at if current_z is not None else None
+
+        is_diagonal = (dx != 0 and dy != 0)
+        if is_diagonal:
+            side1_ok, _ = _is_walkable(
+                map_reader, cx + dx, cy, denied_tiles,
+                current_z, z_arg, cx, cy,
+                doors_passable=doors_passable, door_tiles=door_tiles,
+            )
+            side2_ok, _ = _is_walkable(
+                map_reader, cx, cy + dy, denied_tiles,
+                current_z, z_arg, cx, cy,
+                doors_passable=doors_passable, door_tiles=door_tiles,
+            )
+            if not (side1_ok and side2_ok):
+                return False
+
+        can_walk, new_z = _is_walkable(
+            map_reader, nx, ny, denied_tiles,
+            current_z, z_arg, cx, cy,
+            doors_passable=doors_passable, door_tiles=door_tiles,
+        )
+        if not can_walk:
+            return False
+
+        if current_z is not None:
+            z_at[(nx, ny)] = new_z
+        cx, cy = nx, ny
+
+    return True
+
+
 def find_path(
     map_reader: "MapReader",
     sx: int,
