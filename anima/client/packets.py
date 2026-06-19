@@ -430,6 +430,47 @@ def build_unicode_speech(
     return bytes(data)
 
 
+def build_ascii_speech(
+    text: str,
+    msg_type: int = 0,
+    hue: int = 0x0034,
+    font: int = 3,
+) -> bytes:
+    """Build the legacy AsciiSpeech packet (0x03, variable).
+
+    Mirrors ClassicUO ``Send_ASCIISpeechRequest`` (the pre-CV_200 path of
+    ``GameActions.Say``) exactly:
+
+        [ID 0x03][len u16 BE][type u8][hue u16 BE][font u16 BE][ascii text + 0x00]
+
+    Field widths are the easy thing to get wrong: ``hue`` and ``font`` are
+    *both* 16-bit big-endian (font is a ``byte`` argument in ClassicUO but
+    serialised with ``WriteUInt16BE``), and the text is null-terminated
+    Cp1252/ASCII — not UTF-16 like the 0xAD unicode variant.
+
+    ``msg_type`` carries the speech mode (0 = say/Regular, 2 = emote,
+    8 = whisper, 9 = yell). When a known keyword phrase is present the high
+    ``Encoded`` bit (0xC0) is OR-ed into the type so ServUO's keyword dispatch
+    fires. Unlike 0xAD, the 0x03 frame does *not* carry packed keyword bytes —
+    only the type flag changes; the body stays plain ASCII.
+    """
+    encoded = bool(_match_keywords(text))
+
+    w = PacketWriter()
+    w.write_u8(0x03)
+    w.write_u16(0)  # placeholder for length
+    w.write_u8((msg_type | 0xC0) if encoded else (msg_type & 0xFF))
+    w.write_u16(hue)
+    w.write_u16(font)
+    w.write_bytes(text.encode("ascii", errors="replace") + b"\x00")
+
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
+
+
 def build_war_mode(war: bool) -> bytes:
     """Build WarMode packet (0x72, 5 bytes)."""
     w = PacketWriter()
