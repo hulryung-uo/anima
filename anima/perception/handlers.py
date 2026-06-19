@@ -167,6 +167,25 @@ def register_handlers(
             for layer in list(p.self_state.equipment):
                 if layer != 0x15:
                     del p.self_state.equipment[layer]
+            # Clearing the equipment dict alone is NOT enough: our own worn
+            # items also live in world.items with container == self.serial (set
+            # by the shared item loop below). The non-self branch purges those
+            # stale orphans; the self branch did not, so a removed layer left
+            # the old serial lingering in world.items forever (the gear item
+            # often gets no 0x1D Delete on a gear swap). That orphan then
+            # resurrects the very phantom this purge exists to kill: main.py's
+            # equipment-recovery fallback rebuilds equipment[it.layer] =
+            # it.serial from `it.container == self.serial and it.layer > 0`, so
+            # the dropped weapon walks straight back into equipment[1]/[2] and
+            # the combat-loop "hand already occupied" guard sees it. Mirror the
+            # non-self branch (and ClassicUO's strip-then-replay): drop our worn
+            # items from world.items too, keeping only the backpack (Layer 0x15).
+            for stale in [
+                it.serial
+                for it in p.world.items.values()
+                if it.container == serial and it.layer != 0x15
+            ]:
+                p.world.remove(stale)
         else:
             mob = p.world.get_or_create_mobile(serial)
             mob.body = body
