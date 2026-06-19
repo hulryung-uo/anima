@@ -16,6 +16,7 @@ from anima.data import item_name
 from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
 from anima.memory.retrieval import retrieve_context
 from anima.memory.rewards import get_reward
+from anima.perception.enums import MessageType
 from anima.pathfinding import direction_to, find_path, path_is_traversable
 from anima.world_knowledge import find_location, format_locations_for_llm
 
@@ -87,17 +88,40 @@ def _build_surroundings(ctx: BrainContext) -> str:
     return "\n".join(lines) if lines else "Nothing notable nearby."
 
 
+# Message types that are NOT actual conversation and must never be surfaced to
+# the LLM as "Recent conversation": server SYSTEM lines, single-click LABEL
+# responses ("Hastin the baker"), and FOCUS prompts. Everything else (REGULAR,
+# EMOTE, WHISPER, YELL, SPELL mantras, GUILD/ALLIANCE/PARTY) is real speech a
+# person uttered and is fair game for the conversational window.
+_NON_CONVERSATIONAL_TYPES = frozenset(
+    {MessageType.SYSTEM, MessageType.LABEL, MessageType.FOCUS}
+)
+_MAX_CONVERSATION_LINES = 3
+
+
 def _build_recent_speech(ctx: BrainContext) -> str:
-    recent = ctx.perception.social.recent(count=3)
+    # Pull a wider window and drop non-conversational entries FIRST, then keep
+    # the last few real lines. Slicing to the last 3 *before* filtering meant a
+    # burst of system/cliloc/label noise in the final 3 slots could shut out a
+    # player's actual message that arrived just before it — the LLM would then
+    # see "no conversation" and never reply. Classification is by the
+    # authoritative msg_type, not a brittle name == "system" string check
+    # (a vendor-named cliloc line, e.g. name="Hastin", slipped through that).
+    recent = ctx.perception.social.recent(count=20)
     my_serial = ctx.perception.self_state.serial
     lines: list[str] = []
     for entry in recent:
-        if entry.name.lower() == "system" or entry.serial == 0xFFFFFFFF:
+        if entry.serial == 0xFFFFFFFF:
+            continue  # broadcast/system pseudo-serial
+        if entry.msg_type in _NON_CONVERSATIONAL_TYPES:
+            continue
+        if entry.name.lower() == "system":
             continue
         if entry.serial == my_serial:
             lines.append(f'  You: "{entry.text}"')
         else:
             lines.append(f'  {entry.name}: "{entry.text}"')
+    lines = lines[-_MAX_CONVERSATION_LINES:]
     if lines:
         return "Recent conversation:\n" + "\n".join(lines)
     return ""
