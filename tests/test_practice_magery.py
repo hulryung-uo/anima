@@ -98,3 +98,39 @@ async def test_out_of_reagents_returns_missing_resource(monkeypatch):
     result = await PracticeMagery().execute(ctx)
     assert result.success is False
     assert result.reason == FailureReason.MISSING_RESOURCE
+
+
+@pytest.mark.asyncio
+async def test_meditation_stall_does_not_spin_forever(monkeypatch):
+    """Low mana pool: meditation can never lift mana above the cast threshold
+    (MEDITATE_BELOW_MANA). The loop must NOT spin forever meditating — it must
+    bail out after a bounded number of fruitless meditations instead of
+    burning the whole procedure window with zero casts."""
+    ss = _ss(mana=0)  # permanently below threshold; meditation never helps
+    ctx = SimpleNamespace(perception=SimpleNamespace(self_state=ss))
+
+    cast_calls = {"n": 0}
+    med_calls = {"n": 0}
+
+    async def fake_cast(_ctx, _spell, target_serial=None, mana_cost=0):
+        cast_calls["n"] += 1
+        return SimpleNamespace(success=True, fizzled=False, no_reagents=False)
+
+    async def fake_meditate(_ctx, target_pct=0.0, timeout=0.0):
+        med_calls["n"] += 1
+        # mana stays at 0 — meditation can't clear MEDITATE_BELOW_MANA
+        return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(pm, "cast_spell", fake_cast)
+    monkeypatch.setattr(pm, "meditate", fake_meditate)
+    monkeypatch.setattr(pm.asyncio, "sleep", AsyncMock())
+
+    # Bound the whole call so a regression (infinite loop) fails loudly
+    # instead of hanging the suite.
+    result = await asyncio.wait_for(PracticeMagery().execute(ctx), timeout=5.0)
+
+    # No cast ever became possible, and the loop bailed after a bounded number
+    # of meditations rather than spinning forever.
+    assert cast_calls["n"] == 0
+    assert med_calls["n"] <= 3
+    assert result.success is False

@@ -75,10 +75,25 @@ class PracticeMagery(Procedure):
         # meditations eat slots). The on-disk version had regressed to a 6-cast
         # for-loop (~153); restored here. Guarded by tests/test_practice_magery.py.
         casts_done = 0
+        # Deadlock guard: a small mana pool can sit permanently below the cast
+        # threshold (e.g. mana_max=18 → 60% target = 10.8 < MEDITATE_BELOW_MANA
+        # = 12), so meditation never lifts mana enough to cast. Without a bound
+        # the loop would meditate until the 180s procedure timeout and resolve
+        # ZERO casts. Stop after a couple of fruitless meditations so the run
+        # still returns whatever it managed (and surfaces the stall).
+        stalled_meditations = 0
+        MAX_STALLED_MEDITATIONS = 2
         while casts_done < CASTS_PER_RUN:
             if ss.mana < MEDITATE_BELOW_MANA:
                 await meditate(ctx, target_pct=60.0, timeout=20.0)
+                if ss.mana < MEDITATE_BELOW_MANA:
+                    stalled_meditations += 1
+                    if stalled_meditations >= MAX_STALLED_MEDITATIONS:
+                        break
+                else:
+                    stalled_meditations = 0
                 continue
+            stalled_meditations = 0
             result = await cast_spell(
                 ctx, SPELL_GREATER_HEAL,
                 target_serial=ss.serial,
