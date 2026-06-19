@@ -75,14 +75,95 @@ class TestTargetPrimitives:
 
         async def simulate_target():
             await asyncio.sleep(0.05)
-            ctx.perception.self_state.pending_target = {"cursor_id": 123, "cursor_type": 1}
+            # Use the exact keys the real 0x6C handler stores.
+            ctx.perception.self_state.pending_target = {
+                "cursor_id": 123,
+                "target_type": 0,
+                "cursor_flag": 1,
+            }
             bus.publish("avatar.target_cursor", {})
 
         task = asyncio.create_task(simulate_target())
         result = await wait_for_target(ctx, timeout=2.0)
         assert result.success
         assert result.data["cursor_id"] == 123
+        # The server's harmful/helpful flag must survive to the caller so it
+        # can be echoed back; previously it was always dropped (read from a
+        # nonexistent "cursor_type" key).
+        assert result.data["cursor_flag"] == 1
+        assert result.data["target_type"] == 0
         await task
+
+    @pytest.mark.asyncio
+    async def test_wait_for_target_reads_handler_keys(self):
+        """wait_for_target must read the keys the live 0x6C handler sets.
+
+        Regression for the silent flag-drop: the handler stores
+        ``cursor_flag``/``target_type``; the consumer used to read a
+        ``cursor_type`` key that was never written, so a helpful (2) cursor
+        looked neutral (0) and the echoed response could be rejected.
+        """
+        from anima.actions.target import wait_for_target
+
+        ctx = MagicMock()
+        bus = EventBus()
+        ctx.bus = bus
+        # Mirror perception/handlers.py handle_target_cursor for a heal cursor.
+        ctx.perception.self_state.pending_target = {
+            "target_type": 0,
+            "cursor_id": 0xDEADBEEF,
+            "cursor_flag": 2,  # helpful
+        }
+
+        result = await wait_for_target(ctx, timeout=1.0)
+        assert result.success
+        assert result.data["cursor_flag"] == 2
+        # pending_target consumed exactly once
+        assert ctx.perception.self_state.pending_target is None
+
+    @pytest.mark.asyncio
+    async def test_cast_spell_echoes_cursor_flag(self):
+        """cast_spell echoes the server cursor flag on the target response."""
+        from anima.actions import spells
+        from anima.actions.result import ActionResult
+
+        ctx = MagicMock()
+        ctx.conn.send_packet = AsyncMock()
+        ss = ctx.perception.self_state
+        ss.mana = 50
+        ss.mana_max = 50
+        ss.serial = 0x0001A2B3
+        ss.pending_target = None
+
+        captured: dict = {}
+
+        async def fake_wait_for_target(_ctx, timeout=3.0):
+            # Server requested a harmful object cursor.
+            return ActionResult(
+                success=True,
+                data={"cursor_id": 0x55, "target_type": 0, "cursor_flag": 1},
+            )
+
+        async def fake_target_object(_ctx, cursor_id, serial, cursor_flag=0):
+            captured["cursor_id"] = cursor_id
+            captured["serial"] = serial
+            captured["cursor_flag"] = cursor_flag
+            return ActionResult(success=True)
+
+        async def fake_wait_for_journal(_ctx, _signals, timeout=1.5, since=0.0):
+            # No abort/fizzle text — clean resolution.
+            return ActionResult(success=False)
+
+        with patch.object(spells, "wait_for_target", fake_wait_for_target), \
+             patch.object(spells, "target_object", fake_target_object), \
+             patch.object(spells, "wait_for_journal", fake_wait_for_journal):
+            res = await spells.cast_spell(
+                ctx, spells.SPELL_HEAL, target_serial=0x77, mana_cost=0,
+            )
+
+        assert res.success
+        assert captured["cursor_flag"] == 1
+        assert captured["serial"] == 0x77
 
     @pytest.mark.asyncio
     async def test_wait_for_target_timeout(self):

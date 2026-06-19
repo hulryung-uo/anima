@@ -86,13 +86,27 @@ async def wait_for_target(
     if not ok:
         return ActionResult(success=False, message="Target cursor timeout")
 
-    cursor_id = ss.pending_target.get("cursor_id", 0) if ss.pending_target else 0
-    cursor_type = ss.pending_target.get("cursor_type", 0) if ss.pending_target else 0
+    pt = ss.pending_target or {}
+    cursor_id = pt.get("cursor_id", 0)
+    # The 0x6C handler stores "target_type" (0=object, 1=ground) and
+    # "cursor_flag" (0=neutral, 1=harmful, 2=helpful). Read those exact
+    # keys — the old code read a "cursor_type" key the handler never sets,
+    # so it was always 0 and the harmful/helpful flag was silently dropped.
+    # Strict servers reject a target response whose flag does not echo the
+    # request, so callers must be able to read and replay it.
+    target_type = pt.get("target_type", pt.get("cursor_type", 0))
+    cursor_flag = pt.get("cursor_flag", 0)
     ss.pending_target = None
 
     return ActionResult(
         success=True,
-        data={"cursor_id": cursor_id, "cursor_type": cursor_type},
+        data={
+            "cursor_id": cursor_id,
+            "target_type": target_type,
+            "cursor_flag": cursor_flag,
+            # back-compat alias for callers still reading "cursor_type"
+            "cursor_type": target_type,
+        },
     )
 
 

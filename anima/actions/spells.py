@@ -98,7 +98,13 @@ async def cast_spell(
         )
 
     cursor_id = cursor.data.get("cursor_id", 0)
-    await target_object(ctx, cursor_id, target_serial or ss.serial)
+    # Echo the server's cursor flag (1=harmful for offensive spells,
+    # 2=helpful for heal/bless). Strict servers reject a response whose
+    # flag does not match the request, which would silently waste the cast.
+    cursor_flag = cursor.data.get("cursor_flag", 0)
+    await target_object(
+        ctx, cursor_id, target_serial or ss.serial, cursor_flag=cursor_flag,
+    )
 
     # Resolution: silence within the window = clean success.
     outcome = await wait_for_journal(
