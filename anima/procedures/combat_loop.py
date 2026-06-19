@@ -539,11 +539,19 @@ class HuntNearby(Procedure):
                     deadline = time.monotonic() + ENGAGEMENT_CAP_S
                     continue
 
-                # Close the gap if the target moved away
+                # Close the gap if the target moved away. Run, don't walk: a
+                # chased mob is almost always inside ENGAGE_RANGE (< 8 tiles), so
+                # go_to's auto-run policy (run=None) walks the whole leg at
+                # 400ms/step — the same/faster cadence a kiting mob moves at, so
+                # the agent never re-closes melee range and the swing never
+                # re-lands. Forcing run=True (200ms/step, like the retreat,
+                # reposition and wander legs already do) runs the target down and
+                # restores swings-per-engagement. The retreat interrupt still
+                # breaks the chase the instant HP crosses the floor.
                 dist = max(abs(current.x - ss.x), abs(current.y - ss.y))
                 if dist > 1:
                     await go_to(
-                        ctx, current.x, current.y,
+                        ctx, current.x, current.y, run=True,
                         interrupt_check=lambda: (
                             ss.hits_max > 0 and ss.hp_percent < RETREAT_HP_PCT
                         ),
