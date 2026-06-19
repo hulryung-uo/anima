@@ -126,6 +126,32 @@ def _tool_restock_qty(ctx: AgentContext, graphic: int) -> int:
     return 1
 
 
+def _buy_quantity(ctx: AgentContext, item, budget: int) -> int:
+    """Decide how many of `item` to buy from the vendor this trip.
+
+    Bounded by three independent limits, then floored at 1:
+      1. restock need  — bring the backpack up to TOOL_MIN_STOCK
+      2. budget        — combined backpack + bank funds (``budget``)
+      3. vendor stock  — ``item.amount`` (the display count from 0x3C/0x74)
+
+    The stock cap matters because ServUO charges the *full* requested
+    cost from one source (backpack first, else a single bank withdraw)
+    and delivers nothing if neither pocket can cover it — there is no
+    partial purchase (BaseVendor.OnBuyItems). The server silently clamps
+    the delivered amount down to stock, so if we plan ``buy_qty`` above
+    stock we (a) mis-log the cost and (b) over-decrement the bank-balance
+    cache by ``price * buy_qty`` on a bank-paid success, corrupting the
+    next affordability decision. Capping here keeps planned == actual.
+    """
+    want = _tool_restock_qty(ctx, item.graphic)
+    if item.price > 0:
+        want = min(want, budget // item.price)
+    stock = getattr(item, "amount", 0) or 0
+    if stock > 0:
+        want = min(want, stock)
+    return max(1, want)
+
+
 class BuyFromVendor(Procedure):
     name = "buy_from_vendor"
     description = "Buy tools from a nearby NPC vendor."
@@ -278,12 +304,10 @@ class BuyFromVendor(Procedure):
 
         target_name = target_item.name or f"0x{target_item.graphic:04X}"
 
-        # Buy enough to reach TOOL_MIN_STOCK, capped by combined funds.
-        buy_qty = _tool_restock_qty(ctx, target_item.graphic)
+        # Buy enough to reach TOOL_MIN_STOCK, capped by combined funds
+        # AND by the vendor's available stock for this item.
+        buy_qty = _buy_quantity(ctx, target_item, budget)
         total_cost = target_item.price * buy_qty
-        if total_cost > budget and buy_qty > 1:
-            buy_qty = max(1, budget // target_item.price)
-            total_cost = target_item.price * buy_qty
 
         logger.info(
             "buy_sending",
