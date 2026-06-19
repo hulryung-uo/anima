@@ -57,6 +57,37 @@ class SellToVendor(Procedure):
         return keep
 
     @staticmethod
+    def _select_sellable(
+        sell_list: list,
+        effective_keep: set[int],
+        protected_serials: set[int],
+    ) -> list:
+        """Pick which sell-list items to actually sell, highest value first.
+
+        Filters out:
+        - items whose graphic is still protected (``effective_keep``),
+        - the one serial we reserve per surplus tool group,
+        - **price-0 items**.
+
+        The 0x9E sell list ServUO sends is built purely from
+        ``IShopSellInfo.IsSellable`` (BaseVendor.cs ~L1154) and does NOT
+        filter on sell price, so it routinely contains items the vendor
+        values at 0gp. ServUO's OnVendorSell still *consumes* (deletes /
+        dumps to the vendor BuyPack) any item we send for it while adding
+        ``singlePrice * amount == 0`` gold (BaseVendor.cs ~L2196-2207).
+        Selling those would silently destroy the agent's items for nothing,
+        so we never put a 0-price item in the 0x9F sell request.
+        """
+        return sorted(
+            [si for si in sell_list
+             if si.graphic not in effective_keep
+             and si.serial not in protected_serials
+             and si.price > 0],
+            key=lambda si: si.price * si.amount,
+            reverse=True,
+        )
+
+    @staticmethod
     def _desired_vendor_types(ctx: AgentContext, keep: set[int]) -> set[str] | None:
         """Vendor types that buy our sellable items, or None for any vendor.
 
@@ -273,12 +304,10 @@ class SellToVendor(Procedure):
         # --- Sort by value (highest first) and build sell list ---
         from anima.client.packets import build_sell_items
 
-        sellable = sorted(
-            [si for si in sell_list
-             if si.graphic not in effective_keep
-             and si.serial not in protected_serials],
-            key=lambda si: si.price * si.amount,
-            reverse=True,
+        sellable = self._select_sellable(
+            sell_list,
+            effective_keep,
+            protected_serials,
         )
         items_to_sell = [(si.serial, si.amount) for si in sellable]
         items_kept = [
