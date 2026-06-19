@@ -87,6 +87,35 @@ def parse_login_confirm(data: bytes) -> LoginResult:
     return LoginResult(serial=serial, x=x, y=y, z=z, direction=direction, body=body)
 
 
+def parse_supported_features(data: bytes) -> int:
+    """Parse a SupportedFeatures (0xB9) packet body into the feature-flags int.
+
+    Wire layout depends on the negotiated client version. We advertise
+    7.0.102.3 (``build_seed`` / ``build_client_version``), which is
+    ``>= CV_60142``, so ClassicUO sets ``_packetsTable[0xB9] = 0x05``
+    (PacketsTable.cs) and ServUO emits the *extended* 5-byte frame
+    (``SupportedFeatures`` Packets.cs: ``base(0xB9, ExtendedSupportedFeatures
+    ? 5 : 3)`` then ``m_Stream.Write((uint)flags)``) — i.e. ``[0xB9][flags:u32]``.
+    Only a pre-6.0.14.2 client gets the legacy 3-byte ``[0xB9][flags:u16]`` frame.
+
+    The old inline handler read the flags with ``read_u32() if len(data) > 5
+    else read_u16()``. The framer (``PACKET_LENGTHS[0xB9] = 5``) delivers the
+    extended packet as *exactly* 5 bytes, so ``len(data) > 5`` was never true:
+    it always read a u16, silently dropping the high 16 bits of the 32-bit
+    ``FeatureFlags``. Those upper bits carry real capabilities (e.g.
+    ``SeventhCharacterSlot``/``LiveAccount`` and the high expansion bits ServUO
+    OR-es in), so the logged/observed feature set was wrong for every modern
+    session. Read a u32 whenever the frame actually carries the 4-byte field
+    (total length >= 5, i.e. >= 1 ID byte + 4 flag bytes); fall back to u16 only
+    for the legacy 3-byte frame.
+    """
+    reader = PacketReader(data[1:])  # skip packet ID
+    # data includes the 1-byte ID; the extended frame is ID(1) + flags(4) = 5.
+    if len(data) >= 5:
+        return reader.read_u32()
+    return reader.read_u16()
+
+
 class UoConnection:
     """Manages a single TCP connection to a UO server.
 
@@ -496,10 +525,9 @@ class UoConnection:
                 logger.debug("client_version_sent")
 
             elif packet_id == 0xB9:
-                # SupportedFeatures — log and continue
-                reader = PacketReader(data[1:])
-                flags = reader.read_u32() if len(data) > 5 else reader.read_u16()
-                logger.debug("supported_features", flags=f"0x{flags:04X}")
+                # SupportedFeatures — decode the full flags field and continue.
+                flags = parse_supported_features(data)
+                logger.debug("supported_features", flags=f"0x{flags:08X}")
 
             elif login_result is not None and packet_handler is not None:
                 # After LoginConfirm, dispatch world-state packets
