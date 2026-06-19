@@ -83,18 +83,27 @@ async def drag_drop(
     # from view (it moves into the mobile's Holding), so the world entry
     # either disappears or changes. A rejected lift (0x27 LiftRej) leaves it
     # exactly where it was.
+    #
+    # A PARTIAL lift from a stack (lift ``amount`` < the stack's count) is the
+    # subtle case: the source serial stays in its container at the same
+    # position, but its ``amount`` is decremented by what was lifted (ServUO
+    # echoes the reduced stack via 0x25/0x3C, which the perception layer
+    # mirrors into ``ItemInfo.amount``). Snapshotting position ALONE would
+    # read that successful split as "did not move" and wrongly report a
+    # rejection — stranding callers that move part of a reagent/ingot/gold
+    # stack. Include ``amount`` so a shrunk stack counts as a real lift.
     world = ctx.perception.world
     pre_state = None
     if item_serial in world.items:
         before = world.items[item_serial]
-        pre_state = (before.container, before.x, before.y, before.z)
+        pre_state = (before.container, before.x, before.y, before.z, before.amount)
 
     await ctx.conn.send_packet(build_pick_up(item_serial, amount))
     await asyncio.sleep(0.3)
 
     if pre_state is not None and item_serial in world.items:
         after = world.items[item_serial]
-        if (after.container, after.x, after.y, after.z) == pre_state:
+        if (after.container, after.x, after.y, after.z, after.amount) == pre_state:
             logger.debug(
                 "drag_drop_lift_rejected",
                 item=f"0x{item_serial:08X}",
