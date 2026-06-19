@@ -199,6 +199,22 @@ def _find_target(ctx: BrainContext):
     for m in nearby:
         if m.notoriety not in ATTACKABLE_NOTORIETY:
             continue
+        # Skip invulnerable / blessed mobiles (yellow health bar). ServUO marks
+        # Healers, town NPCs and other protected mobiles with the YELLOW_BAR
+        # flag (MobileInfo.is_yellow_health, synced from the 0x78/0x77/0x17
+        # status packets) — they take zero damage however long we swing. This
+        # mirrors the procedures path (combat_loop._find_target): without the
+        # guard such a mob is a valid candidate, gets selected, and the engage
+        # loop locks onto it (it never dies, never leaves view) — MeleeAttack
+        # then burns the full COMBAT_TIMEOUT and returns success=False with a
+        # -5 reward, polluting the Q-learning signal. Acutely relevant since the
+        # survival-arena Healer NPC was co-located at the resurrection / fight
+        # anchor (kernel commits K1+/K1/K3): the agent would farm swings on the
+        # immortal healer instead of the Ettins/HeadlessOnes beside it. `is True`
+        # (not truthy) so SimpleNamespace test mobs lacking the field aren't
+        # mis-excluded.
+        if getattr(m, "is_yellow_health", False) is True:
+            continue
         # Don't attack human bodies unless clearly hostile
         if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
             continue
