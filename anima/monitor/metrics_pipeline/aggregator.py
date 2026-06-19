@@ -343,15 +343,30 @@ def _aggregate_skill_deltas(events: list[dict]) -> dict[str, dict]:
         sid = e.get("skill_id")
         if sid is None:
             continue
-        slot = per_skill.setdefault(sid, {"from": e.get("from"), "to": e.get("to")})
-        # Keep the earliest "from" and the latest "to"
-        if e.get("ts", 0) < slot.get("_earliest_ts", float("inf")):
+        ts = e.get("ts", 0)
+        slot = per_skill.get(sid)
+        if slot is None:
+            per_skill[sid] = {
+                "from": e.get("from"), "to": e.get("to"),
+                "_earliest_ts": ts, "_latest_ts": ts,
+            }
+            continue
+        # Keep the earliest "from" and the latest "to" *by timestamp*.
+        # Raw events are read in file/append order, but several concurrent
+        # producers (state-diff poll, bus callbacks, action-log poll) write
+        # the same stream, so list order is not guaranteed monotonic in ts.
+        # Picking from/to by ts (not by position) keeps the per-skill delta
+        # (to - from) faithful to the actual before->after of the window.
+        if ts < slot["_earliest_ts"]:
             slot["from"] = e.get("from")
-        slot["to"] = e.get("to")
-        slot["_earliest_ts"] = e.get("ts", 0)
+            slot["_earliest_ts"] = ts
+        if ts >= slot["_latest_ts"]:
+            slot["to"] = e.get("to")
+            slot["_latest_ts"] = ts
     # Strip internal bookkeeping
     for slot in per_skill.values():
         slot.pop("_earliest_ts", None)
+        slot.pop("_latest_ts", None)
     return {str(sid): slot for sid, slot in per_skill.items()}
 
 

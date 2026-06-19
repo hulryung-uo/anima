@@ -8,6 +8,7 @@ import aiosqlite
 import pytest
 
 from anima.monitor.metrics_pipeline.aggregator import MetricsAggregator
+from anima.monitor.metrics_pipeline.aggregator import _aggregate_skill_deltas
 
 
 @pytest.fixture
@@ -345,3 +346,71 @@ class TestTickLoop:
         # Should backfill at most 3 hours plus the current boundary hour
         n = await agg.run_once(now=now)
         assert n >= 1
+
+
+class TestSkillDeltaAggregation:
+    """_aggregate_skill_deltas must pick the earliest 'from' and latest 'to'
+    by timestamp, not by position in the (possibly out-of-order) event list."""
+
+    def _ev(self, sid: int, ts: float, frm: float, to: float) -> dict:
+        return {"type": "skill_delta", "skill_id": sid, "ts": ts,
+                "from": frm, "to": to}
+
+    def test_in_order_events_give_full_span(self):
+        out = _aggregate_skill_deltas([
+            self._ev(45, 100.0, 50.0, 50.2),
+            self._ev(45, 200.0, 50.2, 50.5),
+            self._ev(45, 300.0, 50.5, 50.9),
+        ])
+        assert out["45"] == {"from": 50.0, "to": 50.9}
+
+    def test_out_of_order_events_still_pick_latest_to(self):
+        # The skill genuinely went 50.0 -> 50.9, but the +0.4 step (latest by
+        # ts) is appended to the stream *before* an earlier step. The old code
+        # set 'to' in list order and would report to=50.5, undercounting the
+        # gain by 0.4. Guarding 'to' by timestamp fixes it.
+        out = _aggregate_skill_deltas([
+            self._ev(45, 100.0, 50.0, 50.2),
+            self._ev(45, 300.0, 50.5, 50.9),   # latest by ts, earlier in list
+            self._ev(45, 200.0, 50.2, 50.5),   # earlier by ts, later in list
+        ])
+        assert out["45"] == {"from": 50.0, "to": 50.9}
+        # And the resulting delta is the true before->after span.
+        assert out["45"]["to"] - out["45"]["from"] == pytest.approx(0.9)
+
+    def test_out_of_order_events_still_pick_earliest_from(self):
+        # The true earliest sample (ts=100) arrives last in the list. The old
+        # code overwrote _earliest_ts unconditionally, so a later-ts event
+        # processed first would block the real earliest 'from' from winning.
+        out = _aggregate_skill_deltas([
+            self._ev(7, 300.0, 60.5, 60.9),
+            self._ev(7, 200.0, 60.2, 60.5),
+            self._ev(7, 100.0, 60.0, 60.2),   # earliest by ts, last in list
+        ])
+        assert out["7"] == {"from": 60.0, "to": 60.9}
+
+    @pytest.mark.asyncio
+    async def test_hourly_skill_gain_uses_full_span(
+        self, events_file, hourly_file, tmp_path,
+    ):
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        # Mining (id 45) trains 50.0 -> 50.9, but events are written
+        # out of timestamp order in the raw stream.
+        _write_events(events_file, [
+            {"type": "skill_delta", "skill_id": 45, "ts": 100.0,
+             "from": 50.0, "to": 50.2},
+            {"type": "skill_delta", "skill_id": 45, "ts": 300.0,
+             "from": 50.5, "to": 50.9},
+            {"type": "skill_delta", "skill_id": 45, "ts": 200.0,
+             "from": 50.2, "to": 50.5},
+        ])
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=tmp_path / "d.jsonl",
+            db_path=db,
+        )
+        row = await agg.build_hourly(window_start=0.0, window_end=3600.0)
+        assert row["skills"]["45"]["from"] == pytest.approx(50.0)
+        assert row["skills"]["45"]["to"] == pytest.approx(50.9)
