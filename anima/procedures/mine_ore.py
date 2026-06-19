@@ -225,16 +225,33 @@ class MineOre(Procedure):
             ctx.bus.unsubscribe(sub)
             ctx.bus.unsubscribe(sub2)  # type: ignore[possibly-undefined]
 
-        # A worn-out tool can arrive on the journal even when no bus is wired
-        # (the bus is optional). Reconcile from the journal so the restock
-        # signal fires regardless of transport.
-        if not _mine_flags["tool_broke"]:
+        # EVERY terminal swing outcome can arrive on the journal even when no
+        # bus is wired (the bus is optional, and a cliloc can route to the
+        # journal without an avatar.speech_* publish). Reconcile all of them
+        # from the journal so the correct terminal branch fires regardless of
+        # transport — previously only ``tool_broke`` was recovered here, so a
+        # depleted/too-far/out-of-LOS swing with no bus had its flag left
+        # False and fell through to the generic "Mining failed (skill check)"
+        # branch with next_suggestion="mine_ore". That re-mined the exhausted
+        # vein forever and never tripped the bank cooldown via _trip_bank,
+        # because tripping is gated on _mine_flags["depleted"]. The substrings
+        # mirror the bus callback (_check_speech) exactly so the two transports
+        # stay in lockstep.
+        _journal_flag_snippets = (
+            ("tool_broke", ("worn out",)),
+            ("depleted", ("no metal here", "no ore here")),
+            ("los_fail", ("target cannot be seen",)),
+            ("too_far", ("too far away",)),
+        )
+        if not any(_mine_flags.values()):
             for entry in ctx.perception.social.journal:
                 if entry.timestamp < mine_start:
                     continue
-                if "worn out" in entry.text.lower():
-                    _mine_flags["tool_broke"] = True
-                    break
+                tl = entry.text.lower()
+                for flag, snippets in _journal_flag_snippets:
+                    if any(s in tl for s in snippets):
+                        _mine_flags[flag] = True
+            # tool_broke/depleted are mutually-resolved below in priority order.
 
         if _mine_flags["tool_broke"]:
             # The pickaxe is gone — this is NOT a depleted bank and NOT a
