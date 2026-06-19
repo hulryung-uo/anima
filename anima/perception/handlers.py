@@ -49,25 +49,35 @@ def register_handlers(
         flags = r.read_u8()
         notoriety = r.read_u8()
 
-        if serial == p.self_state.serial:
-            # Don't track self in world mobiles
+        is_self = serial == p.self_state.serial
+        if is_self:
+            # Don't track self in world mobiles, but DO keep reading: the
+            # worn-item list still follows our own 0x78. ServUO emits a self
+            # MobileIncoming on enter-world and whenever our appearance/gear
+            # changes (Mobile.SendEverything), and ClassicUO's UpdateObject
+            # parses that item loop for world.Player too — assigning each
+            # worn item's Container/Layer. Returning here dropped the whole
+            # equipment block, so self_state.equipment never filled from 0x78
+            # and the "hand already occupied / already equipped" guards in
+            # equip_weapon_from_pack / equip_item saw an empty loadout (or a
+            # stale one after a gear swap) — re-equipping when already armed
+            # or mis-judging a free hand mid-fight.
             walker.sync_position(x, y, z, direction & 0x07)
             p.self_state.body = body
             # ServUO pushes self 0x78 on flag changes (OnHiddenChanged) —
             # this is where the hidden bit (0x80) for our own char arrives.
             p.self_state.flags = MobileFlags(flags & 0xFF)
-            return
-
-        mob = p.world.get_or_create_mobile(serial)
-        mob.body = body
-        mob.x = x
-        mob.y = y
-        mob.z = z
-        mob.direction = Direction.from_byte(direction)
-        mob.hue = hue
-        mob.flags = MobileFlags(flags & 0xFF)
-        if 1 <= notoriety <= 7:
-            mob.notoriety = NotorietyFlag(notoriety)
+        else:
+            mob = p.world.get_or_create_mobile(serial)
+            mob.body = body
+            mob.x = x
+            mob.y = y
+            mob.z = z
+            mob.direction = Direction.from_byte(direction)
+            mob.hue = hue
+            mob.flags = MobileFlags(flags & 0xFF)
+            if 1 <= notoriety <= 7:
+                mob.notoriety = NotorietyFlag(notoriety)
 
         # Parse equipment items that follow. ServUO's NewMobileIncoming
         # (the default 0x78 format for modern/ClassicUO clients, protocol
@@ -98,7 +108,7 @@ def register_handlers(
             item.container = serial
 
             # If this is our character, register equipment
-            if serial == p.self_state.serial and layer > 0:
+            if is_self and layer > 0:
                 p.self_state.equipment[layer] = item_serial
 
         p.emit(GameEventType.MOBILE_APPEARED, {"serial": serial, "x": x, "y": y})
