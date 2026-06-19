@@ -300,7 +300,19 @@ class CraftBlacksmith(Procedure):
         trainable = [r for r in affordable if 0.25 <= r[4] <= 0.90]
         if trainable:
             name, grp, idx, cost, _ = min(trainable, key=lambda r: r[3])
+        elif max(r[4] for r in affordable) > 0.90:
+            # Skill has outgrown the training band: every affordable recipe is
+            # near-certain (success clamps to ~1.0). max(..., key=success) would
+            # tie on 1.0 and return the FIRST recipe in list order — the Dagger
+            # (3 ingots, near-worthless) — so a GM smith spammed trash and
+            # worth_term/networth_rate stayed ~0 (the CRAFTING worth plateau).
+            # Pick the most VALUABLE reliable item instead; ingot cost is a good
+            # proxy for sell value (heavier armor/weapons sell for more).
+            reliable = [r for r in affordable if r[4] > 0.90]
+            name, grp, idx, cost, _ = max(reliable, key=lambda r: r[3])
         else:
+            # All affordable recipes are below the training band: maximise the
+            # odds of actually making something (least ingots burned on fails).
             name, grp, idx, cost, _ = max(affordable, key=lambda r: r[4])
         return name, grp, idx, cost
 
