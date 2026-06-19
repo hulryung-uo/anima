@@ -368,11 +368,20 @@ class MemoryDB:
         self, agent_name: str, keyword: str = "", limit: int = 5
     ) -> list[Knowledge]:
         if keyword:
+            # The keyword is a literal substring to find, not a LIKE pattern.
+            # It flows in from discovery/navigation (station/resource names such
+            # as "spinning_wheel", "night_sight", region keys) where '_' and '%'
+            # appear routinely. Interpolated raw, '_' matches ANY single char and
+            # '%' matches anything, so the search silently broadens and
+            # _search_memory pulls coordinates from an *unrelated* fact — the
+            # agent navigates to the wrong place. Escape the LIKE metacharacters
+            # and match literally via ESCAPE.
+            pattern = "%" + keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
             rows = await self.db.execute_fetchall(
                 """SELECT * FROM knowledge
-                   WHERE agent_name = ? AND fact LIKE ?
+                   WHERE agent_name = ? AND fact LIKE ? ESCAPE '\\'
                    ORDER BY confidence DESC, last_confirmed DESC LIMIT ?""",
-                (agent_name, f"%{keyword}%", limit),
+                (agent_name, pattern, limit),
             )
         else:
             rows = await self.db.execute_fetchall(
