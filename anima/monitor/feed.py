@@ -55,6 +55,10 @@ class ActivityFeed:
         self._subscribers.remove(callback)
 
     def recent(self, count: int = 20) -> list[ActivityEvent]:
+        # `events[-count:]` collapses to `events[0:]` (the WHOLE buffer) when
+        # count == 0, and slices from the wrong end for negative counts.
+        if count <= 0:
+            return []
         events = list(self._events)
         return events[-count:]
 
