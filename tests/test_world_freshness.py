@@ -73,3 +73,49 @@ class TestStaleMobilePruning:
         pruned = set(ws.prune_stale_mobiles(now=1100.0, max_age=30.0))
         assert pruned == {0x01, 0x03}
         assert set(ws.mobiles) == {0x02}
+
+    def test_prune_cascades_worn_items(self):
+        # A stale mobile's worn equipment / backpack contents (container ==
+        # mobile serial, as set by 0x78 MobileIncoming) must be dropped when
+        # the mobile is pruned. Otherwise they orphan in world.items with a
+        # dangling container pointer and leak across a long eval, exactly the
+        # leak remove() guards against for an explicit 0x1D Delete.
+        ws = WorldState()
+        mob = ws.get_or_create_mobile(0xABCD)
+        mob.last_seen = 1000.0
+        # A worn weapon directly on the mobile, and a backpack holding an item
+        # nested one level deeper.
+        weapon = ws.get_or_create_item(0x100)
+        weapon.container = 0xABCD
+        backpack = ws.get_or_create_item(0x200)
+        backpack.container = 0xABCD
+        loot = ws.get_or_create_item(0x300)
+        loot.container = 0x200  # inside the backpack
+        # An unrelated ground item that must survive.
+        bystander = ws.get_or_create_item(0x400)
+        bystander.container = 0
+
+        pruned = ws.prune_stale_mobiles(now=1100.0, max_age=30.0)
+
+        assert pruned == [0xABCD]
+        assert 0xABCD not in ws.mobiles
+        # The entire worn/contained subtree is gone, including the nested loot.
+        assert 0x100 not in ws.items
+        assert 0x200 not in ws.items
+        assert 0x300 not in ws.items
+        # The unrelated ground item is untouched.
+        assert 0x400 in ws.items
+
+    def test_prune_keeps_fresh_mobiles_items(self):
+        # Pruning a stale mobile must NOT collaterally drop a fresh mobile's
+        # worn items.
+        ws = WorldState()
+        fresh = ws.get_or_create_mobile(0x01)
+        fresh.last_seen = 1090.0
+        worn = ws.get_or_create_item(0x10)
+        worn.container = 0x01
+        stale = ws.get_or_create_mobile(0x02)
+        stale.last_seen = 1000.0
+        ws.prune_stale_mobiles(now=1100.0, max_age=30.0)
+        assert 0x01 in ws.mobiles
+        assert 0x10 in ws.items

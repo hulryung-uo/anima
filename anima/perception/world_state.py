@@ -165,7 +165,15 @@ class WorldState:
             if m.last_seen > 0.0 and (now - m.last_seen) > max_age
         ]
         for serial in stale:
-            self.mobiles.pop(serial, None)
+            # Route through remove() rather than popping the mobile directly:
+            # a mobile's worn items and backpack contents live in world.items
+            # with `container == serial` (set by 0x78 MobileIncoming). Popping
+            # only self.mobiles strands those children with a dangling
+            # `container` pointer — the very leak remove() was written to
+            # prevent (polluting nearby_items / vendor-list correlation and
+            # growing unboundedly across a long eval). remove() cascade-deletes
+            # the whole subtree, matching ClassicUO World.RemoveMobile.
+            self.remove(serial)
         return stale
 
     def nearby_mobiles(self, x: int, y: int, distance: int = 18) -> list[MobileInfo]:
