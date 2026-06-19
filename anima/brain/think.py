@@ -16,7 +16,7 @@ from anima.data import item_name
 from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
 from anima.memory.retrieval import retrieve_context
 from anima.memory.rewards import get_reward
-from anima.perception.enums import MessageType
+from anima.perception.enums import MessageType, NotorietyFlag
 from anima.pathfinding import direction_to, find_path, path_is_traversable
 from anima.world_knowledge import find_location, format_locations_for_llm
 
@@ -60,6 +60,15 @@ Rules:
 - "say" should be "" most of the time. Only speak when it matters."""
 
 
+# Notoriety values that mark a mobile as a THREAT (gray/criminal/orange/red).
+# Rendering these as friendly "People nearby" gave the LLM a dangerously wrong
+# picture: a red murderer or an aggressive monster read identically to a town
+# baker, so the strategist never registered danger when deciding go/idle/speak.
+_HOSTILE_NOTORIETY = frozenset(
+    {NotorietyFlag.ATTACKABLE, NotorietyFlag.CRIMINAL, NotorietyFlag.ENEMY, NotorietyFlag.MURDERER}
+)
+
+
 def _build_surroundings(ctx: BrainContext) -> str:
     """Build a description of what Anima can see."""
     ss = ctx.perception.self_state
@@ -81,8 +90,19 @@ def _build_surroundings(ctx: BrainContext) -> str:
             lines.append("Nearby objects: " + ", ".join(s.strip("- ") for s in landmarks))
 
     nearby_mobs = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
-    if nearby_mobs:
-        names = [m.name or "someone" for m in nearby_mobs[:5]]
+    # Split living mobiles into threats vs. friendly presences. A corpse/ghost
+    # is neither, so it must not pad either list (it would make the agent think
+    # there are people to talk to, or threats to flee, when there is only a
+    # body). Hostiles get their own line so the LLM actually registers danger.
+    hostiles = [m for m in nearby_mobs if not m.is_dead and m.notoriety in _HOSTILE_NOTORIETY]
+    friendlies = [
+        m for m in nearby_mobs if not m.is_dead and m.notoriety not in _HOSTILE_NOTORIETY
+    ]
+    if hostiles:
+        names = [m.name or "something" for m in hostiles[:5]]
+        lines.append(f"Hostile nearby: {', '.join(names)}")
+    if friendlies:
+        names = [m.name or "someone" for m in friendlies[:5]]
         lines.append(f"People nearby: {', '.join(names)}")
 
     return "\n".join(lines) if lines else "Nothing notable nearby."
