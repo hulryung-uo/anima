@@ -310,6 +310,7 @@ class TestMetaControllerShadow:
         ss.hits = 80; ss.hits_max = 100; ss.weight = 50; ss.weight_max = 400
         ss.gold = 100; ss.x = 10; ss.y = 20; ss.serial = 0x1
         ss.equipment = {0x15: 0x101}
+        ctx.blackboard = {}  # real dict — _net_worth reads the bank_balance cache
         ctx.perception.world.items = {}
         ctx.perception.world.nearby_mobiles = MagicMock(return_value=[])
 
@@ -344,6 +345,7 @@ class TestMetaControllerShadow:
         ss.hits = 80; ss.hits_max = 100; ss.weight = 50; ss.weight_max = 400
         ss.gold = 100; ss.x = 10; ss.y = 20; ss.serial = 0x1
         ss.equipment = {0x15: 0x101}
+        ctx.blackboard = {}  # real dict — _net_worth reads the bank_balance cache
         ctx.perception.world.items = {}
         ctx.perception.world.nearby_mobiles = MagicMock(return_value=[])
 
@@ -367,6 +369,7 @@ class TestMetaControllerShadow:
         ss.hits = 100; ss.hits_max = 100; ss.weight = 0; ss.weight_max = 400
         ss.gold = 0; ss.x = 0; ss.y = 0; ss.serial = 0x1
         ss.equipment = {0x15: 0x101}
+        ctx.blackboard = {}  # real dict — _net_worth reads the bank_balance cache
         ctx.perception.world.items = {}
         ctx.perception.world.nearby_mobiles = MagicMock(return_value=[])
         await c.maybe_decide(ctx)
@@ -390,6 +393,7 @@ class TestMetaControllerShadow:
         ss.hits = 100; ss.hits_max = 100; ss.weight = 0; ss.weight_max = 400
         ss.gold = 0; ss.x = 0; ss.y = 0; ss.serial = 0x1
         ss.equipment = {0x15: 0x101}
+        ctx.blackboard = {}  # real dict — _net_worth reads the bank_balance cache
         ctx.perception.world.items = {}
         ctx.perception.world.nearby_mobiles = MagicMock(return_value=[])
 
