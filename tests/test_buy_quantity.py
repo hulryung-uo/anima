@@ -18,6 +18,7 @@ from anima.perception.self_state import VendorBuyItem
 from anima.procedures.buy_from_vendor import (
     TOOL_MIN_STOCK,
     _buy_quantity,
+    _spendable_per_source,
 )
 
 PICKAXE = 0x0E86
@@ -88,3 +89,54 @@ class TestBuyQuantity:
         ctx = _mock_ctx(PICKAXE, PICKAXE)  # have 2 of TOOL_MIN_STOCK(3)
         qty = _buy_quantity(ctx, _item(price=11, amount=20), budget=10_000)
         assert qty == TOOL_MIN_STOCK - 2  # == 1
+
+
+def _mock_funds_ctx(backpack_gold: int, bank_gold: int):
+    """Mock ctx with a given backpack gold and a fresh bank-balance cache."""
+    import time
+
+    ctx = MagicMock()
+    ctx.perception.self_state.gold = backpack_gold
+    ctx.blackboard = {"bank_balance": {"amount": bank_gold, "ts": time.time()}}
+    return ctx
+
+
+class TestSpendablePerSource:
+    """The quantity budget must be the better single pocket, never the sum.
+
+    REGRESSION: ServUO charges the full order from ONE source (backpack
+    first, else a single bank withdraw) and delivers nothing if neither
+    pocket alone covers it. Planning buy_qty against backpack+bank could
+    request an order only the *combined* funds afford, which the server
+    silently rejects — then the procedure trips a 10-minute buy-disable
+    cooldown and the tool-restock loop starves.
+    """
+
+    def test_uses_larger_single_pocket_not_sum(self):
+        # Split funds: neither pocket alone covers 3*11=33, but the sum
+        # (60+60=120) would have. The budget must be the larger pocket (60).
+        ctx = _mock_funds_ctx(backpack_gold=60, bank_gold=60)
+        assert _spendable_per_source(ctx) == 60
+
+    def test_plan_does_not_exceed_what_one_pocket_affords(self):
+        # backpack=60, bank=60, price=11. Combined budget (120) would plan
+        # 3 (cost 33) — but here the binding check is that we never plan an
+        # order a single pocket cannot pay. With a deeper bank, the bank
+        # alone funds the full restock.
+        ctx = _mock_funds_ctx(backpack_gold=5, bank_gold=200)
+        ctx.perception.self_state.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}  # empty backpack -> wants TOOL_MIN_STOCK
+        budget = _spendable_per_source(ctx)  # == 200 (bank covers it)
+        qty = _buy_quantity(ctx, _item(price=11, amount=20), budget=budget)
+        assert qty == TOOL_MIN_STOCK
+        assert qty * 11 <= budget  # the order fits one pocket
+
+    def test_neither_pocket_covers_full_restock_falls_to_what_one_affords(self):
+        # backpack=22, bank=22 (sum 44 >= 33) but each pocket only funds 2.
+        ctx = _mock_funds_ctx(backpack_gold=22, bank_gold=22)
+        ctx.perception.self_state.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}
+        budget = _spendable_per_source(ctx)  # == 22 -> 22 // 11 == 2
+        qty = _buy_quantity(ctx, _item(price=11, amount=20), budget=budget)
+        assert qty == 2
+        assert qty * 11 <= 22  # affordable from a single pocket

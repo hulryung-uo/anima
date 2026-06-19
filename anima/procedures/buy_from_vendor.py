@@ -92,6 +92,22 @@ def _available_funds(ctx: "AgentContext") -> int:
     return ctx.perception.self_state.gold + _fresh_bank_amount(ctx)
 
 
+def _spendable_per_source(ctx: "AgentContext") -> int:
+    """Largest amount the server can charge in ONE transaction.
+
+    ServUO's BaseVendor.OnBuyItems pays the *full* requested cost from a
+    single source — the backpack if it can cover the whole order, else a
+    single bank withdraw — and delivers nothing (no partial purchase) if
+    neither pocket alone covers it. So the quantity we plan must be bounded
+    by the *better single pocket*, never the backpack+bank sum: a buy_qty
+    afforded only by combining both pockets is silently rejected, which
+    then trips the 10-minute buy-disable cooldown and starves the tool
+    restock loop. Affordability *selection* may still use combined funds
+    (one cheapest unit is always coverable by whichever pocket pays).
+    """
+    return max(ctx.perception.self_state.gold, _fresh_bank_amount(ctx))
+
+
 def _has_purchase_funds(ctx: "AgentContext") -> bool:
     """True if combined backpack + fresh bank balance >= _MIN_PURCHASE_FUNDS.
 
@@ -304,9 +320,10 @@ class BuyFromVendor(Procedure):
 
         target_name = target_item.name or f"0x{target_item.graphic:04X}"
 
-        # Buy enough to reach TOOL_MIN_STOCK, capped by combined funds
-        # AND by the vendor's available stock for this item.
-        buy_qty = _buy_quantity(ctx, target_item, budget)
+        # Buy enough to reach TOOL_MIN_STOCK, capped by the BEST SINGLE
+        # gold source (backpack OR bank — the server never combines them
+        # for one order) AND by the vendor's available stock for this item.
+        buy_qty = _buy_quantity(ctx, target_item, _spendable_per_source(ctx))
         total_cost = target_item.price * buy_qty
 
         logger.info(
