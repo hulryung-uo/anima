@@ -240,9 +240,24 @@ async def llm_think(ctx: BrainContext) -> Status:
 
         # Restore move_target if lost (pathfinding failure cleared it)
         if move_target is None:
-            loc = find_location(goal["place"])
-            if loc:
-                move_target = (loc.nav_x, loc.nav_y)
+            # The goal carries its own authoritative destination (goal["x"],
+            # goal["y"]) — stamped from loc.nav_x/nav_y when the goal was set
+            # (here and in core/goals.py). Re-resolving by NAME via
+            # find_location() instead silently abandons any goal whose place
+            # name doesn't round-trip through the static ALL_LOCATIONS table
+            # (a discovered/dynamic destination, a planner-set goal, or a name
+            # normalization mismatch): find_location() returns None, move_target
+            # stays None, and the goal is finished as a "failure" below despite
+            # carrying perfectly walkable coordinates. Prefer the stored coords;
+            # fall back to the name lookup only when they're absent.
+            gx, gy = goal.get("x"), goal.get("y")
+            if gx is not None and gy is not None:
+                move_target = (gx, gy)
+            else:
+                loc = find_location(goal["place"])
+                if loc:
+                    move_target = (loc.nav_x, loc.nav_y)
+            if move_target is not None:
                 ctx.blackboard["move_target"] = move_target
                 _clear_path_cache(ctx)
 
