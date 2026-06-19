@@ -1553,6 +1553,19 @@ def register_handlers(
         """0x3B CloseVendorInterface — vendor buy window closed."""
         r = PacketReader(data[3:])  # skip packet id + length
         serial = r.read_u32()
+        # Invalidate the cached buy/sell lists once the vendor window closes.
+        # The buy/sell procedures poll a *non-empty* vendor_buy_list /
+        # vendor_sell_list as the "this vendor's list is ready" signal. If we
+        # leave the previous vendor's list populated after it closes, opening a
+        # second vendor races: the poll sees the stale list before the new 0x74
+        # / 0x9E arrives and trades against the wrong (already-closed) vendor
+        # via the stale vendor_serial. Only clear when the close is for the
+        # vendor we are currently tracking, so a late 0x3B for an old vendor
+        # cannot wipe a freshly-opened one's list.
+        if serial == p.self_state.vendor_serial:
+            p.self_state.vendor_serial = 0
+            p.self_state.vendor_buy_list = []
+            p.self_state.vendor_sell_list = []
         logger.debug("vendor_closed", serial=f"0x{serial:08X}")
 
     handler.register(0x3B, handle_close_vendor)
