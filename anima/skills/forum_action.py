@@ -172,8 +172,17 @@ BODY:
 
     title, body = _parse_forum_post(result.text, agent_name)
     post_id = await forum.create_post(title, body, "adventures")
-    ctx.blackboard["forum_last_post"] = now
+    # Only arm the (default 1h) post_interval cooldown once the post actually
+    # landed. TavernForumClient.create_post returns an empty id on a degraded
+    # transport (non-201 / network error); arming the cooldown there would
+    # silently suppress the periodic essay for a full post_interval after a
+    # single dropped request. Mirror the fix already in forum_skill.ForumPost
+    # (commit a1c57e1) on this — the actually-wired (main.py) — path.
+    if not post_id:
+        logger.warning("forum_post_failed", title=title)
+        return Status.FAILURE
 
+    ctx.blackboard["forum_last_post"] = now
     logger.info("forum_posted", post_id=post_id, title=title)
 
     # Also send experience summary (non-LLM, structured data)
