@@ -288,6 +288,14 @@ async def llm_think(ctx: BrainContext) -> Status:
                 # Actually arrived — clear goal, allow next think
                 _finish_goal(ctx, goal, "success")
                 ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + 2.0
+                # MUST return here. Without it, control falls out of the
+                # ``if move_target is not None`` block straight into the
+                # ``_finish_goal(ctx, goal, "failure")`` at the tail of the
+                # ``if goal:`` block below — re-finishing the very goal we just
+                # completed as a FAILURE. That mislabels every successful
+                # arrival as a failure in the goal telemetry/log and pointlessly
+                # re-runs the cleanup. Arrival is a success; stop here.
+                return Status.SUCCESS
 
             elif ctx.walker.can_walk():
                 # Try opening closed doors on denied tiles
