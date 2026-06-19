@@ -260,6 +260,31 @@ def _setup_for(rc: RunConfig, parent: Genome | None,
     return PROFESSION_SETUP.get(profession, (rc.persona, rc.fixed_start))
 
 
+def _explore_target(arc: Archive, suggested: tuple | None) -> tuple | None:
+    """The suggested cell, but ONLY when it is genuinely empty (an EXPLORE aim).
+
+    ``select.suggest_target_cell`` returns an EMPTY cell while the grid has
+    frontier, but once the grid is FULL it deliberately returns a *filled*
+    headroom cell so ``choose_parent_for_target`` can still row-match a parent
+    (see its docstring). The orchestrator must keep using that full ``suggested``
+    cell for parent pairing and profession setup — but it must NOT forward a
+    filled cell to the mutator as a ``target_cell``: ``mutate_with_claude`` keys
+    EXPLORE vs IMPROVE purely off ``target_cell is not None`` and its EXPLORE
+    prompt literally says "land in the empty cell `X`". Handing it an OCCUPIED
+    cell tells the LLM to colonise ground that is already filled (and reframes a
+    pure in-cell IMPROVE as an exploration), and ``_genome_from``/``observe``
+    then records that filled cell as the cycle's ``target_cell`` — so any landing
+    in a *different* cell is mislabelled a dead-end ("aimed X but landed Y") even
+    though the cycle was never an exploration. Return the cell only when it is in
+    the empty set; otherwise None (→ IMPROVE framing against the parent's cell).
+    """
+    if suggested is None:
+        return None
+    return suggested if tuple(suggested) in {
+        tuple(c) for c in select.empty_cells(arc)
+    } else None
+
+
 def _eval_cfg(rc: RunConfig, user: str, slot: int, repo_root: Path | None,
               persona: str | None = None, fixed_start: str | None = None) -> EvalConfig:
     # Each slot owns a contiguous block of `span` lanes/ports so that parallel
@@ -386,13 +411,20 @@ def run(rc: RunConfig) -> Archive:
             with arc_lock:
                 target = select.suggest_target_cell(arc, seed=i)
                 parent = select.choose_parent_for_target(arc, target, seed=i)
+                # EXPLORE only when the suggested cell is genuinely empty; a
+                # full-grid headroom cell is filled and must drive IMPROVE.
+                explore_target = _explore_target(arc, target)
                 parent_obs = (_parent_observation(arc, parent)
                               + "\n" + observe.history(arc))
             out.parent_id = parent.id if parent else None
-            out.target_cell = target
+            out.target_cell = explore_target
+            # Parent pairing / profession setup still key off the (possibly
+            # filled) suggested cell — only the mutator's EXPLORE/IMPROVE framing
+            # and the recorded target use the empty-only `explore_target`.
             out.persona, out.fixed_start = _setup_for(rc, parent, target)
             parent_ref = (parent.code_ref if parent and parent.code_ref else "HEAD")
-            print(f"[cycle {i}] slot={slot} parent={out.parent_id} target_cell={target} "
+            print(f"[cycle {i}] slot={slot} parent={out.parent_id} "
+                  f"target_cell={explore_target} (suggested={target}) "
                   f"eval_as={out.persona}/{out.fixed_start}")
 
             wt = _prepare_worktree(slot, parent_ref)
@@ -400,7 +432,7 @@ def run(rc: RunConfig) -> Archive:
             # --- mutate ----------------------------------------------------
             if rc.backend == "claude":
                 mr = mutate.mutate_with_claude(
-                    wt, parent_obs, parent, target,
+                    wt, parent_obs, parent, explore_target,
                     timeout=rc.mutate_timeout, model=rc.mutate_model,
                     log_path=ANIMA_ROOT / "data" / "eval_logs" / f"mutate-{rc.run_id}-c{i}.log",
                     eval_setup=f"persona={out.persona}, fixed_start={out.fixed_start}",
