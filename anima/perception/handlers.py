@@ -975,6 +975,17 @@ def register_handlers(
         serial = r.read_u32()
         amount = r.read_u16()
 
+        # A zero-amount 0x0B is a fully parried / absorbed / blocked swing:
+        # the server still emits the packet, but no hit landed. ClassicUO's
+        # Damage handler (PacketHandlers.cs) only registers damage when
+        # `damage > 0`. Treating amount==0 as a hit reset
+        # last_damage_taken_at on every parry — which keeps a *defensive*
+        # melee agent (MeleeAttack.can_execute gates on that timestamp)
+        # locked in combat off a swing that never hurt it — and leaked
+        # phantom DAMAGE_TAKEN/DAMAGE_DEALT(amount=0) events downstream.
+        if amount == 0:
+            return
+
         if serial == p.self_state.serial:
             p.self_state.last_damage_taken_at = time.monotonic()
             p.emit(

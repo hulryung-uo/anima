@@ -1152,3 +1152,65 @@ def test_mobile_incoming_equipment_always_has_hue():
     # No spurious items beyond the three we sent (no desync garbage).
     equip_items = [it for it in p.world.items.values() if it.container == mob_serial]
     assert len(equip_items) == len(equipment)
+
+
+# ---------------------------------------------------------------------------
+# Damage (0x0B) — combat-result decode + zero-damage (parry) gating
+# ---------------------------------------------------------------------------
+
+
+def _damage_packet(serial: int, amount: int) -> bytes:
+    buf = PacketWriter()
+    buf.write_u8(0x0B)
+    buf.write_u32(serial)
+    buf.write_u16(amount)
+    return buf.to_bytes()
+
+
+def test_damage_taken_decodes_amount_and_stamps_window():
+    h, p, w = _make_stack()
+
+    h.dispatch(0x0B, _damage_packet(0x00000001, 17))  # self serial
+
+    assert p.self_state.last_damage_taken_at > 0.0
+    events = p.poll_events()
+    taken = [e for e in events if e.type == GameEventType.DAMAGE_TAKEN]
+    assert len(taken) == 1
+    assert taken[0].data["amount"] == 17
+
+
+def test_damage_dealt_decodes_serial_and_amount():
+    h, p, w = _make_stack()
+
+    h.dispatch(0x0B, _damage_packet(0x00000099, 23))  # other serial
+
+    events = p.poll_events()
+    dealt = [e for e in events if e.type == GameEventType.DAMAGE_DEALT]
+    assert len(dealt) == 1
+    assert dealt[0].data == {"serial": 0x00000099, "amount": 23}
+
+
+def test_zero_damage_self_does_not_reset_combat_window():
+    """A fully-parried (amount=0) swing must not look like a real hit.
+
+    MeleeAttack defensive mode re-engages based on last_damage_taken_at, so
+    a 0-damage 0x0B must leave that timestamp (and the event stream) alone,
+    matching ClassicUO's Damage handler which only acts when damage > 0.
+    """
+    h, p, w = _make_stack()
+    p.self_state.last_damage_taken_at = 0.0
+
+    h.dispatch(0x0B, _damage_packet(0x00000001, 0))  # self serial, parried
+
+    assert p.self_state.last_damage_taken_at == 0.0
+    events = p.poll_events()
+    assert not any(e.type == GameEventType.DAMAGE_TAKEN for e in events)
+
+
+def test_zero_damage_other_emits_no_event():
+    h, p, w = _make_stack()
+
+    h.dispatch(0x0B, _damage_packet(0x00000099, 0))  # other serial, absorbed
+
+    events = p.poll_events()
+    assert not any(e.type == GameEventType.DAMAGE_DEALT for e in events)
