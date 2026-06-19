@@ -41,7 +41,15 @@ GREATER_HEAL_REAGENT_GRAPHICS = frozenset(REAGENT_GRAPHICS.values())
 
 CASTS_PER_RUN = 10
 CAST_INTERVAL_S = 0.5  # cast_spell already awaits cursor + journal; 0.5s is just server recovery margin
-MEDITATE_BELOW_MANA = GREATER_HEAL_MANA + 1
+# Cast as soon as mana actually covers the spell cost. The old gate was
+# GREATER_HEAL_MANA + 1, which stranded the *exact-cost* mana state: a low-Int
+# starter (e.g. mana_max=18) meditates to target_pct=60% → ~10-11 mana, which
+# is enough to cast Greater Heal (cost 11) but sits one short of the inflated
+# +1 floor (12). The loop then re-meditates, never clears 12, trips the stall
+# guard after MAX_STALLED_MEDITATIONS, and resolves ZERO casts for the whole
+# run — the worst possible outcome for the MAGIC loop. Gate on the real spell
+# cost so any pool that can regen to the cast price keeps casting.
+MEDITATE_BELOW_MANA = GREATER_HEAL_MANA
 
 
 class PracticeMagery(Procedure):
@@ -98,11 +106,12 @@ class PracticeMagery(Procedure):
         # for-loop (~153); restored here. Guarded by tests/test_practice_magery.py.
         casts_done = 0
         # Deadlock guard: a small mana pool can sit permanently below the cast
-        # threshold (e.g. mana_max=18 → 60% target = 10.8 < MEDITATE_BELOW_MANA
-        # = 12), so meditation never lifts mana enough to cast. Without a bound
-        # the loop would meditate until the 180s procedure timeout and resolve
-        # ZERO casts. Stop after a couple of fruitless meditations so the run
-        # still returns whatever it managed (and surfaces the stall).
+        # threshold (e.g. mana_max=15 → 60% target = 9 < MEDITATE_BELOW_MANA
+        # = GREATER_HEAL_MANA = 11), so meditation never lifts mana enough to
+        # cast. Without a bound the loop would meditate until the 180s
+        # procedure timeout and resolve ZERO casts. Stop after a couple of
+        # fruitless meditations so the run still returns whatever it managed
+        # (and surfaces the stall).
         stalled_meditations = 0
         MAX_STALLED_MEDITATIONS = 2
         while casts_done < CASTS_PER_RUN:
