@@ -42,6 +42,47 @@ def _smells(res: EvalResult) -> list[str]:
     return out
 
 
+def _is_dead_end(g) -> bool:
+    """A mutation the mutator should NOT re-walk: it produced no trade progress
+    (zero skill gain), was barely alive/active (low viability gate), or aimed at
+    one cell and landed in another. These are exactly the lessons history()
+    exists to surface (e.g. three meditation mutations that all earned zero
+    skill gain).
+    """
+    bd = g.eval.get("breakdown", {})
+    if bd.get("skill_gain_rate", 1) == 0:
+        return True
+    if bd.get("viability_gate", 1) < 0.5:
+        return True
+    target = g.config.get("target_cell")
+    if target and list(target) != list(g.cell):
+        return True
+    return False
+
+
+def _reflect_window(gs: list, limit: int) -> list:
+    """The most instructive ``limit`` genomes to feed the mutator's REFLECT log.
+
+    Pure global recency (``gs[-limit:]``) silently evicts the dead-end attempts
+    the log is FOR: across a long run, newer unrelated cycles push the
+    zero-gain / aimed-but-missed failures out of the window, so the mutator
+    re-attempts the same dead end it has no memory of. Keep every dead end that
+    still fits, then backfill with the most recent genomes — preserving
+    chronological (disk/id) order so the narrative still reads oldest->newest.
+    """
+    if len(gs) <= limit:
+        return gs
+    dead_ends = [g for g in gs if _is_dead_end(g)]
+    # Newest dead ends first if they overflow the budget; then backfill with the
+    # most recent remaining genomes. Finally restore chronological order.
+    keep = set(id(g) for g in dead_ends[-limit:])
+    for g in reversed(gs):
+        if len(keep) >= limit:
+            break
+        keep.add(id(g))
+    return [g for g in gs if id(g) in keep]
+
+
 def history(archive: Archive, limit: int = 12) -> str:
     """REFLECT-lite (FOUNDRY.md §6 step 7): what was tried and what happened.
 
@@ -57,7 +98,7 @@ def history(archive: Archive, limit: int = 12) -> str:
         lines.append(f"- {e.cell} {e.fitness:.2f} ({e.id}): “{e.hypothesis}”")
     lines.append("")
     lines.append("## Prior mutations and what actually happened (learn from these)")
-    for g in gs[-limit:]:
+    for g in _reflect_window(gs, limit):
         bd = g.eval.get("breakdown", {})
         notes: list[str] = []
         if bd.get("skill_gain_rate", 1) == 0:
