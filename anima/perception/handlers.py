@@ -29,6 +29,33 @@ _AFFIX_PREPEND = 0x01
 _AFFIX_SYSTEM = 0x02
 
 
+def _decode_cliloc_args(raw: bytes, *, big_endian: bool) -> str:
+    """Decode the UTF-16 argument blob trailing a 0xC1 / 0xCC cliloc packet.
+
+    Mirrors ClassicUO's DisplayClilocString (PacketHandlers.cs:4768-4779):
+    it reads ``remains / 2`` UTF-16 code units via ReadUnicode{LE,BE}, which
+    (a) floors an odd trailing byte instead of choking on it, and (b) stops at
+    the first NUL because ReadUnicode is a C-string read.
+
+    The previous inline ``raw.decode("utf-16-le").rstrip("\\x00")`` diverged on
+    both counts: a buffer with an odd length (the codec frames the variable
+    packet by its declared length, which routinely leaves a 1-byte pad after
+    the NUL terminator) raised UnicodeDecodeError — caught and turned into an
+    EMPTY arg string, so the cliloc rendered with blank ~N~ placeholders (e.g.
+    a combat / loot / skill / vendor message arrived as bare ``[cliloc N]`` or
+    ``": "``). And rstrip only trims TRAILING NULs, so any padding AFTER an
+    embedded NUL terminator leaked into the args. Floor to whole code units,
+    decode with errors="replace" (never raises), then cut at the first NUL.
+    """
+    if len(raw) & 1:
+        raw = raw[:-1]  # ClassicUO's `remains / 2` floors the odd tail byte
+    enc = "utf-16-be" if big_endian else "utf-16-le"
+    text = raw.decode(enc, errors="replace")
+    # ReadUnicode{LE,BE} terminates at the first NUL — match that, don't merely
+    # strip trailing NULs (which would keep post-terminator padding/garbage).
+    return text.split("\x00", 1)[0]
+
+
 def _resolve_cliloc_text(cliloc_num: int, args: str) -> str:
     """Resolve a cliloc id + tab-separated args into display text.
 
@@ -947,11 +974,7 @@ def register_handlers(
         name = name_bytes.split(b"\x00", 1)[0].decode("ascii", errors="replace")
 
         # Args are UTF-16 LE, null-terminated
-        args_raw = data[3 + r.position:]
-        try:
-            args = args_raw.decode("utf-16-le").rstrip("\x00")
-        except (UnicodeDecodeError, ValueError):
-            args = ""
+        args = _decode_cliloc_args(data[3 + r.position:], big_endian=False)
 
         text = _resolve_cliloc_text(cliloc_num, args)
 
@@ -1000,11 +1023,7 @@ def register_handlers(
         r.skip((nul - affix_start) + 1)  # consume affix + its NUL terminator
 
         # Args are UTF-16 BE on 0xCC (ClassicUO ReadUnicodeBE).
-        args_raw = data[3 + r.position:]
-        try:
-            args = args_raw.decode("utf-16-be").rstrip("\x00")
-        except (UnicodeDecodeError, ValueError):
-            args = ""
+        args = _decode_cliloc_args(data[3 + r.position:], big_endian=True)
 
         text = _resolve_cliloc_text(cliloc_num, args)
 
