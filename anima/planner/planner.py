@@ -1021,6 +1021,18 @@ class Planner:
                 _intent(f"직업 활동 ({profession}) → 전리품 판매 (sell_to_vendor)")
                 return sell
         for proc_name in PROFESSION_LOOPS.get(profession, ()):
+            # bandage_self leads the adventurer loop as a SURVIVAL fallback, but
+            # its can_start admits any wound below 95% HP (and first-startable
+            # wins). With a hostile in range that pulls a barely-scratched
+            # warrior OUT of combat to apply a low-value bandage every loop —
+            # forfeiting swings, the COMBAT-uptime leak behind the engaged-vs-
+            # idle seed variance. The real survival heals already ran above
+            # (Priority-1 heal-in-place < 40%, Priority-1c poison cure), and an
+            # active fight heals itself: hunt_nearby interleaves _maybe_bandage
+            # at 85%. So when a target is in range and we're above the retreat
+            # floor, skip standalone bandage_self and let hunt_nearby lead.
+            if proc_name == "bandage_self" and _bandage_should_yield_to_combat(ctx, ss):
+                continue
             proc = _get_proc(proc_name)
             if proc and await proc.can_start(ctx):
                 _intent(f"직업 활동 ({profession}) → {proc_name}")
@@ -4749,6 +4761,33 @@ _HUMAN_BODIES = {0x0190, 0x0191}
 # wounded. Pinned to _FLEE_HP_PCT so both survival branches share one floor.
 _HEAL_IN_PLACE_HP_PCT = _FLEE_HP_PCT  # 0.40
 _HOSTILE_NOTORIETY = None  # set lazily (avoid import at module load)
+
+
+def _bandage_should_yield_to_combat(ctx, ss) -> bool:
+    """True when a standalone bandage_self should defer to hunting.
+
+    ``bandage_self.can_start`` returns True for any wound below 95% HP, and the
+    profession loop is first-startable-wins — so for the adventurer (whose loop
+    leads with ``bandage_self``) a single scratch makes the warrior stop and
+    bandage instead of swinging, even at 94% HP with a mob adjacent. That is the
+    documented COMBAT-uptime leak (engaged-vs-idle seed variance).
+
+    Yield (return True, skip the standalone bandage) only when BOTH hold:
+      * a combat target is within ENGAGE_RANGE — there is a fight to keep; and
+      * HP is above combat's retreat floor (RETREAT_HP_PCT) — we are not in real
+        danger, so the fight's own interleaved heal (``_maybe_bandage`` at 85%)
+        will bandage us mid-swing without forfeiting the attack.
+
+    When no target is in range we DON'T yield, so the agent still heals up
+    between fights; when critically wounded the Priority-1 heal-in-place gate
+    (< 40%) has already fired above, so reaching here that low is the safety
+    case and we also DON'T yield.
+    """
+    from anima.procedures.combat_loop import RETREAT_HP_PCT, _find_target
+
+    if ss.hits_max > 0 and ss.hp_percent <= RETREAT_HP_PCT:
+        return False
+    return _find_target(ctx) is not None
 
 
 def _attackable_set():
