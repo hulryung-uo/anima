@@ -110,21 +110,34 @@ def analyze_deaths(summary: TrajectorySummary,
     return events
 
 
-def _longest_alive_stretch(summary: TrajectorySummary) -> float:
-    """Longest continuous interval the agent stayed alive (hits>0)."""
+def _longest_alive_stretch(summary: TrajectorySummary,
+                           min_death_s: float = MIN_DEATH_S,
+                           grace_s: float = RECOVERY_GRACE_S) -> float:
+    """Longest continuous interval the agent stayed alive (hits>0).
+
+    Derived from the SAME true death intervals that ``analyze_deaths`` returns,
+    so the two analyzers can't disagree on what counts as a death. A transient
+    hp=0 blip shorter than ``min_death_s`` is NOT a ghost death (see MIN_DEATH_S)
+    and must not chop the alive stretch in two — otherwise a 1-second 0→1 blip at
+    a soak's window end halves ``longest_alive_stretch_s`` even though
+    ``analyze_deaths`` (correctly) reports zero deaths.
+    """
     if not summary.hp_samples:
         return summary.duration_s  # no vitals seen → assume alive throughout
+    # True deaths only (transient blips already filtered). Each death carves the
+    # timeline into alive stretches: [start, d0.died], [d0.revived, d1.died], ...
+    deaths = analyze_deaths(summary, grace_s=grace_s, min_death_s=min_death_s)
+    if not deaths:
+        return max(0.0, summary.end_ts - summary.start_ts)
     longest = 0.0
-    alive = True
     stretch_start = summary.start_ts
-    for ts, hits, _ in summary.hp_samples:
-        if hits <= 0 and alive:          # died → close the current alive stretch
-            longest = max(longest, ts - stretch_start)
-            alive = False
-        elif hits > 0 and not alive:     # revived → a new alive stretch begins
-            stretch_start = ts
-            alive = True
-    if alive:
+    for d in deaths:
+        longest = max(longest, d.died_ts - stretch_start)
+        if d.revived_ts is None:        # never revived → no alive stretch follows
+            stretch_start = None
+            break
+        stretch_start = d.revived_ts    # a new alive stretch begins at revival
+    if stretch_start is not None:       # final stretch runs to window end
         longest = max(longest, summary.end_ts - stretch_start)
     return max(0.0, longest)
 
