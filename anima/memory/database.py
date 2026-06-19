@@ -583,11 +583,17 @@ class MemoryDB:
         """Get all activity values for a region.
 
         Returns [(activity, total_reward, visit_count), ...].
+
+        Ordered by average reward per visit (descending), matching the
+        per-visit semantics used by ``get_best_locations`` and the memory
+        retrieval block. Ordering by raw ``total_reward`` would let a
+        frequently-visited but mediocre activity outrank a rarely-visited
+        high-value one and crowd it out of the retrieval top-5.
         """
         rows = await self.db.execute_fetchall(
             """SELECT activity, total_reward, visit_count FROM location_values
                WHERE agent_name = ? AND region_x = ? AND region_y = ?
-               ORDER BY total_reward DESC""",
+               ORDER BY total_reward / NULLIF(visit_count, 0) DESC""",
             (agent_name, region_x, region_y),
         )
         return [(r["activity"], r["total_reward"], r["visit_count"]) for r in rows]

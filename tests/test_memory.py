@@ -212,3 +212,53 @@ class TestActionStats:
 
         all_stats = await db.get_all_action_stats("Anima")
         assert len(all_stats) == 2
+
+
+# ---------------------------------------------------------------------------
+# Location value tests
+# ---------------------------------------------------------------------------
+
+
+class TestLocationValues:
+    @pytest.mark.asyncio
+    async def test_ranked_by_average_not_total(self, db: MemoryDB) -> None:
+        # "mine": many low-quality visits -> high cumulative, low average.
+        for _ in range(10):
+            await db.update_location_value("Anima", 5, 6, "mine", reward=1.0)
+        # "hunt": few high-quality visits -> low cumulative, high average.
+        for _ in range(2):
+            await db.update_location_value("Anima", 5, 6, "hunt", reward=9.0)
+
+        values = await db.get_location_values("Anima", 5, 6)
+        assert [v[0] for v in values] == ["hunt", "mine"]
+
+        # Sanity: cumulative total of "mine" (10.0) is not below "hunt" (18.0)
+        # here, but average must drive the order regardless.
+        hunt = next(v for v in values if v[0] == "hunt")
+        mine = next(v for v in values if v[0] == "mine")
+        assert hunt[1] / hunt[2] > mine[1] / mine[2]
+
+    @pytest.mark.asyncio
+    async def test_total_outranks_but_average_loses(self, db: MemoryDB) -> None:
+        # "grind": huge cumulative reward from sheer volume, mediocre per-visit.
+        for _ in range(100):
+            await db.update_location_value("Anima", 0, 0, "grind", reward=0.5)
+        # "raid": tiny cumulative, but excellent per-visit value.
+        await db.update_location_value("Anima", 0, 0, "raid", reward=20.0)
+
+        values = await db.get_location_values("Anima", 0, 0)
+        # "grind" total = 50.0 >> "raid" total = 20.0, but "raid" avg = 20.0
+        # >> "grind" avg = 0.5, so the genuinely better area must rank first.
+        assert values[0][0] == "raid"
+
+    @pytest.mark.asyncio
+    async def test_accumulates_visits_and_reward(self, db: MemoryDB) -> None:
+        await db.update_location_value("Anima", 1, 1, "fish", reward=3.0)
+        await db.update_location_value("Anima", 1, 1, "fish", reward=5.0)
+
+        values = await db.get_location_values("Anima", 1, 1)
+        assert len(values) == 1
+        activity, total, visits = values[0]
+        assert activity == "fish"
+        assert total == pytest.approx(8.0)
+        assert visits == 2
