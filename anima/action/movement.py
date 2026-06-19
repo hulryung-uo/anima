@@ -31,6 +31,19 @@ RUN_MIN_REMAINING = 8     # tiles left — below this, walk for precision
 RUN_MIN_STAM_PCT = 30.0   # don't run toward the stam==0 walk lockout
 
 
+def _arrived(sx: int, sy: int, tx: int, ty: int, exact: bool) -> bool:
+    """Arrival predicate for go_to.
+
+    exact=True  -> the avatar must stand on the exact target tile.
+    exact=False -> within 1 Chebyshev tile (adjacent) counts as arrived.
+
+    Used by BOTH the per-step check and the max_steps fallback so the two
+    never disagree (the fallback used to report success at 1 tile out even
+    when exact=True was requested).
+    """
+    return max(abs(tx - sx), abs(ty - sy)) <= (0 if exact else 1)
+
+
 def _should_run(ss, remaining: int, cfg, override: bool | None) -> bool:
     """Decide walk vs run for the next step of go_to."""
     if override is not None:
@@ -99,7 +112,7 @@ async def go_to(
 
         sx, sy = ss.x, ss.y
         remaining = max(abs(target_x - sx), abs(target_y - sy))
-        if remaining <= (0 if exact else 1):
+        if _arrived(sx, sy, target_x, target_y, exact):
             elapsed = _time.monotonic() - _start_time
             logger.info(
                 "go_to_arrived",
@@ -498,7 +511,7 @@ async def go_to(
         "go_to_max_steps", pos=f"({ss.x},{ss.y})",
         target=f"({target_x},{target_y})", steps=steps_taken,
     )
-    return max(abs(target_x - ss.x), abs(target_y - ss.y)) <= 1
+    return _arrived(ss.x, ss.y, target_x, target_y, exact)
 
 
 async def wander_action(ctx: BrainContext) -> Status:
