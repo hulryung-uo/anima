@@ -23,6 +23,8 @@ class MobileInfo:
     hits_max: int = 0
     hits: int = 0
     is_poisoned: bool = False
+    # 0-based ServUO Poison.Level (0=Lesser .. 4=Lethal). -1 = not poisoned.
+    poison_level: int = -1
     # time.monotonic() of the last packet that touched this mobile. The UO
     # server does NOT reliably send 0x1D Delete for every mobile that leaves
     # view (notably after recall/teleport, or when many entities go out of

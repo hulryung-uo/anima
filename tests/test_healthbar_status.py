@@ -92,3 +92,60 @@ def test_truncated_packet_is_ignored():
     # Too short to contain serial + count — must not raise.
     short = bytes([0x17, 0x00, 0x05, 0x00, 0x00])
     h.dispatch(0x17, short)
+
+
+def test_poison_level_decoded_on_mobile():
+    # ServUO sends flag = Poison.Level + 1 (0=Lesser .. 4=Lethal).
+    # flag 3 -> level 2 (Greater). The boolean must stay True alongside it.
+    h, p, w = _make_stack()
+    serial = 0x00000099
+    p.world.get_or_create_mobile(serial)
+
+    h.dispatch(0x17, _healthbar_packet(serial, status_type=1, flag=3))
+
+    assert p.world.mobiles[serial].is_poisoned is True
+    assert p.world.mobiles[serial].poison_level == 2
+
+
+def test_poison_level_lethal_vs_lesser_distinguished():
+    # The whole point of tracking level: a Lethal (flag 5 -> level 4) poison
+    # must be distinguishable from a Lesser (flag 1 -> level 0) one, even
+    # though both set is_poisoned True.
+    h, p, w = _make_stack()
+    lesser, lethal = 0x00000010, 0x00000011
+    p.world.get_or_create_mobile(lesser)
+    p.world.get_or_create_mobile(lethal)
+
+    h.dispatch(0x17, _healthbar_packet(lesser, status_type=1, flag=1))
+    h.dispatch(0x17, _healthbar_packet(lethal, status_type=1, flag=5))
+
+    assert p.world.mobiles[lesser].poison_level == 0
+    assert p.world.mobiles[lethal].poison_level == 4
+    assert p.world.mobiles[lesser].is_poisoned is True
+    assert p.world.mobiles[lethal].is_poisoned is True
+
+
+def test_cure_clears_poison_level_on_mobile():
+    h, p, w = _make_stack()
+    serial = 0x00000099
+    mob = p.world.get_or_create_mobile(serial)
+    h.dispatch(0x17, _healthbar_packet(serial, status_type=1, flag=4))
+    assert mob.poison_level == 3
+
+    # flag 0 = cured -> level -1, boolean False
+    h.dispatch(0x17, _healthbar_packet(serial, status_type=1, flag=0))
+    assert mob.poison_level == -1
+    assert mob.is_poisoned is False
+
+
+def test_poison_level_on_self():
+    h, p, w = _make_stack()
+    self_serial = p.self_state.serial
+
+    h.dispatch(0x17, _healthbar_packet(self_serial, status_type=1, flag=2))
+    assert p.self_state.is_poisoned is True
+    assert p.self_state.poison_level == 1
+
+    h.dispatch(0x17, _healthbar_packet(self_serial, status_type=1, flag=0))
+    assert p.self_state.is_poisoned is False
+    assert p.self_state.poison_level == -1

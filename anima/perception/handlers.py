@@ -1486,8 +1486,12 @@ def register_handlers(
 
         Without this handler the poison flag never reaches WorldState, so the
         brain cannot tell a poisoned target (or itself) apart from a healthy
-        one. We translate status_type 1 into a boolean is_poisoned on the
-        mobile / self_state.
+        one. We translate status_type 1 into both a boolean is_poisoned and a
+        0-based poison_level (ServUO Poison.Level: 0=Lesser .. 4=Lethal; the
+        wire flag is level + 1, so flag 0 = cured -> level -1) on the mobile /
+        self_state. Severity matters: a basic cure spell can fail against a
+        higher-level poison, so the cure trigger needs the level, not just a
+        boolean.
         """
         if len(data) < 9:
             return
@@ -1497,22 +1501,28 @@ def register_handlers(
             return
         count = r.read_u16()
 
-        poisoned: bool | None = None
+        # poison_level: None = this packet carried no poison entry; -1 = cured;
+        # 0..N = ServUO Poison.Level (flag - 1).
+        poison_level: int | None = None
         for _ in range(count):
             if r.remaining < 3:
                 break
             status_type = r.read_u16()
             flag = r.read_u8()
             if status_type == 1:  # poison bar
-                poisoned = flag != 0
+                poison_level = flag - 1  # flag 0 (cured) -> -1
 
-        if poisoned is None:
+        if poison_level is None:
             return  # only yellow/blessed bars in this packet — nothing to do
 
+        poisoned = poison_level >= 0
         if serial == p.self_state.serial:
             p.self_state.is_poisoned = poisoned
+            p.self_state.poison_level = poison_level
         else:
-            p.world.get_or_create_mobile(serial).is_poisoned = poisoned
+            mob = p.world.get_or_create_mobile(serial)
+            mob.is_poisoned = poisoned
+            mob.poison_level = poison_level
 
     handler.register(0x17, handle_health_bar_status)
 

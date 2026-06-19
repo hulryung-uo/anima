@@ -78,6 +78,10 @@ class SelfState:
 
         # Health-bar status flags (synced from 0x17 HealthBarStatusUpdate)
         self.is_poisoned: bool = False
+        # 0-based ServUO Poison.Level (0=Lesser .. 4=Lethal; special poisons
+        # report higher raw values). -1 = not poisoned. Tracks the wire flag
+        # minus one so the cure trigger can scale to severity.
+        self.poison_level: int = -1
 
         # Stats
         self.strength: int = 0
