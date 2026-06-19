@@ -57,7 +57,21 @@ class CircuitBreaker:
         count = self._counts.get(target, 0) + 1
         self._counts[target] = count
         if count >= self._max:
-            self._tripped_at[target] = time.time()
+            now = time.time()
+            prev = self._tripped_at.get(target)
+            # Stamp the cooldown clock on the *transition* into open
+            # (prev is None) or when re-tripping after an already-lapsed
+            # window that was never polled (now - prev >= cooldown). A
+            # failure that lands while the breaker is STILL inside its
+            # cooldown must NOT push the window forward: otherwise a target
+            # that keeps failing under sustained pressure (e.g. a directly
+            # fetched survival heal interrupted every tick by an adjacent
+            # mob, or a watchdog-cancelled procedure) resets its own
+            # cooldown on every attempt and the breaker NEVER reaches the
+            # half-open recovery probe — it stays open far past the
+            # configured ``cooldown_s``, effectively forever.
+            if prev is None or now - prev >= self._cooldown:
+                self._tripped_at[target] = now
 
     def record_success(self, target: Hashable) -> None:
         """Reset counter and cooldown for a target."""

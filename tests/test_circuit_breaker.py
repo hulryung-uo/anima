@@ -178,3 +178,40 @@ class TestCircuitBreaker:
         cb.snapshot()  # pure read, must not disturb state
         cb.record_failure("a")
         assert cb.is_open("a") is True
+
+    def test_failure_while_open_does_not_extend_cooldown(self):
+        """A failure landing inside the cooldown must NOT reset the window.
+
+        Regression: ``record_failure`` stamped ``_tripped_at`` on *every*
+        failure once ``count >= max_failures``. A target that keeps failing
+        while already open (a directly fetched survival heal interrupted each
+        tick, or a watchdog-cancelled procedure re-blamed) therefore reset its
+        own cooldown on every attempt and never reached the half-open recovery
+        probe — it stayed open far past ``cooldown_s``, effectively forever.
+        """
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.12)
+        cb.record_failure("a")          # trips, window starts now
+        assert cb.is_open("a") is True
+        time.sleep(0.08)                # still inside the cooldown window
+        cb.record_failure("a")          # must NOT push the window forward
+        assert cb.is_open("a") is True  # still open (correctly)
+        time.sleep(0.06)                # original window (0.12s) has now lapsed
+        # With the bug, the second failure would have reset the clock and this
+        # would still report open; with the fix the original window governs.
+        assert cb.is_open("a") is False
+        assert cb.is_half_open("a") is True
+
+    def test_lapsed_unpolled_failure_still_refreshes_window(self):
+        """A failure after the window lapsed (no poll) DOES re-trip fresh.
+
+        Counterpart to the no-extend rule: when the cooldown has genuinely
+        elapsed but no ``is_open`` poll armed the half-open probe, the next
+        failure must re-stamp the window so the breaker re-opens (matches
+        ``test_lapsed_failure_before_poll_still_retrips``).
+        """
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.05)
+        cb.record_failure("a")
+        assert cb.is_open("a") is True
+        time.sleep(0.06)                # window lapsed, but no is_open() poll
+        cb.record_failure("a")          # re-trip with a fresh window
+        assert cb.is_open("a") is True
