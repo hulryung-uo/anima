@@ -540,6 +540,7 @@ def register_handlers(
                 p.self_state.skills[skill_id] = skill
 
             old_value = skill.value
+            old_base = skill.base
             skill.value = value / 10.0
             skill.base = base / 10.0
             skill.cap = cap / 10.0
@@ -548,8 +549,13 @@ def register_handlers(
 
             p.emit(GameEventType.SKILL_CHANGED, {"skill_id": skill_id, "value": skill.value})
 
-            # Log skill gains/losses to journal and activity feed
-            diff = skill.value - old_value
+            # Log skill gains/losses to journal and activity feed.
+            # Skill *progression* registers on `base` (the trainable value);
+            # `value` = base + transient item/buff bonuses. A gear or buff swap
+            # sends a single 0x3A with an unchanged base but a shifted value, so
+            # keying the gain message/event off `value` produced phantom
+            # "skill gain/loss" feed entries and SKILL_CHANGED diffs. Use base.
+            diff = skill.base - old_base
             if abs(diff) >= 0.1 and is_single:
                 _skill_names = {
                     0: "Alchemy", 1: "Anatomy", 4: "Arms Lore", 5: "Parrying",
@@ -563,11 +569,11 @@ def register_handlers(
                 }
                 sname = _skill_names.get(skill_id, f"Skill {skill_id}")
                 arrow = "\u2191" if diff > 0 else "\u2193"
-                msg = f"{arrow} {sname} {old_value:.1f} \u2192 {skill.value:.1f}"
+                msg = f"{arrow} {sname} {old_base:.1f} \u2192 {skill.base:.1f}"
                 p.social.add_speech(0xFFFFFFFF, "System", msg, 0)
                 logger.info(
                     "skill_gain", skill=sname,
-                    old=old_value, new=skill.value, diff=f"{diff:+.1f}",
+                    old=old_base, new=skill.base, diff=f"{diff:+.1f}",
                 )
                 p.emit(GameEventType.SKILL_CHANGED, {
                     "skill_id": skill_id, "value": skill.value,

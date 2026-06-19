@@ -818,6 +818,60 @@ def test_skill_single_update_type_0xDF():
     assert p.self_state.skills[7].lock.value == 1  # DOWN
 
 
+def test_skill_single_update_gain_measured_off_base_not_value():
+    """A real skill gain (base advances) logs a gain message + diff event."""
+    h, p, w = _make_stack()
+
+    # Seed via a full list (never emits the gain message): Blacksmith base 60.0.
+    h.dispatch(0x3A, _build_skill_packet(0x02, [
+        (8, 600, 600, 0, 1000),  # Blacksmith (id=7 after the 0x02 adjust)
+    ]))
+    p.poll_events()  # drain
+
+    # Single update: base climbs 60.0 -> 60.5 (a genuine training gain).
+    h.dispatch(0x3A, _build_skill_packet(0xDF, [
+        (7, 605, 605, 0, 1000),
+    ]))
+    events = p.poll_events()
+    gain_events = [e for e in events
+                   if e.type == GameEventType.SKILL_CHANGED and "diff" in e.data]
+    assert len(gain_events) == 1
+    assert gain_events[0].data["diff"] == 0.5
+    assert any("Blacksmith" in entry.text for entry in p.social.recent(20))
+
+
+def test_skill_value_only_change_is_not_a_phantom_gain():
+    """Equipping a skill-bonus item shifts value but NOT base — no gain.
+
+    Regression: gain detection keyed off `value` flagged gear/buff swaps as
+    skill gains, polluting the activity feed and SKILL_CHANGED `diff` consumers.
+    Real progression registers on `base`, so a value-only change must be silent.
+    """
+    h, p, w = _make_stack()
+
+    # Baseline Magery base/value 80.0.
+    h.dispatch(0x3A, _build_skill_packet(0x02, [
+        (26, 800, 800, 0, 1000),  # Magery (id=25 after adjust)
+    ]))
+    p.poll_events()
+    journal_before = len(p.social.recent(50))
+
+    # Equip a +10 Magery item: value 90.0, base still 80.0.
+    h.dispatch(0x3A, _build_skill_packet(0xDF, [
+        (25, 900, 800, 0, 1000),
+    ]))
+    events = p.poll_events()
+
+    # value is still tracked for callers that want the effective skill...
+    assert p.self_state.skills[25].value == 90.0
+    assert p.self_state.skills[25].base == 80.0
+    # ...but no phantom gain message or diff event was produced.
+    gain_events = [e for e in events
+                   if e.type == GameEventType.SKILL_CHANGED and "diff" in e.data]
+    assert gain_events == []
+    assert len(p.social.recent(50)) == journal_before
+
+
 def _build_skill_packet_0based(list_type: int, skills: list[tuple[int, int, int, int, int]]) -> bytes:
     """Build a 0x3A full-list packet for the 0-based variants (type 0x01/0x03).
 
