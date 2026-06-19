@@ -114,6 +114,12 @@ HEAVY_DPS_PCT_PER_S = 8.0
 BANDAGE_REAPPLY_S = 8.5  # min spacing — re-applying restarts the timer
 LOOT_RANGE = 2           # container-open range for corpses
 CORPSE_SPAWN_WAIT_S = 1.0  # kill → corpse item appears in world state
+# Max times we re-open a corpse that yielded nothing before giving up on it.
+# A loot can fail transiently — the 0x3C contents haven't streamed in yet, or
+# the weight gate broke before lifting anything because the pack was full. We
+# only retire a corpse for good once it has cost us this many empty opens, so a
+# pack that frees up (a sell/bank between fights) still recovers stranded gold.
+LOOT_MAX_ATTEMPTS = 3
 
 # Emergency heal-potion quaff. A bandage and a potion run on two *independent*
 # timers in UO — drinking a heal potion gives an instant HP bump while a
@@ -375,13 +381,31 @@ async def _loot_fresh_corpses(ctx: AgentContext) -> int:
     """Loot corpses adjacent to the agent after a kill. Returns gold lifted."""
     await asyncio.sleep(CORPSE_SPAWN_WAIT_S)  # let the corpse spawn in
     looted: set[int] = ctx.blackboard.setdefault("_looted_corpses", set())
+    # Per-corpse failed-open counter. A corpse only enters ``looted`` (and is
+    # skipped forever) on a SUCCESSFUL lift or after LOOT_MAX_ATTEMPTS empty
+    # opens. Marking it looted up-front — before/regardless of the lift result —
+    # permanently stranded gold whenever the open raced the 0x3C contents
+    # stream or the weight gate broke on a full pack: the next kill's pass saw
+    # the serial already in ``looted`` and never retried, even after weight
+    # freed up. We now retry until it actually pays out or proves empty.
+    attempts: dict[int, int] = ctx.blackboard.setdefault("_loot_attempts", {})
     gold = 0
     for corpse in find_corpses(ctx, max_dist=LOOT_RANGE):
         if corpse.serial in looted:
             continue
-        looted.add(corpse.serial)
         result = await loot_corpse(ctx, corpse.serial)
-        gold += result.data.get("gold", 0)
+        if result.success:
+            looted.add(corpse.serial)
+            attempts.pop(corpse.serial, None)
+            gold += result.data.get("gold", 0)
+        else:
+            # Empty open: count it, and only retire the corpse once it has
+            # cost us LOOT_MAX_ATTEMPTS opens (so a genuinely-empty corpse
+            # isn't re-opened on every single subsequent kill forever).
+            attempts[corpse.serial] = attempts.get(corpse.serial, 0) + 1
+            if attempts[corpse.serial] >= LOOT_MAX_ATTEMPTS:
+                looted.add(corpse.serial)
+                attempts.pop(corpse.serial, None)
         logger.info(
             "hunt_loot",
             corpse=f"0x{corpse.serial:08X}",
