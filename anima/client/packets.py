@@ -300,14 +300,38 @@ def build_delete_character(password: str, slot: int, client_ip: int = 0x7F000001
     return w.to_bytes()
 
 
-def build_play_character(name: str = "", slot: int = 0, client_ip: int = 0x7F000001) -> bytes:
-    """Build PlayCharacter packet (0x5D, 73 bytes)."""
+# Facet-access bits ServUO stores in ``state.Flags`` from the 0x5D client-flags
+# field (Server/ExpansionInfo.cs ``ClientFlags``): Felucca 0x01 | Trammel 0x02 |
+# Ilshenar 0x04 | Malas 0x08 | Tokuno 0x10 | TerMur 0x20 = 0x3F. We advertise a
+# modern 7.0.102.3 client (``build_seed``), which ClassicUO mirrors by writing
+# its negotiated ``Protocol`` flags into this field. A full-expansion client
+# enables every facet, so 0x3F is the matching value.
+_ALL_FACET_CLIENT_FLAGS = 0x3F
+
+
+def build_play_character(
+    name: str = "",
+    slot: int = 0,
+    client_ip: int = 0x7F000001,
+    client_flags: int = _ALL_FACET_CLIENT_FLAGS,
+) -> bytes:
+    """Build PlayCharacter packet (0x5D, 73 bytes).
+
+    ServUO ``PacketHandlers.PlayCharacter`` reads the 4-byte client-flags field
+    (offset 36) and assigns ``state.Flags = (ClientFlags)flags``. ClassicUO
+    fills it with its negotiated ``Protocol`` value (``Send_SelectCharacter``);
+    sending a bare ``0`` makes the server record ``ClientFlags.None``, so
+    facet-/expansion-aware server logic (e.g. ``NetState.IsUOTDClient`` and
+    facet access) sees a client that claims support for nothing. Default to the
+    full-facet mask (0x3F) that matches the modern client version we advertise
+    so ``state.Flags`` reflects reality instead of an empty expansion set.
+    """
     w = PacketWriter()
     w.write_u8(0x5D)
     w.write_u32(0xEDEDEDED)  # pattern
     w.write_ascii(name, 30)
     w.write_zeros(2)  # unknown
-    w.write_u32(0)  # client flags
+    w.write_u32(client_flags)  # client/facet flags (ServUO -> state.Flags)
     w.write_zeros(24)  # unknown
     w.write_u32(slot)
     w.write_u32(client_ip)
