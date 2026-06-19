@@ -21,8 +21,8 @@ from anima.procedures.combat_loop import (
 )
 
 
-def _ctx(hp_pct=100.0, hits_max=100):
-    ss = SimpleNamespace(hits_max=hits_max, hp_percent=hp_pct, serial=0x1)
+def _ctx(hp_pct=100.0, hits_max=100, is_poisoned=False):
+    ss = SimpleNamespace(hits_max=hits_max, hp_percent=hp_pct, serial=0x1, is_poisoned=is_poisoned)
     sent: list[bytes] = []
 
     async def _send(pkt):
@@ -132,3 +132,36 @@ class TestMaybeQuaffHealPotion:
         # The potion uses its own key and never touches the bandage timer.
         assert ctx.blackboard["_potion_last_ts"] == 5000.0
         assert ctx.blackboard["_bandage_last_ts"] == 5000.0
+
+    @pytest.mark.asyncio
+    async def test_poisoned_does_not_quaff(self, monkeypatch):
+        """While poisoned, ServUO's BaseHealPotion.Drink refuses the potion
+        ("You can not heal yourself in your current state.") — consuming
+        nothing and restoring no HP. So even at critical HP with a potion in
+        the pack the quaff must be suppressed, and crucially the 10s cooldown
+        must NOT be armed (otherwise the rescue gate is burned on a no-op)."""
+        _stock_potions(monkeypatch)
+        monkeypatch.setattr(cl.time, "monotonic", lambda: 5000.0)
+
+        ctx = _ctx(hp_pct=POTION_HP_PCT - 20.0, is_poisoned=True)
+        assert await _maybe_quaff_heal_potion(ctx) is False
+        assert ctx._sent == []  # no double-click sent
+        assert "_potion_last_ts" not in ctx.blackboard  # cooldown not armed
+
+    @pytest.mark.asyncio
+    async def test_cured_then_quaffs(self, monkeypatch):
+        """The poison veto is transient: once the agent is cured (is_poisoned
+        clears) the same critical-HP situation drinks the potion as normal."""
+        _stock_potions(monkeypatch, serial=0xBEEF)
+        monkeypatch.setattr(cl.time, "monotonic", lambda: 5000.0)
+
+        # Still poisoned → suppressed.
+        ctx = _ctx(hp_pct=POTION_HP_PCT - 20.0, is_poisoned=True)
+        assert await _maybe_quaff_heal_potion(ctx) is False
+        assert ctx._sent == []
+
+        # Cure lands; HP still critical → now it drinks.
+        ctx.perception.self_state.is_poisoned = False
+        assert await _maybe_quaff_heal_potion(ctx) is True
+        assert ctx._sent == [build_double_click(0xBEEF)]
+        assert ctx.blackboard["_potion_last_ts"] == 5000.0

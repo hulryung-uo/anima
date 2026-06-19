@@ -323,7 +323,7 @@ async def _maybe_quaff_heal_potion(ctx: AgentContext) -> bool:
     Returns True if a potion was quaffed this tick. Independent of the bandage
     timer (the two heal on separate server cooldowns), so this can fire while a
     bandage is mid-apply — that overlap is the whole point. Gated on three
-    things, all of which must hold:
+    things (plus a poison veto), all of which must hold:
 
       1. HP is *known* and below POTION_HP_PCT (critical, near the retreat
          floor) — no point burning a potion on a flesh wound.
@@ -331,6 +331,12 @@ async def _maybe_quaff_heal_potion(ctx: AgentContext) -> bool:
          refuses a drink inside the use-delay, so quaffing again is wasted.
       3. A heal potion is actually in the backpack — availability gate; an
          empty pack must be a clean no-op, never a phantom heal.
+      4. The agent is NOT poisoned. ServUO ``BaseHealPotion.Drink`` refuses a
+         heal potion outright while ``from.Poisoned`` ("You can not heal
+         yourself in your current state.") — nothing is consumed and no HP is
+         restored. Quaffing anyway would still arm our 10s cooldown, burning
+         the emergency rescue gate for a no-op. The cure-bandage path handles
+         poison instead, so the potion simply yields to it here.
 
     A heal potion is a plain double-click with no target cursor, so we send the
     use packet directly and return — no wait, war mode stays on.
@@ -338,6 +344,8 @@ async def _maybe_quaff_heal_potion(ctx: AgentContext) -> bool:
     ss = ctx.perception.self_state
     now = time.monotonic()
     if ss.hits_max <= 0 or ss.hp_percent >= POTION_HP_PCT:
+        return False
+    if bool(getattr(ss, "is_poisoned", False)):
         return False
     if now - ctx.blackboard.get("_potion_last_ts", 0.0) < POTION_COOLDOWN_S:
         return False
