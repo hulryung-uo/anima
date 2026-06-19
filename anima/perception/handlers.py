@@ -1326,9 +1326,16 @@ def register_handlers(
         """0x72 WarMode."""
         r = PacketReader(data[1:])
         war_mode = r.read_u8()
-        p.self_state.direction = (
-            p.self_state.direction | 0x80 if war_mode else p.self_state.direction & 0x7F
-        )
+        # War mode lives in the mobile flags (MobileFlags.WAR_MODE, 0x40), NOT
+        # in `direction`. `direction` is a 0-7 movement facing that the walker,
+        # movement and combat-facing code read directly; OR-ing 0x80 (the
+        # RUNNING bit, never WAR_MODE) into it corrupted the facing and lost the
+        # war state entirely. Route it through `flags` so `in_war_mode` is
+        # queryable, mirroring how `hidden` reads MobileFlags.HIDDEN.
+        if war_mode:
+            p.self_state.flags |= MobileFlags.WAR_MODE
+        else:
+            p.self_state.flags &= ~MobileFlags.WAR_MODE
         logger.debug("war_mode", enabled=bool(war_mode))
 
     handler.register(0x72, handle_war_mode)

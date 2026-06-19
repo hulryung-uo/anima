@@ -153,3 +153,8 @@ class SelfState:
     def hidden(self) -> bool:
         """True while the server reports us hidden (UO flag 0x80)."""
         return bool(self.flags & MobileFlags.HIDDEN)
+
+    @property
+    def in_war_mode(self) -> bool:
+        """True while the server reports us in war mode (UO flag 0x40)."""
+        return bool(self.flags & MobileFlags.WAR_MODE)
