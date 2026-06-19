@@ -157,7 +157,22 @@ class UoConnection:
                 elif length == 0:
                     if len(self._recv_buffer) >= 3:
                         total_len = struct.unpack(">H", self._recv_buffer[1:3])[0]
-                        if total_len >= 3 and len(self._recv_buffer) >= total_len:
+                        if total_len < 3:
+                            # A variable-length frame cannot be shorter than its
+                            # own 3-byte ID+length header. A declared total_len of
+                            # 0/1/2 means corruption or a stream desync. Without
+                            # this guard the `total_len >= 3` test below never
+                            # fires, the frame is never consumed, and the receive
+                            # loop blocks on TCP reads forever. Discard the bad
+                            # 3-byte header and resync to the next frame.
+                            logger.warning(
+                                "malformed_game_packet_length",
+                                packet_id=f"0x{packet_id:02X}",
+                                total_len=total_len,
+                            )
+                            del self._recv_buffer[:3]
+                            continue
+                        if len(self._recv_buffer) >= total_len:
                             packet_data = bytes(self._recv_buffer[:total_len])
                             del self._recv_buffer[:total_len]
                             return packet_id, packet_data
