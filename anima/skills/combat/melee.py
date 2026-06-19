@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from anima.client.packets import build_attack, build_war_mode
+from anima.actions.loot import find_corpses
 from anima.perception.enums import NotorietyFlag
 from anima.skills.base import Skill, SkillResult
 
@@ -28,12 +29,39 @@ ATTACKABLE_NOTORIETY = {
 # Human body types (should not be attacked unless criminal/enemy/murderer)
 HUMAN_BODIES = {0x0190, 0x0191}  # male, female
 
+# Scan radius used by ``_find_target`` — also the radius we search for the
+# corpse that proves a vanished target was actually felled (vs. having fled).
+ENGAGE_RANGE = 10
+
 # How long to fight before giving up (seconds)
 COMBAT_TIMEOUT = 30.0
 COMBAT_TICK = 1.0
 
 # How recently we must have taken damage to fight back in defensive mode
 DEFENSIVE_WINDOW = 10.0
+
+
+def _confirm_kill(ctx: BrainContext, last_hits: int, last_hits_max: int) -> bool:
+    """True only when a target that vanished from ``world.mobiles`` actually DIED.
+
+    A mobile is dropped from ``world.mobiles`` by a 0x1D Delete and by the
+    stale-update prune — but UO sends a 0x1D Delete whenever a mobile leaves the
+    player's visual range, not only when it dies, and the prune likewise fires
+    on a mob that simply pathed away. So ``mob is None`` does NOT imply a kill:
+    a fast kiter that runs out of view disappears exactly like a felled one.
+    Crediting every disappearance as a kill hands MeleeAttack a +15 reward (and
+    a ``success=True``) for a foe that escaped, polluting the Q-learning reward
+    signal. Mirror ``combat_loop._confirm_kill`` and require positive evidence:
+
+      * the target's LAST-KNOWN health bar was a real reading at/below zero
+        (``last_hits_max > 0 and last_hits <= 0`` — we watched it die); or
+      * a corpse (graphic 0x2006) is on the ground within ``ENGAGE_RANGE``.
+
+    Otherwise the target merely left view: not a kill.
+    """
+    if last_hits_max > 0 and last_hits <= 0:
+        return True
+    return bool(find_corpses(ctx, max_dist=ENGAGE_RANGE))
 
 
 class MeleeAttack(Skill):
@@ -91,6 +119,11 @@ class MeleeAttack(Skill):
         # Monitor combat until target dies, we're hurt badly, or timeout
         deadline = time.monotonic() + COMBAT_TIMEOUT
         target_killed = False
+        # Last health-bar reading we saw for the target, so when it vanishes from
+        # world.mobiles we can tell a real kill (we watched it hit zero, or a
+        # corpse is on the ground) from a kiter that simply left view.
+        last_hits = 0
+        last_hits_max = 0
 
         while time.monotonic() < deadline:
             await asyncio.sleep(COMBAT_TICK)
@@ -98,8 +131,15 @@ class MeleeAttack(Skill):
             # Check if target is gone (dead/fled)
             mob = ctx.perception.world.mobiles.get(target_serial)
             if mob is None:
-                target_killed = True
+                # Gone from the world is NOT proof of death — a 0x1D Delete also
+                # fires when a mob leaves visual range. Only credit a kill with
+                # positive evidence; otherwise the target fled and we disengage.
+                target_killed = _confirm_kill(ctx, last_hits, last_hits_max)
+                if not target_killed:
+                    logger.info("melee_target_left_view", target=target_name)
                 break
+            last_hits = mob.hits
+            last_hits_max = mob.hits_max
 
             # Bail if HP drops too low
             if ss.hp_percent < 15:
