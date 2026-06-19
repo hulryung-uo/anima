@@ -93,6 +93,22 @@ def register_handlers(
             # ServUO pushes self 0x78 on flag changes (OnHiddenChanged) —
             # this is where the hidden bit (0x80) for our own char arrives.
             p.self_state.flags = MobileFlags(flags & 0xFF)
+            # The self 0x78 is a FULL, authoritative loadout: ClassicUO's
+            # UpdateObject strips every worn item off the mobile (except the
+            # backpack / opened containers) BEFORE replaying the item loop, so a
+            # layer no longer present in the new list is dropped. Without an
+            # equivalent purge here, a gear change that REMOVES a layer (e.g.
+            # the agent drops a one-hander, or a two-hander replaces a 1H +
+            # shield) left the old serial lingering in self_state.equipment[1]/
+            # [2] whenever the server refreshed appearance without a paired 0x1D
+            # Delete. The combat-loop "hand already occupied / already equipped"
+            # guards (procedures/combat_loop.py) then saw a phantom weapon and
+            # never re-armed. Clear all layers but the backpack (Layer 0x15),
+            # which ClassicUO preserves and the rest of the codebase relies on
+            # as the inventory root; the loop below refills the worn layers.
+            for layer in list(p.self_state.equipment):
+                if layer != 0x15:
+                    del p.self_state.equipment[layer]
         else:
             mob = p.world.get_or_create_mobile(serial)
             mob.body = body
