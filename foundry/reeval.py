@@ -22,6 +22,15 @@ from foundry.kernel.eval import EvalConfig, run_eval_multi
 from foundry.orchestrator import LANE_BUDGET, _prepare_worktree
 
 
+# Below this magnitude a recorded fitness has no usable SCALE to normalise the
+# held-out score against. fitness is ``gate * inner`` (eval.fitness), so a barely
+# viable genome (a near-zero viability gate) archives a tiny non-zero total like
+# 1e-9 — NOT exactly 0.0. Dividing by abs(1e-9) turns a normal held-out recovery
+# into an astronomically large finite ratio, which then survives the finite
+# filter in _summarize_ratios and single-handedly swamps the cross-genome median.
+_NEGLIGIBLE_FITNESS = 1e-6
+
+
 def _replication_ratio(recorded: float, held_out: float) -> float:
     """How much of ``recorded`` fitness the held-out re-run reproduced.
 
@@ -38,11 +47,16 @@ def _replication_ratio(recorded: float, held_out: float) -> float:
     Use a shortfall form that is monotone in held_out and matches the old
     positive-fitness behaviour exactly: ``1 - (recorded - held_out)/|recorded|``.
     Higher held_out always scores higher; for recorded > 0 it reduces to
-    ``held_out / recorded``. A recorded fitness of exactly 0 has no scale to
-    normalise against, so a held_out that also recovered ~0 replicates (ratio 1)
-    while any positive recovery reads as a clean over-replication.
+    ``held_out / recorded``. A recorded fitness AT OR BELOW ``_NEGLIGIBLE_FITNESS``
+    in magnitude (``~0`` — exactly 0.0 OR a tiny ``gate*inner`` residue like 1e-9)
+    has no scale to normalise against: dividing by ``abs(recorded)`` there yields
+    an arbitrarily large FINITE ratio that slips past the inf-filter in
+    ``_summarize_ratios`` and dominates the median demotion verdict. Treat the
+    whole near-zero band like exact zero — a held_out that also recovered ~0
+    replicates (ratio 1) while any positive recovery reads as a clean
+    over-replication (``inf``, which the summary already excludes from the median).
     """
-    if recorded == 0.0:
+    if abs(recorded) <= _NEGLIGIBLE_FITNESS:
         return 1.0 if held_out <= 0.0 else float("inf")
     return 1.0 - (recorded - held_out) / abs(recorded)
 

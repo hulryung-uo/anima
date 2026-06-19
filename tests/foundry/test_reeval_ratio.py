@@ -67,3 +67,41 @@ def test_zero_recorded_does_not_divide_by_zero():
     assert reeval._replication_ratio(0.0, 0.0) == 1.0
     assert reeval._replication_ratio(0.0, -1.0) == 1.0
     assert reeval._replication_ratio(0.0, 5.0) == float("inf")
+
+
+def test_near_zero_recorded_is_scale_free_not_an_exploding_ratio():
+    # fitness is gate*inner, so a barely-viable genome archives a TINY non-zero
+    # total (e.g. 1e-9), not exactly 0.0. Dividing the held-out recovery by that
+    # tiny denominator used to yield an astronomically large FINITE ratio
+    # (~5e10) that the exact ``recorded == 0.0`` guard never caught. A near-zero
+    # recorded must be treated like exact zero: scale-free.
+    assert reeval._replication_ratio(1e-9, 50.0) == float("inf")   # was ~5e10
+    assert reeval._replication_ratio(-1e-9, 50.0) == float("inf")
+    assert reeval._replication_ratio(1e-9, 0.0) == 1.0
+    assert reeval._replication_ratio(1e-9, -3.0) == 1.0
+    # A genuinely-scaled recorded fitness is UNCHANGED (well above the band).
+    assert reeval._replication_ratio(10.0, 8.0) == 0.8
+    assert reeval._replication_ratio(-1.0, -0.5) == reeval._replication_ratio(-1.0, -0.5)
+
+
+def test_near_zero_recorded_does_not_poison_the_cross_genome_median():
+    # The headline demotion-evidence number is the median over FINITE ratios
+    # (_summarize_ratios drops the inf over-replications). A near-zero-recorded
+    # genome that recovered a real positive score must register as an inf
+    # over-replication (excluded), NOT as a giant finite ratio that swamps the
+    # median of the genomes that actually replicated.
+    ratios = [
+        reeval._replication_ratio(10.0, 2.0),    # 0.2  — clear shortfall
+        reeval._replication_ratio(10.0, 4.0),    # 0.4  — clear shortfall
+        reeval._replication_ratio(1e-9, 50.0),   # ~0 recorded, big recovery
+    ]
+    summary = reeval._summarize_ratios(ratios)
+    assert summary is not None
+    # Median taken over the two FINITE shortfall ratios only → 0.30; the
+    # near-zero genome is reported as a separate over-replication count.
+    assert "0.30" in summary
+    assert "over 2 genomes" in summary
+    assert "1 over-replicated" in summary
+    # Pre-fix: the near-zero genome produced a ~5e10 FINITE ratio, the median of
+    # [0.2, 0.4, 5e10] was 0.4, and "over-replicated" was 0 — the demotion
+    # signal silently shifted by a genome the summary should have set aside.
