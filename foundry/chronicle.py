@@ -81,16 +81,22 @@ def post_cycle_note(cell: tuple, status: str, fitness: float,
     if creds is None:
         return False
     base, key = creds
-    title, body = cycle_text(cell, status, fitness, prev_fitness)
-    import json
-    payload = json.dumps({"board": board, "title": title,
-                          "content": body}).encode()
-    req = urllib.request.Request(
-        f"{base}/agent/posts", data=payload, method="POST",
-        headers={"x-api-key": key, "Content-Type": "application/json"},
-    )
     try:
+        # Everything below — text rendering, JSON serialization, request
+        # construction, and the network round-trip — runs under one guard so
+        # the documented "Never raises" contract holds. A malformed cell or a
+        # non-numeric fitness (e.g. the "improved" branch's `:.0f` format) used
+        # to raise OUTSIDE this try and crash the orchestrator's per-cycle path;
+        # the forum is decorative and must never break the evolution run.
+        title, body = cycle_text(cell, status, fitness, prev_fitness)
+        import json
+        payload = json.dumps({"board": board, "title": title,
+                              "content": body}).encode()
+        req = urllib.request.Request(
+            f"{base}/agent/posts", data=payload, method="POST",
+            headers={"x-api-key": key, "Content-Type": "application/json"},
+        )
         with urllib.request.urlopen(req, timeout=15) as r:
             return r.status == 201
-    except (urllib.error.URLError, OSError, ValueError):
+    except Exception:
         return False
