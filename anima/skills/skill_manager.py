@@ -157,10 +157,20 @@ async def apply_skill_locks(ctx: BrainContext, persona_name: str) -> int:
 
     sent = 0
 
-    # Set skill locks for all known skills
-    for skill_id, skill_info in ctx.perception.self_state.skills.items():
+    # Set skill locks for every skill the server has reported AND every skill
+    # the persona wants raised. Iterating only over self_state.skills used to
+    # silently skip any skills_up target the server hadn't sent yet — a fresh
+    # character whose core skills sit at 0.0 may not appear in the dict before
+    # the full 0x3A skill list arrives, so those skills never got their Up lock
+    # and the agent would never train them. We send Up for persona targets
+    # regardless of whether they are already tracked.
+    skills = ctx.perception.self_state.skills
+    for skill_id in sorted(set(skills) | skills_up):
         desired = Lock.UP if skill_id in skills_up else Lock.LOCKED
-        if skill_info.lock != desired:
+        skill_info = skills.get(skill_id)
+        # Unknown (not yet reported) skills have no current lock to compare
+        # against, so always send to guarantee the desired state.
+        if skill_info is None or skill_info.lock != desired:
             await ctx.conn.send_packet(build_skill_lock(skill_id, desired.value))
             sent += 1
 
