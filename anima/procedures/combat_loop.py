@@ -673,7 +673,18 @@ class HuntNearby(Procedure):
             except Exception:
                 pass
 
-        if retreated or leashed:
+        # Re-center on the anchor on ANY disengage that left us off it — not just
+        # a retreat or a leash break. The engagement-cap timeout (deadline elapsed
+        # while mid-chase) and a connection drop both exit the loop normally with
+        # retreated/leashed still False, yet the gap-closing chase above can have
+        # walked the agent up to MAX_CHASE_FROM_ANCHOR tiles off the anchor. Only
+        # walking back on retreat/leash stranded the agent there after every cap
+        # timeout, drifting the combat anchor out from under WanderForCombat's
+        # orbit — exactly the "drift away from the anchor" the docstring and the
+        # leash promise the loop won't do. So we gate the walk-back on actual
+        # displacement: if we're still standing on the anchor (the common kill-
+        # fest case that never chased anywhere) it's a no-op; otherwise we return.
+        if (ss.x, ss.y) != anchor:
             await go_to(ctx, *anchor, run=True)
 
         sw = ss.skills.get(SKILL_SWORDS)
