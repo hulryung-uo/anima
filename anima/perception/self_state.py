@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from anima.perception.enums import Lock, MobileFlags
+from anima.perception.enums import Lock, MobileFlags, NotorietyFlag
 
 if TYPE_CHECKING:
     from anima.perception.gump import GumpData
@@ -67,6 +67,12 @@ class SelfState:
 
         # Status flags (synced from self-branch of 0x78 / 0x20)
         self.flags: MobileFlags = MobileFlags.NONE
+
+        # Our own notoriety (criminal/gray/murderer status), synced from the
+        # notoriety byte the server appends to every 0x22 ConfirmWalk. Mirrors
+        # ClassicUO's world.Player.NotorietyFlag. Defaults to INNOCENT until the
+        # first accepted step refreshes it.
+        self.notoriety: NotorietyFlag = NotorietyFlag.INNOCENT
 
         # Vitals
         self.hits: int = 0

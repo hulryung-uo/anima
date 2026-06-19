@@ -929,6 +929,23 @@ def register_handlers(
         """0x22 ConfirmWalk."""
         r = PacketReader(data[1:])
         seq = r.read_u8()
+        # The 0x22 ConfirmWalk is [0x22][seq][notoriety] (3 bytes). The second
+        # byte is OUR OWN notoriety — the authoritative source for the player's
+        # criminal/gray/murderer status, refreshed by the server on every
+        # accepted step (e.g. the moment a freshly-committed crime flips us
+        # gray, or a count drops us to murderer/red). ClassicUO decodes it in
+        # ConfirmWalk (PacketHandlers.cs) as ``noto = ReadUInt8() & ~0x40`` and
+        # assigns ``world.Player.NotorietyFlag``, coercing an out-of-range
+        # 0 / >=8 byte back to 0x01 (Innocent). We previously read only ``seq``
+        # and left self_state.notoriety pinned at its INNOCENT default forever,
+        # so the agent could never tell it had gone criminal — the same
+        # notoriety gate the combat/social code already reads off *foes* was
+        # blind for the player. Decode and store it to match ClassicUO.
+        if r.remaining >= 1:
+            noto = r.read_u8() & ~0x40
+            if noto == 0 or noto >= 8:
+                noto = 1
+            p.self_state.notoriety = NotorietyFlag(noto)
         pending = walker._pending_step_tile
         walker.confirm_walk(seq)
         ss = p.self_state
