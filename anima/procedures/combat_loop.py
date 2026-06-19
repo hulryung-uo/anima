@@ -149,6 +149,28 @@ def _should_retreat(ctx: AgentContext, hp_pct: float, hits_max: int) -> bool:
     return strikes >= RETREAT_CONFIRM_TICKS
 
 
+def _reset_engagement_state(ctx: AgentContext) -> None:
+    """Clear the per-tick survival-timing scratch state before a fresh hunt.
+
+    ``_should_retreat`` and ``_bandage_trigger_pct`` accumulate state in the
+    blackboard *across ticks* (the consecutive-sub-floor strike count, and the
+    last HP%/timestamp used to estimate incoming DPS). That carry-over is
+    correct *within* one engagement but must NOT survive into the next one: a
+    hunt that breaks off at the retreat floor leaves ``_retreat_strikes`` parked
+    at ``RETREAT_CONFIRM_TICKS``. The agent then heals up and re-enters
+    ``hunt_nearby`` (``can_start`` only needs 40% HP) with the strike count still
+    armed — so the very first transient sub-floor HP read of the *new* fight
+    (e.g. a stale status bar before the post-heal 0x11 lands) instantly satisfies
+    the retreat check, abandoning a winnable fight and flapping anchor<->mob.
+    The stale ``_bandage_hp_*`` trajectory likewise mis-estimates DPS off a gap
+    that spans the heal/walk-back. Resetting at engagement start makes the
+    debounce start counting fresh, exactly as it does on the first-ever fight.
+    """
+    ctx.blackboard["_retreat_strikes"] = 0
+    ctx.blackboard.pop("_bandage_hp_last", None)
+    ctx.blackboard.pop("_bandage_hp_ts", None)
+
+
 def _bandage_trigger_pct(ctx: AgentContext, hp_pct: float, now: float) -> float:
     """Effective HP%% below which we should interleave a self-bandage.
 
@@ -430,6 +452,7 @@ class HuntNearby(Procedure):
         ss = ctx.perception.self_state
         anchor = (ss.x, ss.y)
         ctx.blackboard["combat_anchor"] = anchor
+        _reset_engagement_state(ctx)
 
         sw = ss.skills.get(SKILL_SWORDS)
         tc = ss.skills.get(SKILL_TACTICS)
