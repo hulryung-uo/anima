@@ -220,7 +220,12 @@ class ForumPost(Skill):
 
         title, body = _parse_post(result.text, agent_name)
         post_id = await forum.create_post(title, body, template["board"])
-        ctx.blackboard["forum_last_post"] = time.time()
+        # Only arm the (default 1h) cooldown once the post actually landed.
+        # create_post returns an empty id on a degraded-network / non-2xx
+        # path; bumping forum_last_post there would silently suppress the
+        # periodic essay for a full post_interval before the next attempt.
+        if post_id:
+            ctx.blackboard["forum_last_post"] = time.time()
 
         elapsed = (time.monotonic() - start) * 1000
         logger.info(
