@@ -184,7 +184,19 @@ async def respond_to_speech(ctx: BrainContext) -> Status:
         logger.warning("speech_llm_failed", to=speaker)
 
     # Fallback
-    response = f"I heard you, {speaker}."
+    #
+    # This is the LAST resort: reached when the LLM is absent OR returned no
+    # text. It MUST still honour the persona's hard rule "reply in the SAME
+    # language" — a Korean player who said something non-greeting would
+    # otherwise get an English "I heard you, <name>.", which both breaks
+    # immersion and reads exactly like a bot whose model just fell over. The
+    # tier-1 greeting path already localizes via GREETING_RESPONSES_KR; mirror
+    # that here using the language already detected above so every reply path
+    # is language-consistent.
+    if is_korean:
+        response = "어, 들었어."
+    else:
+        response = f"I heard you, {speaker}."
     await ctx.conn.send_packet(build_unicode_speech(response))
     record_conversation(ctx, "assistant", response)
     logger.info("speech_fallback", to=speaker, text=response)
