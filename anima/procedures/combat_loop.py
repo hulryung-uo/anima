@@ -716,7 +716,32 @@ class HuntNearby(Procedure):
         tc = ss.skills.get(SKILL_TACTICS)
         before = (sw.value if sw else 0.0) + (tc.value if tc else 0.0)
 
-        equipped_two_handed = False
+        # A two-handed weapon already worn on layer 2 (the TwoHanded layer) leaves
+        # layer 1 EMPTY — an axe/polearm occupies only layer 2, never layer 1. So
+        # an agent that re-equipped a looted two-hander between fights (post-res
+        # re-equip, commit f57c7e3) reads as ``not ss.equipment.get(1)`` and would
+        # otherwise enter the equip block below: the one-handed attempt is
+        # correctly refused (equip_weapon_from_pack sees the worn two-hander on
+        # layer 2 and bails, per ServUO BaseWeapon.CheckConflictingLayer 500214),
+        # and the two-handed fallback is gated on ``not ss.equipment.get(2)`` —
+        # which the worn two-hander makes false — so execute() falls straight to
+        # "No weapon to fight with" and ABORTS the hunt while fully armed. Detect
+        # the worn two-hander up front and treat it as already-equipped: skip the
+        # equip block (so we don't bail) AND mark equipped_two_handed so the shield
+        # path below never tries to add a shield on top of it (the server would
+        # refuse the wear and strand the shield on the cursor).
+        offhand_serial = ss.equipment.get(2)
+        worn_offhand = None
+        if offhand_serial:
+            # world.items is a plain dict in production; tolerate a test stub
+            # that lacks .get (treat as "unknown offhand item" → not a two-hander).
+            items = getattr(ctx.perception.world, "items", None)
+            worn_offhand = items.get(offhand_serial) if hasattr(items, "get") else None
+        already_two_handed = (
+            worn_offhand is not None
+            and getattr(worn_offhand, "graphic", None) in TWO_HANDED_WEAPON_GRAPHICS
+        )
+        equipped_two_handed = already_two_handed
         # The WEAPON hand is layer 1; layer 2 is the off-hand (shield / the second
         # half of a two-hander). Gate the weapon equip on the WEAPON hand being
         # empty — NOT on both hands being empty. The old `not get(1) and not
@@ -733,7 +758,7 @@ class HuntNearby(Procedure):
         # layer 2. The two-hander fallback still needs BOTH hands, so it only runs
         # when layer 2 is also free (and equip_weapon_from_pack(two_handed=True)
         # additionally refuses if layer 1 somehow re-filled).
-        if not ss.equipment.get(1):
+        if not already_two_handed and not ss.equipment.get(1):
             # Prefer a one-handed weapon so the off-hand stays free for a shield
             # (Parrying stream). Only fall back to a two-hander when that's all
             # the pack holds AND the off-hand is free — and then wear it on the
