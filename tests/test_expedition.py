@@ -287,3 +287,75 @@ class TestPhaseTransitionPredicates:
         """Fresh expedition in IDLE must never report watchdog expired."""
         exp = MiningExpedition()  # phase=IDLE, phase_started_at=0.0
         assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+
+class TestWatchdogTracksProgress:
+    """The watchdog must measure staleness from the last verified progress
+    event, not raw phase age — otherwise a productively-mining phase in a
+    dense area (bank scan never empty) gets its accumulated piles wiped
+    every `max_phase_s` despite making real progress.
+    """
+
+    def test_productive_mining_does_not_trip_watchdog(self):
+        """Phase older than max_phase_s but with recent progress is alive."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        now = time.time()
+        # Entered the phase 20 minutes ago...
+        exp.phase_started_at = now - 1200.0
+        # ...but mined successfully 1 minute ago.
+        exp.last_progress_at = now - 60.0
+        assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+    def test_stalled_mining_still_trips_watchdog(self):
+        """No progress for longer than max_phase_s → watchdog fires."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        now = time.time()
+        exp.phase_started_at = now - 1200.0
+        exp.last_progress_at = now - 700.0  # last mine 11m40s ago
+        assert exp.watchdog_expired(max_phase_s=600.0) is True
+
+    def test_note_ore_mined_rearms_progress(self):
+        """A successful mine updates last_progress_at to ~now."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        # Simulate a long-running phase with no progress recorded yet.
+        now = time.time()
+        exp.phase_started_at = now - 1200.0
+        assert exp.watchdog_expired(max_phase_s=600.0) is True  # stale, no progress
+        exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
+        assert exp.last_progress_at >= now
+        assert exp.watchdog_expired(max_phase_s=600.0) is False  # re-armed
+
+    def test_note_ore_mined_rearms_even_without_ground_pile(self):
+        """A verified mine that bounced into the backpack is still progress."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        now = time.time()
+        exp.phase_started_at = now - 1200.0
+        exp.last_progress_at = 0.0
+        exp.note_ore_mined(x=100, y=100, bank_key=(12, 12), ground_pile=False)
+        # No pile recorded, but progress is still tracked.
+        assert exp.piles == []
+        assert exp.last_progress_at >= now
+        assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+    def test_transition_resets_progress_clock(self):
+        """Entering a new phase clears stale progress; staleness restarts."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        exp.note_ore_mined(x=100, y=100, bank_key=(12, 12))
+        assert exp.last_progress_at > 0.0
+        exp.transition_to(Phase.COLLECTING)
+        assert exp.last_progress_at == 0.0
+        # Fresh phase: watchdog references phase_started_at (just now) → alive.
+        assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+    def test_no_progress_falls_back_to_phase_age(self):
+        """Backward compat: with no progress event, behaviour is phase-age."""
+        exp = MiningExpedition()
+        exp.transition_to(Phase.MINING)
+        exp.last_progress_at = 0.0
+        exp.phase_started_at = time.time() - 700.0
+        assert exp.watchdog_expired(max_phase_s=600.0) is True

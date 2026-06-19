@@ -65,6 +65,13 @@ class MiningExpedition:
     piles: list[PileRecord] = field(default_factory=list)
     phase_started_at: float = 0.0
     cycles_completed: int = 0
+    # Timestamp of the last *verified* progress event (a successful mine).
+    # The watchdog measures staleness from this, not from phase entry, so a
+    # phase that is making real progress (e.g. productively mining in a dense
+    # area where the bank scan never reports empty) is never treated as
+    # "stuck". 0.0 means "no progress yet" — the watchdog then falls back to
+    # phase_started_at, preserving the original phase-age behaviour.
+    last_progress_at: float = 0.0
 
     # --- Mutators ---
 
@@ -88,6 +95,9 @@ class MiningExpedition:
         the forge/sell trip.
         """
         now = time.time()
+        # A successful mine is real progress — re-arm the watchdog so an
+        # actively-mining phase is never wiped for being "stuck".
+        self.last_progress_at = now
         if self.home_base is None:
             self.home_base = (x, y)
         if self.phase == Phase.IDLE:
@@ -127,6 +137,9 @@ class MiningExpedition:
         old = self.phase
         self.phase = new_phase
         self.phase_started_at = time.time()
+        # New phase starts with a clean slate; staleness is measured from
+        # entry until the first in-phase progress event re-arms it.
+        self.last_progress_at = 0.0
         logger.info(
             "expedition_phase",
             from_=old.value,
@@ -196,7 +209,15 @@ class MiningExpedition:
         Returns False in IDLE — the watchdog is meaningless before a phase
         has been entered, and the initial phase_started_at=0.0 would otherwise
         spuriously trip.
+
+        "Without progress" is measured from the most recent verified progress
+        event (`last_progress_at`) when one exists, otherwise from phase entry
+        (`phase_started_at`). This keeps a productively-mining phase alive even
+        when its total age exceeds `max_phase_s` — the watchdog only fires when
+        the agent has genuinely made no progress for `max_phase_s`, which is the
+        stall it is meant to catch (and avoids wiping real accumulated piles).
         """
         if self.phase == Phase.IDLE:
             return False
-        return time.time() - self.phase_started_at > max_phase_s
+        reference = max(self.phase_started_at, self.last_progress_at)
+        return time.time() - reference > max_phase_s
