@@ -50,6 +50,16 @@ class Sequence(Node):
     tick while a later child is still RUNNING — firing packet sends, resource
     spends, etc. more than once. The resume index is cleared on SUCCESS or
     FAILURE so a fresh sequence run always starts from the beginning.
+
+    Guard re-check: leading ``Condition`` children (which are pure, synchronous
+    predicates with no side effects) ARE re-evaluated on resume. A guarded
+    sequence such as ``[Condition(low_hp), Action(heal)]`` must abandon itself
+    the moment its guard goes false — e.g. HP recovers above threshold while
+    ``heal`` is still RUNNING on a bandage timer — so the Selector above can
+    fall through to other work. Skipping the guard (resuming straight at the
+    RUNNING child) would pin the agent to a no-longer-needed action forever.
+    Only completed *non-Condition* children are skipped, preserving the
+    "don't re-fire side-effecting Actions" property above.
     """
 
     def __init__(self, name: str, children: list[Node]) -> None:
@@ -59,6 +69,17 @@ class Sequence(Node):
 
     async def tick(self, ctx: BrainContext) -> Status:
         start = self._running_index
+        # On a resume, re-check any leading Condition guards. They are pure
+        # predicates, so re-running is free of side effects; if a guard has
+        # since gone false the precondition no longer holds and the sequence
+        # must bail rather than blindly resume its RUNNING action.
+        if start > 0:
+            for index in range(start):
+                child = self.children[index]
+                if isinstance(child, Condition):
+                    if await child.tick(ctx) is not Status.SUCCESS:
+                        self._running_index = 0
+                        return Status.FAILURE
         for index in range(start, len(self.children)):
             child = self.children[index]
             result = await child.tick(ctx)

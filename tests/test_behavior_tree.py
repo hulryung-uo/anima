@@ -300,6 +300,81 @@ class TestSequence:
         assert await node.tick(make_ctx()) == Status.FAILURE
         assert call_count == 0
 
+    @pytest.mark.asyncio
+    async def test_resume_rechecks_leading_guard_and_bails_when_false(self) -> None:
+        """A leading Condition guard is re-checked on RUNNING-resume.
+
+        Regression guard: previously a RUNNING child made the sequence resume
+        straight at that child, never re-evaluating the gating Condition. So a
+        guarded sequence (e.g. [low_hp?, heal]) stayed pinned to its action even
+        after the guard went false (HP recovered), starving the rest of the tree.
+        Now the guard is re-checked; if it is false the sequence bails (FAILURE)
+        and does NOT re-tick the suspended action.
+        """
+        hp_low = True
+        heal_ticks = 0
+
+        async def guard_action(ctx: BrainContext) -> Status:
+            # Stand-in heal that would stay RUNNING forever on a timer.
+            nonlocal heal_ticks
+            heal_ticks += 1
+            return Status.RUNNING
+
+        node = Sequence(
+            "survival",
+            [
+                Condition("low_hp", lambda ctx: hp_low),
+                Action("heal", guard_action),
+            ],
+        )
+        ctx = make_ctx()
+
+        # Tick 1: guard true, heal starts and stays RUNNING.
+        assert await node.tick(ctx) == Status.RUNNING
+        assert heal_ticks == 1
+
+        # HP recovers — guard is now false.
+        hp_low = False
+
+        # Tick 2: resume must re-check the guard, find it false, and bail
+        # WITHOUT re-ticking the heal action.
+        assert await node.tick(ctx) == Status.FAILURE
+        assert heal_ticks == 1  # heal NOT re-fired
+        assert node._running_index == 0  # reset for a fresh run
+
+    @pytest.mark.asyncio
+    async def test_resume_keeps_running_while_guard_holds(self) -> None:
+        """If the leading guard still holds, resume proceeds at the RUNNING child
+        without re-firing earlier side-effecting Actions."""
+        prior_calls = 0
+        running_ticks = 0
+
+        async def prior_action(ctx: BrainContext) -> Status:
+            nonlocal prior_calls
+            prior_calls += 1
+            return Status.SUCCESS
+
+        async def worker(ctx: BrainContext) -> Status:
+            nonlocal running_ticks
+            running_ticks += 1
+            return Status.RUNNING if running_ticks < 2 else Status.SUCCESS
+
+        node = Sequence(
+            "guarded",
+            [
+                Condition("gate", lambda ctx: True),  # always holds
+                Action("prior", prior_action),
+                Action("worker", worker),
+            ],
+        )
+        ctx = make_ctx()
+
+        assert await node.tick(ctx) == Status.RUNNING
+        assert await node.tick(ctx) == Status.SUCCESS
+        # Guard re-checked (harmless) but the side-effecting prior fired once.
+        assert prior_calls == 1
+        assert running_ticks == 2
+
 
 # ---------------------------------------------------------------------------
 # Composite tree tests
