@@ -1012,9 +1012,18 @@ class Planner:
         # When a backlog has piled up, prefer sell_to_vendor — its can_start
         # already verifies a vendor is nearby, so when none is in range this
         # falls through to normal hunting (no thrash).
+        #
+        # ...BUT only between fights. The flush preempts the WHOLE profession
+        # loop (hunt_nearby included), so without a combat guard a backlog of 6+
+        # looted items pulls the warrior OUT of a live, winnable fight every loop
+        # to walk to the vendor — in a survival arena (vendor co-located with the
+        # spawn) that means repeatedly turning its back on engaged mobs and
+        # bleeding out. Yield to an in-range combat target, exactly like the
+        # standalone-bandage gate above; selling resumes once the fight is over.
         if (
             profession == "adventurer"
             and _count_sellable_loot_in_pack(ctx) >= LOOT_SELL_BACKLOG_THRESHOLD
+            and not _loot_flush_should_yield_to_combat(ctx)
         ):
             sell = _get_proc("sell_to_vendor")
             if sell and await sell.can_start(ctx):
@@ -4804,6 +4813,26 @@ def _bandage_should_yield_to_combat(ctx, ss) -> bool:
 
     if ss.hits_max > 0 and ss.hp_percent <= RETREAT_HP_PCT:
         return False
+    return _find_target(ctx) is not None
+
+
+def _loot_flush_should_yield_to_combat(ctx) -> bool:
+    """True when the adventurer loot-flush (sell_to_vendor) should defer to a
+    live fight.
+
+    The loot-flush gate preempts the entire first-startable profession loop —
+    hunt_nearby included — the instant the sellable backlog crosses
+    LOOT_SELL_BACKLOG_THRESHOLD. With a vendor in range (the survival-arena
+    layout co-locates it with the spawn) that drags the warrior away from an
+    engaged mob to sell, every loop, forfeiting swings and exposing its back to
+    the swarm. Yield (return True) whenever combat has a target in ENGAGE_RANGE,
+    so the loot only flushes BETWEEN fights. Unlike the bandage gate this has no
+    HP carve-out: when critically wounded the Priority-1 survival branches have
+    already returned above, so any path reaching the loot-flush is healthy
+    enough that an in-range target means "keep fighting, sell later".
+    """
+    from anima.procedures.combat_loop import _find_target
+
     return _find_target(ctx) is not None
 
 
