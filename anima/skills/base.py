@@ -9,6 +9,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from anima.brain.behavior_tree import BrainContext
 
+# Map the short stat names used in ``required_stats`` (per the documented
+# ``{"str": 30}`` form) to the actual attributes on ``SelfState``, which stores
+# stats as ``strength`` / ``dexterity`` / ``intelligence``. Without this
+# translation ``getattr(ss, "str", 0)`` resolves to the default ``0`` and every
+# positive stat requirement is silently impossible to satisfy. The full
+# attribute names are accepted too so either spelling works.
+_STAT_ATTR: dict[str, str] = {
+    "str": "strength",
+    "dex": "dexterity",
+    "int": "intelligence",
+}
+
 
 @dataclass
 class SkillResult:
@@ -40,7 +52,7 @@ class Skill(ABC):
     required_items: list[int] = []       # item graphics needed in backpack
     required_nearby: list[int] = []      # object graphics needed nearby
     required_skill: tuple[int, float] | None = None  # (skill_id, min_value)
-    required_stats: dict[str, int] = {}  # e.g. {"str": 30}
+    required_stats: dict[str, int] = {}  # e.g. {"str": 30} (str/dex/int)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
         """Check if all preconditions are met."""
@@ -80,7 +92,8 @@ class Skill(ABC):
 
         # Check required stats
         for stat_name, min_val in self.required_stats.items():
-            actual = getattr(ss, stat_name, 0)
+            attr = _STAT_ATTR.get(stat_name, stat_name)
+            actual = getattr(ss, attr, 0)
             if actual < min_val:
                 return False
 

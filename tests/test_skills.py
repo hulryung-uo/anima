@@ -44,6 +44,26 @@ class NeedsItemSkill(Skill):
         return SkillResult(success=True, reward=3.0, message="ok")
 
 
+class NeedsStrSkill(Skill):
+    name = "needs_str"
+    category = "test"
+    description = "Needs minimum strength"
+    required_stats = {"str": 30}  # documented short-name form
+
+    async def execute(self, ctx):
+        return SkillResult(success=True, reward=3.0, message="ok")
+
+
+class NeedsBigStrSkill(Skill):
+    name = "needs_big_str"
+    category = "test"
+    description = "Needs a lot of strength"
+    required_stats = {"strength": 999}  # full attribute-name form
+
+    async def execute(self, ctx):
+        return SkillResult(success=True, reward=3.0, message="ok")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -130,6 +150,39 @@ class TestSkill:
         result = await skill.execute(ctx)
         assert result.success is True
         assert result.reward == 5.0
+
+    @pytest.mark.asyncio
+    async def test_required_stats_short_name_met(self) -> None:
+        """Regression: ``required_stats={"str": 30}`` must read SelfState.strength.
+
+        SelfState stores stats as ``strength``/``dexterity``/``intelligence``, but
+        the precondition is documented with the short ``str``/``dex``/``int`` keys.
+        The old code did ``getattr(ss, "str", 0)`` which resolved to the default
+        ``0`` and made every positive stat requirement impossible to satisfy. The
+        test ctx has strength=50, so a 30-strength gate must pass.
+        """
+        skill = NeedsStrSkill()
+        ctx = make_ctx()
+        assert ctx.perception.self_state.strength == 50
+        assert await skill.can_execute(ctx) is True
+
+    @pytest.mark.asyncio
+    async def test_required_stats_short_name_unmet(self) -> None:
+        """A genuinely-too-low stat still gates the skill off."""
+        skill = NeedsStrSkill()
+        ctx = make_ctx()
+        ctx.perception.self_state.strength = 10
+        assert await skill.can_execute(ctx) is False
+
+    @pytest.mark.asyncio
+    async def test_required_stats_full_attribute_name(self) -> None:
+        """The full attribute name (``strength``) is also accepted and enforced."""
+        skill = NeedsBigStrSkill()
+        ctx = make_ctx()
+        # strength=50 in the test ctx, requirement is 999 -> not met.
+        assert await skill.can_execute(ctx) is False
+        ctx.perception.self_state.strength = 1000
+        assert await skill.can_execute(ctx) is True
 
     def test_repr(self) -> None:
         skill = DummySkill()
