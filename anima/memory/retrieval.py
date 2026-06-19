@@ -157,13 +157,14 @@ def _disposition_word(d: float) -> str:
 
 def _infer_context_pattern(ctx: BrainContext) -> str:
     """Infer a rough context pattern from the current game state."""
-    ss = ctx.perception.self_state
-    nearby_mobs = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
+    # Must match brain.think._infer_context_pattern exactly: the write path
+    # (update_action_stats) and this read path bucket by the same key, so a
+    # divergence here would look up an empty bucket. Gate "near_player" on the
+    # human body, not notoriety (which flags every hostile mob as a player).
+    from anima.skills.state import has_player_nearby
 
-    has_players = any(
-        m.notoriety is not None and m.notoriety.value <= 6
-        for m in nearby_mobs
-    )
+    ss = ctx.perception.self_state
+    has_players = has_player_nearby(ctx)
 
     if ss.hp_percent < 30:
         return "low_hp"

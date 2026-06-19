@@ -829,9 +829,13 @@ def _agent_name(ctx: BrainContext) -> str:
 def _infer_context_pattern(ctx: BrainContext) -> str:
     """Infer a rough context pattern from the current game state."""
     ss = ctx.perception.self_state
-    nearby_mobs = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
-
-    has_players = any(m.notoriety is not None and m.notoriety.value <= 6 for m in nearby_mobs)
+    # Player detection gates on the human body, not notoriety: hostile mobs
+    # carry ATTACKABLE(3)/ENEMY(5)/MURDERER(6) notoriety, so a notoriety<=6
+    # test buckets every solo grind/combat episode (a field full of monsters)
+    # under "near_player" instead of "exploring", corrupting the action-stats
+    # reward buckets the LLM later reads back via retrieve_context.
+    from anima.skills.state import has_player_nearby
+    has_players = has_player_nearby(ctx)
 
     if ss.hp_percent < 30:
         return "low_hp"

@@ -71,6 +71,28 @@ def _location_type(ctx: BrainContext) -> str:
     return "field"
 
 
+def has_player_nearby(ctx: BrainContext, distance: int = 18) -> bool:
+    """True iff another *player* (human-bodied mobile) is within ``distance``.
+
+    Player detection must gate on the body, never on notoriety: hostile mobs
+    carry ATTACKABLE(3)/ENEMY(5)/MURDERER(6) notoriety, so a ``notoriety.value
+    <= 6`` test flags every monster in the field as a "player". Players use
+    human bodies; monsters never do. The agent itself is excluded by serial.
+
+    This is the single source of truth for "is a player around" — both the
+    Q-table state key (:func:`_player_presence`) and the action-stats context
+    bucket (``_infer_context_pattern`` in brain/think.py and memory/retrieval.py)
+    consume it, so they agree on what "near_player" means.
+    """
+    ss = ctx.perception.self_state
+    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=distance)
+    self_serial = getattr(ss, "serial", None)
+    return any(
+        m.body in HUMAN_BODIES and m.serial != self_serial
+        for m in nearby
+    )
+
+
 def _player_presence(ctx: BrainContext) -> str:
     """Detect another *player* (human-bodied mobile) nearby.
 
@@ -81,13 +103,7 @@ def _player_presence(ctx: BrainContext) -> str:
     ``alone|...|enemies``). Players use human bodies; monsters never do, so gate
     on the body. The agent itself is excluded by serial.
     """
-    ss = ctx.perception.self_state
-    nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
-    has_players = any(
-        m.body in HUMAN_BODIES and m.serial != getattr(ss, "serial", None)
-        for m in nearby
-    )
-    return "players" if has_players else "alone"
+    return "players" if has_player_nearby(ctx) else "alone"
 
 
 def _enemy_presence(ctx: BrainContext) -> str:
