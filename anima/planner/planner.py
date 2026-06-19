@@ -232,13 +232,23 @@ class Planner:
     async def _run_loop(self, ctx: AgentContext) -> None:
         while self._running and ctx.conn.connected:
             # --- Request names for nearby unnamed NPCs ---
-            # Without names, _find_vendor cannot identify NPC types
-            ss = ctx.perception.self_state
-            for mob in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
-                if not mob.name and mob.serial != ss.serial:
-                    from anima.client.packets import build_opl_request, build_single_click
-                    await ctx.conn.send_packet(build_opl_request(mob.serial))
-                    await ctx.conn.send_packet(build_single_click(mob.serial))
+            # Without names, _find_vendor cannot identify NPC types.
+            # Guarded: a transient perception glitch or a bad packet build
+            # here must not escape the loop and tear down the whole session
+            # (the TaskGroup would cancel recv_loop and force a reconnect).
+            # A real disconnect is handled by the `ctx.conn.connected` loop
+            # condition, so swallowing here is safe.
+            try:
+                ss = ctx.perception.self_state
+                for mob in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18):
+                    if not mob.name and mob.serial != ss.serial:
+                        from anima.client.packets import build_opl_request, build_single_click
+                        await ctx.conn.send_packet(build_opl_request(mob.serial))
+                        await ctx.conn.send_packet(build_single_click(mob.serial))
+            except asyncio.CancelledError:
+                raise  # real shutdown — propagate
+            except Exception as e:
+                logger.warning("planner_name_request_error", error=str(e))
 
             # --- External steering ---
             if self.command_bus and self.command_bus.paused:

@@ -2078,3 +2078,67 @@ class TestExpeditionWatchdog:
             and entry.get("log_level") == "warning"
             for entry in logs
         ), f"expected expedition_watchdog warning in logs: {logs}"
+
+
+class TestRunLoopExceptionIsolation:
+    """A bad tick in the run loop must not tear down the whole session.
+
+    The NPC name-request preamble runs every iteration *before* the main
+    guarded block. A transient perception glitch or a packet-build error
+    there used to escape ``_run_loop`` → kill the planner task → the
+    TaskGroup cancels ``recv_loop`` and forces a full reconnect (losing
+    fastwalk keys + in-memory world state). It must be isolated instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_name_request_glitch_does_not_kill_loop(self):
+        """``nearby_mobiles`` raising in the preamble is swallowed, loop ends
+        cleanly via the connection-state condition (no exception propagates)."""
+        from structlog.testing import capture_logs
+
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        planner._running = True
+
+        ctx = _make_ctx()
+        ctx.conn.connected = True
+        ctx.command_bus = None
+
+        # First iteration: perception read blows up *and* the connection
+        # drops, so the while-condition exits the loop after this pass.
+        def _boom(*args, **kwargs):
+            ctx.conn.connected = False
+            raise RuntimeError("perception desync")
+
+        ctx.perception.world.nearby_mobiles = MagicMock(side_effect=_boom)
+
+        with capture_logs() as logs:
+            # Must return normally — NOT raise RuntimeError.
+            await planner._run_loop(ctx)
+
+        # The glitch was caught and logged as a warning, not propagated.
+        assert any(
+            entry.get("event") == "planner_name_request_error"
+            for entry in logs
+        ), f"expected planner_name_request_error warning, got: {logs}"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_still_propagates(self):
+        """asyncio.CancelledError in the preamble must NOT be swallowed —
+        cooperative cancellation (shutdown/reconnect) has to propagate."""
+        reg = ProcedureRegistry()
+        planner = Planner(reg)
+        planner._running = True
+
+        ctx = _make_ctx()
+        ctx.conn.connected = True
+
+        ctx.perception.world.nearby_mobiles = MagicMock(
+            side_effect=asyncio.CancelledError()
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await planner._run_loop(ctx)
+
+
+import asyncio  # noqa: E402  (used by TestRunLoopExceptionIsolation)
