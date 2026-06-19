@@ -800,3 +800,78 @@ def build_stat_lock(stat_index: int, lock_state: int) -> bytes:
     data[1] = (length >> 8) & 0xFF
     data[2] = length & 0xFF
     return bytes(data)
+
+
+def build_trade_cancel(serial: int) -> bytes:
+    """Build a SecureTrade cancel packet (0x6F, variable).
+
+    Verified against ClassicUO ``Send_TradeResponse`` with ``code == 1``
+    (src/ClassicUO.Client/Network/OutgoingPackets.cs):
+
+        ID 0x6F | len(u16 BE) | action 0x01 | trade-serial(u32 BE)
+
+    ``serial`` is the trade-window serial that the server assigned in the
+    incoming 0x6F type-0 ("open") packet — NOT a mobile serial. Closing the
+    trade window is what the server treats as a cancel.
+    """
+    w = PacketWriter()
+    w.write_u8(0x6F)
+    w.write_u16(0)  # length placeholder
+    w.write_u8(0x01)  # action: cancel
+    w.write_u32(serial & 0xFFFFFFFF)
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
+
+
+def build_trade_accept(serial: int, accept: bool) -> bytes:
+    """Build a SecureTrade set-accept packet (0x6F, variable).
+
+    Verified against ClassicUO ``Send_TradeResponse`` with ``code == 2``:
+
+        ID 0x6F | len(u16 BE) | action 0x02 | trade-serial(u32 BE) | state(u32 BE)
+
+    The accept flag is written as a *u32* (0 or 1), not a single byte — the
+    bug this guards against is sending a 1-byte bool, which desyncs the
+    server's 4-byte read and leaves the trade stuck "not accepted".
+    """
+    w = PacketWriter()
+    w.write_u8(0x6F)
+    w.write_u16(0)  # length placeholder
+    w.write_u8(0x02)  # action: set-accept
+    w.write_u32(serial & 0xFFFFFFFF)
+    w.write_u32(1 if accept else 0)
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
+
+
+def build_trade_update_gold(serial: int, gold: int, platinum: int = 0) -> bytes:
+    """Build a SecureTrade update-gold packet (0x6F, variable).
+
+    Verified against ClassicUO ``Send_TradeUpdateGold``:
+
+        ID 0x6F | len(u16 BE) | action 0x03
+               | trade-serial(u32 BE) | gold(u32 BE) | platinum(u32 BE)
+
+    Gold and platinum amounts are clamped to the u32 range so a computed
+    amount that overflows preserves intent ("offer as much as we have")
+    instead of silently wrapping mod 2**32 into a smaller, valid-looking
+    offer the server would honour.
+    """
+    w = PacketWriter()
+    w.write_u8(0x6F)
+    w.write_u16(0)  # length placeholder
+    w.write_u8(0x03)  # action: update gold
+    w.write_u32(serial & 0xFFFFFFFF)
+    w.write_u32(max(0, min(gold, 0xFFFFFFFF)))
+    w.write_u32(max(0, min(platinum, 0xFFFFFFFF)))
+    data = bytearray(w.to_bytes())
+    length = len(data)
+    data[1] = (length >> 8) & 0xFF
+    data[2] = length & 0xFF
+    return bytes(data)
