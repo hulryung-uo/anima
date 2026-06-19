@@ -108,8 +108,21 @@ async def wait_for_gump(
     if not ok:
         return ActionResult(success=False, message="Gump timeout")
 
-    # Return the most recent gump
-    gump_id = max(ss.gumps.keys())
+    # Return the most recently RECEIVED gump.
+    #
+    # ``ss.gumps`` is keyed by the gump TYPE id (the second 0xB0/0xDD field),
+    # not by recency. The old ``max(ss.gumps.keys())`` returned whichever type
+    # id was numerically largest — fine when a single craft gump keeps
+    # re-sending under an incrementing id, but wrong the moment an UNRELATED
+    # gump with a higher type id lingers alongside the one that just opened
+    # (e.g. a status/paperdoll gump still on screen when a vendor/res gump
+    # arrives). ``craft_via_gump`` and other callers then drove their click
+    # against the stale gump's serial/buttons, so the response either matched
+    # no button (ServUO disconnects the client) or operated on the wrong gump.
+    # Python dicts preserve insertion order and the 0xB0/0xDD handlers insert a
+    # fresh key per newly-opened gump, so the last key is the newest arrival —
+    # exactly the "most recent" this function documents.
+    gump_id = next(reversed(ss.gumps))
     gump = ss.gumps[gump_id]
     return ActionResult(
         success=True,
