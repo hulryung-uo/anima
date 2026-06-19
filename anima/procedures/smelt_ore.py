@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -153,6 +154,31 @@ class SmeltOre(Procedure):
             sub1 = ctx.bus.subscribe("avatar.speech_heard", _on_speech)
             sub2 = ctx.bus.subscribe("avatar.speech_cliloc", _on_speech)
 
+        # ServUO Ore.cs smelt result clilocs (Scripts/Items/Resource/Ore.cs).
+        # Any of these means the smelt attempt RESOLVED, so the per-swing
+        # wait can break immediately instead of always napping a flat 2.0s.
+        # The flat nap was the dominant dead-time sink in the mine->smelt
+        # loop: every smelt — success or instant skill/type failure — paid
+        # the full 2.0s even though the server answered in well under a
+        # second, and this procedure re-suggests itself (next_suggestion=
+        # "smelt_ore"), so the waste compounds across the whole tour.
+        _result_snippets = (
+            "put the metal in your backpack",   # 501988 success
+            "burn away the impurities",         # 501990 partial success
+            "not enough metal",                 # 501987 too small a pile
+            "no idea how to smelt",             # 501986 unsmelable type
+        )
+
+        def _journal_result_seen() -> bool:
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < smelt_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in _result_snippets):
+                    return True
+            return False
+
+        smelt_start = time.time()
         # Smelt: double-click ore → target forge
         if forge_dyn:
             result = await use_on_object(ctx, ore.serial, forge_dyn[3])
@@ -172,7 +198,23 @@ class SmeltOre(Procedure):
                 message=result.message,
             )
 
-        await asyncio.sleep(2.0)
+        # Event-driven cadence (mirrors MineOre / ChopWood): poll until the
+        # smelt resolves — new ingots in the pack, the "not enough metal"
+        # flag, or a smelt-result journal line — and only burn the full
+        # window on a true timeout.
+        def _ingots_in_pack() -> int:
+            return sum(
+                it.amount for it in world.items.values()
+                if it.container == backpack and it.graphic in INGOT_GRAPHICS
+            )
+
+        deadline = smelt_start + 2.0
+        while time.time() < deadline:
+            await asyncio.sleep(0.2)
+            if (_ingots_in_pack() > ingots_before
+                    or _smelt_flags["not_enough"]
+                    or _journal_result_seen()):
+                break
 
         if ctx.bus:
             if sub1:
