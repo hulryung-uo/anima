@@ -78,11 +78,47 @@ PROFESSION_LOOPS: dict[str, tuple[str, ...]] = {
     # (wander_for_combat) instead of falling through to the mining chain —
     # the largest COMBAT-uptime leak (variance-dominated seeds: engaged vs
     # stuck in mining fallthrough).
-    "adventurer": ("bandage_self", "hunt_nearby", "wander_for_combat"),
+    # sell_to_vendor is last so looted weapons/armor get flushed to a
+    # vendor once a backlog piles up (see the loot-flush gate in decide()):
+    # without it the adventurer's worth_term stays structurally 0 —
+    # bandage_self/hunt_nearby are first-startable-wins and never yield.
+    "adventurer": (
+        "bandage_self", "hunt_nearby", "wander_for_combat", "sell_to_vendor",
+    ),
     # stationary, gump-resident craft loop (wiki optimum); smelt feeds it,
     # selling restocks. Falls through to the generic ladder when blocked.
     "blacksmith": ("craft_blacksmith", "smelt_ore", "sell_to_vendor"),
 }
+
+# Once this many vendor-sellable looted items (weapons/armor/etc. that a
+# vendor will buy, excluding protected tools/materials) pile up in the pack,
+# the adventurer loop prefers sell_to_vendor over hunting so the loot
+# converts to gold (worth_term) instead of sitting dead in the backpack.
+LOOT_SELL_BACKLOG_THRESHOLD = 6
+
+
+def _count_sellable_loot_in_pack(ctx: AgentContext) -> int:
+    """Count vendor-sellable looted items sitting in the backpack.
+
+    "Sellable" = graphic appears in ITEM_VENDOR_MAP (some vendor buys it)
+    and is NOT in KEEP_GRAPHICS (essential tools / raw materials / gold are
+    never the sell backlog). Mirrors craft_blacksmith._count_crafted_in_pack
+    but for the loot an adventurer accumulates from corpses.
+    """
+    from anima.procedures.vendor_knowledge import ITEM_VENDOR_MAP
+    from anima.skills.trade.vendor import KEEP_GRAPHICS
+
+    ss = ctx.perception.self_state
+    backpack = ss.equipment.get(0x15)
+    if not backpack:
+        return 0
+    return sum(
+        getattr(item, "amount", 1)
+        for item in ctx.perception.world.items.values()
+        if item.container == backpack
+        and item.graphic in ITEM_VENDOR_MAP
+        and item.graphic not in KEEP_GRAPHICS
+    )
 
 
 def _is_supervisor_skipped(procedure: str) -> bool:
@@ -815,6 +851,20 @@ class Planner:
         # as the primary activity; the mining chain below stays as the
         # default for miner-type personas and as the universal fallback.
         profession = getattr(ctx.persona, "profession", "") or ""
+        # Loot-flush gate: an adventurer accumulates vendor-sellable gear
+        # from corpses but bandage_self/hunt_nearby always win the
+        # first-startable loop, so the looted gear never converts to gold.
+        # When a backlog has piled up, prefer sell_to_vendor — its can_start
+        # already verifies a vendor is nearby, so when none is in range this
+        # falls through to normal hunting (no thrash).
+        if (
+            profession == "adventurer"
+            and _count_sellable_loot_in_pack(ctx) >= LOOT_SELL_BACKLOG_THRESHOLD
+        ):
+            sell = _get_proc("sell_to_vendor")
+            if sell and await sell.can_start(ctx):
+                _intent(f"직업 활동 ({profession}) → 전리품 판매 (sell_to_vendor)")
+                return sell
         for proc_name in PROFESSION_LOOPS.get(profession, ()):
             proc = _get_proc(proc_name)
             if proc and await proc.can_start(ctx):
