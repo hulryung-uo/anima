@@ -125,3 +125,87 @@ def test_packet_build_walk():
     assert data[0] == 0x02
     assert data[1] == 0x82  # direction with run flag
     assert data[2] == 5     # sequence
+
+
+# --- Item interaction builders (0x06 / 0x07 / 0x08 / 0x13) ---------------
+# Byte layouts verified against ClassicUO OutgoingPackets.cs
+# (Send_DoubleClick / Send_PickUpRequest / Send_DropRequest /
+# Send_EquipRequest) and ServUO PacketHandlers.cs (DropReq6017 = 15 bytes,
+# EquipReq = 10 bytes). These lock the wire format against silent
+# regressions in fresh, otherwise-untested territory.
+
+
+def test_build_double_click_layout():
+    from anima.client.packets import build_double_click
+
+    data = build_double_click(0x40001234)
+    assert len(data) == 5
+    assert data[0] == 0x06
+    assert data[1:5] == bytes([0x40, 0x00, 0x12, 0x34])  # serial, big-endian
+
+
+def test_build_pick_up_layout():
+    from anima.client.packets import build_pick_up
+
+    data = build_pick_up(0x40005678, amount=5)
+    assert len(data) == 7
+    assert data[0] == 0x07
+    assert data[1:5] == bytes([0x40, 0x00, 0x56, 0x78])  # serial BE
+    assert data[5:7] == bytes([0x00, 0x05])              # amount u16 BE
+
+
+def test_build_pick_up_clamps_overflowing_amount():
+    # A computed amount above the u16 ceiling must clamp to 0xFFFF
+    # (lift as much as possible), not wrap mod 65536 into a wrong count.
+    from anima.client.packets import build_pick_up
+
+    data = build_pick_up(0x1, amount=70000)
+    assert data[5:7] == bytes([0xFF, 0xFF])  # clamped, NOT 70000 & 0xFFFF
+    # Negative amounts clamp to 0 rather than wrapping to a huge stack.
+    data = build_pick_up(0x1, amount=-1)
+    assert data[5:7] == bytes([0x00, 0x00])
+
+
+def test_build_drop_item_to_container_layout():
+    # Modern 6017 drop: serial, x, y, z, grid-slot byte, container.
+    # Dropping into a container uses x=y=0xFFFF (auto-place sentinel),
+    # matching ClassicUO's grab-bag drop (GameActions.cs).
+    from anima.client.packets import build_drop_item
+
+    data = build_drop_item(0x4000AAAA, container=0x40001111)
+    assert len(data) == 15
+    assert data[0] == 0x08
+    assert data[1:5] == bytes([0x40, 0x00, 0xAA, 0xAA])   # item serial BE
+    assert data[5:7] == bytes([0xFF, 0xFF])               # x = 0xFFFF
+    assert data[7:9] == bytes([0xFF, 0xFF])               # y = 0xFFFF
+    assert data[9] == 0x00                                # z (i8)
+    assert data[10] == 0x00                               # grid slot
+    assert data[11:15] == bytes([0x40, 0x00, 0x11, 0x11]) # container BE
+
+
+def test_build_drop_item_to_ground_layout():
+    # Ground drop: explicit coords, container left at the 0xFFFFFFFF
+    # "no container" sentinel.
+    from anima.client.packets import build_drop_item
+
+    data = build_drop_item(0x40002222, x=1000, y=2000, z=-5)
+    assert len(data) == 15
+    assert data[0] == 0x08
+    assert data[5:7] == (1000).to_bytes(2, "big")
+    assert data[7:9] == (2000).to_bytes(2, "big")
+    assert data[9] == 0xFB                                 # z = -5 as i8
+    assert data[10] == 0x00                                # grid slot
+    assert data[11:15] == bytes([0xFF, 0xFF, 0xFF, 0xFF])  # no container
+
+
+def test_build_equip_item_layout():
+    # 0x13: item serial, layer byte, wearer serial — 10 bytes total.
+    # ServUO EquipReq seeks past serial(4)+layer(1) then reads the wearer.
+    from anima.client.packets import build_equip_item
+
+    data = build_equip_item(0x40003333, layer=0x02, mobile_serial=0x00012345)
+    assert len(data) == 10
+    assert data[0] == 0x13
+    assert data[1:5] == bytes([0x40, 0x00, 0x33, 0x33])  # item serial BE
+    assert data[5] == 0x02                               # layer (TwoHanded)
+    assert data[6:10] == bytes([0x00, 0x01, 0x23, 0x45]) # wearer serial BE

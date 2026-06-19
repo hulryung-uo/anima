@@ -547,11 +547,18 @@ def build_cast_spell(spell_id: int) -> bytes:
 
 
 def build_pick_up(serial: int, amount: int = 1) -> bytes:
-    """Build PickUp packet (0x07, 7 bytes)."""
+    """Build PickUp packet (0x07, 7 bytes).
+
+    ``amount`` is the stack count, a u16 on the wire (ClassicUO
+    ``Send_PickUpRequest``). Clamp it to [0, 0xFFFF] so a computed
+    quantity that overflows preserves intent ("lift as much as
+    possible") instead of silently wrapping mod 65536 into a smaller,
+    valid-looking — but wrong — lift the server would honour.
+    """
     w = PacketWriter()
     w.write_u8(0x07)
     w.write_u32(serial)
-    w.write_u16(amount)
+    w.write_u16(max(0, min(amount, 0xFFFF)))
     return w.to_bytes()
 
 
