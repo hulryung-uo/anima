@@ -108,3 +108,32 @@ async def test_real_say_still_spoken(monkeypatch):
 
     assert status is Status.SUCCESS
     ctx.conn.send_packet.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_null_place_on_go_does_not_crash(monkeypatch):
+    """A ``go`` decision with an explicit JSON ``null`` (or missing) ``place``
+    must not crash the think tick.
+
+    ``action.get("place", "")`` returns ``None`` for ``{"place": null}`` (the
+    default only fills a *missing* key), and ``find_location(None)`` does
+    ``None.strip()`` → AttributeError, killing the whole decision tick. The fix
+    coerces null/non-str to "" so ``find_location`` cleanly reports the place
+    unknown and ``llm_think`` takes its graceful goal_place_unknown branch.
+    """
+    now = 1_000_000.0
+    monkeypatch.setattr(think.time, "time", lambda: now)
+
+    ctx = _make_ctx(chat_text='{"action": "go", "place": null, "say": null}')
+    # memory_db is None on the test ctx, so the goal_place_unknown branch's
+    # _record_episode call is a cheap no-op.
+
+    # Before the fix this raised AttributeError: 'NoneType' has no 'strip'.
+    status = await llm_think(ctx)
+
+    assert status is Status.SUCCESS
+    # A null place resolves to no location → no goal committed, no movement.
+    assert ctx.blackboard.get("current_goal") is None
+    assert ctx.blackboard.get("move_target") is None
+    # No speech for a null ``say``.
+    ctx.conn.send_packet.assert_not_awaited()

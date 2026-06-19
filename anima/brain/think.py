@@ -412,7 +412,14 @@ async def llm_think(ctx: BrainContext) -> Status:
 
     # Execute action
     if act == "go":
-        place_name = action.get("place", "")
+        # ``dict.get(key, default)`` only substitutes the default for a MISSING
+        # key — a key present with JSON ``null`` yields ``None`` (the same trap
+        # the say/reason/action fields above were hardened against). LLMs very
+        # commonly emit ``{"action": "go", "place": null}`` (or omit it after
+        # leaving the ``"<place name>"`` placeholder unfilled). ``None`` would
+        # flow into ``find_location`` → ``name.strip()`` → AttributeError,
+        # aborting the whole decision tick. Coerce null/non-str to "".
+        place_name = action.get("place") or ""
         loc = find_location(place_name)
         if loc:
             # Use approach point for indoor locations
