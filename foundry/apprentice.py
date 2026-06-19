@@ -144,10 +144,28 @@ def _longest_alive_stretch(summary: TrajectorySummary,
 
 def _longest_sample_gap(summary: TrajectorySummary) -> float:
     """Longest gap between consecutive vitals/position samples — a coarse
-    'went quiet' (possible stall) indicator."""
-    ts_list = sorted(t for t, *_ in (summary.hp_samples + summary.positions))
-    if len(ts_list) < 2:
+    'went quiet' (possible stall) indicator.
+
+    The window edges (``start_ts``..``end_ts``) are part of the timeline: an
+    agent that connects but never sends vitals/position, or that goes silent
+    and stays silent until the window closes, produces NO inter-sample gap, yet
+    that leading/trailing dead-air is exactly the stall this metric exists to
+    catch. So the first/last sample are bracketed against the window bounds (as
+    ``_longest_alive_stretch`` and ``alive_fraction`` already do) rather than
+    only diffing observed samples. Empty timeline → the whole window is dead
+    air. Samples are clamped into the window so a stray out-of-window packet
+    can't inflate or negate the gap.
+    """
+    lo, hi = summary.start_ts, summary.end_ts
+    if hi <= lo:
         return 0.0
+    sample_ts = sorted(
+        min(max(t, lo), hi)
+        for t, *_ in (summary.hp_samples + summary.positions)
+    )
+    if not sample_ts:
+        return hi - lo  # never reported in → the entire window is a gap
+    ts_list = [lo, *sample_ts, hi]
     return max(b - a for a, b in zip(ts_list, ts_list[1:]))
 
 
