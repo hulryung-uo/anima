@@ -70,6 +70,16 @@ WEAPON_GRAPHICS = {
 ENGAGE_RANGE = 10        # tiles to scan for targets
 ENGAGEMENT_CAP_S = 45.0  # per-target time box
 RETREAT_HP_PCT = 35.0    # break off and retreat below this
+# Flee-threshold hysteresis. HP%% is read off mobile-status packets and can dip
+# for a single tick — a damage packet landing just before the bandage it
+# triggered resolves, or a momentary status-bar reading — only to recover on the
+# next read. Breaking off on one sub-floor sample abandons a winnable fight and,
+# because can_start only needs 40%%, the agent can immediately re-hunt and flap
+# anchor<->mob. So a *single* dip arms a strike; we only retreat once HP is below
+# the floor for this many consecutive ticks. Any tick at/above the floor clears
+# the strike count. (Same "don't trust a transient blip" reasoning as the
+# apprentice hp=0 death-debounce, commit 44fdedc.)
+RETREAT_CONFIRM_TICKS = 2
 TICK_S = 1.0
 
 BANDAGE_HP_PCT = 85.0    # interleave a self-bandage below this
@@ -93,6 +103,23 @@ CORPSE_SPAWN_WAIT_S = 1.0  # kill → corpse item appears in world state
 # room to resolve). We don't flee — we reposition and keep the engagement.
 SURROUND_COUNT = 3
 REPOSITION_STEP = 2      # tiles to back off from the hostile centroid
+
+
+def _should_retreat(ctx: AgentContext, hp_pct: float, hits_max: int) -> bool:
+    """True only after HP stays below the retreat floor for consecutive ticks.
+
+    Debounces a single transient sub-floor HP reading (see
+    ``RETREAT_CONFIRM_TICKS``): a lone dip arms a strike but does not break the
+    engagement; the strike count must reach ``RETREAT_CONFIRM_TICKS`` before we
+    retreat. A tick at/above the floor (or unknown HP, ``hits_max <= 0``) resets
+    the count, so a recovered blip never carries over into a later real drop.
+    """
+    if hits_max <= 0 or hp_pct >= RETREAT_HP_PCT:
+        ctx.blackboard["_retreat_strikes"] = 0
+        return False
+    strikes = ctx.blackboard.get("_retreat_strikes", 0) + 1
+    ctx.blackboard["_retreat_strikes"] = strikes
+    return strikes >= RETREAT_CONFIRM_TICKS
 
 
 def _bandage_trigger_pct(ctx: AgentContext, hp_pct: float, now: float) -> float:
@@ -359,7 +386,7 @@ class HuntNearby(Procedure):
             while time.monotonic() < deadline and ctx.conn.connected:
                 await asyncio.sleep(TICK_S)
 
-                if ss.hits_max > 0 and ss.hp_percent < RETREAT_HP_PCT:
+                if _should_retreat(ctx, ss.hp_percent, ss.hits_max):
                     retreated = True
                     break
 
