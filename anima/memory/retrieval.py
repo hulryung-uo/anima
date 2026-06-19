@@ -108,18 +108,29 @@ async def retrieve_context(ctx: BrainContext) -> str:
     # (a recommendation), negative-average ones as "costly — avoid" (a
     # warning). Neither list is dropped, so the warning signal in the losses
     # is preserved instead of masquerading as advice.
+    #
+    # The cap must be applied *per section*, never to the raw list. get_location_values
+    # returns rows ordered by average reward DESC, so the costly (negative-average)
+    # activities always sort last. Slicing loc_values[:5] before the split therefore
+    # silently discarded the warnings whenever a region had more than five activities
+    # (e.g. several profitable ones plus a couple of lethal ones): the agent would be
+    # told only where things pay off and never warned away from where it kept dying —
+    # the exact failure this block's redesign claimed to prevent. Split first over the
+    # full list, then cap each section independently.
     rx, ry = region_coords(ss.x, ss.y)
     loc_values = await memory_db.get_location_values(agent_name, rx, ry)
     if loc_values:
         good_lines: list[str] = []
         bad_lines: list[str] = []
-        for activity, total_r, visits in loc_values[:5]:
+        for activity, total_r, visits in loc_values:
             avg = total_r / visits if visits else 0
             line = f"  - {activity}: avg reward {avg:+.1f} ({visits} visits)"
             if avg > 0:
-                good_lines.append(line)
+                if len(good_lines) < 5:
+                    good_lines.append(line)
             elif avg < 0:
-                bad_lines.append(line)
+                if len(bad_lines) < 5:
+                    bad_lines.append(line)
         if good_lines:
             parts.append(
                 f"This area (region {rx},{ry}) pays off for:\n"

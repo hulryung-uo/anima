@@ -563,3 +563,33 @@ class TestRetrievalLocationFraming:
         # mine appears in the pays-off block (before the avoid header);
         # fight appears in the avoid block (after it).
         assert pays_idx < mine_idx < avoid_idx < fight_idx
+
+    @pytest.mark.asyncio
+    async def test_costly_warning_survives_many_profitable_activities(
+        self, db: MemoryDB
+    ) -> None:
+        """A costly activity must still surface as a warning even when the region
+        has more than five profitable activities.
+
+        get_location_values orders by average reward DESC, so the negative-average
+        ("avoid") rows sort last. A naive loc_values[:5] pre-slice would drop them
+        once five higher-paying activities exist, silently suppressing the warning
+        channel the block promises to preserve.
+        """
+        from anima.memory.retrieval import retrieve_context
+
+        x, y = 1600, 1700
+        rx, ry = region_coords(x, y)
+        # Six profitable activities (all rank above the loss on avg-DESC) ...
+        for i, reward in enumerate((9.0, 8.0, 7.0, 6.0, 5.0, 4.0)):
+            await db.update_location_value("Anima", rx, ry, f"profit{i}", reward)
+        # ... plus one activity that only ever lost reward.
+        await db.update_location_value("Anima", rx, ry, "deathtrap", -8.0)
+
+        block = await retrieve_context(_retrieval_ctx(db, x, y))
+
+        # The warning must not be crowded out by the profitable activities.
+        assert "deathtrap" in block
+        assert "costly" in block.lower() or "avoid" in block.lower()
+        avoid_anchor = "costly" if "costly" in block else "avoid"
+        assert block.index(avoid_anchor) < block.index("deathtrap")
