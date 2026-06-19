@@ -192,6 +192,10 @@ class MemoryDB:
         # callers cannot interleave between the get_relationship read and the
         # INSERT, which would otherwise race to create duplicate rows.
         self._rel_lock = asyncio.Lock()
+        # Same protection for add_knowledge: a fact re-observed (reflection runs
+        # every 20 episodes, discovery re-scans the same vendor/resource) must
+        # not race two callers into two duplicate rows.
+        self._knowledge_lock = asyncio.Lock()
 
     async def init(self) -> None:
         """Open the database and create tables if needed."""
@@ -316,14 +320,49 @@ class MemoryDB:
         source: str = "experience",
         confidence: float = 0.5,
     ) -> int:
+        """Insert a fact, or *confirm* it if the exact fact already exists.
+
+        Knowledge is re-observed constantly — the reflection loop re-extracts
+        the same patterns every 20 episodes and discovery re-scans the same
+        vendors/resources on every pass. Blindly INSERTing each time floods the
+        table with exact duplicates so the ``query_knowledge`` top-N (ordered by
+        confidence, then recency) fills up with copies of one fact and crowds
+        out every *other* thing the agent knows — recall collapses to a single
+        repeated line. Worse, re-seeing a fact should make the agent *more* sure
+        of it, not spawn another timid 0.5-confidence row.
+
+        So a repeat of the same (agent_name, fact) is treated as a confirmation:
+        bump confidence toward 1.0 (never below what's already stored) and
+        refresh ``last_confirmed``. Returns the row id (existing or new). The
+        read-modify-write is serialized so two concurrent re-observations can't
+        both miss the existing row and each INSERT.
+        """
         now = time.time()
-        cursor = await self.db.execute(
-            """INSERT INTO knowledge (agent_name, fact, source, confidence, created, last_confirmed)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (agent_name, fact, source, confidence, now, now),
-        )
-        await self.db.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        async with self._knowledge_lock:
+            existing = await self.db.execute_fetchall(
+                "SELECT id, confidence FROM knowledge WHERE agent_name = ? AND fact = ?",
+                (agent_name, fact),
+            )
+            if existing:
+                row = existing[0]
+                # Confirmation: strengthen confidence (matching confirm_knowledge's
+                # +0.1 step) but never let a fresh low-confidence re-add weaken a
+                # fact we'd already grown more sure of.
+                new_conf = min(1.0, max(row["confidence"], confidence) + 0.1)
+                await self.db.execute(
+                    """UPDATE knowledge SET confidence = ?, last_confirmed = ?
+                       WHERE id = ?""",
+                    (new_conf, now, row["id"]),
+                )
+                await self.db.commit()
+                return row["id"]
+            cursor = await self.db.execute(
+                """INSERT INTO knowledge (agent_name, fact, source, confidence, created, last_confirmed)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (agent_name, fact, source, confidence, now, now),
+            )
+            await self.db.commit()
+            return cursor.lastrowid  # type: ignore[return-value]
 
     async def query_knowledge(
         self, agent_name: str, keyword: str = "", limit: int = 5
