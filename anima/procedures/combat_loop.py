@@ -25,7 +25,7 @@ from anima.actions.equip import equip_shield_from_pack, equip_weapon_from_pack
 from anima.actions.inventory import find_in_backpack
 from anima.actions.loot import find_corpses, loot_corpse
 from anima.actions.target import use_on_object
-from anima.client.packets import build_attack, build_war_mode
+from anima.client.packets import build_attack, build_double_click, build_war_mode
 from anima.perception.enums import NotorietyFlag
 from anima.procedures.bandage_self import BANDAGE_GRAPHICS
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
@@ -92,6 +92,28 @@ HEAVY_DPS_PCT_PER_S = 8.0
 BANDAGE_REAPPLY_S = 8.5  # min spacing — re-applying restarts the timer
 LOOT_RANGE = 2           # container-open range for corpses
 CORPSE_SPAWN_WAIT_S = 1.0  # kill → corpse item appears in world state
+
+# Emergency heal-potion quaff. A bandage and a potion run on two *independent*
+# timers in UO — drinking a heal potion gives an instant HP bump while a
+# bandage is still applying. The interleaved bandage (above) takes ~8s to
+# resolve; against heavy DPS HP can cross the RETREAT_HP_PCT floor inside that
+# window and the agent flees a winnable fight with a heal still in flight. A
+# heal potion is the right tool for exactly that gap: instant top-up to buy the
+# bandage time to land. So: a potion is *not* a substitute for the bandage
+# (which we keep using for the Healing skill stream and sustained throughput) —
+# it is an emergency rescue layered on top, fired only when HP is critically
+# low (POTION_HP_PCT, just above the retreat floor so it gets a chance before
+# we break off). Heal potions are drunk by a plain double-click — NO target
+# cursor (unlike a bandage) — and carry their own server-side use-delay, so we
+# gate on a dedicated cooldown key independent of _bandage_last_ts.
+HEAL_POTION_GRAPHICS = {
+    0x0F0C,  # greater heal potion
+    0x0F0B,  # heal potion
+}
+POTION_HP_PCT = 45.0     # quaff once HP drops below this (above the 35% floor)
+# UO potion use-delay is ~10s wall-clock; never spam-quaff inside it (the drink
+# would be refused server-side and we'd waste the loop tick).
+POTION_COOLDOWN_S = 10.0
 
 # Anti-surround positioning. A melee mob can only swing the agent while it is
 # adjacent (Chebyshev distance 1), so each extra adjacent hostile is another
@@ -176,6 +198,43 @@ async def _maybe_bandage(ctx: AgentContext) -> None:
         )
     else:
         logger.debug("combat_bandage_failed", message=used.message)
+
+
+async def _maybe_quaff_heal_potion(ctx: AgentContext) -> bool:
+    """Drink a heal potion for an instant HP top-up when critically low.
+
+    Returns True if a potion was quaffed this tick. Independent of the bandage
+    timer (the two heal on separate server cooldowns), so this can fire while a
+    bandage is mid-apply — that overlap is the whole point. Gated on three
+    things, all of which must hold:
+
+      1. HP is *known* and below POTION_HP_PCT (critical, near the retreat
+         floor) — no point burning a potion on a flesh wound.
+      2. The potion's own ~10s cooldown (POTION_COOLDOWN_S) has elapsed — UO
+         refuses a drink inside the use-delay, so quaffing again is wasted.
+      3. A heal potion is actually in the backpack — availability gate; an
+         empty pack must be a clean no-op, never a phantom heal.
+
+    A heal potion is a plain double-click with no target cursor, so we send the
+    use packet directly and return — no wait, war mode stays on.
+    """
+    ss = ctx.perception.self_state
+    now = time.monotonic()
+    if ss.hits_max <= 0 or ss.hp_percent >= POTION_HP_PCT:
+        return False
+    if now - ctx.blackboard.get("_potion_last_ts", 0.0) < POTION_COOLDOWN_S:
+        return False
+    potions = find_in_backpack(ctx, HEAL_POTION_GRAPHICS)
+    if not potions:
+        return False
+    await ctx.conn.send_packet(build_double_click(potions[0].serial))
+    ctx.blackboard["_potion_last_ts"] = now
+    logger.info(
+        "combat_heal_potion",
+        hp_pct=round(ss.hp_percent, 1),
+        serial=f"0x{potions[0].serial:08X}",
+    )
+    return True
 
 
 def _adjacent_hostiles(ctx: AgentContext) -> list:
@@ -391,6 +450,12 @@ class HuntNearby(Procedure):
 
             while time.monotonic() < deadline and ctx.conn.connected:
                 await asyncio.sleep(TICK_S)
+
+                # Emergency instant top-up: a heal potion runs on its own timer
+                # so it can rescue HP in the ~8s a bandage takes to resolve.
+                # Fire it *before* the retreat check so an available potion gets
+                # a chance to pull HP back above the floor and save the fight.
+                await _maybe_quaff_heal_potion(ctx)
 
                 if _should_retreat(ctx, ss.hp_percent, ss.hits_max):
                     retreated = True
