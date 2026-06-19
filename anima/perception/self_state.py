@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from anima.perception.enums import Lock, MobileFlags, NotorietyFlag
+from anima.perception.world_state import _GHOST_BODIES
 
 if TYPE_CHECKING:
     from anima.perception.gump import GumpData
@@ -166,7 +167,28 @@ class SelfState:
         return (self.stam / self.stam_max) * 100.0
 
     @property
+    def is_ghost(self) -> bool:
+        """True while our own mobile is wearing a ghost body graphic.
+
+        On death ServUO turns the player into a ghost (0x0192/0x0193 on foot,
+        or the mounted/flying ghost bodies) and that body change — synced by
+        the 0x78/0x20/0x77 handlers into ``self.body`` — is the authoritative
+        death signal ClassicUO uses (Mobile.IsDead). The health-bar packets
+        (0x11/0xA1) are NOT a reliable death oracle for self: a ghost can show
+        a non-zero bar, and an out-of-order 0xA1 can land after the body flip
+        still carrying the pre-death ``hits``. Mirrors WorldState._GHOST_BODIES
+        so self and foes share one corpse criterion.
+        """
+        return self.body in _GHOST_BODIES
+
+    @property
     def is_alive(self) -> bool:
+        # A ghost body is dead no matter what the health bar says — the body
+        # flip is the authoritative death signal (see is_ghost). Otherwise we
+        # are alive if we have positive HP, or if HP is simply unknown
+        # (hits_max==0 placeholder before the first status packet arrives).
+        if self.is_ghost:
+            return False
         return self.hits > 0 or self.hits_max == 0
 
     @property

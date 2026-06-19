@@ -123,6 +123,40 @@ class TestSelfState:
         s.hits = 0
         assert s.is_alive is False
 
+    def test_is_alive_ghost_body_overrides_stale_health_bar(self):
+        # Regression: on death ServUO flips the player to a ghost body, but a
+        # stale / out-of-order 0xA1 can still report the pre-death hits. The
+        # body flip is authoritative (ClassicUO Mobile.IsDead), so is_alive
+        # must report dead even though hits > 0.
+        s = SelfState(serial=0x01)
+        s.hits = 50
+        s.hits_max = 100
+        s.body = 0x0192  # on-foot human ghost
+        assert s.is_ghost is True
+        assert s.is_alive is False
+
+    def test_is_alive_mounted_ghost_body(self):
+        # Dying while mounted/flying yields a different ghost graphic; it must
+        # still count as dead (matches WorldState._GHOST_BODIES coverage).
+        s = SelfState(serial=0x01)
+        s.hits = 1
+        s.hits_max = 100
+        s.body = 0x02B6  # mounted ghost
+        assert s.is_ghost is True
+        assert s.is_alive is False
+
+    def test_is_alive_living_body_not_ghost(self):
+        # A normal living body with positive HP stays alive, and a living body
+        # with HP=0 stays dead — the ghost check must not perturb either path.
+        s = SelfState(serial=0x01)
+        s.body = 0x0190  # ordinary human male
+        s.hits = 50
+        s.hits_max = 100
+        assert s.is_ghost is False
+        assert s.is_alive is True
+        s.hits = 0
+        assert s.is_alive is False
+
 
 # ---------------------------------------------------------------------------
 # SocialState
