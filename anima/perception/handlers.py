@@ -16,7 +16,7 @@ from anima.client.codec import PacketReader
 from anima.client.handler import PacketHandler
 from anima.data import cliloc_text
 from anima.perception import Perception
-from anima.perception.enums import Direction, Lock, MobileFlags, NotorietyFlag
+from anima.perception.enums import Direction, Lock, MessageType, MobileFlags, NotorietyFlag
 from anima.perception.event_stream import GameEventType
 from anima.perception.gump import parse_layout
 from anima.perception.self_state import SkillInfo, VendorBuyItem, VendorSellItem
@@ -1092,9 +1092,16 @@ def register_handlers(
                 text = f"{affix}{text}"
             else:
                 text = f"{text}{affix}"
-        # System flag forces a system message.
+        # System flag forces a system message. ClassicUO sets
+        # `type = MessageType.System` here (PacketHandlers.cs DisplayClilocString,
+        # `if ((flags & AffixType.System) != 0) type = MessageType.System`), and
+        # MessageType.System is 1 — NOT 6 (which is Label, the single-click name
+        # response). The old `msg_type = 6` mis-tagged every System-affixed
+        # localized message (ServUO delivers many gameplay notices via
+        # SendLocalizedMessageAffix) as a LABEL in the speech journal / SPEECH_HEARD
+        # event, conflating server system text with NPC name labels.
         if flags & _AFFIX_SYSTEM:
-            msg_type = 6
+            msg_type = MessageType.SYSTEM
 
         if not name:
             name = "System"
