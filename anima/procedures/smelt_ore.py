@@ -168,6 +168,19 @@ class SmeltOre(Procedure):
             "not enough metal",                 # 501987 too small a pile
             "no idea how to smelt",             # 501986 unsmelable type
         )
+        # Success lines specifically. Like MineOre / ChopWood, ServUO sends the
+        # smelt-success cliloc ("...put the metal in your backpack.") and the
+        # container-content update (0x25/0x1A) that actually adds the ingots as
+        # two separate packets whose relative order is NOT guaranteed — the
+        # message is frequently processed first. If the wait loop breaks on the
+        # success line before the ingot item has landed in world.items,
+        # ingots_after == ingots_before and a genuinely successful smelt is
+        # mis-booked as a failure with zero yield credited. Track it so we can
+        # grace-poll for the item update before declaring failure.
+        _success_snippets = (
+            "put the metal in your backpack",   # 501988 success
+            "burn away the impurities",         # 501990 partial success
+        )
 
         def _journal_result_seen() -> bool:
             for entry in ctx.perception.social.journal:
@@ -175,6 +188,15 @@ class SmeltOre(Procedure):
                     continue
                 tl = entry.text.lower()
                 if any(s in tl for s in _result_snippets):
+                    return True
+            return False
+
+        def _journal_success_seen() -> bool:
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < smelt_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in _success_snippets):
                     return True
             return False
 
@@ -221,6 +243,23 @@ class SmeltOre(Procedure):
                 ctx.bus.unsubscribe(sub1)
             if sub2:
                 ctx.bus.unsubscribe(sub2)
+
+        # The success cliloc can arrive before the item-update packet that
+        # actually adds the ingots to the pack. If the smelt reported success
+        # but the ingots are not visible yet (and the "not enough metal" flag
+        # did not fire), grace-poll briefly for the container update so the
+        # yield is credited instead of being lost as a phantom failure. Without
+        # this, a successful colored-ore smelt that lost the race is counted as
+        # a miss; three such misses blacklist the hue (_unsmelable_ore_hues)
+        # and the agent permanently DROPS perfectly-smeltable ore as junk.
+        if (_ingots_in_pack() <= ingots_before
+                and not _smelt_flags["not_enough"]
+                and _journal_success_seen()):
+            grace_deadline = time.time() + 1.0
+            while time.time() < grace_deadline:
+                await asyncio.sleep(0.1)
+                if _ingots_in_pack() > ingots_before:
+                    break
 
         ingots_after = sum(
             it.amount for it in world.items.values()
