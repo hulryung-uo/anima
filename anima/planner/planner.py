@@ -4503,6 +4503,36 @@ def _count_hostiles(ctx, ss, dist: int) -> int:
     )
 
 
+def _flee_destination(ss, hostiles, flee_dist: int) -> tuple[int, int]:
+    """Pick a tile ``flee_dist`` tiles away from the hostile centroid.
+
+    The survival floor only fires when the agent is wounded AND swarmed, which
+    is exactly the geometry where the agent tends to sit at (or very near) the
+    centroid of the pack. In that case ``ss - centroid`` is the zero vector and
+    the old code (``norm = math.hypot(dx, dy) or 1.0``) produced an escape
+    delta of (0, 0) — a "flee" straight back to the agent's own tile. The
+    bandage then gets interrupted by the still-adjacent swarm and the agent
+    dies, the precise combat-sustainability collapse this guard exists to
+    prevent.
+
+    When the away-direction is degenerate, fall back to a deterministic cardinal
+    escape (north) so the agent always breaks contact instead of standing still.
+    """
+    import math
+
+    cx = sum(m.x for m in hostiles) / len(hostiles)
+    cy = sum(m.y for m in hostiles) / len(hostiles)
+    dx, dy = ss.x - cx, ss.y - cy
+    norm = math.hypot(dx, dy)
+    if norm < 1e-6:
+        # Agent is on the hostile centroid (fully surrounded): no away-vector
+        # exists, so commit to a fixed direction rather than fleeing in place.
+        dx, dy, norm = 0.0, -1.0, 1.0
+    fx = int(ss.x + (dx / norm) * flee_dist)
+    fy = int(ss.y + (dy / norm) * flee_dist)
+    return fx, fy
+
+
 class _FleeFromHostiles:
     """Retreat away from a swarm when too wounded to fight. Healing in place
     fails surrounded (melee interrupts the bandage), so break contact first."""
@@ -4518,8 +4548,6 @@ class _FleeFromHostiles:
         return ctx.perception.self_state.is_alive
 
     async def run(self, ctx) -> ProcedureResult:
-        import math
-
         from anima.action.movement import go_to
 
         ss = ctx.perception.self_state
@@ -4532,12 +4560,7 @@ class _FleeFromHostiles:
             return ProcedureResult(success=True, message="No hostiles to flee from")
 
         # Move directly away from the hostile centroid.
-        cx = sum(m.x for m in hostiles) / len(hostiles)
-        cy = sum(m.y for m in hostiles) / len(hostiles)
-        dx, dy = ss.x - cx, ss.y - cy
-        norm = math.hypot(dx, dy) or 1.0
-        fx = int(ss.x + (dx / norm) * self.FLEE_DIST)
-        fy = int(ss.y + (dy / norm) * self.FLEE_DIST)
+        fx, fy = _flee_destination(ss, hostiles, self.FLEE_DIST)
         logger.warning(
             "fleeing_swarm", hostiles=len(hostiles),
             hp=f"{ss.hits}/{ss.hits_max}", to=f"({fx},{fy})",
