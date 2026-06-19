@@ -3,6 +3,7 @@
 import struct
 import zlib
 
+from anima.actions.gump import sanitize_gump_response
 from anima.client.codec import PacketReader, PacketWriter
 from anima.client.handler import PacketHandler
 from anima.client.packets import build_gump_response
@@ -289,6 +290,84 @@ class TestBuildGumpResponse:
         r = PacketReader(pkt[3:])
         r.skip(4 + 4)
         assert r.read_u32() == 0  # button_id = cancel
+
+
+# ---------------------------------------------------------------------------
+# sanitize_gump_response — guard ServUO's disconnect-on-malformed checks
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeGumpResponse:
+    def test_invalid_button_collapses_to_close(self):
+        # ServUO disconnects on a button that is neither 0 nor a real button.
+        gump = parse_layout("{ button 10 20 4005 4007 1 0 1 }", [])
+        gump.gump_id = 0xAABBCCDD
+        button_id, switches, entries = sanitize_gump_response(gump, 99)
+        assert button_id == 0  # coerced to always-valid 'close'
+        assert switches == []
+        assert entries == []
+
+    def test_valid_button_preserved(self):
+        gump = parse_layout("{ button 10 20 4005 4007 1 0 7 }", [])
+        button_id, _, _ = sanitize_gump_response(gump, 7)
+        assert button_id == 7
+
+    def test_zero_button_always_valid_even_with_no_buttons(self):
+        gump = parse_layout("", [])
+        button_id, _, _ = sanitize_gump_response(gump, 0)
+        assert button_id == 0
+
+    def test_buttontileart_counts_as_valid(self):
+        gump = parse_layout(
+            "{ buttontileart 10 20 4005 4007 1 0 5 1234 0 44 44 }", []
+        )
+        button_id, _, _ = sanitize_gump_response(gump, 5)
+        assert button_id == 5
+
+    def test_unknown_switch_ids_dropped(self):
+        # switchCount must not exceed gump.m_Switches and IDs must be real.
+        gump = parse_layout(
+            "{ button 10 20 4005 4007 1 0 1 }{ checkbox 10 40 210 211 0 100 }",
+            [],
+        )
+        _, switches, _ = sanitize_gump_response(gump, 1, switches=[100, 999])
+        assert switches == [100]
+
+    def test_switches_capped_at_gump_count(self):
+        # Even if every requested ID matched, never send more than declared.
+        gump = parse_layout(
+            "{ button 10 20 4005 4007 1 0 1 }{ checkbox 10 40 210 211 0 5 }",
+            [],
+        )
+        # Duplicate the lone valid switch; capped to the 1 declared switch.
+        _, switches, _ = sanitize_gump_response(gump, 1, switches=[5, 5])
+        assert switches == [5]
+
+    def test_excess_text_entries_truncated(self):
+        # textCount must not exceed gump.m_TextEntries.
+        gump = parse_layout(
+            "{ button 10 20 4005 4007 1 0 1 }{ textentry 10 40 100 20 0 0 }",
+            [""],
+        )
+        _, _, entries = sanitize_gump_response(
+            gump, 1, text_entries=[(0, "ok"), (1, "overflow")]
+        )
+        assert entries == [(0, "ok")]
+
+    def test_sanitized_response_round_trips_through_builder(self):
+        # The whole point: a hostile payload becomes a packet ServUO accepts.
+        gump = parse_layout("{ button 10 20 4005 4007 1 0 1 }", [])
+        gump.serial = 0x01
+        gump.gump_id = 0xABCD
+        button_id, switches, entries = sanitize_gump_response(
+            gump, 42, switches=[7], text_entries=[(0, "x")]
+        )
+        pkt = build_gump_response(0x01, 0xABCD, button_id, switches, entries)
+        r = PacketReader(pkt[3:])
+        r.skip(4 + 4)  # serial + gump_id
+        assert r.read_u32() == 0  # button coerced to 'close'
+        assert r.read_u32() == 0  # no switches survived
+        assert r.read_u32() == 0  # no text entries survived
 
 
 # ---------------------------------------------------------------------------
