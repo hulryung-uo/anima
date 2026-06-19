@@ -173,6 +173,19 @@ class MineOre(Procedure):
             "moved too far away",
             "worn out your tool",
         )
+        # Success lines specifically. ServUO sends the "You dig some ... ore
+        # and put it in your backpack." cliloc and the container-content
+        # update (0x25/0x1A) as two separate packets; their relative order
+        # is NOT guaranteed, and the message is frequently processed first.
+        # If the wait loop breaks on the success line before the ore item
+        # has been applied to world.items, ore_after == ore_before and a
+        # genuinely successful swing is mis-booked as a skill-check FAIL with
+        # zero yield credited. Track the success line so we can grace-poll
+        # for the item update before declaring failure.
+        _success_snippets = (
+            "you dig some",
+            "you loosen some rocks",
+        )
 
         def _ore_in_pack() -> int:
             return sum(
@@ -186,6 +199,15 @@ class MineOre(Procedure):
                     continue
                 tl = entry.text.lower()
                 if any(s in tl for s in _result_snippets):
+                    return True
+            return False
+
+        def _journal_success_seen() -> bool:
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < mine_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in _success_snippets):
                     return True
             return False
 
@@ -255,6 +277,22 @@ class MineOre(Procedure):
                 reason=FailureReason.BLOCKED,
                 message=f"Cannot see mining target at ({tx},{ty})",
             )
+
+        # The success cliloc can arrive before the item-update packet that
+        # actually adds the ore to the pack. If the swing reported success
+        # but the ore is not visible yet (and no terminal-failure flag
+        # fired), grace-poll briefly for the container update so the yield
+        # is credited instead of being lost as a phantom skill-check miss.
+        if (
+            _ore_in_pack() <= ore_before
+            and not any(_mine_flags.values())
+            and _journal_success_seen()
+        ):
+            grace_deadline = _time.time() + 1.0
+            while _time.time() < grace_deadline:
+                await asyncio.sleep(0.1)
+                if _ore_in_pack() > ore_before:
+                    break
 
         # Count ore after
         ore_after = sum(
