@@ -111,7 +111,17 @@ _LOCATIONS_BY_NAME: dict[str, Location] = {loc.name.lower(): loc for loc in ALL_
 
 def find_location(name: str) -> Location | None:
     """Find a location by name (case-insensitive partial match)."""
-    name_lower = name.lower()
+    # An empty / whitespace-only name must NOT match anything. The partial-match
+    # loop below tests ``name_lower in key`` and ``"" in key`` is *always* True,
+    # so a blank name would silently resolve to the first location in the list
+    # (West Britain Bank). LLM ``go`` decisions routinely arrive with the place
+    # missing/null/blank (``{"action": "go", "place": ""}``); think.llm_think
+    # reads ``action.get("place", "")`` and hands that straight here. Treat a
+    # blank name as "unknown place" so the caller takes its goal_place_unknown
+    # branch instead of committing to a bogus destination.
+    name_lower = name.strip().lower()
+    if not name_lower:
+        return None
     # Exact match first
     if name_lower in _LOCATIONS_BY_NAME:
         return _LOCATIONS_BY_NAME[name_lower]
