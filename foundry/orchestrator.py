@@ -301,6 +301,12 @@ def seed_archive(arc: Archive, rc: RunConfig) -> Genome | None:
 def run(rc: RunConfig) -> Archive:
     arc = Archive(rc.archive_root)
     arc_lock = threading.Lock()
+    # Baseline of the all-time genome count, captured BEFORE this run plants
+    # anything. MAX_GENOMES_PER_RUN bounds what THIS run contributes (the
+    # documented "runaway loop backstop"), so the scheduling guard compares the
+    # DELTA against it — not the raw disk total, which already includes every
+    # genome every prior run ever wrote.
+    genomes_at_start = arc.summary()["total_genomes"]
     # Pin the kernel at the HEAD *commit* (revert_kernel does
     # `git checkout <commit> -- foundry/kernel`, which needs a commit ref).
     pinned = safety.head_sha(REPO) or "HEAD"
@@ -460,7 +466,14 @@ def run(rc: RunConfig) -> Archive:
                 print("[run] STOP file present — not scheduling further cycles.")
                 slots.put(slot)
                 break
-            if arc.summary()["total_genomes"] + submitted >= safety.MAX_GENOMES_PER_RUN:
+            # Genomes this run has produced so far = (current disk total −
+            # baseline) for finished cycles, plus the still-in-flight `submitted`
+            # count. Capping on the raw disk total instead made the per-run cap a
+            # permanent GLOBAL ceiling: once the archive accumulated
+            # MAX_GENOMES_PER_RUN genomes across all history, every later run
+            # refused to schedule even its first cycle ("genome cap reached").
+            run_genomes = (arc.summary()["total_genomes"] - genomes_at_start) + submitted
+            if run_genomes >= safety.MAX_GENOMES_PER_RUN:
                 print("[run] genome cap reached — not scheduling further cycles.")
                 slots.put(slot)
                 break
