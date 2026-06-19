@@ -38,17 +38,18 @@ SELL_BACKLOG_THRESHOLD = 10
 
 
 def _count_iron_ingots(ctx: AgentContext) -> int:
-    """Count only iron ingots (hue 0) in backpack, excluding colored metals."""
-    ss = ctx.perception.self_state
-    backpack = ss.equipment.get(0x15)
-    if not backpack:
-        return 0
+    """Count only iron ingots (hue 0) in the backpack, excluding colored metals.
+
+    Uses the recursive ``find_in_backpack`` scan so ingots tucked inside a
+    sub-container (a bag the smelt drop or a starter kit dropped them into)
+    are still counted. The old flat ``container == backpack`` scan read those
+    nested stacks as zero, so ``can_start`` for both craft_blacksmith and
+    make_tools silently never fired even with plenty of iron on hand.
+    """
     return sum(
         item.amount
-        for item in ctx.perception.world.items.values()
-        if item.container == backpack
-        and item.graphic in INGOT_GRAPHICS
-        and item.hue == IRON_HUE
+        for item in find_in_backpack(ctx, INGOT_GRAPHICS)
+        if item.hue == IRON_HUE
     )
 
 
