@@ -89,6 +89,13 @@ PACKET_LENGTHS: dict[int, int] = {
     0x49: 63,
     0x4E: 6,
     0x4F: 2,
+    # 0x53 PopupMessage (ServUO Packets.cs:3156 base(0x53, 2); ClassicUO
+    # PacketsTable 0x53 = 0x0002). FIXED 2 bytes. Absent here it defaulted to
+    # -1 (unknown), and the game framer discards only ONE byte on an unknown id
+    # (connection.py: "unknown_game_packet" -> del recv_buffer[:1]), reading the
+    # message byte as a fresh packet id and desyncing the rest of the
+    # decompressed stream. Declare it so the frame is consumed whole.
+    0x53: 2,
     0x54: 12,
     0x55: 1,
     0x56: 11,
@@ -111,6 +118,11 @@ PACKET_LENGTHS: dict[int, int] = {
     0x76: 16,
     0x77: 17,
     0x78: 0,
+    # 0x7B Sequence (ServUO Packets.cs:2560 base(0x7B, 2); ClassicUO
+    # PacketsTable 0x7B = 0x0002). FIXED 2 bytes. Same desync hazard as 0x53:
+    # an unmapped id makes the framer drop a single byte and misread the
+    # stream from there. Frame it as fixed 2.
+    0x7B: 2,
     0x7C: 0,
     0x7D: 13,
     0x80: 62,
@@ -182,7 +194,18 @@ PACKET_LENGTHS: dict[int, int] = {
     0xC4: 6,
     0xC7: 49,
     0xC8: 2,
+    # 0xC6 InvalidMapEnable (ServUO Packets.cs:777 base(0xC6, 1); ClassicUO
+    # PacketsTable 0xC6 = 0x0001). FIXED 1 byte (id only). Without an entry it
+    # was -1/unknown — harmless to length here since it is 1 byte, but mapping
+    # it keeps the table faithful and silences the spurious unknown_game_packet
+    # warning the framer logs for it.
+    0xC6: 1,
     0xCA: 6,
+    # 0xC9 TripTimeResponse (ServUO Packets.cs:650 base(0xC9, 6); ClassicUO
+    # PacketsTable 0xC9 = 0x0006). FIXED 6 bytes. As an unknown id the framer
+    # would drop one byte and reinterpret the remaining 5 body bytes as packet
+    # ids, desyncing the stream. Frame it as fixed 6.
+    0xC9: 6,
     0xCB: 7,
     0xCC: 0,
     0xCF: 0,
