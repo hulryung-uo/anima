@@ -10,6 +10,7 @@ import structlog
 
 from anima.actions.inventory import find_in_backpack
 from anima.actions.target import use_on_target
+from anima.skills.gathering.lumber import _find_nearby_tree  # noqa: F401 (re-export for patching)
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.gathering.lumber import (
     HATCHET_GRAPHICS,
@@ -47,6 +48,12 @@ class ChopWood(Procedure):
         "too far away",                 # 500446 out of range
         "can't use",                    # blocked
     )
+
+    # Result lines that mean *this tree* is spent or unreachable, so it must be
+    # parked in the shared ``depleted_trees`` cooldown (the same map
+    # ``_find_nearby_tree`` honours) — otherwise the next loop iteration just
+    # re-selects and re-targets the identical exhausted tree forever.
+    _SKIP_TREE_SNIPPETS = ("not enough wood", "no wood here", "too far away")
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
@@ -103,20 +110,33 @@ class ChopWood(Procedure):
                 if it.container == backpack and it.graphic in LOG_GRAPHICS
             )
 
-        def _journal_result_seen() -> bool:
+        def _journal_result_seen() -> str | None:
+            """Return the first matching result snippet since the swing, or None."""
             for entry in ctx.perception.social.journal:
                 if entry.timestamp < chop_start:
                     continue
                 tl = entry.text.lower()
-                if any(s in tl for s in self._RESULT_SNIPPETS):
-                    return True
-            return False
+                for s in self._RESULT_SNIPPETS:
+                    if s in tl:
+                        return s
+            return None
 
         deadline = chop_start + 3.0
+        result_snippet: str | None = None
         while time.time() < deadline:
             await asyncio.sleep(0.2)
-            if _logs_in_pack() > logs_before or _journal_result_seen():
+            result_snippet = _journal_result_seen()
+            if _logs_in_pack() > logs_before or result_snippet:
                 break
+
+        # A depleted / out-of-range tree must be parked in the shared cooldown
+        # so _find_nearby_tree skips it next iteration; otherwise the loop pins
+        # on the same dead tree and chops nothing for DEPLETED_COOLDOWN seconds.
+        if result_snippet in self._SKIP_TREE_SNIPPETS:
+            depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
+                "depleted_trees", {}
+            )
+            depleted[(tx, ty)] = time.time()
 
         logs_after = sum(
             it.amount for it in world.items.values()
