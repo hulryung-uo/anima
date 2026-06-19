@@ -102,8 +102,12 @@ def _spendable_per_source(ctx: "AgentContext") -> int:
     by the *better single pocket*, never the backpack+bank sum: a buy_qty
     afforded only by combining both pockets is silently rejected, which
     then trips the 10-minute buy-disable cooldown and starves the tool
-    restock loop. Affordability *selection* may still use combined funds
-    (one cheapest unit is always coverable by whichever pocket pays).
+    restock loop. The SAME single-pocket bound governs item *selection*
+    (``execute``): a tool whose unit price exceeds both pockets individually
+    yet fits their sum (e.g. backpack=6gp, bank=6gp, pickaxe=10gp) must NOT
+    be picked — selecting it then floors ``_buy_quantity`` to 1 and fires a
+    10gp order at a 6gp pocket, which ServUO rejects with no delivery and
+    which trips the very buy-disable cooldown this bound exists to avoid.
     """
     return max(ctx.perception.self_state.gold, _fresh_bank_amount(ctx))
 
@@ -332,9 +336,14 @@ class BuyFromVendor(Procedure):
         # --- Priority-based tool selection ---
         # 1) Try each missing-tool category in priority order.
         # 2) If nothing missing matches, try ANY affordable tool.
-        # Affordability is backpack + bank because the shard falls back
-        # to bank gold when the pouch can't cover the price.
-        budget = _available_funds(ctx)
+        # Affordability MUST be the better single pocket, NOT backpack+bank:
+        # ServUO pays a buy order from one source and delivers nothing if
+        # neither pocket alone covers it. Selecting a tool that only the
+        # *combined* funds can afford floors _buy_quantity to 1 and sends a
+        # doomed order, which the failure path punishes with a 10-minute
+        # buy-disable cooldown — starving the restock loop even though the
+        # agent simply needed a cheaper tool (or to bank/withdraw first).
+        budget = _spendable_per_source(ctx)
         target_item = None
         needed = _needed_tool_graphics(ctx)
 

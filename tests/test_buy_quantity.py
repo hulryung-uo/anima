@@ -140,3 +140,122 @@ class TestSpendablePerSource:
         qty = _buy_quantity(ctx, _item(price=11, amount=20), budget=budget)
         assert qty == 2
         assert qty * 11 <= 22  # affordable from a single pocket
+
+
+class TestSelectionUsesSinglePocketBudget:
+    """REGRESSION: the item-selection budget in ``execute`` must be the better
+    single pocket, never backpack+bank combined.
+
+    Before the fix, selection used ``_available_funds`` (combined) while the
+    quantity used ``_spendable_per_source`` (single pocket). A tool whose unit
+    price exceeded BOTH pockets individually yet fit their sum (backpack=6gp,
+    bank=6gp, pickaxe=10gp) was selected, ``_buy_quantity`` floored to 1, and a
+    10gp order was fired at a 6gp pocket. ServUO delivers nothing, and the
+    failure path trips a 10-minute ``_buy_disabled_until`` cooldown + blacklist
+    — starving the restock loop over a buy that never had a chance.
+    """
+
+    def _run_select(self, ctx, buy_list):
+        """Reproduce ``execute``'s selection step exactly (budget + loops)."""
+        from anima.procedures.buy_from_vendor import (
+            _ALL_TOOL_GRAPHICS,
+            _needed_tool_graphics,
+            _spendable_per_source,
+        )
+
+        budget = _spendable_per_source(ctx)
+        needed = _needed_tool_graphics(ctx)
+        target_item = None
+        for graphics_set in needed:
+            for item in buy_list:
+                if item.graphic in graphics_set and 0 < item.price <= budget:
+                    target_item = item
+                    break
+            if target_item:
+                break
+        if not target_item:
+            for item in buy_list:
+                if item.graphic in _ALL_TOOL_GRAPHICS and 0 < item.price <= budget:
+                    target_item = item
+                    break
+        return target_item
+
+    def test_combined_only_affordable_tool_is_not_selected(self):
+        # backpack=6, bank=6: combined 12 >= price 10, but NO single pocket
+        # covers 10. The tool must NOT be selected (a doomed buy avoided).
+        ctx = _mock_funds_ctx(backpack_gold=6, bank_gold=6)
+        ctx.perception.self_state.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}  # empty backpack -> wants a pickaxe
+        assert self._run_select(ctx, [_item(price=10, amount=5)]) is None
+
+    def test_single_pocket_affordable_tool_is_selected(self):
+        # bank alone covers the price -> selectable.
+        ctx = _mock_funds_ctx(backpack_gold=2, bank_gold=20)
+        ctx.perception.self_state.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}
+        item = _item(price=10, amount=5)
+        assert self._run_select(ctx, [item]) is item
+
+
+def test_execute_does_not_buy_or_cooldown_when_no_single_pocket_affords(monkeypatch):
+    """End-to-end: a combined-only-affordable tool must yield MISSING_RESOURCE
+    with NO buy packet sent and NO 10-minute buy-disable cooldown armed.
+    """
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from anima.perception.self_state import VendorBuyItem
+    from anima.procedures import buy_from_vendor as bfv
+    from anima.procedures.base import FailureReason
+
+    # Freeze the clocks the procedure consults (no real waiting).
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(time, "time", lambda: 1000.0)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+    PICKAXE = 0x0E86
+
+    ss = MagicMock()
+    ss.gold = 6
+    ss.weight = 0
+    ss.weight_max = 100
+    ss.equipment = {0x15: 0x101}
+    ss.vendor_buy_list = [
+        VendorBuyItem(serial=0xABCD, graphic=PICKAXE, amount=5, price=10, name="pickaxe")
+    ]
+    ss.vendor_serial = 0x42
+
+    ctx = MagicMock()
+    ctx.perception.self_state = ss
+    ctx.perception.world.items = {}  # empty backpack -> wants a pickaxe
+    ctx.blackboard = {"bank_balance": {"amount": 6, "ts": 1000.0}}
+    sent: list = []
+    ctx.conn.send_packet = AsyncMock(side_effect=lambda pkt: sent.append(pkt))
+
+    vendor = MagicMock()
+    vendor.serial = 0x99
+    vendor.name = "Tinker"
+    vendor.x, vendor.y = 0, 0
+
+    monkeypatch.setattr(bfv, "_find_vendor", lambda *a, **k: vendor)
+    monkeypatch.setattr(bfv, "_mark_refused", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bfv, "_request_context_menu_entry", AsyncMock(return_value=True)
+    )
+
+    proc = bfv.BuyFromVendor()
+    result = asyncio.run(proc.execute(ctx))
+
+    # Combined funds (12) >= price (10) but neither pocket (6/6) covers it:
+    # the procedure must refuse cleanly, not fire a doomed buy.
+    assert result.success is False
+    assert result.reason is FailureReason.MISSING_RESOURCE
+    # No BuyItems (0x3B) packet should have been sent.
+    assert all(not (isinstance(p, (bytes, bytearray)) and p[:1] == b"\x3b") for p in sent)
+    # And the 10-minute buy-disable cooldown must NOT be armed.
+    assert not ctx.blackboard.get("_buy_disabled_until")
