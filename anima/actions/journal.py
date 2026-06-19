@@ -47,13 +47,34 @@ async def wait_for_journal(
     journal = ctx.perception.social.journal
 
     def _check() -> tuple[int, str] | None:
-        for entry in journal:
+        # Resolve by PATTERN priority, not by journal arrival order. Callers
+        # pass ``patterns`` in deliberate precedence order and document it as
+        # such — e.g. cast_spell's abort scan
+        # ``[_NO_MANA, _NO_REAGENTS, _FIZZLE, _DISRUPTED]`` notes "it is last in
+        # the list so an explicit mana/reagent line still wins". The old scan
+        # returned the FIRST entry (in chronological deque order) that matched
+        # ANY pattern, so when two different lines were both present within the
+        # window the winner was whichever arrived FIRST in time, ignoring the
+        # priority order entirely. A mid-cast disruption ("concentration is
+        # disturbed") typically lands BEFORE the "Insufficient mana" abort, so
+        # the caster was told ``disrupted`` (recast) when ``no_mana`` (stop) was
+        # the real reason — burning the recast loop with no mana. Pick the match
+        # with the lowest pattern index across all in-window entries; break ties
+        # by the earliest entry. Single-pattern callers are unaffected.
+        best: tuple[int, int, str] | None = None  # (pattern_idx, entry_pos, text)
+        for pos, entry in enumerate(journal):
             if entry.timestamp < since:
                 continue
             for i, pat in enumerate(compiled):
                 if pat.search(entry.text):
-                    return i, entry.text
-        return None
+                    if best is None or i < best[0] or (i == best[0] and pos < best[1]):
+                        best = (i, pos, entry.text)
+                    # Only the first (highest-priority) pattern this entry
+                    # matches matters; an entry can't out-rank itself.
+                    break
+        if best is None:
+            return None
+        return best[0], best[2]
 
     if ctx.bus:
         match = _check()
