@@ -464,3 +464,91 @@ class TestWalkerDeniedTiles:
         assert isinstance(a, float)
         # Monotonic: never goes backwards.
         assert b >= a
+
+
+class TestThinkImpassableWorldItemsDoors:
+    """A closed door must NOT count as a dynamic obstacle for the path cache.
+
+    ``go_to`` opens doors automatically and the pathfinder plans through them,
+    so a cached route crossing a closed door must stay valid. Regression guard
+    for think._impassable_world_items leaking door tiles into the denied set
+    handed to path_is_traversable (which short-circuits on denied tiles before
+    the door-passable logic, wrongly discarding the cached path).
+    """
+
+    def _make_ctx(self, items, door_graphics, wall_graphics):
+        from types import SimpleNamespace
+
+        from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
+
+        def get_flags(g: int) -> int:
+            if g in door_graphics:
+                return FLAG_DOOR | FLAG_IMPASSABLE
+            if g in wall_graphics:
+                return FLAG_IMPASSABLE
+            return 0
+
+        map_reader = SimpleNamespace(_get_item_flags=get_flags)
+        world = SimpleNamespace(items={it.serial: it for it in items})
+        perception = SimpleNamespace(world=world)
+        return SimpleNamespace(map_reader=map_reader, perception=perception)
+
+    def _item(self, serial, graphic, x, y, container=0):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            serial=serial, graphic=graphic, x=x, y=y, container=container,
+        )
+
+    def test_closed_door_excluded_wall_kept(self) -> None:
+        from anima.brain.think import _impassable_world_items
+
+        door = self._item(0x40000001, 0x0675, 2, 0)
+        wall = self._item(0x40000002, 0x0001, 5, 5)
+        ctx = self._make_ctx(
+            [door, wall], door_graphics={0x0675}, wall_graphics={0x0001},
+        )
+        blocked = _impassable_world_items(ctx)
+        # Door tile is NOT blocked (go_to opens it); the wall still is.
+        assert (2, 0) not in blocked
+        assert (5, 5) in blocked
+
+    def test_cached_path_through_closed_door_stays_traversable(self) -> None:
+        """End-to-end: the denied set built from world items must not flip a
+        door-crossing cached path to non-traversable.
+        """
+        from types import SimpleNamespace
+
+        from anima.brain.think import _impassable_world_items
+        from anima.map import FLAG_DOOR, FLAG_IMPASSABLE
+        from anima.pathfinding import path_is_traversable
+
+        door = self._item(0x40000001, 0x0675, 2, 0)
+        ctx = self._make_ctx([door], door_graphics={0x0675}, wall_graphics=set())
+        denied = _impassable_world_items(ctx)
+
+        class _Map:
+            def _get_item_flags(self, g: int) -> int:
+                return (FLAG_DOOR | FLAG_IMPASSABLE) if g == 0x0675 else 0
+
+            def get_tile(self, x: int, y: int):
+                return SimpleNamespace(
+                    land=SimpleNamespace(impassable=False),
+                    statics=[],
+                    walkable=True,
+                    walkable_z=lambda cz: (True, cz),
+                )
+
+        # Cached route walks straight east through the door tile at (2, 0).
+        path = [(1, 0), (2, 0), (3, 0)]
+        assert path_is_traversable(
+            _Map(), 0, 0, path, denied_tiles=denied, current_z=0,
+        ) is True
+
+    def test_no_map_reader_returns_empty(self) -> None:
+        from types import SimpleNamespace
+
+        from anima.brain.think import _impassable_world_items
+
+        ctx = SimpleNamespace(map_reader=None, perception=None)
+        assert _impassable_world_items(ctx) == set()

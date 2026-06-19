@@ -457,7 +457,16 @@ def _get_cached_path(
 # ------------------------------------------------------------------
 
 def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
-    """Collect (x, y) of ground-level world items that actually have the IMPASSABLE flag."""
+    """Collect (x, y) of ground-level world items that block walking.
+
+    Doors are excluded: a closed door carries FLAG_DOOR|FLAG_IMPASSABLE, but
+    ``go_to`` opens doors automatically during movement and the pathfinder
+    plans through them (``doors_passable=True``). If a door tile leaks into
+    this set it is handed to ``path_is_traversable`` as a denied tile, which is
+    checked *before* the door-passable logic and short-circuits to False —
+    needlessly discarding every cached path that legitimately routes through a
+    closed door. Mirror movement.py's twin and keep doors out.
+    """
     if ctx.map_reader is None:
         return set()
     blocked: set[tuple[int, int]] = set()
@@ -467,7 +476,7 @@ def _impassable_world_items(ctx: BrainContext) -> set[tuple[int, int]]:
         if it.serial & 0x40000000 == 0:
             continue
         flags = ctx.map_reader._get_item_flags(it.graphic)
-        if flags & FLAG_IMPASSABLE:
+        if (flags & FLAG_IMPASSABLE) and not (flags & FLAG_DOOR):
             blocked.add((it.x, it.y))
     return blocked
 
