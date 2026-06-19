@@ -41,7 +41,21 @@ COMBAT_TICK = 1.0
 DEFENSIVE_WINDOW = 10.0
 
 
-def _confirm_kill(ctx: BrainContext, last_hits: int, last_hits_max: int) -> bool:
+def _corpse_serials(ctx: BrainContext) -> set[int]:
+    """Serials of every corpse (graphic 0x2006) on the ground within range now.
+
+    Snapshotted when the target is first engaged so ``_confirm_kill`` can tell a
+    body THIS fight dropped from one that was already lying there.
+    """
+    return {c.serial for c in find_corpses(ctx, max_dist=ENGAGE_RANGE)}
+
+
+def _confirm_kill(
+    ctx: BrainContext,
+    last_hits: int,
+    last_hits_max: int,
+    known_corpses: set[int],
+) -> bool:
     """True only when a target that vanished from ``world.mobiles`` actually DIED.
 
     A mobile is dropped from ``world.mobiles`` by a 0x1D Delete and by the
@@ -55,13 +69,27 @@ def _confirm_kill(ctx: BrainContext, last_hits: int, last_hits_max: int) -> bool
 
       * the target's LAST-KNOWN health bar was a real reading at/below zero
         (``last_hits_max > 0 and last_hits <= 0`` — we watched it die); or
-      * a corpse (graphic 0x2006) is on the ground within ``ENGAGE_RANGE``.
+      * a *new* corpse (graphic 0x2006) is on the ground within ``ENGAGE_RANGE``
+        — a corpse whose serial was NOT already present (``known_corpses``) when
+        this target was engaged.
+
+    The corpse arm must only count a body THIS fight dropped. Corpses linger in
+    ``world.items`` until they are looted and removed — and a loot can fail (full
+    pack / weight gate), leaving an earlier kill's corpse on the ground for the
+    rest of the engagement. With a bare ``find_corpses(...)`` truthiness check
+    that stale body falsely confirms EVERY subsequent target that merely kites
+    out of view as a kill, re-inflating the exact reward signal the
+    kiter-not-a-kill guard exists to protect. Requiring a serial absent from the
+    pre-engagement snapshot closes that hole (mirrors the R52 combat_loop fix).
 
     Otherwise the target merely left view: not a kill.
     """
     if last_hits_max > 0 and last_hits <= 0:
         return True
-    return bool(find_corpses(ctx, max_dist=ENGAGE_RANGE))
+    return any(
+        c.serial not in known_corpses
+        for c in find_corpses(ctx, max_dist=ENGAGE_RANGE)
+    )
 
 
 class MeleeAttack(Skill):
@@ -119,6 +147,9 @@ class MeleeAttack(Skill):
         # Monitor combat until target dies, we're hurt badly, or timeout
         deadline = time.monotonic() + COMBAT_TIMEOUT
         target_killed = False
+        # Bodies already on the ground when we engage — a corpse from a PREVIOUS
+        # kill (not yet despawned) must not confirm THIS target as felled.
+        known_corpses = _corpse_serials(ctx)
         # Last health-bar reading we saw for the target, so when it vanishes from
         # world.mobiles we can tell a real kill (we watched it hit zero, or a
         # corpse is on the ground) from a kiter that simply left view.
@@ -134,7 +165,9 @@ class MeleeAttack(Skill):
                 # Gone from the world is NOT proof of death — a 0x1D Delete also
                 # fires when a mob leaves visual range. Only credit a kill with
                 # positive evidence; otherwise the target fled and we disengage.
-                target_killed = _confirm_kill(ctx, last_hits, last_hits_max)
+                target_killed = _confirm_kill(
+                    ctx, last_hits, last_hits_max, known_corpses,
+                )
                 if not target_killed:
                     logger.info("melee_target_left_view", target=target_name)
                 break

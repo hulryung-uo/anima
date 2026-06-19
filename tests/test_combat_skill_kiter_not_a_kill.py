@@ -91,17 +91,27 @@ async def test_kiter_leaving_view_is_not_a_kill(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_corpse_on_ground_confirms_the_kill(monkeypatch):
-    # Same disappearance, but a corpse is on the ground nearby — positive death
-    # evidence, so this IS a kill.
+    # Same disappearance, but a FRESH corpse drops nearby during the fight —
+    # positive death evidence, so this IS a kill.
     foe = _mob(0x2, 101, 100, hits=50, hits_max=50)
     mobiles = {foe.serial: foe}
-    ctx = _ctx(mobiles, corpses=[(101, 100)])
+    ctx = _ctx(mobiles, corpses=[])
     _patch_clock(monkeypatch)
 
     real_sleep = melee.asyncio.sleep
 
     async def _sleep_then_die(_):
-        mobiles.pop(foe.serial, None)
+        # Only act on a real COMBAT_TICK sleep, NOT the pre-loop war-mode setup
+        # sleep (0.3s) — the known-corpse snapshot is taken AFTER that setup
+        # sleep, so dropping the corpse during it would (wrongly) fold the body
+        # into the pre-engagement snapshot and the new-corpse arm would miss it.
+        if _ >= melee.COMBAT_TICK:
+            # The foe dies this tick: it leaves world.mobiles and a NEW corpse
+            # (serial absent from the pre-engagement snapshot) drops where it stood.
+            mobiles.pop(foe.serial, None)
+            ctx.perception.world.items[0xC0FF] = SimpleNamespace(
+                serial=0xC0FF, graphic=0x2006, container=0, x=101, y=100,
+            )
         return await real_sleep(_)
 
     monkeypatch.setattr(melee.asyncio, "sleep", _sleep_then_die)
@@ -110,3 +120,30 @@ async def test_corpse_on_ground_confirms_the_kill(monkeypatch):
 
     assert result.success is True, "a corpse on the ground confirms the kill"
     assert result.reward > 0
+
+
+@pytest.mark.asyncio
+async def test_stale_corpse_does_not_confirm_a_kiter(monkeypatch):
+    # A corpse from a PREVIOUS kill is already on the ground when we engage.
+    # The new target then kites out of view leaving NO new body. The lingering
+    # stale corpse must NOT be accepted as proof this target died — otherwise an
+    # escaped foe is mis-credited as a +15 kill (the bug this fix closes).
+    foe = _mob(0x2, 101, 100, hits=50, hits_max=50)
+    mobiles = {foe.serial: foe}
+    # Pre-existing corpse on the ground at engagement time.
+    ctx = _ctx(mobiles, corpses=[(102, 100)])
+    _patch_clock(monkeypatch)
+
+    real_sleep = melee.asyncio.sleep
+
+    async def _sleep_then_flee(_):
+        # Foe walks out of view — dropped from world.mobiles, NO new corpse.
+        mobiles.pop(foe.serial, None)
+        return await real_sleep(_)
+
+    monkeypatch.setattr(melee.asyncio, "sleep", _sleep_then_flee)
+
+    result = await MeleeAttack().execute(ctx)
+
+    assert result.success is False, "a stale corpse must not confirm a kiter"
+    assert result.reward < 0, "escape must not yield the kill reward"
