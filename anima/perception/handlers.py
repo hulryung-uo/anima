@@ -957,13 +957,27 @@ def register_handlers(
         text = r.read_ascii_remaining()
 
         # msg_type 6 = Label (single-click response with name + title)
-        if msg_type == 6 and serial:
+        if msg_type == 6 and serial and text:
             mob = p.world.mobiles.get(serial)
-            if mob is not None and text:
+            if mob is not None:
                 mob.name = text  # e.g. "Hastin the baker"
             item = p.world.items.get(serial)
-            if item is not None and text:
+            if item is not None:
                 item.name = text
+            # Persist a labeled MOBILE name to the durable OPL cache.
+            # world.opl_names survives a 0x1D Delete (see
+            # WorldState.get_or_create_mobile): when a labeled NPC leaves view
+            # and re-enters, MobileIncoming recreates a blank MobileInfo that is
+            # re-seeded from this cache. The 0xD6 MegaCliloc handler already
+            # caches its resolved name here, but the single-click LABEL — a
+            # primary name source for any NPC the agent clicks — did not, so a
+            # labeled vendor's name was silently lost on re-entry and the
+            # synchronous name-keyed gates (_is_vendor / _is_refused) missed
+            # until a fresh OPL round-trip. Only mobiles are re-seeded from this
+            # cache, so scope the write to a known mobile serial. Mirror the
+            # 0xD6 cache write so a label-learned name is just as durable.
+            if mob is not None:
+                p.world.opl_names[serial] = text
 
         p.social.add_speech(serial, name, text, msg_type, hue)
         p.emit(

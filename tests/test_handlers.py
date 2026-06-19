@@ -798,6 +798,54 @@ def test_ascii_talk():
     assert any(e.type == GameEventType.SPEECH_HEARD for e in events)
 
 
+def _build_ascii_label(serial: int, name_text: str) -> bytes:
+    """Build a 0x1C ASCII Talk LABEL (msg_type 6 = single-click name)."""
+    buf = PacketWriter()
+    buf.write_u8(0x1C)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u32(serial)
+    buf.write_u16(0x0190)      # graphic
+    buf.write_u8(6)            # msg_type = LABEL
+    buf.write_u16(0)           # hue
+    buf.write_u16(3)           # font
+    buf.write_ascii("", 30)    # speaker name (labels carry it in the text)
+    buf.write_bytes(name_text.encode("ascii") + b"\x00")
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_ascii_label_name_survives_delete_and_reentry():
+    """A 0x1C single-click LABEL (msg_type 6) learns an NPC name; that name must
+    survive a 0x1D Delete + 0x78 re-entry via the durable world.opl_names cache.
+
+    The label is a primary name source for any NPC the agent clicks. Without
+    caching it (like the 0xD6 MegaCliloc handler does), a labeled vendor's name
+    was silently lost the moment it walked out of view and back — leaving the
+    synchronous name-keyed gates (_is_vendor / _is_refused) blind until a fresh
+    OPL round-trip completed."""
+    h, p, _ = _make_stack()
+    serial = 0x0000C0DE
+
+    # NPC enters view (blank name), then we single-click it and the server
+    # replies with a LABEL carrying its name + title.
+    p.world.get_or_create_mobile(serial)
+    h.dispatch(0x1C, _build_ascii_label(serial, "Hastin the baker"))
+    assert p.world.mobiles[serial].name == "Hastin the baker"
+    # The label name was persisted to the durable cache.
+    assert p.world.opl_names[serial] == "Hastin the baker"
+
+    # NPC leaves view: 0x1D Delete drops the live MobileInfo (opl_names kept).
+    h.dispatch(0x1D, struct.pack(">BI", 0x1D, serial))
+    assert serial not in p.world.mobiles
+    assert p.world.opl_names[serial] == "Hastin the baker"
+
+    # NPC re-enters view: get_or_create_mobile must re-seed the name from the
+    # cache instead of leaving it blank.
+    mob = p.world.get_or_create_mobile(serial)
+    assert mob.name == "Hastin the baker"
+
+
 def test_unicode_talk():
     h, p, w = _make_stack()
 
