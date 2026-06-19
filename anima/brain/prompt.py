@@ -112,3 +112,15 @@ def record_conversation(ctx: BrainContext, role: str, content: str) -> None:
     # Keep history bounded
     if len(history) > MAX_CONVERSATION_HISTORY:
         del history[: len(history) - MAX_CONVERSATION_HISTORY]
+
+    # Anthropic (a configured provider) requires the first message after the
+    # system prompt to be a ``user`` turn and strict user/assistant alternation.
+    # The plain front-trim above drops an arbitrary count from the head, so when
+    # an odd number is removed the surviving history begins with an ``assistant``
+    # message — Anthropic then rejects the whole request. Drop any leading
+    # non-``user`` turns so the kept window always opens on a ``user`` message.
+    drop = 0
+    while drop < len(history) and history[drop]["role"] != "user":
+        drop += 1
+    if drop:
+        del history[:drop]
