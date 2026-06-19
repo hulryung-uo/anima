@@ -100,7 +100,21 @@ class PracticePeacemaking(Procedure):
 
         successes = 0
         plays = 0
-        for attempt in range(ATTEMPTS_PER_RUN):
+        # g_00101-style throughput guard (mirrors practice_magery): count only
+        # RESOLVED Peacemaking checks, so a cursor miss — the agent is still
+        # inside the skill lockout, the cursor never lands — fills the lockout
+        # with plays and RETRIES instead of burning one of the ATTEMPTS_PER_RUN
+        # slots. The old fixed-range attempt loop let each
+        # of the two `continue` branches consume an attempt without ever rolling
+        # Peacemaking, so a run that hit two cursor misses rolled the skill once
+        # instead of three times (~ -2/3 of the Peacemaking checks/run).
+        resolved = 0
+        # Bound total iterations so a cursor that NEVER arrives (e.g. a wedged
+        # session) can't spin the loop forever — at worst we make
+        # ATTEMPTS_PER_RUN real attempts plus a margin of pure-miss retries.
+        cursor_misses = 0
+        MAX_CURSOR_MISSES = ATTEMPTS_PER_RUN * 2
+        while resolved < ATTEMPTS_PER_RUN and cursor_misses < MAX_CURSOR_MISSES:
             since = time.time()
             ss.pending_target = None
             await use_skill(ctx, SKILL_PEACEMAKING)
@@ -108,6 +122,7 @@ class PracticePeacemaking(Procedure):
             cursor = await wait_for_target(ctx, timeout=3.0)
             if not cursor.success:
                 # No cursor — most likely still inside the skill lockout.
+                cursor_misses += 1
                 await _play_through_lockout(
                     ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
                 continue
@@ -124,6 +139,7 @@ class PracticePeacemaking(Procedure):
                 )
                 cursor = await wait_for_target(ctx, timeout=3.0)
                 if not cursor.success:
+                    cursor_misses += 1
                     await _play_through_lockout(
                         ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
                     continue
@@ -131,6 +147,9 @@ class PracticePeacemaking(Procedure):
             # Creature cursor ("Whom do you wish to calm?" 1049525) —
             # answering with our own serial = area peace, no mobs needed.
             await target_object(ctx, cursor.data.get("cursor_id", 0), ss.serial)
+            # The creature cursor was answered — the Peacemaking CheckSkill has
+            # now fired server-side, so this counts as a resolved attempt.
+            resolved += 1
 
             seen = await wait_for_journal(ctx, _RESULT_PATTERNS, timeout=3.0, since=since)
             calmed = bool(seen.success and seen.data.get("index") in (0, 1))
@@ -138,7 +157,7 @@ class PracticePeacemaking(Procedure):
                 successes += 1
             logger.debug(
                 "practice_peacemaking_attempt",
-                attempt=attempt + 1,
+                attempt=resolved,
                 calmed=calmed,
             )
             # Wait out the server skill lockout (10s on fail, 5s on
@@ -159,7 +178,7 @@ class PracticePeacemaking(Procedure):
         return ProcedureResult(
             success=True,
             message=(
-                f"Peacemaking practice: {successes}/{ATTEMPTS_PER_RUN} calmed "
+                f"Peacemaking practice: {successes}/{resolved} calmed "
                 f"({plays} plays), +{peace_gain:.1f} Peacemaking, "
                 f"+{music_gain:.1f} Musicianship"
             ),
