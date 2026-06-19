@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 
 from anima.memory.database import MemoryDB
 from anima.memory.database import ActionStat
 from anima.memory.retrieval import _format_action_stats
+from anima.skills.state import region_coords
 
 
 @pytest.fixture
@@ -398,3 +400,83 @@ class TestRelationshipConcurrency:
             r["name"]: r["unique"] for r in rows
         }
         assert unique_cols.get("idx_relationships_agent") == 1
+
+
+# ---------------------------------------------------------------------------
+# Episode -> location-value wiring
+# ---------------------------------------------------------------------------
+
+
+def _fake_ctx(memory_db: MemoryDB, x: int, y: int, hp_percent: int = 100):
+    """A minimal BrainContext stand-in for _record_episode.
+
+    _record_episode reads: ctx.memory_db, ctx.blackboard (a real dict),
+    ctx.perception.self_state.{x,y,hp_percent,serial}, ctx.llm,
+    ctx.cfg.memory.max_episodes, and (via _infer_context_pattern ->
+    has_player_nearby) ctx.perception.world.nearby_mobiles(...).
+    """
+    ctx = MagicMock()
+    ctx.memory_db = memory_db
+    ctx.llm = None  # skip the reflection branch
+    ctx.blackboard = {}  # must be a real dict (get/set used)
+    ctx.cfg.memory.max_episodes = 1000
+    ss = ctx.perception.self_state
+    ss.x = x
+    ss.y = y
+    ss.hp_percent = hp_percent
+    ss.serial = 1
+    ctx.perception.world.nearby_mobiles.return_value = []  # nobody nearby
+    return ctx
+
+
+class TestEpisodeLocationValueWiring:
+    @pytest.mark.asyncio
+    async def test_rewarded_episode_populates_location_value(self, db: MemoryDB) -> None:
+        """A rewarded episode must be tallied into the location-value map that
+        retrieve_context reads back — previously update_location_value had no
+        runtime caller and the 'best area' channel was always empty."""
+        from anima.brain.think import _record_episode
+
+        x, y = 1600, 1700
+        ctx = _fake_ctx(db, x, y)
+        await _record_episode(ctx, "mine_ore", "vein", "success", reward=7.0)
+
+        rx, ry = region_coords(x, y)
+        values = await db.get_location_values("Anima", rx, ry)
+        assert len(values) == 1
+        activity, total, visits = values[0]
+        assert activity == "mine_ore"
+        assert total == pytest.approx(7.0)
+        assert visits == 1
+
+    @pytest.mark.asyncio
+    async def test_repeat_episodes_accumulate_in_region(self, db: MemoryDB) -> None:
+        """Two rewarded episodes of the same activity in the same region
+        accumulate visit_count and total_reward (per-visit average semantics)."""
+        from anima.brain.think import _record_episode
+
+        x, y = 1600, 1700
+        ctx = _fake_ctx(db, x, y)
+        await _record_episode(ctx, "mine_ore", "vein", "success", reward=4.0)
+        await _record_episode(ctx, "mine_ore", "vein", "success", reward=6.0)
+
+        rx, ry = region_coords(x, y)
+        values = await db.get_location_values("Anima", rx, ry)
+        assert len(values) == 1
+        _, total, visits = values[0]
+        assert total == pytest.approx(10.0)
+        assert visits == 2
+
+    @pytest.mark.asyncio
+    async def test_zero_reward_episode_is_not_tallied(self, db: MemoryDB) -> None:
+        """Zero-signal episodes carry no learning value and must not dilute the
+        per-visit average the retrieval block ranks regions by."""
+        from anima.brain.think import _record_episode
+
+        x, y = 1600, 1700
+        ctx = _fake_ctx(db, x, y)
+        await _record_episode(ctx, "speak", "hello", "success", reward=0.0)
+
+        rx, ry = region_coords(x, y)
+        values = await db.get_location_values("Anima", rx, ry)
+        assert values == []

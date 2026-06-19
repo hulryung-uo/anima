@@ -830,6 +830,21 @@ async def _record_episode(
         reward=reward,
     )
 
+    # Feed the location-value map. retrieve_context surfaces a "This area
+    # (region X,Y)" block from get_location_values, but nothing in the runtime
+    # ever wrote to it — update_location_value had zero callers, so that whole
+    # learned-memory channel was permanently empty and the LLM never saw which
+    # regions actually paid off for which activity. Every episode already
+    # carries a location, an action, and a reward, so key the region tally by
+    # the episode action (the "activity") whenever the signal is non-zero;
+    # zero-reward episodes (neutral speech, no-op moves) carry no learning
+    # signal and would only dilute the per-visit average the read path ranks by.
+    if reward != 0.0:
+        from anima.skills.state import region_coords
+
+        rx, ry = region_coords(ss.x, ss.y)
+        await memory_db.update_location_value(agent_name, rx, ry, action, reward)
+
     # Trigger reflection periodically
     episode_count = ctx.blackboard.get("episode_count", 0) + 1
     ctx.blackboard["episode_count"] = episode_count
