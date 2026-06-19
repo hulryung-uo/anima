@@ -52,6 +52,26 @@ ATTACKABLE_NOTORIETY = {
 }
 HUMAN_BODIES = {0x0190, 0x0191}
 
+
+def _initiates_combat(ctx: AgentContext) -> bool:
+    """Whether the persona is willing to PROACTIVELY start a fight.
+
+    Mirrors the legacy BT melee gate (anima/skills/combat/melee.py): a
+    ``pacifist`` persona "never initiates combat", so the planner's proactive
+    combat procedures (HuntNearby walking onto a hostile in range,
+    WanderForCombat roaming to find one) must stay off for it. Without this
+    gate the documented ``combat_disposition`` field is silently dropped in
+    the active planner path — a pacifist blacksmith/bard/thief still hunts.
+
+    Only ``pacifist`` is gated here: ``defensive``/``aggressive``/unset keep
+    the existing proactive behaviour (the COMBAT lineage depends on it), and
+    a defensive persona's retaliation is handled by the survival chain, not by
+    refusing to ever start. Default (no persona / unset field) is permissive.
+    """
+    persona = getattr(ctx, "persona", None)
+    return getattr(persona, "combat_disposition", "defensive") != "pacifist"
+
+
 WEAPON_GRAPHICS = {
     # swords
     0x0F51, 0x0F52,  # dagger
@@ -609,6 +629,8 @@ class HuntNearby(Procedure):
         ss = ctx.perception.self_state
         if not ss.is_alive:
             return False
+        if not _initiates_combat(ctx):
+            return False  # pacifist persona never starts a fight
         if ss.hits_max > 0 and ss.hp_percent < 40:
             return False  # too wounded to start a fight
         # Weapon in hand or in pack
@@ -990,6 +1012,8 @@ class WanderForCombat(Procedure):
         ss = ctx.perception.self_state
         if not ss.is_alive:
             return False
+        if not _initiates_combat(ctx):
+            return False  # pacifist persona never roams to find a fight
         # Post-yield cooldown: we already swept this spot clean and handed the
         # tick to productive work — stay off until the cooldown lapses so that
         # work isn't yanked away after one invocation (the wander↔work flap).
