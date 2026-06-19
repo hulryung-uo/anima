@@ -27,6 +27,29 @@ logger = structlog.get_logger()
 LAYER_ONE_HANDED = 1
 LAYER_TWO_HANDED = 2
 
+# Two-handed melee weapons. On ServUO every axe (BaseAxe) and polearm
+# (BasePoleArm) carries Layer.TwoHanded in its tiledata, so the server wears
+# it on layer 2 (TwoHanded), occupying BOTH hands. BaseWeapon.cs
+# CheckConflictingLayer (line 1005) then REFUSES any one-handed wear while it
+# is on: ``Layer == Layer.TwoHanded && layer == Layer.OneHanded`` ->
+# "You already have something in both hands." (500214). A *shield* on the same
+# layer 2 does NOT block a one-hander (the conflict is weapon-vs-weapon only),
+# so we must tell the two apart by graphic before refusing. Mirrors the set in
+# ``anima.procedures.combat_loop`` (kept local here to avoid an import cycle:
+# combat_loop imports from this module).
+TWO_HANDED_WEAPON_GRAPHICS = {
+    0x0F43, 0x0F44,  # hatchet
+    0x0F45, 0x0F46,  # executioner's axe
+    0x0F47, 0x0F48,  # battle axe
+    0x0F49, 0x0F4A,  # axe
+    0x0F4B, 0x0F4C,  # double axe
+    0x0F4D, 0x0F4E,  # bardiche (polearm)
+    0x13AF, 0x13B0,  # war axe
+    0x13FA, 0x13FB,  # large battle axe
+    0x143E, 0x143F,  # halberd (polearm)
+    0x1443, 0x1444,  # two-handed axe
+}
+
 
 async def equip_item(
     ctx: AgentContext,
@@ -88,6 +111,27 @@ async def equip_weapon_from_pack(
             success=False,
             message="One-handed hand occupied — can't equip a two-handed weapon",
         )
+
+    # Symmetric case: equipping a ONE-handed weapon while a TWO-handed weapon
+    # already holds layer 2. ServUO refuses the one-hander outright (same
+    # CheckConflictingLayer rule, 500214 "you already have something in both
+    # hands"), yet ``ss.equipment.get(LAYER_ONE_HANDED)`` is empty so the guard
+    # above misses it — equip_item would PickUp the one-hander, the wear would
+    # be rejected, and the weapon would strand loose on the cursor, disarming
+    # the agent. A shield on layer 2 (Parrying stream) must NOT block the
+    # one-hander, so distinguish a worn two-hander from a shield by graphic.
+    if not two_handed:
+        offhand_serial = ss.equipment.get(LAYER_TWO_HANDED)
+        if offhand_serial:
+            worn = ctx.perception.world.items.get(offhand_serial)
+            if worn is not None and worn.graphic in TWO_HANDED_WEAPON_GRAPHICS:
+                return ActionResult(
+                    success=False,
+                    message=(
+                        "Two-handed weapon occupies both hands — "
+                        "can't add a one-handed weapon"
+                    ),
+                )
 
     weapons = find_in_backpack(ctx, graphics)
     if not weapons:
