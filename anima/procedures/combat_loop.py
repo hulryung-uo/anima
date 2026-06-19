@@ -92,6 +92,36 @@ WEAPON_GRAPHICS = {
     0x1443, 0x1444,  # two-handed axe
 }
 
+# Two-handed melee weapons among WEAPON_GRAPHICS. On ServUO every axe (BaseAxe)
+# and polearm (BasePoleArm) carries Layer.TwoHanded in its tiledata — the
+# weapon's layer is read straight from the art (BaseWeapon.cs:5167
+# `Layer = (Layer)ItemData.Quality;`). So when the server equips one it goes to
+# the TWO-HANDED layer (2), occupying BOTH hands, and BaseWeapon.cs
+# CheckConflictingLayer (line 1005) REFUSES any attempt to wear it on the
+# one-handed layer ("You already have something in both hands.", 500214).
+#
+# `equip_weapon_from_pack` defaults to `two_handed=False`, i.e. layer 1. The
+# axe family was added to WEAPON_GRAPHICS (commit b33c9e4, "looted axe arms
+# combat") so a warrior holding only a looted axe reads as armed in can_start —
+# but execute() then tried to wear that axe on layer 1, which the server
+# rejects. equip_item still PickUps it first (lifting it loose onto the cursor)
+# and reports a soft unverified success, so the agent believes it is armed,
+# stays disarmed, lands zero swings, and the whole COMBAT skill stream (Swords/
+# Tactics/Anatomy/Parrying) never rolls. We must wear a two-hander on layer 2.
+TWO_HANDED_WEAPON_GRAPHICS = {
+    0x0F43, 0x0F44,  # hatchet
+    0x0F45, 0x0F46,  # executioner's axe
+    0x0F47, 0x0F48,  # battle axe
+    0x0F49, 0x0F4A,  # axe
+    0x0F4B, 0x0F4C,  # double axe
+    0x0F4D, 0x0F4E,  # bardiche (polearm)
+    0x13AF, 0x13B0,  # war axe
+    0x13FA, 0x13FB,  # large battle axe
+    0x143E, 0x143F,  # halberd (polearm)
+    0x1443, 0x1444,  # two-handed axe
+}
+ONE_HANDED_WEAPON_GRAPHICS = WEAPON_GRAPHICS - TWO_HANDED_WEAPON_GRAPHICS
+
 ENGAGE_RANGE = 10        # tiles to scan for targets
 ENGAGEMENT_CAP_S = 45.0  # per-target time box
 RETREAT_HP_PCT = 35.0    # break off and retreat below this
@@ -536,8 +566,19 @@ class HuntNearby(Procedure):
         tc = ss.skills.get(SKILL_TACTICS)
         before = (sw.value if sw else 0.0) + (tc.value if tc else 0.0)
 
+        equipped_two_handed = False
         if not ss.equipment.get(1) and not ss.equipment.get(2):
-            equipped = await equip_weapon_from_pack(ctx, WEAPON_GRAPHICS)
+            # Prefer a one-handed weapon so the off-hand stays free for a shield
+            # (Parrying stream). Only fall back to a two-hander when that's all
+            # the pack holds — and then wear it on the TWO-handed layer, because
+            # ServUO reads an axe/polearm's layer from its tiledata and refuses
+            # to wear it one-handed (it would strand on the cursor, disarming us).
+            equipped = await equip_weapon_from_pack(ctx, ONE_HANDED_WEAPON_GRAPHICS)
+            if not equipped.success:
+                equipped = await equip_weapon_from_pack(
+                    ctx, TWO_HANDED_WEAPON_GRAPHICS, two_handed=True
+                )
+                equipped_two_handed = equipped.success
             if not equipped.success:
                 return ProcedureResult(
                     success=False,
@@ -547,7 +588,10 @@ class HuntNearby(Procedure):
 
         # Parrying stream: raise a shield if the left hand is free.
         # Best-effort — a missing shield never fails the hunt.
-        if not ss.equipment.get(2):
+        # A two-handed weapon already fills the left hand (layer 2) — never try
+        # to add a shield on top of it: the server would refuse the wear and
+        # equip_shield_from_pack would strand the shield loose on the cursor.
+        if not equipped_two_handed and not ss.equipment.get(2):
             try:
                 shield = await equip_shield_from_pack(ctx)
                 if shield.success and shield.data:
