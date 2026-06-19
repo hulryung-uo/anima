@@ -13,6 +13,7 @@ anima/client/appearance.py for the full table.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import TYPE_CHECKING
 
@@ -36,10 +37,27 @@ SKILL_STEALTH = 47
 # ServUO Mobile skill-use lockout (seconds between active skill uses)
 SKILL_USE_COOLDOWN_S = 10.0
 
-# Meditation journal strings (Scripts/Skills/Meditation.cs, clilocs
-# 501851 / 501848)
+# Meditation journal strings (Scripts/Skills/Meditation.cs OnUse).
+# A trance — and the mana-regen boost — is ONLY entered on 501851. Every
+# other branch leaves m.Meditating false, so mana will NOT climb: returning
+# from those branches immediately (instead of polling mana for the whole
+# timeout) avoids burning ~timeout seconds per call on a no-op and reporting
+# a misleading success.
 MEDITATE_SUCCESS = "meditative trance"
+# 501850 "You cannot focus your concentration." (failed roll) and
+# 501845 "You are busy ... cannot focus." (a target cursor is open) both
+# contain this substring → no trance.
 MEDITATE_FAIL = "cannot focus"
+# 501846 "You are at peace." — mana is already at max; no trance is needed.
+MEDITATE_AT_PEACE = "at peace"
+# 502626 "Your hands must be free to cast spells or meditate." /
+# 500135 "Regenative forces cannot penetrate your armor!" /
+# 501849 "The mind is strong but the body is weak." — the meditation is
+# blocked outright; no trance, no regen.
+MEDITATE_BLOCKED = re.compile(
+    r"hands must be free|cannot penetrate your armor|body is weak",
+    re.IGNORECASE,
+)
 
 
 async def use_skill(ctx: AgentContext, skill_id: int) -> ActionResult:
@@ -94,10 +112,32 @@ async def meditate(
     since = time.time()
     await ctx.conn.send_packet(build_use_skill(SKILL_MEDITATION))
     entered = await wait_for_journal(
-        ctx, [MEDITATE_SUCCESS, MEDITATE_FAIL], timeout=3.0, since=since,
+        ctx,
+        [MEDITATE_SUCCESS, MEDITATE_FAIL, MEDITATE_AT_PEACE, MEDITATE_BLOCKED],
+        timeout=3.0,
+        since=since,
     )
-    if entered.success and entered.data.get("index") == 1:
-        return ActionResult(success=False, message="Could not focus (meditation failed)")
+    if entered.success:
+        idx = entered.data.get("index")
+        if idx == 1:
+            # 501850/501845: roll failed or busy — no trance was entered.
+            return ActionResult(
+                success=False, message="Could not focus (meditation failed)"
+            )
+        if idx == 2:
+            # 501846 "You are at peace." — mana is already maxed. Nothing to
+            # regen; report the goal as met rather than polling for a climb
+            # that will never come.
+            return ActionResult(
+                success=True,
+                message="Mana already at peace (full)",
+                data={"mana": ss.mana},
+            )
+        if idx == 3:
+            # Hands occupied / armor / low body: blocked outright, no regen.
+            return ActionResult(
+                success=False, message="Meditation blocked (hands/armor/body)"
+            )
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
