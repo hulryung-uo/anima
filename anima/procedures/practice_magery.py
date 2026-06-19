@@ -84,10 +84,39 @@ class PracticeMagery(Procedure):
                 return True
         return bool(find_in_backpack(ctx, SPELLBOOK_GRAPHICS))
 
+    def _no_gain_possible(self, ctx: AgentContext) -> bool:
+        """True when neither skill this loop rolls can gain any more.
+
+        practice_magery rolls Magery on every cast and Meditation while
+        regenerating mana. If BOTH are already at (or above) their server-
+        reported cap, the whole run produces ZERO skill gain — it just burns
+        the eval window casting Greater Heal forever while the profession
+        loop ("first startable wins") never falls through to anything else.
+        Skip so the planner can pick the next procedure instead.
+
+        Gain is measured off ``base`` (not value+bonuses), so the cap test
+        compares ``base`` against ``cap``. ``cap == 0`` means the server has
+        not reported a cap yet (default), so we never skip on unknown caps —
+        a missing cap must not masquerade as "capped".
+        """
+        ss = ctx.perception.self_state
+
+        def _capped(skill_id: int) -> bool:
+            s = ss.skills.get(skill_id)
+            if s is None:
+                return False
+            cap = getattr(s, "cap", 0.0) or 0.0
+            base = getattr(s, "base", 0.0) or 0.0
+            return cap > 0.0 and base >= cap
+
+        return _capped(SKILL_MAGERY) and _capped(SKILL_MEDITATION)
+
     async def can_start(self, ctx: AgentContext) -> bool:
         if not ctx.perception.self_state.is_alive:
             return False
         if not self._has_spellbook(ctx):
+            return False
+        if self._no_gain_possible(ctx):
             return False
         return not self._reagent_shortage(ctx)
 
