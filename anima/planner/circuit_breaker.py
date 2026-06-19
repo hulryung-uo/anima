@@ -39,13 +39,21 @@ class CircuitBreaker:
         # Kept as two parallel dicts so each has a precise type.
         self._counts: dict[Hashable, int] = {}
         self._tripped_at: dict[Hashable, float] = {}
+        # Targets whose cooldown has lapsed and are being probed once.
+        self._half_open: set[Hashable] = set()
 
     def _drop(self, target: Hashable) -> None:
         self._counts.pop(target, None)
         self._tripped_at.pop(target, None)
+        self._half_open.discard(target)
 
     def record_failure(self, target: Hashable) -> None:
         """Count one failure. Opens the breaker if max_failures reached."""
+        # A failed half-open probe means the target is still bad: re-trip
+        # immediately rather than counting up from zero again.
+        if target in self._half_open:
+            self.trip(target)
+            return
         count = self._counts.get(target, 0) + 1
         self._counts[target] = count
         if count >= self._max:
@@ -59,6 +67,7 @@ class CircuitBreaker:
         """Open the breaker immediately, skipping the counter."""
         self._counts[target] = self._max
         self._tripped_at[target] = time.time()
+        self._half_open.discard(target)
 
     def reset(self, target: Hashable) -> None:
         """Remove a target from tracking entirely."""
@@ -67,6 +76,7 @@ class CircuitBreaker:
     def reset_all(self) -> None:
         self._counts.clear()
         self._tripped_at.clear()
+        self._half_open.clear()
 
     def is_open(self, target: Hashable) -> bool:
         """True while the target is in its cooldown window."""
@@ -75,13 +85,25 @@ class CircuitBreaker:
             return False
         tripped_at = self._tripped_at.get(target, 0.0)
         if time.time() - tripped_at >= self._cooldown:
-            # Auto-expire
-            self._drop(target)
+            # Cooldown lapsed: clear the counter but remember that this
+            # target is now being probed once (half-open). The next
+            # failure re-trips it without re-counting to max_failures.
+            self._counts.pop(target, None)
+            self._tripped_at.pop(target, None)
+            self._half_open.add(target)
             return False
         return True
 
     def failure_count(self, target: Hashable) -> int:
         return self._counts.get(target, 0)
+
+    def is_half_open(self, target: Hashable) -> bool:
+        """True if the target's cooldown lapsed and it is being probed.
+
+        Note: a target only transitions to half-open once `is_open()`
+        has been evaluated after the cooldown window elapsed.
+        """
+        return target in self._half_open
 
     def open_targets(self) -> list[Hashable]:
         """List of targets whose breaker is currently open."""

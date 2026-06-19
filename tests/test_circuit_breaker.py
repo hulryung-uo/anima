@@ -77,3 +77,55 @@ class TestCircuitBreaker:
         assert cb.is_open((10, 20)) is True
         assert cb.is_open(42) is True
         assert cb.is_open("name") is True
+
+    def test_half_open_after_cooldown(self):
+        """After cooldown the target is probed once (half-open)."""
+        cb = CircuitBreaker(max_failures=2, cooldown_s=0.05)
+        cb.record_failure("a")
+        cb.record_failure("a")
+        assert cb.is_open("a") is True
+        assert cb.is_half_open("a") is False
+        time.sleep(0.06)
+        # Evaluating is_open after cooldown lapses puts it half-open.
+        assert cb.is_open("a") is False
+        assert cb.is_half_open("a") is True
+        assert cb.failure_count("a") == 0
+
+    def test_half_open_failure_retrips_immediately(self):
+        """A failing probe re-opens at once, not after max_failures again."""
+        cb = CircuitBreaker(max_failures=3, cooldown_s=0.05)
+        for _ in range(3):
+            cb.record_failure("a")
+        assert cb.is_open("a") is True
+        time.sleep(0.06)
+        assert cb.is_open("a") is False  # cooldown lapsed -> half-open probe
+        assert cb.is_half_open("a") is True
+        # The single probe attempt fails: known-bad target re-trips now,
+        # without having to burn max_failures (3) attempts all over again.
+        cb.record_failure("a")
+        assert cb.is_open("a") is True
+        assert cb.is_half_open("a") is False
+
+    def test_half_open_success_clears(self):
+        """A successful probe fully recovers the target (no half-open left)."""
+        cb = CircuitBreaker(max_failures=2, cooldown_s=0.05)
+        cb.record_failure("a")
+        cb.record_failure("a")
+        time.sleep(0.06)
+        assert cb.is_open("a") is False
+        assert cb.is_half_open("a") is True
+        cb.record_success("a")
+        assert cb.is_half_open("a") is False
+        assert cb.failure_count("a") == 0
+        # Back to a clean slate: needs a full max_failures run to re-open.
+        cb.record_failure("a")
+        assert cb.is_open("a") is False
+
+    def test_reset_clears_half_open(self):
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.05)
+        cb.record_failure("a")
+        time.sleep(0.06)
+        assert cb.is_open("a") is False  # -> half-open
+        assert cb.is_half_open("a") is True
+        cb.reset("a")
+        assert cb.is_half_open("a") is False
