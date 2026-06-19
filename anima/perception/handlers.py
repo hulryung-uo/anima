@@ -403,6 +403,44 @@ def register_handlers(
 
     handler.register(0xA3, handle_stam_update)
 
+    def handle_mobile_attributes(packet_id: int, data: bytes) -> None:
+        """0x2D MobileAttributes — full vitals refresh for one mobile.
+
+        Fixed 17-byte packet that carries hp, mana, and stamina (max then
+        current for each) in a single message. ServUO emits it on resurrect,
+        login, and bulk attribute changes (Server/Mobile.cs), so without a
+        handler our self_state hits/mana/stam silently go stale until the next
+        0xA1/0xA2/0xA3 trickle. Field order matches ClassicUO MobileAttributes
+        (PacketHandlers.cs) and ServUO's MobileAttributes packet: serial,
+        hits_max, hits, mana_max, mana, stam_max, stam.
+        """
+        r = PacketReader(data[1:])
+        serial = r.read_u32()
+        hits_max = r.read_u16()
+        hits = r.read_u16()
+        mana_max = r.read_u16()
+        mana = r.read_u16()
+        stam_max = r.read_u16()
+        stam = r.read_u16()
+        if serial == p.self_state.serial:
+            p.self_state.hits = hits
+            p.self_state.hits_max = hits_max
+            p.self_state.mana = mana
+            p.self_state.mana_max = mana_max
+            p.self_state.stam = stam
+            p.self_state.stam_max = stam_max
+            p.emit(GameEventType.HP_CHANGED, {"hits": hits, "hits_max": hits_max})
+            p.emit(GameEventType.MANA_CHANGED, {"mana": mana, "mana_max": mana_max})
+            p.emit(GameEventType.STAM_CHANGED, {"stam": stam, "stam_max": stam_max})
+        else:
+            # ClassicUO sets HitsMax/Hits for any entity; mana/stam are only
+            # meaningful for mobiles and we don't track them per-foe.
+            mob = p.world.get_or_create_mobile(serial)
+            mob.hits = hits
+            mob.hits_max = hits_max
+
+    handler.register(0x2D, handle_mobile_attributes)
+
     def handle_skill_update(packet_id: int, data: bytes) -> None:
         """0x3A SkillUpdate — skill list or single skill change.
 

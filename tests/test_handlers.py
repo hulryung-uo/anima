@@ -269,6 +269,67 @@ def test_hp_update_other():
 
 
 # ---------------------------------------------------------------------------
+# MobileAttributes (0x2D) — full vitals refresh in one packet
+# ---------------------------------------------------------------------------
+
+
+def test_mobile_attributes_self_updates_all_vitals():
+    h, p, w = _make_stack()
+    # Seed stale vitals so we can prove every field is overwritten.
+    p.self_state.hits = 1
+    p.self_state.hits_max = 1
+    p.self_state.mana = 1
+    p.self_state.mana_max = 1
+    p.self_state.stam = 1
+    p.self_state.stam_max = 1
+
+    buf = PacketWriter()
+    buf.write_u8(0x2D)
+    buf.write_u32(0x00000001)  # player serial
+    buf.write_u16(100)         # hits_max
+    buf.write_u16(80)          # hits
+    buf.write_u16(60)          # mana_max
+    buf.write_u16(45)          # mana
+    buf.write_u16(70)          # stam_max
+    buf.write_u16(35)          # stam
+
+    assert h.dispatch(0x2D, buf.to_bytes()) is True
+
+    assert p.self_state.hits == 80
+    assert p.self_state.hits_max == 100
+    assert p.self_state.mana == 45
+    assert p.self_state.mana_max == 60
+    assert p.self_state.stam == 35
+    assert p.self_state.stam_max == 70
+
+    events = p.poll_events()
+    types = {e.type for e in events}
+    assert GameEventType.HP_CHANGED in types
+    assert GameEventType.MANA_CHANGED in types
+    assert GameEventType.STAM_CHANGED in types
+
+
+def test_mobile_attributes_other_updates_hits_only():
+    h, p, w = _make_stack()
+
+    buf = PacketWriter()
+    buf.write_u8(0x2D)
+    buf.write_u32(0x00000099)  # other serial
+    buf.write_u16(200)         # hits_max
+    buf.write_u16(120)         # hits
+    buf.write_u16(50)          # mana_max
+    buf.write_u16(50)          # mana
+    buf.write_u16(50)          # stam_max
+    buf.write_u16(50)          # stam
+
+    h.dispatch(0x2D, buf.to_bytes())
+
+    mob = p.world.mobiles[0x00000099]
+    assert mob.hits == 120
+    assert mob.hits_max == 200
+
+
+# ---------------------------------------------------------------------------
 # ConfirmWalk (0x22) and DenyWalk (0x21)
 # ---------------------------------------------------------------------------
 
