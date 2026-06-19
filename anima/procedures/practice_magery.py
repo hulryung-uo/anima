@@ -102,7 +102,7 @@ class PracticeMagery(Procedure):
         ss = ctx.perception.self_state
 
         def _capped(skill_id: int) -> bool:
-            s = ss.skills.get(skill_id)
+            s = getattr(ss, "skills", {}).get(skill_id)
             if s is None:
                 return False
             cap = getattr(s, "cap", 0.0) or 0.0
