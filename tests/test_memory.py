@@ -178,6 +178,41 @@ class TestRelationships:
         rels = await db.get_nearby_relationships("Anima", [])
         assert rels == []
 
+    @pytest.mark.asyncio
+    async def test_nearby_relationships_ranked_by_significance(self, db: MemoryDB) -> None:
+        """The most significant relationships must surface first, not arbitrary
+        rowid order: most interactions, then strongest feeling, then recency."""
+        # Inserted in low->high significance order so rowid order would be wrong.
+        # "stranger": met once, indifferent.
+        await db.update_relationship("Anima", 1, "stranger", disposition_delta=0.05)
+        # "rival": one tense brush, but a single interaction.
+        await db.update_relationship("Anima", 2, "rival", disposition_delta=-0.6)
+        # "regular": met many times.
+        for _ in range(5):
+            await db.update_relationship("Anima", 3, "regular", disposition_delta=0.02)
+
+        rels = await db.get_nearby_relationships("Anima", [1, 2, 3])
+        # "regular" (5 interactions) outranks the single-interaction rows; among
+        # those, "rival" (|disp|=0.6) beats "stranger" (|disp|=0.05).
+        assert [r.entity_name for r in rels] == ["regular", "rival", "stranger"]
+
+    @pytest.mark.asyncio
+    async def test_nearby_relationships_capped(self, db: MemoryDB) -> None:
+        """A crowded area must not dump every known relationship into the LLM
+        context — the result is capped, and the cap keeps the top-ranked ones."""
+        serials = list(range(100, 120))  # 20 known entities nearby
+        for s in serials:
+            # interaction_count == s - 100, so higher serial == more significant.
+            for _ in range(s - 100 + 1):
+                await db.update_relationship("Anima", s, f"e{s}", disposition_delta=0.01)
+
+        rels = await db.get_nearby_relationships("Anima", serials, limit=8)
+        assert len(rels) == 8
+        # The 8 kept are the most-interacted entities (serials 119..112), not a
+        # rowid-order slice that would have started at serial 100.
+        kept = {r.entity_serial for r in rels}
+        assert kept == set(range(112, 120))
+
 
 # ---------------------------------------------------------------------------
 # Action stats tests

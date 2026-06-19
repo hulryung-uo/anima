@@ -476,16 +476,33 @@ class MemoryDB:
             await self.db.commit()
 
     async def get_nearby_relationships(
-        self, agent_name: str, serials: list[int]
+        self, agent_name: str, serials: list[int], limit: int = 8
     ) -> list[Relationship]:
-        """Get relationships for a list of entity serials."""
+        """Get relationships for a list of entity serials, ranked by significance.
+
+        Every other retrieval path the LLM context is built from is both ordered
+        and capped (episodes/knowledge ``limit=5``, q-values ``[:8]``, location
+        values ``[:5]``); this one was the lone exception — it returned every
+        matching row in arbitrary rowid order with no cap. In a crowded area
+        (a town, a tavern, near a pack of known NPCs) ``serials`` can be large,
+        so the memory block got flooded *and* the genuinely meaningful
+        relationships (someone met many times, a strong friend or a sworn enemy)
+        could be crowded out or dropped purely by insertion order.
+
+        Rank so the most significant relationships surface first: most
+        interactions, then strongest feeling (|disposition|), then most recent —
+        and cap at ``limit``.
+        """
         if not serials:
             return []
         placeholders = ",".join("?" for _ in serials)
         rows = await self.db.execute_fetchall(
             f"""SELECT * FROM relationships
-                WHERE agent_name = ? AND entity_serial IN ({placeholders})""",
-            [agent_name, *serials],
+                WHERE agent_name = ? AND entity_serial IN ({placeholders})
+                ORDER BY interaction_count DESC, ABS(disposition) DESC,
+                         last_interaction DESC
+                LIMIT ?""",
+            [agent_name, *serials, limit],
         )
         return [_row_to_relationship(r) for r in rows]
 
