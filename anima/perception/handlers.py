@@ -303,8 +303,9 @@ def register_handlers(
             p.self_state.hits_max = hits_max
 
             if flag >= 1:
-                # Female, race omitted — skip: sex(1) + race(1) if available
-                r.skip(1)  # sex
+                # Gender bool (ServUO m.Female / ClassicUO mobile.IsFemale).
+                # Written immediately after the type byte for every type >= 1.
+                p.self_state.is_female = r.read_u8() != 0
                 p.self_state.strength = r.read_u16()
                 p.self_state.dexterity = r.read_u16()
                 p.self_state.intelligence = r.read_u16()
@@ -319,7 +320,10 @@ def register_handlers(
             if flag >= 5 and r.remaining >= 2:
                 p.self_state.weight_max = r.read_u16()
                 if r.remaining >= 1:
-                    r.skip(1)  # race
+                    # Race id on the wire is RaceID + 1; the server emits 0 for a
+                    # non-ML-enabled account, which ClassicUO coerces to Human(1).
+                    race = r.read_u8()
+                    p.self_state.race = race if race != 0 else 1
             else:
                 # Calculate weight_max from STR (UOR formula)
                 p.self_state.weight_max = 7 * (p.self_state.strength // 2) + 40

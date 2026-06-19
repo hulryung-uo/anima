@@ -1103,6 +1103,83 @@ def test_character_status_aos_decodes_luck_and_damage():
     assert ss.damage_max == 19
 
 
+def _build_status_ml(serial: int, *, female: bool, race: int) -> bytes:
+    """Build a 0x11 type-5 (ML) self-status packet matching ServUO's
+    MobileStatusExtended wire order: gender byte, extended stats, the
+    type>=5 weight_max + race pair, stat_cap+followers, then the AOS run.
+    """
+    buf = PacketWriter()
+    buf.write_u8(0x11)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u32(serial)
+    buf.write_ascii("Tester", 30)
+    buf.write_u16(48)   # hits
+    buf.write_u16(50)   # hits_max
+    buf.write_u8(0)     # name_change_flag (renamable)
+    buf.write_u8(5)     # type/flag = 5 (ML)
+    # extended block (type >= 1)
+    buf.write_u8(1 if female else 0)  # gender
+    buf.write_u16(80)   # str
+    buf.write_u16(70)   # dex
+    buf.write_u16(60)   # int
+    buf.write_u16(45)   # stam
+    buf.write_u16(50)   # stam_max
+    buf.write_u16(40)   # mana
+    buf.write_u16(55)   # mana_max
+    buf.write_u32(1234) # gold
+    buf.write_u16(20)   # phys resist / armor
+    buf.write_u16(150)  # weight
+    # type >= 5: weight_max + race (RaceID + 1)
+    buf.write_u16(510)  # weight_max
+    buf.write_u8(race)  # race byte on the wire
+    # stat_cap + followers
+    buf.write_u16(225)  # stat_cap
+    buf.write_u8(2)     # followers
+    buf.write_u8(5)     # followers_max
+    # AOS block (type >= 4, and 5 >= 4)
+    buf.write_u16(11)   # fire
+    buf.write_u16(12)   # cold
+    buf.write_u16(13)   # poison
+    buf.write_u16(14)   # energy
+    buf.write_u16(300)  # luck
+    buf.write_u16(7)    # damage_min
+    buf.write_u16(19)   # damage_max
+    buf.write_u32(99)   # tithing points
+
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_character_status_ml_decodes_gender_and_race():
+    """Regression: the gender byte and the type>=5 race byte were skipped,
+    so is_female/race were never populated. The whole ML tail (weight_max,
+    stat_cap, resists, luck/damage) must also stay byte-aligned.
+    """
+    h, p, w = _make_stack()
+    serial = p.self_state.serial  # _make_stack uses 0x00000001
+
+    # Elf female (wire race byte 2 = RaceID 1 + 1).
+    h.dispatch(0x11, _build_status_ml(serial, female=True, race=2))
+
+    ss = p.self_state
+    assert ss.is_female is True
+    assert ss.race == 2
+    # The type>=5 weight_max comes off the wire, not the STR fallback.
+    assert ss.weight_max == 510
+    # Tail stays aligned after consuming gender + weight_max + race.
+    assert ss.stat_cap == 225
+    assert ss.followers == 2
+    assert ss.resist_fire == 11
+    assert ss.luck == 300
+    assert ss.damage_max == 19
+
+    # A non-ML-enabled account emits race byte 0; coerce to Human(1).
+    h.dispatch(0x11, _build_status_ml(serial, female=False, race=0))
+    assert ss.is_female is False
+    assert ss.race == 1
+
+
 # ---------------------------------------------------------------------------
 # WorldItem (0x1A) — ground item field-order regression
 # ---------------------------------------------------------------------------

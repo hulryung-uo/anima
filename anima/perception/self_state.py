@@ -84,6 +84,12 @@ class SelfState:
         self.dexterity: int = 0
         self.intelligence: int = 0
 
+        # Body attributes (from 0x11 extended status)
+        # is_female: gender bool written by the server right after the type byte.
+        # race: ML+ race id as on the wire (RaceID + 1): 1=Human, 2=Elf, 3=Gargoyle.
+        self.is_female: bool = False
+        self.race: int = 1
+
         # Extended stats (from 0x11)
         self.gold: int = 0
         self.weight: int = 0
