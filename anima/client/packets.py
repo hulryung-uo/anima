@@ -276,10 +276,25 @@ def build_game_login(auth_key: int, username: str, password: str) -> bytes:
 
 
 def build_delete_character(password: str, slot: int, client_ip: int = 0x7F000001) -> bytes:
-    """Build DeleteCharacter packet (0x83, 39 bytes)."""
+    """Build DeleteCharacter packet (0x83, 39 bytes).
+
+    Layout per ClassicUO ``Send_DeleteCharacter``
+    (src/ClassicUO.Client/Network/OutgoingPackets.cs):
+
+        [0x83][30 zero bytes][slot:u32 BE][clientIP:u32 BE]
+
+    The 30-byte field is *all zeros* — it is NOT the account password. Modern
+    clients stopped putting the password on the wire here, and ServUO's
+    ``PacketHandlers.DeleteCharacter`` simply ``Seek(30, ...)`` past it before
+    reading the slot. The previous build wrote the cleartext password into this
+    field, which (a) diverges from the reference wire bytes and (b) needlessly
+    leaks the password to any server/proxy that *does* read those 30 bytes. The
+    ``password`` parameter is retained for call-site compatibility but ignored.
+    """
+    del password  # field is reserved/zeroed on the wire (matches ClassicUO)
     w = PacketWriter()
     w.write_u8(0x83)
-    w.write_ascii(password, 30)
+    w.write_zeros(30)
     w.write_u32(slot)
     w.write_u32(client_ip)
     return w.to_bytes()
