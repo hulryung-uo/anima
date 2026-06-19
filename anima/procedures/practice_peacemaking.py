@@ -50,19 +50,29 @@ ATTEMPTS_PER_RUN = 3  # ~30s per procedure run (10s lockout between uses)
 
 
 async def _play_through_lockout(ctx, instrument_serial: int,
-                                duration_s: float) -> int:
-    """Fill a skill-lockout wait with instrument plays.
+                                lockout_end: float) -> int:
+    """Fill the remaining skill-lockout window with instrument plays.
 
     Plain instrument double-clicks roll Musicianship server-side and are NOT
     gated by the 10s UseSkill lockout (field data: 200 plays in one 600s
     window). Idling here cost the first bard seed 4/5 of its gain rate —
     exclusive lockout-paced peacemaking scored 16/h vs 52/h for play-spam.
+
+    ``lockout_end`` is an absolute ``time.monotonic()`` deadline captured at the
+    ``use_skill`` call that STARTED the lockout — not a fresh duration measured
+    from here. The Peacemaking lockout begins server-side the instant the skill
+    is used, so the seconds the caller already spent waiting on the target
+    cursor and the result journal line are ALREADY part of that window. Filling
+    a fresh full ``SKILL_USE_COOLDOWN_S`` from this call double-counted that
+    wait — up to ~3s of result-wait per resolved attempt — so each ~30s run
+    over-slept ~6-9s it could have spent on more Musicianship plays / the next
+    Peacemaking check. Filling only until ``lockout_end`` (a no-op once it has
+    already elapsed) mirrors ``practice_hiding``'s ``lockout_end`` accounting.
     """
     from anima.client.packets import build_double_click
 
     plays = 0
-    deadline = asyncio.get_event_loop().time() + duration_s
-    while asyncio.get_event_loop().time() < deadline:
+    while time.monotonic() < lockout_end:
         await ctx.conn.send_packet(build_double_click(instrument_serial))
         plays += 1
         await asyncio.sleep(1.3)  # server play lockout is 1s + margin
@@ -116,6 +126,11 @@ class PracticePeacemaking(Procedure):
         MAX_CURSOR_MISSES = ATTEMPTS_PER_RUN * 2
         while resolved < ATTEMPTS_PER_RUN and cursor_misses < MAX_CURSOR_MISSES:
             since = time.time()
+            # Anchor the lockout to the instant we USE the skill — the seconds
+            # spent waiting on the cursor / result below are already part of the
+            # server's 10s window, so _play_through_lockout fills only what is
+            # LEFT, never a fresh full window stacked on top of the result-wait.
+            lockout_end = time.monotonic() + SKILL_USE_COOLDOWN_S + 0.5
             ss.pending_target = None
             await use_skill(ctx, SKILL_PEACEMAKING)
 
@@ -123,8 +138,7 @@ class PracticePeacemaking(Procedure):
             if not cursor.success:
                 # No cursor — most likely still inside the skill lockout.
                 cursor_misses += 1
-                await _play_through_lockout(
-                    ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
+                await _play_through_lockout(ctx, instrument.serial, lockout_end)
                 continue
 
             # First-ever use asks which instrument to play (500617); the
@@ -140,8 +154,7 @@ class PracticePeacemaking(Procedure):
                 cursor = await wait_for_target(ctx, timeout=3.0)
                 if not cursor.success:
                     cursor_misses += 1
-                    await _play_through_lockout(
-                        ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
+                    await _play_through_lockout(ctx, instrument.serial, lockout_end)
                     continue
 
             # Creature cursor ("Whom do you wish to calm?" 1049525) —
@@ -164,7 +177,7 @@ class PracticePeacemaking(Procedure):
             # success — use the long one so no attempt is ever wasted),
             # filling it with Musicianship-rolling instrument plays.
             plays += await _play_through_lockout(
-                ctx, instrument.serial, SKILL_USE_COOLDOWN_S + 0.5)
+                ctx, instrument.serial, lockout_end)
 
         peace = ss.skills.get(SKILL_PEACEMAKING)
         music = ss.skills.get(SKILL_MUSICIANSHIP)
