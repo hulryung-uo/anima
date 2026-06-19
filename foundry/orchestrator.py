@@ -448,7 +448,6 @@ def run(rc: RunConfig) -> Archive:
             slots.put(out.slot)
 
     with ThreadPoolExecutor(max_workers=rc.parallel) as pool:
-        submitted = 0
         in_flight = 0
         for i in range(1, rc.n_cycles + 1):
             # Pace submission to slot availability: `pool.submit` never blocks,
@@ -467,18 +466,19 @@ def run(rc: RunConfig) -> Archive:
                 slots.put(slot)
                 break
             # Genomes this run has produced so far = (current disk total −
-            # baseline) for finished cycles, plus the still-in-flight `submitted`
-            # count. Capping on the raw disk total instead made the per-run cap a
-            # permanent GLOBAL ceiling: once the archive accumulated
-            # MAX_GENOMES_PER_RUN genomes across all history, every later run
-            # refused to schedule even its first cycle ("genome cap reached").
-            run_genomes = (arc.summary()["total_genomes"] - genomes_at_start) + submitted
+            # baseline) for ALREADY-DRAINED cycles, plus the still-IN-FLIGHT
+            # cycles (each of which will likely add one genome). Use `in_flight`,
+            # NOT the cumulative `submitted`: `submitted` is never decremented,
+            # so once a cycle finishes its genome was counted BOTH in the disk
+            # delta and in `submitted` — the guard then double-counted every
+            # finished cycle and tripped MAX_GENOMES_PER_RUN at ~half the
+            # intended budget, silently truncating long evolution runs.
+            run_genomes = (arc.summary()["total_genomes"] - genomes_at_start) + in_flight
             if run_genomes >= safety.MAX_GENOMES_PER_RUN:
                 print("[run] genome cap reached — not scheduling further cycles.")
                 slots.put(slot)
                 break
             pool.submit(job, i, slot)
-            submitted += 1
             in_flight += 1
 
         for _ in range(in_flight):
