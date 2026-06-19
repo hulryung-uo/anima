@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -31,6 +32,21 @@ class ChopWood(Procedure):
         if not find_in_backpack(ctx, HATCHET_GRAPHICS):
             return False
         return _find_nearby_tree(ctx) is not None
+
+    # ServUO Lumberjacking result lines (Scripts/Skills/Lumberjacking.cs +
+    # the harvest system). Any of these means the swing has RESOLVED, so the
+    # per-swing wait can break immediately instead of napping a flat 3s. The
+    # depletion/too-far lines matter most: a contended or freshly-stripped
+    # tree emits them right away and used to stall the whole 3s deadline.
+    _RESULT_SNIPPETS = (
+        "logs into your backpack",      # success
+        "put some logs",                # success (variant)
+        "not enough wood",              # 500493 depleted
+        "no wood here",                 # depleted (variant)
+        "fail to produce",              # skill-check fail
+        "too far away",                 # 500446 out of range
+        "can't use",                    # blocked
+    )
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
@@ -73,7 +89,34 @@ class ChopWood(Procedure):
                 message=result.message,
             )
 
-        await asyncio.sleep(3.0)
+        # Event-driven cadence (mirrors MineOre): poll until the swing
+        # resolves — new logs in the pack OR a lumberjacking result journal
+        # line — and only burn the full window on a true timeout. The old
+        # flat 3s nap was the dominant dead-time sink in low-skill chopping
+        # windows: every depleted/too-far/fail swing paid the whole 3s even
+        # though the server had already answered in well under a second.
+        chop_start = time.time()
+
+        def _logs_in_pack() -> int:
+            return sum(
+                it.amount for it in world.items.values()
+                if it.container == backpack and it.graphic in LOG_GRAPHICS
+            )
+
+        def _journal_result_seen() -> bool:
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < chop_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in self._RESULT_SNIPPETS):
+                    return True
+            return False
+
+        deadline = chop_start + 3.0
+        while time.time() < deadline:
+            await asyncio.sleep(0.2)
+            if _logs_in_pack() > logs_before or _journal_result_seen():
+                break
 
         logs_after = sum(
             it.amount for it in world.items.values()
