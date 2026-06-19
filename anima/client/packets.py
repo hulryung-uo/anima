@@ -155,7 +155,12 @@ PACKET_LENGTHS: dict[int, int] = {
     0xB7: 0,
     0xB8: 0,
     0xB9: 5,
-    0xBA: 6,
+    # 0xBA QuestArrow: 10 bytes for the High Seas (CV_7090+) protocol the
+    # client negotiates. We report 7.0.102.3 (>= 7.0.9.0), so ServUO sends the
+    # SetArrowHS/CancelArrowHS variant [ID][bool][x:u16][y:u16][serial:u32] = 10
+    # bytes, not the legacy 6-byte SetArrow/CancelArrow. Reading only 6 leaves
+    # the 4-byte serial in the buffer and desyncs every subsequent packet.
+    0xBA: 10,
     0xBB: 9,
     0xBC: 3,
     0xBD: 0,
