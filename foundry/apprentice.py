@@ -164,6 +164,35 @@ def _longest_alive_stretch(summary: TrajectorySummary,
     return max(0.0, longest)
 
 
+def _alive_fraction(summary: TrajectorySummary,
+                    min_death_s: float = MIN_DEATH_S,
+                    grace_s: float = RECOVERY_GRACE_S) -> float:
+    """Fraction of the window spent alive, from the SAME true death intervals
+    ``analyze_deaths`` returns — so it can't disagree with ``deaths`` and
+    ``longest_alive_stretch_s`` on what counts as "alive".
+
+    ``TrajectorySummary.alive_fraction`` (kernel, read-only) is a NAIVE measure:
+    every ``hits<=0`` sample opens a dead interval, including the sub-``MIN_DEATH_S``
+    transient flickers (a stale 0x11/0x16 hits update that briefly reads 0) that
+    ``analyze_deaths`` deliberately drops as non-deaths. Reporting that raw number
+    next to a filtered ``deaths``/``longest_alive_stretch_s`` makes the three
+    autonomy figures contradict each other (e.g. ``deaths=0`` and
+    ``longest_alive_stretch_s=<full window>`` but ``alive_fraction<1.0`` because a
+    1-second blip was charged as dead-time). Over a long soak with many stale
+    packets that error compounds and systematically under-reports autonomy. We
+    derive the dead-time from the filtered intervals instead, mirroring
+    ``_longest_alive_stretch``.
+    """
+    if not summary.hp_samples:
+        return 1.0  # no vitals seen → assume alive (match the kernel convention)
+    dur = max(0.0, summary.end_ts - summary.start_ts)
+    if dur <= 0:
+        return 1.0
+    deaths = analyze_deaths(summary, grace_s=grace_s, min_death_s=min_death_s)
+    dead_s = sum(d.dead_s for d in deaths)
+    return max(0.0, min(1.0, 1.0 - dead_s / dur))
+
+
 def _longest_sample_gap(summary: TrajectorySummary) -> float:
     """Longest gap between consecutive vitals/position samples — a coarse
     'went quiet' (possible stall) indicator.
@@ -208,7 +237,7 @@ def build_report(summary: TrajectorySummary, profession: str, fixed_start: str,
         ok=ok,
         duration_s=round(summary.duration_s, 1),
         duration_h=round(dur_h, 3),
-        alive_fraction=round(summary.alive_fraction(), 3),
+        alive_fraction=round(_alive_fraction(summary, grace_s=grace_s), 3),
         skill_gain_total=round(summary.skill_gain_total, 2),
         gold_delta=summary.gold_delta,
         total_actions=summary.total_actions,

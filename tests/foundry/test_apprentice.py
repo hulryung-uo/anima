@@ -5,6 +5,7 @@ the autonomy metrics that measure Rank 6 (flee/recover) over a long horizon.
 from foundry.apprentice import (
     analyze_deaths,
     build_report,
+    _alive_fraction,
     _longest_alive_stretch,
     _longest_sample_gap,
 )
@@ -129,6 +130,44 @@ class TestBuildReport:
         assert r.shadow_interventions == 0
         assert r.self_rescue_rate == 1.0
         assert r.interventions_per_hour == 0.0
+
+    def test_alive_fraction_consistent_with_filtered_deaths(self):
+        # A single 1s transient hp=0 blip (stale packet) at 2000: analyze_deaths
+        # drops it, so deaths==0 and the agent was alive the whole window. The
+        # kernel's NAIVE alive_fraction charges that blip as dead-time (<1.0),
+        # contradicting deaths/longest_alive. build_report must report the
+        # filtered, self-consistent fraction (==1.0).
+        s = _summary([(1000, 50, 50), (2000, 0, 50), (2001, 1, 50), (2800, 50, 50)])
+        # the kernel measure is the inconsistent one we are NOT using:
+        assert s.alive_fraction() < 1.0
+        r = build_report(s, "adventurer", "warrior")
+        assert r.deaths == 0
+        assert r.longest_alive_stretch_s == 1800.0
+        assert r.alive_fraction == 1.0          # consistent with deaths==0
+
+    def test_alive_fraction_counts_real_dead_time(self):
+        # A genuine 100s death in the 1800s window → 1 - 100/1800 = 0.944.
+        s = _summary([(1000, 50, 50), (1100, 0, 50), (1200, 40, 50)])
+        r = build_report(s, "adventurer", "warrior", grace_s=180)
+        assert r.deaths == 1
+        assert r.alive_fraction == round(1 - 100 / 1800, 3)
+
+
+class TestAliveFraction:
+    def test_transient_blip_does_not_reduce_fraction(self):
+        s = _summary([(1000, 50, 50), (2000, 0, 50), (2001, 1, 50), (2800, 50, 50)])
+        assert _alive_fraction(s) == 1.0
+
+    def test_real_death_reduces_fraction(self):
+        s = _summary([(1000, 50, 50), (1100, 0, 50), (1200, 40, 50)])  # dead 100s
+        assert abs(_alive_fraction(s) - (1 - 100 / 1800)) < 1e-9
+
+    def test_never_revived_runs_to_window_end(self):
+        s = _summary([(1000, 50, 50), (1100, 0, 50)])  # dead 1700s of 1800s
+        assert abs(_alive_fraction(s) - (1 - 1700 / 1800)) < 1e-9
+
+    def test_no_samples_assumes_alive(self):
+        assert _alive_fraction(_summary([])) == 1.0
 
 
 class TestMidDeathFlickerNotDoubleCounted:
