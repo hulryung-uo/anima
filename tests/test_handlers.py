@@ -1312,6 +1312,44 @@ def test_world_item_plain_no_flags():
     assert item.hue == 0
 
 
+def test_world_item_multi_strips_0x4000_flag():
+    """Regression: a ground multi (BaseMulti) is sent by ServUO with its art id
+    OR'd with 0x4000 (`itemID | 0x4000`). That bit is a "this is a multi" flag,
+    not part of the graphic number — ClassicUO's UpdateItem treats it as a multi
+    and uses the low bits as the real art id. The handler must mask 0x4000 off so
+    item.graphic is the true art id, not art_id + 0x4000.
+    """
+    h, p, w = _make_stack()
+    serial = 0x40009ABC
+    base_graphic = 0x0064  # a small-multi art id
+
+    # Build a 0x1A WorldItem whose graphic carries the multi flag (no stack,
+    # no graphic_inc, no hue/flags). Mirrors ServUO WorldItem ordering:
+    # serial -> graphic(|0x4000) -> x -> y -> z.
+    buf = PacketWriter()
+    buf.write_u8(0x1A)
+    buf.write_u16(0)  # length placeholder
+    buf.write_u32(serial)  # no stack-amount high bit
+    buf.write_u16(base_graphic | 0x4000)  # multi flag set
+    buf.write_u16(300)  # x, no direction flag
+    buf.write_u16(400)  # y, no hue/flags bits
+    buf.write_i8(0)  # z
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+
+    h.dispatch(0x1A, bytes(data))
+
+    item = p.world.items.get(serial)
+    assert item is not None
+    # The multi flag must be stripped — graphic is the real art id.
+    assert item.graphic == base_graphic
+    assert item.graphic & 0x4000 == 0
+    assert item.x == 300
+    assert item.y == 400
+    assert item.z == 0
+    assert item.amount == 1
+
+
 # ---------------------------------------------------------------------------
 # MobileIncoming (0x78) — NewMobileIncoming equipment record alignment
 # ---------------------------------------------------------------------------

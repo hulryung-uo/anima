@@ -219,6 +219,18 @@ def register_handlers(
             graphic &= 0x7FFF
             graphic += r.read_u8()  # graphic_inc
 
+        # ServUO WorldItem (Packets.cs) writes the art id as `itemID & 0x3FFF`
+        # for a normal item and `itemID | 0x4000` for a BaseMulti — bit 0x4000
+        # is a pure "this is a multi" flag, NOT part of the graphic number.
+        # ClassicUO's UpdateItem treats `graphic >= 0x4000` as a multi and uses
+        # the low bits as the real art id. The old code stored the raw u16 with
+        # the multi bit still set, so every ground multi (house signs, addons,
+        # deco/house components) landed in world.items with a graphic offset by
+        # 0x4000 — corrupting any graphic-based item identification and
+        # nearest-item lookups. Strip it so item.graphic is the true art id.
+        is_multi = bool(graphic & 0x4000)
+        graphic &= 0x3FFF
+
         amount = r.read_u16() if has_amount else 0
 
         x = r.read_u16()
@@ -248,6 +260,7 @@ def register_handlers(
         item.hue = hue
         item.amount = amount if amount else 1
         item.container = 0
+        _ = is_multi  # decoded for alignment/clarity; not yet surfaced on ItemInfo
 
         p.emit(GameEventType.ITEM_APPEARED, {"serial": serial, "x": x, "y": y})
 
