@@ -494,6 +494,34 @@ async def _request_target_status(ctx: AgentContext, serial: int) -> bool:
     return True
 
 
+def _confirm_kill(ctx: AgentContext, last_hits: int, last_hits_max: int) -> bool:
+    """True when a target that left ``world.mobiles`` actually DIED.
+
+    A mobile is dropped from ``world.mobiles`` by ``World.remove`` on a 0x1D
+    Delete (handlers.handle_delete) and by ``prune_stale_mobiles`` — but UO
+    sends a 0x1D Delete whenever a mobile leaves the player's visual range, not
+    only when it dies, and a stale-update prune likewise fires on a mob that has
+    simply pathed away. So ``current is None`` does NOT imply a kill: a fast
+    kiter that runs out of view, or a mob the leash let go, disappears exactly
+    the same way a felled one does. Crediting every disappearance as a kill
+    inflates the kill count that feeds the COMBAT throughput metric, fires a
+    phantom ``_loot_fresh_corpses`` pass, and masks a kiter escape (which the
+    chase leash exists to handle) as a win.
+
+    A real melee kill leaves positive evidence, so we require one of:
+
+      * the target's LAST-KNOWN health bar was a real reading at/below zero
+        (``last_hits_max > 0 and last_hits <= 0``) — we watched it die; or
+      * a corpse (graphic 0x2006) is on the ground within ``ENGAGE_RANGE`` —
+        the body the killing blow dropped.
+
+    Otherwise the target merely left view: not a kill.
+    """
+    if last_hits_max > 0 and last_hits <= 0:
+        return True
+    return bool(find_corpses(ctx, max_dist=ENGAGE_RANGE))
+
+
 def _find_target(ctx: AgentContext):
     """Nearest attackable non-human mobile (humans only when hostile)."""
     ss = ctx.perception.self_state
@@ -640,6 +668,12 @@ class HuntNearby(Procedure):
         retreated = False
         died = False
         leashed = False
+        # Last health-bar reading we saw for the current target, so that when it
+        # vanishes from world.mobiles we can tell a real kill (we watched it hit
+        # zero, or a corpse is on the ground) from a kiter that simply left view
+        # (0x1D Delete / stale prune). Reset whenever the target changes.
+        last_target_hits = 0
+        last_target_hits_max = 0
         try:
             await ctx.conn.send_packet(build_war_mode(True))
             await _request_target_status(ctx, target.serial)
@@ -689,19 +723,47 @@ class HuntNearby(Procedure):
                     await ctx.conn.send_packet(build_attack(target.serial))
 
                 current = ctx.perception.world.mobiles.get(target.serial)
-                # Dead = removed from the world, or a KNOWN health bar at
-                # zero. MobileInfo defaults hits/hits_max to 0 for mobiles
-                # we never queried — treating that as dead made this loop
-                # re-target every tick and never land a swing.
-                target_dead = current is None or (
-                    current.hits_max > 0 and current.hits <= 0
-                )
+                # Dead = a KNOWN health bar at zero, or gone from the world with
+                # positive death evidence. MobileInfo defaults hits/hits_max to 0
+                # for mobiles we never queried — treating that as dead made this
+                # loop re-target every tick and never land a swing.
+                #
+                # `current is None` (dropped from world.mobiles) is NOT proof of
+                # death: a 0x1D Delete also fires when a mob leaves visual range
+                # and prune_stale_mobiles reaps a mob that pathed away — so a
+                # kiter that ran out of view disappears exactly like a felled one.
+                # `_confirm_kill` gates the no-current case on real evidence (a
+                # last-seen zero health bar, or a corpse on the ground); without
+                # it a fled kiter is mis-credited as a kill (inflating the COMBAT
+                # throughput metric) and triggers a phantom loot pass.
+                if current is not None:
+                    last_target_hits = current.hits
+                    last_target_hits_max = current.hits_max
+                    target_dead = current.hits_max > 0 and current.hits <= 0
+                else:
+                    target_dead = _confirm_kill(
+                        ctx, last_target_hits, last_target_hits_max
+                    )
+                    if not target_dead:
+                        # Target left view without dying — re-pick a closer live
+                        # hostile (or break) but DON'T credit a kill or loot.
+                        logger.info(
+                            "combat_target_left_view",
+                            target=f"0x{target.serial:08X}",
+                        )
                 if target_dead:
                     kills += 1
                     gold_looted += await _loot_fresh_corpses(ctx)
+                # Re-pick a target when the current one is gone from the world
+                # (dead OR left view) or confirmed dead by its health bar. A live
+                # kiter that left view re-targets here too — without a kill credit
+                # or a loot pass — so the next _find_target picks a closer foe.
+                if current is None or target_dead:
                     target = _find_target(ctx)
                     if target is None:
                         break
+                    last_target_hits = 0
+                    last_target_hits_max = 0
                     await _request_target_status(ctx, target.serial)
                     await ctx.conn.send_packet(build_attack(target.serial))
                     deadline = time.monotonic() + ENGAGEMENT_CAP_S

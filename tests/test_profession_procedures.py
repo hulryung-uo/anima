@@ -520,7 +520,11 @@ class TestCombatKillDetection:
             or result.details.get("kills", 0) == 0 or "Combat: 0 kills" in result.message
 
     @pytest.mark.asyncio
-    async def test_removed_mobile_counts_as_kill(self):
+    async def test_removed_mobile_with_corpse_counts_as_kill(self):
+        # A removed mobile (gone from world.mobiles) is only a kill with
+        # positive death evidence — here a corpse (0x2006) on the ground where
+        # it stood. (A removal with no corpse and no known-zero health bar is a
+        # kiter that left view, NOT a kill — see test_removed_mobile_left_view.)
         from anima.perception.enums import NotorietyFlag
         from anima.procedures import combat_loop as cl
 
@@ -535,11 +539,48 @@ class TestCombatKillDetection:
             return targets[0] if len(targets) == 1 else targets.pop(0)
 
         ctx.perception.world.nearby_mobiles = MagicMock(side_effect=_nearby)
-        ctx.perception.world.mobiles = {}  # already removed → dead on first check
+        ctx.perception.world.mobiles = {}  # already removed → check the corpse
+        # Corpse on the ground next to the agent = positive death evidence.
+        ctx.perception.world.items = {
+            0xC0: MagicMock(serial=0xC0, x=101, y=200, container=0, graphic=0x2006)
+        }
 
         proc = cl.HuntNearby()
         with patch.object(cl, "ENGAGEMENT_CAP_S", 0.25), \
-             patch.object(cl, "TICK_S", 0.05):
+             patch.object(cl, "TICK_S", 0.05), \
+             patch.object(cl, "_loot_fresh_corpses", AsyncMock(return_value=0)):
             result = await proc.run(ctx)
 
         assert "1 kills" in result.message
+
+    @pytest.mark.asyncio
+    async def test_removed_mobile_left_view_is_not_a_kill(self):
+        # A mobile that vanishes from world.mobiles with NO corpse and no
+        # known-zero health bar (never status-queried: hits_max==0) left visual
+        # range / was pruned — UO sends a 0x1D Delete on leaving view, not only
+        # on death. It must NOT be credited as a kill.
+        from anima.perception.enums import NotorietyFlag
+        from anima.procedures import combat_loop as cl
+
+        ctx = _make_ctx()
+        ctx.perception.self_state.equipment[1] = 0x9004
+        mob = MagicMock(serial=0xA1, x=101, y=200, body=0x05,
+                        notoriety=NotorietyFlag.ATTACKABLE,
+                        hits=0, hits_max=0)
+        targets = [[mob], []]
+
+        def _nearby(*a, **k):
+            return targets[0] if len(targets) == 1 else targets.pop(0)
+
+        ctx.perception.world.nearby_mobiles = MagicMock(side_effect=_nearby)
+        ctx.perception.world.mobiles = {}  # gone, but no corpse spawned
+        ctx.perception.world.items = {}
+
+        proc = cl.HuntNearby()
+        with patch.object(cl, "ENGAGEMENT_CAP_S", 0.25), \
+             patch.object(cl, "TICK_S", 0.05), \
+             patch.object(cl, "_loot_fresh_corpses", AsyncMock(return_value=0)) as loot:
+            result = await proc.run(ctx)
+
+        assert "0 kills" in result.message
+        loot.assert_not_awaited()
