@@ -10,6 +10,10 @@ if TYPE_CHECKING:
 # Region size for location value map (32x32 tiles per region)
 REGION_SIZE = 32
 
+# Player characters use human bodies (male/female). Monsters never do, so the
+# body check is what separates "another player nearby" from "a mob nearby".
+HUMAN_BODIES = {0x0190, 0x0191}
+
 
 def encode_state(ctx: BrainContext) -> str:
     """Encode current game state into a string key for Q-table lookup.
@@ -68,10 +72,19 @@ def _location_type(ctx: BrainContext) -> str:
 
 
 def _player_presence(ctx: BrainContext) -> str:
+    """Detect another *player* (human-bodied mobile) nearby.
+
+    NOTE: notoriety alone is not enough — hostile mobs carry ATTACKABLE(3),
+    ENEMY(5) or MURDERER(6) notoriety, so a plain ``notoriety.value <= 6`` test
+    flags every monster in the field as a "player" and corrupts the state key
+    (a solo grinder would encode as ``players|...|enemies`` instead of
+    ``alone|...|enemies``). Players use human bodies; monsters never do, so gate
+    on the body. The agent itself is excluded by serial.
+    """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
     has_players = any(
-        m.notoriety is not None and m.notoriety.value <= 6
+        m.body in HUMAN_BODIES and m.serial != getattr(ss, "serial", None)
         for m in nearby
     )
     return "players" if has_players else "alone"

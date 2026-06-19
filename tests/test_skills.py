@@ -210,6 +210,60 @@ class TestStateEncoder:
         ctx.perception.self_state.hp_percent = 10.0
         assert "critical" in encode_state(ctx)
 
+    def test_monsters_do_not_count_as_players(self) -> None:
+        """A field full of monsters must encode as 'alone', not 'players'.
+
+        Regression: monsters carry ATTACKABLE(3)/ENEMY(5)/MURDERER(6) notoriety,
+        and the old ``notoriety.value <= 6`` test flagged every mob as a player,
+        corrupting the social component of the state key.
+        """
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+
+        ctx = make_ctx()
+        ctx.perception.self_state.serial = 0x01
+        monsters = [
+            SimpleNamespace(serial=0x10, body=0x0021, notoriety=NotorietyFlag.ATTACKABLE),
+            SimpleNamespace(serial=0x11, body=0x0009, notoriety=NotorietyFlag.ENEMY),
+            SimpleNamespace(serial=0x12, body=0x002E, notoriety=NotorietyFlag.MURDERER),
+        ]
+        ctx.perception.world.nearby_mobiles.return_value = monsters
+
+        state = encode_state(ctx)
+        parts = state.split("|")
+        # parts[1] is the player-presence component.
+        assert parts[1] == "alone"
+        assert "players" not in parts
+
+    def test_human_bodied_mobile_counts_as_player(self) -> None:
+        """A real human-bodied character nearby encodes as 'players'."""
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+
+        ctx = make_ctx()
+        ctx.perception.self_state.serial = 0x01
+        ctx.perception.world.nearby_mobiles.return_value = [
+            SimpleNamespace(serial=0x20, body=0x0190, notoriety=NotorietyFlag.INNOCENT),
+        ]
+
+        assert encode_state(ctx).split("|")[1] == "players"
+
+    def test_self_does_not_count_as_player(self) -> None:
+        """The agent's own human body must not register as another player."""
+        from types import SimpleNamespace
+
+        from anima.perception.enums import NotorietyFlag
+
+        ctx = make_ctx()
+        ctx.perception.self_state.serial = 0x01
+        ctx.perception.world.nearby_mobiles.return_value = [
+            SimpleNamespace(serial=0x01, body=0x0190, notoriety=NotorietyFlag.INNOCENT),
+        ]
+
+        assert encode_state(ctx).split("|")[1] == "alone"
+
     def test_region_coords(self) -> None:
         assert region_coords(1000, 2000) == (31, 62)
         assert region_coords(0, 0) == (0, 0)
