@@ -4359,30 +4359,16 @@ class _SeekResurrection:
             await asyncio.sleep(self.RESURRECT_POLL_INTERVAL)
             ss = ctx.perception.self_state
 
-            # Check for resurrection gump and accept it
-            if ss.gumps:
-                for gump_id, gump in list(ss.gumps.items()):
-                    try:
-                        from anima.client.packets import build_gump_response
-                        cont_btn = gump.find_button_near_text("CONTINUE")
-                        if cont_btn is None:
-                            cont_btn = gump.find_button_near_text("OK")
-                        button_id = self._safe_button(
-                            gump, cont_btn.button_id if cont_btn else 1)
-                        await ctx.conn.send_packet(
-                            build_gump_response(gump.serial, gump_id, button_id)
-                        )
-                        logger.info(
-                            "seek_resurrection_gump_response",
-                            gump_id=hex(gump_id),
-                            button_id=button_id,
-                        )
-                        ss.gumps.pop(gump_id, None)
-                        await asyncio.sleep(2.0)
-                    except Exception as e:
-                        logger.warning(
-                            "seek_resurrection_gump_error", error=str(e)
-                        )
+            # Accept any pending resurrection gump. Delegate to the shared
+            # helper, which gates on the res-gump signature (CONTINUE/OK label
+            # or a "resurrect"/"ghost" text line) before sending a button.
+            # The old inline loop fell back to button 1 for *every* open gump,
+            # so an unrelated gump (e.g. a welcome/status window with a reply
+            # button) would get a spurious button-1 click while the real res
+            # gump went unanswered — leaving the ghost Frozen until timeout.
+            if await self._dismiss_pending_res_gumps(ctx):
+                return self._success_result("Resurrected by healer NPC", ctx)
+            ss = ctx.perception.self_state
 
             if ss.is_alive:
                 return self._success_result("Resurrected by healer NPC", ctx)
