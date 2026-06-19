@@ -103,6 +103,22 @@ class DiscoveredLocation:
     serial: int = 0  # entity serial if applicable
 
 
+def discovery_fact(loc: DiscoveredLocation) -> str:
+    """Render a discovery as a persisted knowledge ``fact`` string.
+
+    The ``category`` MUST lead the sentence. ``LocationKnowledge.build_knowledge_prompt``
+    surfaces discoveries into the LLM navigation prompt by keyword-matching the
+    stored facts (``query_knowledge(keyword="vendor")``, ``keyword="resource"``,
+    ...). The old format stored only the *subcategory* — "weaponsmith at (x, y)",
+    "iron_spot at (x, y)" — so the word "vendor"/"resource" never appeared in the
+    fact and the keyword search matched nothing: every discovered vendor and
+    resource was persisted yet invisible to navigation. Leading with the category
+    keyword makes the read path actually find them. The ``(x, y)`` tail is kept so
+    the coordinate regex in ``_search_memory`` still parses the location.
+    """
+    return f"{loc.category}: {loc.subcategory} at ({loc.x}, {loc.y})"
+
+
 # ---------------------------------------------------------------------------
 # Discovery engine
 # ---------------------------------------------------------------------------
@@ -144,7 +160,7 @@ class LocationDiscovery:
             for loc in new_locations:
                 await ctx.memory_db.add_knowledge(
                     agent_name=self._agent_name,
-                    fact=f"{loc.subcategory} at ({loc.x}, {loc.y})",
+                    fact=discovery_fact(loc),
                     source="exploration",
                     confidence=0.9,
                 )
