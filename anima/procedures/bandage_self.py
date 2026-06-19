@@ -32,7 +32,17 @@ _FINISH_PATTERNS = [
     "finish applying",      # 500969 — heal resolved (gain rolled)
     "stanch",               # bleeding variant
     "not damaged",          # 500955 — full HP, nothing to heal
-    "barely manage",        # failed heal message variants
+    # 500968 "You apply the bandages, but they barely help." — the low-skill
+    # heal outcome a starter grinding Healing produces most often. The old
+    # pattern "barely manage" matches NO bandage cliloc (only resurrection /
+    # stat-inspection strings 502396/1019033/1038xxx), so this finish line went
+    # undetected: wait_for_journal ran its full 12 s timeout and the procedure
+    # fell through to a phantom "+0 HP" success — roughly doubling heal cadence.
+    "barely help",          # 500968 — heal rolled but barely helped
+    # 500967 "You heal what little damage your patient had." — full-HP/minor
+    # heal finish; without it a near-full heal also times out instead of
+    # resolving immediately.
+    "little damage",
 ]
 
 
@@ -85,7 +95,12 @@ class BandageSelf(Procedure):
         gained = max(0.0, (skill.value if skill else 0.0) - before)
         healed = max(0, ss.hits - hp_before)
 
-        if finished.success and finished.data.get("index") == 2:
+        # "not damaged" (500955) is a server refusal, not a heal — detect it by
+        # the matched TEXT, not a positional pattern index: adding/reordering a
+        # pattern (as above) must never silently turn the refusal branch into a
+        # different message.
+        finish_text = (finished.data.get("text") or "").lower() if finished.success else ""
+        if "not damaged" in finish_text:
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
