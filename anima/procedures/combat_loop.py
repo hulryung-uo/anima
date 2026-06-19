@@ -834,6 +834,22 @@ class HuntNearby(Procedure):
                             )
                             target = best
                             current = best
+                            # Re-baseline the kill-confirmation tracking onto the
+                            # NEW target, exactly as the dead/left-view re-pick
+                            # path above does. The switch carried over the OLD
+                            # target's last-seen health bar and the engage-start
+                            # corpse snapshot — so if the freshly-switched target
+                            # then kited out of view next tick, _confirm_kill
+                            # would judge it against the previous target's reading
+                            # AND count any corpse that dropped *after* the
+                            # original engagement (a body this engagement already
+                            # felled and left unlooted) as "new" evidence,
+                            # crediting a phantom kill and firing a bogus loot pass
+                            # — the same stale-corpse false-confirm the re-pick
+                            # snapshot (commit 5195230) closes, missed here.
+                            last_target_hits = 0
+                            last_target_hits_max = 0
+                            known_corpses = _corpse_serials(ctx)
                             await _request_target_status(ctx, target.serial)
                             await ctx.conn.send_packet(build_attack(target.serial))
 
