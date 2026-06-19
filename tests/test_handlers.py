@@ -19,6 +19,83 @@ def _make_stack() -> tuple[PacketHandler, Perception, WalkerManager]:
     return h, p, w
 
 
+def _build_context_menu(mode: int, serial: int, entries: list[tuple]) -> bytes:
+    """Build a 0xBF subcmd 0x14 DisplayContextMenu packet.
+
+    Each `entries` tuple is (cliloc, index, flags). For the new layout
+    (mode >= 2) cliloc is a full u32; for the old layout (mode < 2) it is
+    encoded as a u16 with the +3_000_000 base offset stripped back off.
+    """
+    body = bytearray()
+    body += struct.pack(">H", mode)
+    body += struct.pack(">I", serial)
+    body.append(len(entries))
+    for cliloc, index, flags in entries:
+        if mode >= 2:
+            body += struct.pack(">IHH", cliloc, index, flags)
+        else:
+            body += struct.pack(">HHH", index, cliloc - 3_000_000, flags)
+    pkt = bytearray()
+    pkt.append(0xBF)
+    pkt += struct.pack(">H", 0)  # length placeholder
+    pkt += struct.pack(">H", 0x0014)  # subcmd
+    pkt += body
+    struct.pack_into(">H", pkt, 1, len(pkt))
+    return bytes(pkt)
+
+
+def test_context_menu_new_cliloc():
+    h, p, _ = _make_stack()
+    entries = [(1114778, 0, 0x20), (3000168, 1, 0x00)]
+    h.dispatch(0xBF, _build_context_menu(mode=2, serial=0x40001234, entries=entries))
+    assert p.self_state.context_menu_serial == 0x40001234
+    got = [(e.cliloc, e.index, e.flags) for e in p.self_state.context_menu]
+    assert got == entries
+
+
+def test_context_menu_old_cliloc_layout():
+    """mode < 2 uses index,u16-cliloc,flags ordering — not the new u32 cliloc.
+
+    Regression: the handler used to decode every entry as the new layout,
+    so an old-format packet produced a bogus 4-byte cliloc and a shifted
+    index/flags. Verify the correct old-format fields are recovered.
+    """
+    h, p, _ = _make_stack()
+    entries = [(3006149, 0, 0x00), (3000168, 1, 0x00)]
+    h.dispatch(0xBF, _build_context_menu(mode=0, serial=0x4000ABCD, entries=entries))
+    assert p.self_state.context_menu_serial == 0x4000ABCD
+    got = [(e.cliloc, e.index, e.flags) for e in p.self_state.context_menu]
+    assert got == entries
+
+
+def test_context_menu_old_cliloc_flag_gated_words_keep_alignment():
+    """Old-format entries with flag-gated trailing words must not desync.
+
+    flags & 0x20 appends one extra u16; if the decoder ignores it the
+    following entry is read at the wrong offset. Verify both entries decode.
+    """
+    h, p, _ = _make_stack()
+    # First entry carries the 0x20 flag (one trailing word). Hand-build the
+    # body so we can inject the extra word between the two entries.
+    body = bytearray()
+    body += struct.pack(">H", 0)            # mode 0 (old)
+    body += struct.pack(">I", 0x40005555)   # serial
+    body.append(2)                           # count
+    body += struct.pack(">HHH", 0, 3006149 - 3_000_000, 0x20)  # entry 0
+    body += struct.pack(">H", 0x1234)        # flag-gated trailing word
+    body += struct.pack(">HHH", 7, 3000168 - 3_000_000, 0x00)  # entry 1
+    pkt = bytearray()
+    pkt.append(0xBF)
+    pkt += struct.pack(">H", 0)
+    pkt += struct.pack(">H", 0x0014)
+    pkt += body
+    struct.pack_into(">H", pkt, 1, len(pkt))
+
+    h.dispatch(0xBF, bytes(pkt))
+    got = [(e.cliloc, e.index, e.flags) for e in p.self_state.context_menu]
+    assert got == [(3006149, 0, 0x20), (3000168, 7, 0x00)]
+
+
 # ---------------------------------------------------------------------------
 # MobileIncoming (0x78)
 # ---------------------------------------------------------------------------

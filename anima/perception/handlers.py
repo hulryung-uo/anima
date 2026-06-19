@@ -1189,23 +1189,47 @@ def register_handlers(
                 )
 
         elif subcmd == 0x14 and len(data) >= 12:
-            # DisplayContextMenu: subcmd(2) + unk(2) + serial(4) + count(1)
-            # Per entry: cliloc(4) + index(2) + flags(2) = 8 bytes each
+            # DisplayContextMenu: subcmd(2) + mode(2) + serial(4) + count(1)
+            # The entry layout depends on `mode` (ClassicUO PopupMenuData.Parse):
+            #   mode >= 2 (new cliloc): cliloc:u32, index:u16, flags:u16
+            #   mode <  2 (old cliloc): index:u16, cliloc:u16(+3_000_000),
+            #                           flags:u16, then optional flag-gated
+            #                           words (0x84 -> +2, 0x40 -> +2,
+            #                           0x20 -> +2). Decoding an old-format
+            #                           packet with the new layout shifts
+            #                           every field and corrupts the cliloc.
             from anima.perception.self_state import ContextMenuEntry as CMEntry
 
             raw = data[5:]
-            # unk(2) + serial(4) + count(1)
+            mode = struct.unpack(">H", raw[0:2])[0]
+            is_new_cliloc = mode >= 2
             serial = struct.unpack(">I", raw[2:6])[0]
             count = raw[6]
-            entry_offset = 7
+            off = 7
             entries: list[CMEntry] = []
-            for i in range(count):
-                off = entry_offset + i * 8
-                if off + 8 > len(raw):
-                    break
-                cliloc = struct.unpack(">I", raw[off : off + 4])[0]
-                index = struct.unpack(">H", raw[off + 4 : off + 6])[0]
-                flags = struct.unpack(">H", raw[off + 6 : off + 8])[0]
+            for _ in range(count):
+                if is_new_cliloc:
+                    if off + 8 > len(raw):
+                        break
+                    cliloc = struct.unpack(">I", raw[off : off + 4])[0]
+                    index = struct.unpack(">H", raw[off + 4 : off + 6])[0]
+                    flags = struct.unpack(">H", raw[off + 6 : off + 8])[0]
+                    off += 8
+                else:
+                    if off + 6 > len(raw):
+                        break
+                    index = struct.unpack(">H", raw[off : off + 2])[0]
+                    cliloc = struct.unpack(">H", raw[off + 2 : off + 4])[0] + 3_000_000
+                    flags = struct.unpack(">H", raw[off + 4 : off + 6])[0]
+                    off += 6
+                    # Flag-gated trailing words — consume them so the next
+                    # entry stays byte-aligned (values themselves unused).
+                    if flags & 0x84:
+                        off += 2
+                    if flags & 0x40:
+                        off += 2
+                    if flags & 0x20:
+                        off += 2
                 entries.append(CMEntry(cliloc=cliloc, index=index, flags=flags))
 
             p.self_state.context_menu_serial = serial
