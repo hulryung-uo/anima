@@ -600,6 +600,27 @@ class Planner:
         """
         return ss.hits_max > 0 and ss.hits < ss.hits_max * _HEAL_IN_PLACE_HP_PCT
 
+    def _should_cure_poison(self, ss) -> bool:
+        """Priority-1 decision: a poison tick is a survival threat that the
+        HP-percentage gates above CANNOT see.
+
+        ``_should_flee_swarm`` and ``_should_heal_in_place`` both key purely on
+        HP fraction. Poison is invisible to them: a freshly-poisoned agent sits
+        at high HP (>= 40%) so neither fires, and it falls straight through to
+        the Priority-1.5 profession / mining loop — where bandages never fire
+        (combat_loop's poison override only runs *inside* a fight, and combat
+        has ended once the mob is dead/fled). The poison then ticks the agent
+        down, and by the time HP finally crosses the 40% heal floor the agent is
+        mid-procedure (mining/smelting/crafting) and keeps bleeding to death.
+
+        ServUO's Bandage.cs cures poison on a roll *independent* of the heal, so
+        a cure-bandage is worth applying even at full HP. This gate mirrors
+        combat_loop._maybe_bandage's documented poison override at the planner
+        level, so the agent stops everything and cure-bandages the moment it is
+        poisoned, instead of only reacting once the poison has nearly killed it.
+        """
+        return bool(getattr(ss, "is_poisoned", False))
+
     async def select_procedure(self, ctx: AgentContext):
         """Select the highest-priority procedure based on gameplay loop.
 
@@ -937,6 +958,20 @@ class Planner:
             proc = _get_proc("bandage_self")
             if proc and await proc.can_start(ctx):
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 붕대 치료")
+                return proc
+
+        # --- Priority 1c: Cure an active poison (independent of HP) ---
+        # Poison is invisible to the HP-percentage gates above: it ticks an
+        # otherwise-healthy agent down while it runs the profession/mining loop
+        # (where combat_loop's in-fight poison-bandage override no longer runs).
+        # Cure-bandage NOW so the agent doesn't keep grinding while it bleeds to
+        # death. bandage_self.can_start admits a poisoned agent even at full HP.
+        if self._should_cure_poison(ss):
+            proc = _get_proc("bandage_self")
+            if proc and await proc.can_start(ctx):
+                _intent(
+                    f"중독 (lvl {getattr(ss, 'poison_level', 0)}) → 해독 붕대"
+                )
                 return proc
 
         # --- Priority 1.5: Profession loop (non-mining trades) ---

@@ -45,8 +45,15 @@ class BandageSelf(Procedure):
         ss = ctx.perception.self_state
         if not ss.is_alive:
             return False
-        if ss.hits_max <= 0 or ss.hits >= ss.hits_max * 0.95:
-            return False  # no damage → server refuses, no gain
+        if ss.hits_max <= 0:
+            return False
+        # An active poison forces a cure-bandage even at full HP: ServUO's
+        # Bandage.cs rolls a cure independent of the heal, so the "not damaged"
+        # refusal does not apply while poisoned. Without this, the planner's
+        # Priority-1c poison gate would select bandage_self only to have it
+        # immediately refuse, and a high-HP poisoned agent would never cure.
+        if ss.hits >= ss.hits_max * 0.95 and not getattr(ss, "is_poisoned", False):
+            return False  # no damage and no poison → server refuses, no gain
         return bool(find_in_backpack(ctx, BANDAGE_GRAPHICS))
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
