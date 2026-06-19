@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from anima.memory.database import MemoryDB
+from anima.memory.database import ActionStat
+from anima.memory.retrieval import _format_action_stats
 
 
 @pytest.fixture
@@ -212,6 +214,57 @@ class TestActionStats:
 
         all_stats = await db.get_all_action_stats("Anima")
         assert len(all_stats) == 2
+
+
+class TestActionStatFormatting:
+    """The LLM context line ranks actions by the avg-reward it actually prints."""
+
+    @staticmethod
+    def _stat(action: str, successes: int, failures: int, total_reward: float) -> ActionStat:
+        return ActionStat(
+            id=0,
+            agent_name="Anima",
+            context_pattern="exploring",
+            action=action,
+            successes=successes,
+            failures=failures,
+            total_reward=total_reward,
+            last_updated=0.0,
+        )
+
+    def _action_order(self, lines: list[str]) -> list[str]:
+        # Each line looks like:  - "name": s/t success (avg reward: +x.x)
+        return [ln.split('"')[1] for ln in lines]
+
+    def test_ranked_by_average_not_total(self) -> None:
+        # "grind": huge cumulative reward from sheer volume, mediocre per-try.
+        #   100 tries * 0.5 = 50.0 total, avg = +0.5
+        # "raid": tiny cumulative, but excellent per-try value.
+        #   1 try * 20.0 = 20.0 total, avg = +20.0
+        # get_action_stats returns them total-DESC -> grind first; the renderer
+        # must flip them so the printed avg-reward order is honoured.
+        stats = [
+            self._stat("grind", successes=100, failures=0, total_reward=50.0),
+            self._stat("raid", successes=1, failures=0, total_reward=20.0),
+        ]
+        lines = _format_action_stats(stats)
+        assert self._action_order(lines) == ["raid", "grind"]
+        # And the figure shown next to the top action is its true average.
+        assert "+20.0" in lines[0]
+
+    def test_skips_zero_attempt_rows(self) -> None:
+        stats = [
+            self._stat("ghost", successes=0, failures=0, total_reward=0.0),
+            self._stat("go", successes=2, failures=0, total_reward=4.0),
+        ]
+        lines = _format_action_stats(stats)
+        assert self._action_order(lines) == ["go"]
+
+    def test_average_uses_successes_plus_failures(self) -> None:
+        # 2 success + 2 failure = 4 attempts; total 4.0 -> avg +1.0 (not +2.0).
+        stats = [self._stat("go", successes=2, failures=2, total_reward=4.0)]
+        lines = _format_action_stats(stats)
+        assert lines == ['  - "go": 2/4 success (avg reward: +1.0)']
 
 
 # ---------------------------------------------------------------------------

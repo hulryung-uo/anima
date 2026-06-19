@@ -8,6 +8,7 @@ from anima.memory.database import MemoryDB
 
 if TYPE_CHECKING:
     from anima.brain.behavior_tree import BrainContext
+    from anima.memory.database import ActionStat
 
 
 async def retrieve_context(ctx: BrainContext) -> str:
@@ -68,16 +69,7 @@ async def retrieve_context(ctx: BrainContext) -> str:
     context_pattern = _infer_context_pattern(ctx)
     stats = await memory_db.get_action_stats(agent_name, context_pattern)
     if stats:
-        stat_lines = []
-        for s in stats:
-            total = s.successes + s.failures
-            if total == 0:
-                continue
-            avg_reward = s.total_reward / total
-            stat_lines.append(
-                f"  - \"{s.action}\": {s.successes}/{total} success "
-                f"(avg reward: {avg_reward:+.1f})"
-            )
+        stat_lines = _format_action_stats(stats)
         if stat_lines:
             parts.append(
                 f"Past experience ({context_pattern}):\n" + "\n".join(stat_lines)
@@ -116,6 +108,34 @@ async def retrieve_context(ctx: BrainContext) -> str:
         return ""
 
     return "== Your Memory ==\n" + "\n\n".join(parts)
+
+
+def _format_action_stats(stats: list[ActionStat]) -> list[str]:
+    """Render action stats as LLM lines, ranked by the metric we display.
+
+    ``get_action_stats`` returns rows ordered by raw ``total_reward`` (DESC),
+    but the line we show the LLM reports *average* reward per attempt. A
+    high-volume mediocre action (many tries, small per-try reward) accumulates
+    a large cumulative total and would otherwise be listed above a rarely-tried
+    but genuinely better action — contradicting the ``avg reward`` figure right
+    next to it. Re-rank by average so the ordering matches what's printed, the
+    same per-attempt semantics already used for location values.
+    """
+    rendered: list[tuple[float, str]] = []
+    for s in stats:
+        total = s.successes + s.failures
+        if total == 0:
+            continue
+        avg_reward = s.total_reward / total
+        rendered.append(
+            (
+                avg_reward,
+                f'  - "{s.action}": {s.successes}/{total} success '
+                f"(avg reward: {avg_reward:+.1f})",
+            )
+        )
+    rendered.sort(key=lambda r: r[0], reverse=True)
+    return [line for _, line in rendered]
 
 
 def _agent_name(ctx: BrainContext) -> str:
