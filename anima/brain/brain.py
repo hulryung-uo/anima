@@ -41,7 +41,16 @@ def _has_skill_registry(ctx: BrainContext) -> bool:
 
 
 async def _flee_action(ctx: BrainContext) -> Status:
-    """Placeholder flee action — just log for now."""
+    """Placeholder flee action — alert only, no real movement yet.
+
+    Returns FAILURE on purpose. The Survival sequence sits *above* SkillExec
+    in the root Selector, and a Selector short-circuits on the first child
+    that returns SUCCESS/RUNNING. If this no-op returned SUCCESS it would
+    claim the survival need is handled and stop the tree right here — exactly
+    when HP < 30% — starving the real survival action (`heal_self`, which
+    lives in the SkillExec branch). Returning FAILURE publishes the flee
+    alert but lets the Selector fall through so healing can still run.
+    """
     logger.warning(
         "flee_triggered",
         hp=ctx.perception.self_state.hits,
@@ -50,7 +59,7 @@ async def _flee_action(ctx: BrainContext) -> Status:
     from anima.core.publish import pub
     ss = ctx.perception.self_state
     pub(ctx, "combat.flee", f"Flee! HP={ss.hits}/{ss.hits_max}", importance=3)
-    return Status.SUCCESS
+    return Status.FAILURE
 
 
 async def _skill_action(ctx: BrainContext) -> Status:
