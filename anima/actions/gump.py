@@ -88,12 +88,31 @@ def sanitize_gump_response(
 async def wait_for_gump(
     ctx: AgentContext,
     timeout: float = 3.0,
+    exclude_ids: set[int] | None = None,
 ) -> ActionResult:
-    """Wait for a gump to appear."""
+    """Wait for a gump to appear.
+
+    ``exclude_ids`` is the set of gump TYPE ids already on screen *before*
+    this call. The wait condition only fires on a gump whose id is NOT in
+    that set, and the result is picked from those fresh arrivals — so a
+    lingering, unrelated gump (a status/paperdoll panel left open, or the
+    craft gump that was just clicked but not yet popped) can no longer
+    satisfy the wait and hand a stale window back to the caller.
+
+    The recency fix alone (return the last-inserted key) is not enough: when
+    a stale gump is already present the bare ``bool(ss.gumps)`` condition is
+    true immediately, so ``wait_for_gump`` returned *before* the new gump
+    arrived and ``craft_via_gump`` clicked against the lingering window —
+    matching no button and tripping ServUO's "Invalid gump response,
+    disconnecting..." path, or driving the wrong gump. Excluding the
+    pre-existing ids makes the wait block until the server actually sends the
+    next gump. Mirrors ``skills.crafting.tinker._wait_for_gump(exclude_ids=)``.
+    """
     ss = ctx.perception.self_state
+    exclude = exclude_ids or set()
 
     def _has_gump() -> bool:
-        return bool(ss.gumps)
+        return any(gid not in exclude for gid in ss.gumps)
 
     if ctx.bus:
         ok = await ctx.bus.wait_for_condition(_has_gump, timeout=timeout)
@@ -108,7 +127,8 @@ async def wait_for_gump(
     if not ok:
         return ActionResult(success=False, message="Gump timeout")
 
-    # Return the most recently RECEIVED gump.
+    # Return the most recently RECEIVED gump that the caller did not already
+    # have on screen.
     #
     # ``ss.gumps`` is keyed by the gump TYPE id (the second 0xB0/0xDD field),
     # not by recency. The old ``max(ss.gumps.keys())`` returned whichever type
@@ -122,7 +142,7 @@ async def wait_for_gump(
     # Python dicts preserve insertion order and the 0xB0/0xDD handlers insert a
     # fresh key per newly-opened gump, so the last key is the newest arrival —
     # exactly the "most recent" this function documents.
-    gump_id = next(reversed(ss.gumps))
+    gump_id = next(gid for gid in reversed(ss.gumps) if gid not in exclude)
     gump = ss.gumps[gump_id]
     return ActionResult(
         success=True,
@@ -180,11 +200,16 @@ async def craft_via_gump(
     """
     from anima.client.packets import build_double_click
 
+    ss = ctx.perception.self_state
+    # Snapshot whatever gumps are already open so each wait below only
+    # accepts a NEW gump the server sends, never a lingering stale one.
+    pre_open_ids = set(ss.gumps)
+
     # Open crafting gump
     await ctx.conn.send_packet(build_double_click(tool_serial))
 
     # Wait for crafting gump
-    result = await wait_for_gump(ctx, timeout=timeout)
+    result = await wait_for_gump(ctx, timeout=timeout, exclude_ids=pre_open_ids)
     if not result.success:
         return ActionResult(success=False, message="Crafting gump did not open")
 
@@ -195,8 +220,13 @@ async def craft_via_gump(
     if not result.success:
         return result
 
-    # Wait for category sub-gump
-    result = await wait_for_gump(ctx, timeout=timeout)
+    # Wait for the category sub-gump. ``click_gump_button`` already popped the
+    # craft gump, but any OTHER gump still on screen (an unrelated panel) would
+    # otherwise satisfy a bare wait — exclude everything currently open so we
+    # block until the sub-gump genuinely arrives.
+    result = await wait_for_gump(
+        ctx, timeout=timeout, exclude_ids=set(ss.gumps)
+    )
     if not result.success:
         return ActionResult(success=False, message="Category gump did not open")
 
