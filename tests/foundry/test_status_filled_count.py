@@ -155,6 +155,33 @@ def test_elites_lineage_unchanged_on_clean_grid(tmp_path):
     assert "g_00001" in section and "g_00002" in section
 
 
+def test_elites_lineage_excludes_the_none_fallback_row(tmp_path):
+    # Headline-vs-body integrity for the NONE fallback row (R33: not a real
+    # niche). The qd-score/best headline already excludes a NONE-row elite, and
+    # R51 set out to exclude it from the lineage listing too -- but it stopped at
+    # active_elites (NONE-INCLUSIVE) instead of the targetable quality set, so a
+    # NONE elite still surfaced here. Give the NONE-row elite the HIGHEST fitness
+    # so the bug would sort it to the TOP of the lineage, directly contradicting
+    # a headline "best" that no longer sees it.
+    arc = Archive(tmp_path)
+    arc.add(_g("g_00001", ("MAGIC", 0), 10.0))            # real niche
+    arc.add(_g("g_00002", ("COMBAT", 1), 20.0))           # real niche
+    arc.add(_g("g_00003", ("NONE", 0), 99.0))             # fallback row, volatile
+
+    rendered = status.render(arc)
+    section = _elites_section(rendered)
+
+    # The NONE-row (highest-fitness) elite must NOT appear in the lineage...
+    assert "g_00003" not in section
+    assert "99.000" not in section
+    # ...while the genuine real-niche elites still do.
+    assert "g_00001" in section
+    assert "g_00002" in section
+    # And the lineage top agrees with the headline "best" (both exclude NONE).
+    header = rendered.splitlines()[0]
+    assert _headline_value(header, "best") == 20.0
+
+
 def test_qd_score_and_best_exclude_the_none_fallback_row(tmp_path):
     # RUN-QUALITY integrity: the NONE fallback row is not a real niche (R33) --
     # a failed/wandered agent that banked a high-variance score. Commit 25ad63f
