@@ -152,6 +152,13 @@ class HeuristicModePolicy:
     # Fixed rotation of low-risk *productive* modes for the balance branch.
     # Ordering is stable so rotation is deterministic.
     _LOW_RISK_PRODUCTIVE: tuple[str, ...] = ("mining", "smithing", "magery", "bard")
+    # Modes whose whole point is converting effort into gold. A flat/negative
+    # gold rate in one of these means the loop has stopped paying off (mined-out
+    # vein, no buyer, full pack) — the economic-sustainability lever (docs §5
+    # principle 4) says relocate/offload rather than keep grinding it. Pure
+    # skill-grinds (magery/bard/thief) are excluded: a flat gold rate there is
+    # expected and is NOT a signal to abandon the stint.
+    _GOLD_EARNING: frozenset[str] = frozenset({"mining", "smithing", "combat"})
     # How many identical recent stints trigger a balance rotation.
     _BALANCE_STINTS = 3
 
@@ -176,7 +183,27 @@ class HeuristicModePolicy:
                 goal=None,
             )
 
-        # (c) balance: if the last N stints were all the current mode, rotate to
+        # (c) economic sustainability: a gold-earning mode whose rate has gone
+        # flat/negative past the early phase (enough samples to trust it) and
+        # that is carrying a non-trivial pack is a dead loop — relocate/offload
+        # via travel instead of grinding ground that no longer pays. Gated on
+        # weight so we don't send an empty-handed avatar on a pointless trip.
+        if (
+            actual in self._GOLD_EARNING
+            and state.phase != "early"
+            and state.gold_rate_per_min <= 0.0
+            and state.weight_frac >= 0.25
+        ):
+            return ModeDecision(
+                mode="travel",
+                rationale=(
+                    f"economy: {actual} gold-rate {state.gold_rate_per_min:+.1f}/min "
+                    f"flat at weight={state.weight_frac:.0%} → relocate/offload"
+                ),
+                goal=None,
+            )
+
+        # (d) balance: if the last N stints were all the current mode, rotate to
         # a different low-risk productive mode (deterministic next-in-list).
         recent = state.last_modes[-self._BALANCE_STINTS :]
         if (
@@ -192,7 +219,7 @@ class HeuristicModePolicy:
                     goal=None,
                 )
 
-        # (d) day-phase default. early/mid = keep grinding the actual mode;
+        # (e) day-phase default. early/mid = keep grinding the actual mode;
         # late = socialize/tidy up. Clamp to actual_mode if the mapping ever
         # yields a non-mode (defensive — every value here is already valid).
         phase_mode = {"early": actual, "mid": actual, "late": "socialize"}.get(

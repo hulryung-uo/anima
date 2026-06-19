@@ -105,6 +105,78 @@ class TestHeuristicModePolicy:
         assert d.goal is None
 
     @pytest.mark.asyncio
+    async def test_flat_gold_rate_relocates_a_gold_mode(self):
+        # A gold-earning mode (mining) past the early phase with a non-trivial
+        # pack and a flat/negative gold rate is a dead loop → travel to
+        # relocate/offload (docs §5 economic-sustainability lever), NOT keep
+        # grinding ground that no longer pays.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.5,
+                        danger_nearby=False, phase="mid",
+                        gold_rate_per_min=0.0,
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "travel"
+        assert d.mode in MODES
+        assert d.goal is None
+        assert "economy" in d.rationale
+
+    @pytest.mark.asyncio
+    async def test_negative_gold_rate_relocates(self):
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="smithing", hp_frac=0.9, weight_frac=0.4,
+                        danger_nearby=False, phase="late",
+                        gold_rate_per_min=-3.0,
+                        last_modes=["smithing", "smithing"]))
+        assert d.mode == "travel"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_positive_gold_rate_does_not_relocate(self):
+        # Healthy gold flow → keep working; the economy branch must not fire.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.5,
+                        danger_nearby=False, phase="mid",
+                        gold_rate_per_min=4.0,
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "mining"   # day-phase default keeps grinding
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_flat_rate_in_skill_grind_does_not_relocate(self):
+        # Pure skill-grinds (magery) earn no gold by design — a flat gold rate
+        # there is expected and must NOT pull the avatar off its skill stint.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="magery", hp_frac=0.9, weight_frac=0.5,
+                        danger_nearby=False, phase="mid",
+                        gold_rate_per_min=0.0,
+                        last_modes=["magery", "combat"]))
+        assert d.mode == "magery"   # not travel
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_flat_rate_early_phase_does_not_relocate(self):
+        # Early phase = too few gold samples to trust a 0.0 rate; keep grinding.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.5,
+                        danger_nearby=False, phase="early",
+                        gold_rate_per_min=0.0,
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "mining"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
+    async def test_flat_rate_empty_pack_does_not_relocate(self):
+        # Nothing to offload (light pack) → a relocation trip is pointless;
+        # the weight gate keeps the avatar grinding instead of wandering.
+        d = await HeuristicModePolicy().choose(
+            _make_state(actual_mode="mining", hp_frac=0.9, weight_frac=0.05,
+                        danger_nearby=False, phase="mid",
+                        gold_rate_per_min=0.0,
+                        last_modes=["mining", "combat"]))
+        assert d.mode == "mining"
+        assert d.goal is None
+
+    @pytest.mark.asyncio
     async def test_balance_rotates_off_actual(self):
         # last 3 stints all the actual mode, healthy/safe → rotate to a
         # different low-risk productive mode.
