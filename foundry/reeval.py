@@ -126,6 +126,20 @@ def _main(argv: list[str]) -> int:
             print(f"{gid}: not found")
             continue
         targets.append(g)
+    # De-duplicate by genome id (first occurrence wins, preserving order). A
+    # genome named explicitly that is ALSO a grid elite would otherwise be
+    # re-eval'd twice — burning a second ~window_s live eval for no new evidence
+    # AND counting its ratio twice in the median replication verdict, which is
+    # this tool's whole output. The median is meant to summarise N DISTINCT
+    # genomes; a doubled entry silently pulls it toward that one genome.
+    seen: set[str] = set()
+    deduped: list[Genome] = []
+    for g in targets:
+        if g.id in seen:
+            continue
+        seen.add(g.id)
+        deduped.append(g)
+    targets = deduped
     if not targets:
         print("nothing to re-eval (pass genome ids or --elites)")
         return 2
