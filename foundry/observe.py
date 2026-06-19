@@ -93,8 +93,21 @@ def history(archive: Archive, limit: int = 12) -> str:
     gs = archive.all_genomes()
     if not gs:
         return ""
+    # Rank the "PROVEN recipes" list the mutator mines by the SAME variance-aware
+    # signal select.py picks parents and the kernel promotes on — NOT raw
+    # g.fitness. _selection_quality = min(fitness, reliability) (reliability =
+    # mean − λ·pstdev): it both discounts lucky high-variance elites (a single
+    # 400/0 pair averages to 200 but its lower bound is 0) and honors the human
+    # held-out corrections baked into eval.fitness for the ruler-inflation
+    # genomes. Sorting these by raw fitness floats exactly those demoted/volatile
+    # genomes to the TOP of the list captioned "the PROVEN recipes (mine these
+    # for tricks)", steering the LLM mutator to copy the recipe the rest of the
+    # pipeline deliberately distrusts. (Function-scope import mirrors
+    # _archive_context_lines and avoids a select<->observe module cycle.)
+    from foundry.select import _selection_quality
+
     lines = ["## Current cell elites — the PROVEN recipes (mine these for tricks)"]
-    for e in sorted(archive.elites(), key=lambda g: -g.fitness):
+    for e in sorted(archive.elites(), key=lambda g: -_selection_quality(g)):
         lines.append(f"- {e.cell} {e.fitness:.2f} ({e.id}): “{e.hypothesis}”")
     lines.append("")
     lines.append("## Prior mutations and what actually happened (learn from these)")
