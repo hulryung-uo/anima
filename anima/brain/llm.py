@@ -14,6 +14,7 @@ Provider string → litellm model ID mapping:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from dataclasses import dataclass, field
@@ -64,6 +65,8 @@ class LLMClient:
         api_key: str = "",
         temperature: float = 0.7,
         timeout: float = 10.0,
+        max_retries: int = 2,
+        retry_backoff: float = 0.5,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -71,6 +74,8 @@ class LLMClient:
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
 
         # Set provider-specific env vars so litellm can find them
         if api_key:
@@ -131,18 +136,47 @@ class LLMClient:
 
         start = time.monotonic()
 
-        try:
-            response = await litellm.acompletion(**kwargs)
-        except litellm.Timeout:
-            logger.warning("llm_timeout", model=litellm_model, timeout=self.timeout)
-            return LLMResponse(text="", model=litellm_model)
-        except Exception as e:
-            logger.error("llm_error", error=str(e), provider=self.provider)
-            return LLMResponse(text="", model=litellm_model)
+        # Transient backend failures (timeouts, rate limits, dropped connections,
+        # 5xx) are retried with exponential backoff; a single flaky blip should
+        # not leave the brain idle for a whole think-cooldown.  Non-transient
+        # errors (bad request, auth) fail fast — retrying them only wastes time.
+        transient = (
+            litellm.Timeout,
+            litellm.APIConnectionError,
+            litellm.RateLimitError,
+            litellm.ServiceUnavailableError,
+            litellm.InternalServerError,
+        )
+        response = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await litellm.acompletion(**kwargs)
+                break
+            except transient as e:
+                if attempt >= self.max_retries:
+                    logger.warning(
+                        "llm_transient_exhausted",
+                        model=litellm_model,
+                        error=type(e).__name__,
+                        attempts=attempt + 1,
+                    )
+                    return LLMResponse(text="", model=litellm_model)
+                delay = self.retry_backoff * (2**attempt)
+                logger.warning(
+                    "llm_transient_retry",
+                    model=litellm_model,
+                    error=type(e).__name__,
+                    attempt=attempt + 1,
+                    delay=f"{delay:.2f}",
+                )
+                await asyncio.sleep(delay)
+            except Exception as e:
+                logger.error("llm_error", error=str(e), provider=self.provider)
+                return LLMResponse(text="", model=litellm_model)
 
         elapsed_ms = (time.monotonic() - start) * 1000
 
-        # Extract response
+        # Extract response (defensively — a malformed/empty payload must not raise)
         choice = response.choices[0] if response.choices else None
         text = choice.message.content.strip() if choice and choice.message.content else ""
 
