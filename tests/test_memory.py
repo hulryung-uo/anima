@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from anima.memory.database import MemoryDB
@@ -315,3 +317,49 @@ class TestLocationValues:
         assert activity == "fish"
         assert total == pytest.approx(8.0)
         assert visits == 2
+
+
+# ---------------------------------------------------------------------------
+# Relationship concurrency tests
+# ---------------------------------------------------------------------------
+
+
+class TestRelationshipConcurrency:
+    @pytest.mark.asyncio
+    async def test_concurrent_updates_no_duplicate_rows(self, db: MemoryDB) -> None:
+        """Concurrent update_relationship calls for the same entity must not
+        create duplicate rows or lose interaction-count/disposition updates.
+
+        Before the fix, the read-then-INSERT path interleaved under
+        asyncio.gather: both calls saw "no existing row" and each INSERTed,
+        leaving two rows each with interaction_count == 1.
+        """
+        await asyncio.gather(
+            db.update_relationship("Anima", 42, entity_name="Bob", disposition_delta=0.1),
+            db.update_relationship("Anima", 42, entity_name="Bob", disposition_delta=0.1),
+            db.update_relationship("Anima", 42, entity_name="Bob", disposition_delta=0.1),
+        )
+
+        rows = await db.db.execute_fetchall(
+            "SELECT * FROM relationships WHERE agent_name = ? AND entity_serial = ?",
+            ("Anima", 42),
+        )
+        assert len(rows) == 1, "duplicate relationship rows were created"
+
+        rel = await db.get_relationship("Anima", 42)
+        assert rel is not None
+        # All three interactions were counted (no lost update).
+        assert rel.interaction_count == 3
+        # Disposition deltas accumulated (3 * 0.1), clamped to [-1, 1].
+        assert rel.disposition == pytest.approx(0.3)
+        assert rel.entity_name == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_unique_index_present(self, db: MemoryDB) -> None:
+        """The (agent_name, entity_serial) index must be UNIQUE so duplicate
+        rows are structurally impossible even outside the in-process lock."""
+        rows = await db.db.execute_fetchall("PRAGMA index_list('relationships')")
+        unique_cols = {
+            r["name"]: r["unique"] for r in rows
+        }
+        assert unique_cols.get("idx_relationships_agent") == 1

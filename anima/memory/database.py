@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
@@ -124,7 +125,8 @@ CREATE INDEX IF NOT EXISTS idx_episodes_agent ON episodes(agent_name);
 CREATE INDEX IF NOT EXISTS idx_episodes_location ON episodes(location_x, location_y);
 CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_agent ON knowledge(agent_name);
-CREATE INDEX IF NOT EXISTS idx_relationships_agent ON relationships(agent_name, entity_serial);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_agent
+    ON relationships(agent_name, entity_serial);
 CREATE INDEX IF NOT EXISTS idx_action_stats_agent
     ON action_stats(agent_name, context_pattern, action);
 
@@ -186,6 +188,10 @@ class MemoryDB:
     def __init__(self, db_path: str | Path = "data/anima.db") -> None:
         self.db_path = Path(db_path)
         self._db: aiosqlite.Connection | None = None
+        # Serializes the read-modify-write in update_relationship so concurrent
+        # callers cannot interleave between the get_relationship read and the
+        # INSERT, which would otherwise race to create duplicate rows.
+        self._rel_lock = asyncio.Lock()
 
     async def init(self) -> None:
         """Open the database and create tables if needed."""
@@ -371,57 +377,64 @@ class MemoryDB:
     ) -> None:
         """Update or create a relationship with an entity."""
         now = time.time()
-        existing = await self.get_relationship(agent_name, entity_serial)
+        # The read (get_relationship) and the conditional INSERT must be atomic
+        # with respect to other update_relationship calls; otherwise two
+        # concurrent callers both see "no existing row" and each INSERT, leaving
+        # duplicate rows (and a lost interaction_count/disposition update). The
+        # UNIQUE index on (agent_name, entity_serial) is the structural backstop;
+        # this lock keeps the common in-process path correct and crash-free.
+        async with self._rel_lock:
+            existing = await self.get_relationship(agent_name, entity_serial)
 
-        if existing:
-            new_disp = max(-1.0, min(1.0, existing.disposition + disposition_delta))
-            new_trust = max(0.0, min(1.0, existing.trust + trust_delta))
-            new_count = existing.interaction_count + 1
-            notes = existing.notes
-            if note:
-                notes_list = notes.get("interactions", [])
-                notes_list.append({"time": now, "note": note})
-                # Keep last 20 notes
-                notes["interactions"] = notes_list[-20:]
-            await self.db.execute(
-                """UPDATE relationships
-                   SET entity_name = COALESCE(NULLIF(?, ''), entity_name),
-                       disposition = ?, trust = ?, interaction_count = ?,
-                       last_interaction = ?, notes = ?
-                   WHERE agent_name = ? AND entity_serial = ?""",
-                (
-                    entity_name,
-                    new_disp,
-                    new_trust,
-                    new_count,
-                    now,
-                    json.dumps(notes),
-                    agent_name,
-                    entity_serial,
-                ),
-            )
-        else:
-            disp = max(-1.0, min(1.0, disposition_delta))
-            trust = max(0.0, min(1.0, 0.5 + trust_delta))
-            notes_dict: dict = {}
-            if note:
-                notes_dict["interactions"] = [{"time": now, "note": note}]
-            await self.db.execute(
-                """INSERT INTO relationships
-                   (agent_name, entity_serial, entity_name, disposition, trust,
-                    interaction_count, last_interaction, notes)
-                   VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
-                (
-                    agent_name,
-                    entity_serial,
-                    entity_name,
-                    disp,
-                    trust,
-                    now,
-                    json.dumps(notes_dict),
-                ),
-            )
-        await self.db.commit()
+            if existing:
+                new_disp = max(-1.0, min(1.0, existing.disposition + disposition_delta))
+                new_trust = max(0.0, min(1.0, existing.trust + trust_delta))
+                new_count = existing.interaction_count + 1
+                notes = existing.notes
+                if note:
+                    notes_list = notes.get("interactions", [])
+                    notes_list.append({"time": now, "note": note})
+                    # Keep last 20 notes
+                    notes["interactions"] = notes_list[-20:]
+                await self.db.execute(
+                    """UPDATE relationships
+                       SET entity_name = COALESCE(NULLIF(?, ''), entity_name),
+                           disposition = ?, trust = ?, interaction_count = ?,
+                           last_interaction = ?, notes = ?
+                       WHERE agent_name = ? AND entity_serial = ?""",
+                    (
+                        entity_name,
+                        new_disp,
+                        new_trust,
+                        new_count,
+                        now,
+                        json.dumps(notes),
+                        agent_name,
+                        entity_serial,
+                    ),
+                )
+            else:
+                disp = max(-1.0, min(1.0, disposition_delta))
+                trust = max(0.0, min(1.0, 0.5 + trust_delta))
+                notes_dict: dict = {}
+                if note:
+                    notes_dict["interactions"] = [{"time": now, "note": note}]
+                await self.db.execute(
+                    """INSERT INTO relationships
+                       (agent_name, entity_serial, entity_name, disposition, trust,
+                        interaction_count, last_interaction, notes)
+                       VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (
+                        agent_name,
+                        entity_serial,
+                        entity_name,
+                        disp,
+                        trust,
+                        now,
+                        json.dumps(notes_dict),
+                    ),
+                )
+            await self.db.commit()
 
     async def get_nearby_relationships(
         self, agent_name: str, serials: list[int]
