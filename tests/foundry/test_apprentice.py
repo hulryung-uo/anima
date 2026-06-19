@@ -57,6 +57,54 @@ class TestAnalyzeDeaths:
         assert ev[0].self_rescued and not ev[1].self_rescued
 
 
+class TestWindowCensoredDeathNotAnIntervention:
+    """A death that opens too near the window end to observe a full grace
+    period is WINDOW-CENSORED, not a confirmed failed self-rescue.
+
+    Regression (observed live in soak-soak12bd3a): the agent died 5.5s before a
+    39s soak closed and the window stopped. The never-revived branch
+    unconditionally stamped self_rescued=False / needed_intervention=True, so a
+    death well inside the 180s grace produced shadow_interventions=1,
+    interventions_per_hour=91.94 and self_rescue_rate=0.0 — fabricating a GM
+    intervention out of an unobserved outcome and corrupting the autonomy metric.
+    Such a within-grace, window-truncated tail must be dropped (we have no
+    evidence of either a rescue or an intervention).
+    """
+
+    def test_within_grace_never_revived_is_dropped(self):
+        # Dies at 2795, window ends 2800 → dead only 5s, far inside 180s grace
+        # and never revived only because the window closed. Not an intervention.
+        s = _summary([(1000, 50, 50), (2795, 0, 50)])
+        assert analyze_deaths(s, grace_s=180) == []
+
+    def test_past_grace_never_revived_still_counts(self):
+        # Control: dead past the grace window before the soak ends → a genuine
+        # unrecovered death that a GM tutor would have stepped into.
+        s = _summary([(1000, 50, 50), (1100, 0, 50)])  # dead 1700s >> 180s grace
+        ev = analyze_deaths(s, grace_s=180)
+        assert len(ev) == 1
+        assert ev[0].revived_ts is None
+        assert ev[0].needed_intervention is True
+        assert ev[0].dead_s == 1700
+
+    def test_build_report_does_not_fabricate_an_intervention(self):
+        # The full soak12bd3a shape: short window, death near the end, no revive.
+        s = _summary([(1000, 50, 50), (2795, 0, 50)])
+        r = build_report(s, "adventurer", "warrior", grace_s=180)
+        assert r.deaths == 0
+        assert r.shadow_interventions == 0
+        assert r.interventions_per_hour == 0.0
+        assert r.self_rescue_rate == 1.0          # no confirmed failed rescue
+        # the censored tail is unobserved, so it is not charged as dead-time
+        assert r.alive_fraction == 1.0
+
+    def test_just_past_grace_boundary_counts(self):
+        # Death exactly grace_s+1 before window end → past grace, still counted.
+        s = _summary([(1000, 50, 50), (2800 - 181, 0, 50)])  # dead 181s > 180
+        ev = analyze_deaths(s, grace_s=180)
+        assert len(ev) == 1 and ev[0].needed_intervention is True
+
+
 class TestLongestAliveStretch:
     def test_picks_longer_segment_around_death(self):
         # alive 1000-1100 (100s), dead, alive 1200-2800 (1600s) → 1600

@@ -124,7 +124,20 @@ def analyze_deaths(summary: TrajectorySummary,
         death_ts = None
     if death_ts is not None:  # died and never revived before the window ended
         dead_s = max(0.0, summary.end_ts - death_ts)
-        if dead_s >= min_death_s:
+        # A never-revived death only counts as a confirmed shadow intervention /
+        # failed self-rescue once the agent has been dead PAST the grace window
+        # (``dead_s > grace_s``) — that is the very definition of
+        # ``needed_intervention``. A death that opens close enough to the window
+        # end that ``dead_s <= grace_s`` is WINDOW-CENSORED: the soak stopped
+        # observing before the agent had a full grace period to self-rescue, so
+        # its outcome is unknown. Emitting it as ``self_rescued=False,
+        # needed_intervention=True`` fabricates a failed rescue (observed live: a
+        # 5.5s death at the end of a 39s soak became shadow_interventions=1,
+        # interventions_per_hour=91.94, self_rescue_rate=0.0 — corrupting the one
+        # autonomy metric this module exists to measure). Drop the censored tail,
+        # mirroring how a sub-min_death_s transient blip is dropped. (grace_s is
+        # far larger than min_death_s, so this still excludes transient blips.)
+        if dead_s > grace_s:
             events.append(DeathEvent(
                 died_ts=death_ts, revived_ts=None, dead_s=dead_s,
                 self_rescued=False, needed_intervention=True,
