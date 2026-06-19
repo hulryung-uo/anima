@@ -32,6 +32,12 @@ LAYER_BACKPACK = 0x15
 CONTENTS_WAIT_S = 1.5  # server round-trip for 0x3C after the open
 LIFT_DELAY_S = 0.3  # pacing between pick_up / drop packets
 WEIGHT_HEADROOM = 50  # stop looting this close to max weight
+# Conservative per-lift weight estimate (stones). ss.weight only refreshes
+# when the server echoes a 0x11 status update, which lags far behind the
+# ~0.6s-per-item lift loop below. Without a local projection the gate reads
+# a stale weight for the whole corpse and over-loots the agent into the
+# overweight (movement-blocked) state. Gold is ~1 stone / 100 coins.
+WEIGHT_PER_ITEM_EST = 2
 
 
 def _valuable_graphics() -> set[int]:
@@ -93,18 +99,35 @@ async def loot_corpse(ctx: AgentContext, corpse_serial: int) -> ActionResult:
     valuable = _valuable_graphics()
     items_picked = 0
     gold_picked = 0
+    # Local running weight projection — seeded from the last server-reported
+    # weight and advanced per lift so the gate stops BEFORE the next stale
+    # 0x11 status update would arrive.
+    projected_weight = ss.weight
     for it in list(ctx.perception.world.items.values()):
         if it.container != corpse_serial:
             continue
         is_gold = it.graphic == GOLD_GRAPHIC
         if not (is_gold or it.graphic in valuable):
             continue
-        if ss.weight_max > 0 and ss.weight > ss.weight_max - WEIGHT_HEADROOM:
+        # Estimate what this lift adds: gold ~1 stone / 100 coins (>=1),
+        # everything else a flat conservative minimum.
+        if is_gold:
+            est = max(1, (it.amount + 99) // 100)
+        else:
+            est = WEIGHT_PER_ITEM_EST
+        # Gate on the PROJECTED post-lift weight (>=, so the headroom band
+        # is honoured exactly) using the freshest server reading available.
+        projected_weight = max(projected_weight, ss.weight)
+        if (
+            ss.weight_max > 0
+            and projected_weight + est > ss.weight_max - WEIGHT_HEADROOM
+        ):
             break
         await ctx.conn.send_packet(build_pick_up(it.serial, it.amount))
         await asyncio.sleep(LIFT_DELAY_S)
         await ctx.conn.send_packet(build_drop_item(it.serial, container=backpack))
         await asyncio.sleep(LIFT_DELAY_S)
+        projected_weight += est
         items_picked += 1
         if is_gold:
             gold_picked += it.amount
