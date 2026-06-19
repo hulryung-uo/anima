@@ -141,6 +141,24 @@ def _pin_ref(gid: str, sha: str) -> None:
         _git(REPO, "update-ref", f"refs/foundry/{gid}", sha)
 
 
+def _archive_genome(arc: Archive, g: Genome, promote: bool):
+    """Land a finished cycle's genome.
+
+    promote=True  → normal MAP-Elites insert (kernel reliability promotion rule).
+    promote=False → persist for lineage ONLY, never enter the grid. Used when a
+    would-be promotion's confirm-on-promotion round could not corroborate the
+    cell (failed or drifted off-cell): the sole surviving evidence is the single
+    lucky first round, which --confirm-promotions exists to reject. We keep the
+    genome reachable (descendants may inherit its code) without letting it crown
+    a cell on un-confirmed evidence. Returns the InsertResult, or None when not
+    promoted.
+    """
+    if not promote:
+        arc.save_genome(g)
+        return None
+    return arc.add(g)
+
+
 def _pool_confirmation(first: EvalResult, confirm: EvalResult) -> EvalResult:
     """Pool a confirm-on-promotion round into ``first`` ONLY if it corroborates
     the SAME behavioral cell.
@@ -304,6 +322,12 @@ class _CycleOutcome:
     result: EvalResult | None = None
     error: str = ""
     skipped: bool = False
+    # A would-be promotion whose confirm-on-promotion round could NOT corroborate
+    # the same cell (the re-run failed, or drifted to a neighbouring cell). The
+    # only surviving evidence is the single lucky first round — the exact thing
+    # --confirm-promotions exists to reject — so this genome must NOT be allowed
+    # to crown its cell on that evidence. Persisted for lineage, kept out of the grid.
+    confirm_uncorroborated: bool = False
 
 
 def seed_archive(arc: Archive, rc: RunConfig) -> Genome | None:
@@ -424,7 +448,15 @@ def run(rc: RunConfig) -> Archive:
                                   persona=out.persona, fixed_start=out.fixed_start),
                         seeds=rc.seeds, max_seeds=rc.max_seeds, cv_high=rc.cv_high,
                     )
+                    first_round = out.result
                     out.result = _pool_confirmation(out.result, confirm)
+                    # _pool_confirmation returns the SAME object only when it
+                    # refused to pool (the confirm failed or drifted off-cell).
+                    # In that case the would-be promotion has no corroboration —
+                    # don't let the lone lucky round crown the cell. (When the
+                    # confirm DID pool, out.result is a fresh merged object.)
+                    if out.result is first_round:
+                        out.confirm_uncorroborated = True
         except Exception as e:  # noqa: BLE001 — a broken cycle must not kill the run
             out.error = f"{type(e).__name__}: {e}"
         finally:
@@ -459,8 +491,12 @@ def run(rc: RunConfig) -> Archive:
                                  hypothesis=mr.hypothesis if mr else "", rc=rc,
                                  target_cell=out.target_cell,
                                  persona=out.persona, fixed_start=out.fixed_start)
-                r = arc.add(g)
+                r = _archive_genome(arc, g, promote=not out.confirm_uncorroborated)
             _pin_ref(g.id, g.code_ref)
+            if r is None:
+                print(f"[cycle {i}] {g.id} fitness={g.fitness:.3f} "
+                      f"cell={g.cell} -> NOT PROMOTED (confirm uncorroborated)")
+                return
             prev = f" (prev {r.prev_fitness:.3f})" if r.prev_fitness is not None else ""
             print(f"[cycle {i}] {g.id} fitness={g.fitness:.3f} "
                   f"cell={g.cell} -> {r.status}{prev}")
