@@ -55,6 +55,38 @@ def _get_button_id(btn_type: int, index: int) -> int:
     return 1 + btn_type + (index * 7)
 
 
+def _classify_blacksmith_result(result_msg: str, consumed: int) -> str:
+    """Decide the craft outcome from the journal token and ingot delta.
+
+    ServUO's DefBlacksmithy.PlayEndingEffect sends distinct clilocs:
+      1044154 "You create the item." / 502785 "barely able to make" -> success
+      1044043 "You failed to create the item, and some of your materials
+               are lost." -> a *failure* that STILL consumes ingots
+      1044157 "You failed to create the item, but no materials were lost."
+      1044038 "You have worn out your tool!" -> tool_broke
+
+    The explicit journal token must win over the ``consumed > 0`` heuristic:
+    a 1044043 failure burns ingots too, so ``consumed > 0`` is NOT a reliable
+    success signal on its own. Treating it as one rewarded a failed craft with
+    +5.0 and a fake skill gain, poisoning the Q-table's reward signal.
+
+    ``consumed > 0`` is only promoted to ``success`` when the journal said
+    nothing recognizable — that covers the quality-0 "barely able to make"
+    line some shards phrase without a literal "you create".
+
+    Returns one of: ``success`` / ``fail`` / ``tool_broke`` / ``none``.
+    """
+    if result_msg == "tool_broke":
+        return "tool_broke"
+    if result_msg == "fail":
+        return "fail"
+    if result_msg == "success":
+        return "success"
+    if consumed > 0:
+        return "success"
+    return "none"
+
+
 # (display_name, group_index, item_index, min_skill, ingots_needed)
 # Group/item indices verified against ServUO DefBlacksmithy.cs under
 # CurrentExpansion=EJ: every era-gated AddCraft is active and ring/chain/
@@ -310,7 +342,8 @@ class CraftBlacksmith(Skill):
                 build_gump_response(g.serial, g.gump_id, 0)
             )
 
-        if result_msg == "success" or consumed > 0:
+        outcome = _classify_blacksmith_result(result_msg, consumed)
+        if outcome == "success":
             msg = f"Forged {target_name} (used {consumed} ingots)"
             logger.info("blacksmith_success", item=target_name, consumed=consumed)
             if feed:
@@ -320,7 +353,7 @@ class CraftBlacksmith(Skill):
                 skill_gains=[(BLACKSMITH_SKILL_ID, 0.1)],
                 duration_ms=elapsed,
             )
-        elif result_msg == "fail":
+        elif outcome == "fail":
             logger.info("blacksmith_fail", item=target_name, consumed=consumed)
             if feed:
                 feed.publish("skill", f"Failed {target_name}", importance=1)
@@ -330,7 +363,7 @@ class CraftBlacksmith(Skill):
                 skill_gains=[(BLACKSMITH_SKILL_ID, 0.05)],
                 duration_ms=elapsed,
             )
-        elif result_msg == "tool_broke":
+        elif outcome == "tool_broke":
             logger.warning("blacksmith_tool_broke")
             if feed:
                 feed.publish("skill", "Smith hammer broke!", importance=3)
