@@ -188,8 +188,12 @@ class LLMClient:
         if not thinking and choice and hasattr(choice.message, "reasoning_content"):
             thinking = choice.message.reasoning_content or ""
 
-        # Token usage
-        usage = response.usage if response.usage else None
+        # Token usage. litellm's ModelResponse does NOT always carry a ``usage``
+        # attribute — some Ollama / OpenAI-compatible-proxy / streaming-coalesced
+        # payloads omit it entirely, so ``response.usage`` raises AttributeError.
+        # That would propagate past the retry guard and crash the whole think
+        # tick, defeating the module's "must not raise" contract. Read it safely.
+        usage = getattr(response, "usage", None)
         prompt_tokens = usage.prompt_tokens if usage else 0
         eval_tokens = usage.completion_tokens if usage else 0
 
