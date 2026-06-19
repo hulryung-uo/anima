@@ -56,6 +56,40 @@ def _get_button_id(btn_type: int, index: int) -> int:
     return 1 + btn_type + (index * 7)
 
 
+def _classify_carpentry_result(result_msg: str, consumed: int) -> str:
+    """Decide the craft outcome from the journal token and material delta.
+
+    ServUO's DefCarpentry.PlayEndingEffect sends distinct clilocs:
+      1044154 "You create the item." -> success
+      1044043 "You failed to create the item, and some of your materials
+               are lost." -> a *failure* that STILL consumes boards
+      1044157 "You failed to create the item, but no materials were lost."
+      1044038 "You have worn out your tool!" -> tool_broke
+
+    The explicit journal token must win over the ``consumed > 0`` heuristic:
+    a 1044043 failure burns boards too, so ``consumed > 0`` is NOT a reliable
+    success signal on its own. The old dispatch
+    (``if result_msg == "success" or consumed > 0``) promoted such a failure
+    to +5.0 and a fake skill gain, poisoning the reward/skill signal — exactly
+    the bug fixed for blacksmithy in ``_classify_blacksmith_result``.
+
+    ``consumed > 0`` is only promoted to ``success`` when the journal said
+    nothing recognizable — that covers the quality-0 "barely able to make"
+    line some shards phrase without a literal "you create".
+
+    Returns one of: ``success`` / ``fail`` / ``tool_broke`` / ``none``.
+    """
+    if result_msg == "tool_broke":
+        return "tool_broke"
+    if result_msg == "fail":
+        return "fail"
+    if result_msg == "success":
+        return "success"
+    if consumed > 0:
+        return "success"
+    return "none"
+
+
 # Category/item definitions: (category_name, group_index, items)
 # group_index matches ServUO CraftGroup order in DefCarpentry.cs
 CRAFT_TARGETS = [
@@ -305,7 +339,8 @@ class CraftCarpentry(Skill):
                 build_gump_response(g.serial, g.gump_id, 0)
             )
 
-        if result_msg == "success" or consumed > 0:
+        outcome = _classify_carpentry_result(result_msg, consumed)
+        if outcome == "success":
             msg = f"Crafted {target_name} (used {consumed} wood)"
             logger.info("carpentry_success", item=target_name, consumed=consumed)
             if feed:
@@ -315,7 +350,7 @@ class CraftCarpentry(Skill):
                 skill_gains=[(CARPENTRY_SKILL_ID, 0.1)],
                 duration_ms=elapsed,
             )
-        elif result_msg == "fail":
+        elif outcome == "fail":
             logger.info("carpentry_fail", item=target_name, consumed=consumed)
             if feed:
                 feed.publish("skill", f"Failed {target_name}", importance=1)
@@ -325,7 +360,7 @@ class CraftCarpentry(Skill):
                 skill_gains=[(CARPENTRY_SKILL_ID, 0.05)],
                 duration_ms=elapsed,
             )
-        elif result_msg == "tool_broke":
+        elif outcome == "tool_broke":
             logger.warning("carpentry_tool_broke", item=target_name)
             if feed:
                 feed.publish("skill", "Saw broke!", importance=3)
