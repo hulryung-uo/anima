@@ -74,6 +74,21 @@ async def equip_weapon_from_pack(
     if ss.equipment.get(layer):
         return ActionResult(success=True, message="Hand already occupied")
 
+    # A two-handed weapon occupies BOTH hands. ServUO BaseWeapon.cs
+    # CheckConflictingLayer refuses a two-hander outright when the
+    # one-handed layer is full ("You already have something in both
+    # hands."), so the EquipItem never takes. equip_item below would
+    # nonetheless PickUp the weapon first — lifting it loose onto the
+    # cursor / out of the pack — and then report a *soft success* on the
+    # rejected wear, leaving the agent disarmed with the two-hander
+    # stranded on the cursor. Bail out before lifting anything when the
+    # off-hand is occupied so the caller's existing weapon stays equipped.
+    if two_handed and ss.equipment.get(LAYER_ONE_HANDED):
+        return ActionResult(
+            success=False,
+            message="One-handed hand occupied — can't equip a two-handed weapon",
+        )
+
     weapons = find_in_backpack(ctx, graphics)
     if not weapons:
         return ActionResult(success=False, message="No weapon in backpack")
