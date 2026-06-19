@@ -229,6 +229,19 @@ class WalkerManager:
             self.steps_count = 0
             self.walk_sequence = 0
             self._last_step_sent = 0.0
+            # Also drop the in-flight op's pending state. The reset abandons
+            # whatever step/turn was outstanding, but a merely-slow (not
+            # silent) server can still deliver its ConfirmWalk (0x22) /
+            # DenyWalk (0x21) afterwards. If _pending_seq / _pending_step_tile
+            # / _pending_direction survive the reset, that late ack can match
+            # the lingering _pending_seq and snap SelfState onto a tile/facing
+            # belonging to the step we already gave up on — desyncing every
+            # later step that reads the position/direction. reset() clears
+            # these for exactly this reason; this inline path was an
+            # incomplete copy that left them dangling.
+            self._pending_seq = None
+            self._pending_step_tile = None
+            self._pending_direction = None
         return (
             not self.walking_failed
             and self.steps_count < MAX_STEP_COUNT

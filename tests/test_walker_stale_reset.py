@@ -77,3 +77,64 @@ def test_can_walk_never_resets_with_unarmed_clock():
     # (this is the pre-fix state for a path that never called next_sequence).
     assert w.can_walk() is False
     assert w.steps_count == MAX_STEP_COUNT
+
+
+def test_stale_reset_clears_pending_so_late_ack_cannot_teleport():
+    """A delayed ack arriving after the stale auto-reset must NOT move us.
+
+    Repro of the desync: a move (seq M, tile T) is queued, the server goes
+    quiet long enough to trip the 5s auto-reset, then the server's merely-slow
+    ConfirmWalk(M) finally lands. If the reset left _pending_seq / _pending_*
+    dangling, that late confirm matches the lingering seq and snaps the avatar
+    onto T — a tile from the step we already abandoned. After the fix the
+    pending op state is cleared, so the late ack is treated as a non-pending
+    stale ack and leaves the position untouched.
+    """
+    w = _make_walker()
+    w._self_state.x, w._self_state.y = 100, 100
+
+    # Queue a single move whose confirm never arrives.
+    w._pending_step_tile = (101, 100)
+    move_seq = w.next_sequence()
+    w.steps_count += 1
+
+    # Server goes silent past the 5s threshold → auto-reset on the next poll.
+    w._last_step_sent -= 6000
+    w.last_step_time = 0.0
+    assert w.can_walk() is True
+    assert w.steps_count == 0
+    assert w.walk_sequence == 0
+    # The pending op must be fully forgotten by the reset.
+    assert w._pending_seq is None
+    assert w._pending_step_tile is None
+    assert w._pending_direction is None
+
+    # The slow server finally confirms the abandoned step.
+    w.confirm_walk(move_seq)
+
+    # Avatar must stay where it is — the late ack is stale, not pending.
+    assert (w._self_state.x, w._self_state.y) == (100, 100)
+
+
+def test_stale_reset_clears_pending_direction_so_late_turn_ack_cannot_stick():
+    """A delayed turn confirm after the auto-reset must not apply a stale facing."""
+    w = _make_walker()
+    w._self_state.direction = 0
+
+    # Queue a turn (no tile) whose confirm never arrives.
+    w._pending_step_tile = None
+    w._pending_direction = 4  # South
+    turn_seq = w.next_sequence()
+    w.steps_count += 1
+
+    # Trip the stale auto-reset.
+    w._last_step_sent -= 6000
+    w.last_step_time = 0.0
+    assert w.can_walk() is True
+    assert w._pending_direction is None
+
+    # The slow turn confirm lands after the reset.
+    w.confirm_walk(turn_seq)
+
+    # Facing must remain the server-authoritative pre-turn direction.
+    assert w._self_state.direction == 0
