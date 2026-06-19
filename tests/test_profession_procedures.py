@@ -93,7 +93,9 @@ class TestCastSpell:
 
         assert result.success is True
         assert result.fizzled is False
-        tgt.assert_awaited_once_with(ctx, 7, ctx.perception.self_state.serial)
+        tgt.assert_awaited_once_with(
+            ctx, 7, ctx.perception.self_state.serial, cursor_flag=0
+        )
 
     @pytest.mark.asyncio
     async def test_fizzle_counts_as_resolved(self):
