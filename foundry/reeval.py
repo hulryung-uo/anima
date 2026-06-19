@@ -31,6 +31,37 @@ from foundry.orchestrator import LANE_BUDGET, _prepare_worktree
 _NEGLIGIBLE_FITNESS = 1e-6
 
 
+def _elite_reeval_order(elites: list[Genome]) -> list[Genome]:
+    """Order grid elites so the LEAST trustworthy champion is re-checked FIRST.
+
+    ``--elites`` is the demotion-evidence pass: it re-runs each champion on fresh
+    accounts to see whether its archived fitness replicates. The queue used to be
+    sorted by raw ``g.fitness`` (descending), but raw fitness is the very signal
+    the rest of the pipeline distrusts — selection (``select._selection_quality``),
+    the REFLECT "proven recipes" list (``observe.history``) and the kernel
+    promotion rule all rank champions by the variance-aware lower bound
+    ``min(fitness, reliability)`` (reliability = mean − λ·pstdev), which both
+    discounts a lucky high-variance elite (per_seed [200, 20] → quality 20, not
+    its 110 mean) and honors the human held-out corrections baked into
+    ``eval.fitness``.
+
+    Sorting the re-eval queue by raw fitness floats exactly those lucky/inflated
+    champions — the ones MOST in need of a replication check — to the BOTTOM of a
+    long ``--elites`` run. A live held-out pass costs ~window_s per genome and is
+    routinely time-boxed or interrupted (STOP/operator), so the suspect champions
+    that should be evidenced first were the ones silently re-checked last (or
+    never). Rank by ``_selection_quality`` ASCENDING so the steadiest, most-trusted
+    elites yield their slot to the volatile ones, with the genome id as a stable
+    tiebreak. This only reorders the queue; every elite is still re-eval'd and the
+    grid is never touched (the tool stays report-only).
+    """
+    # Function-scope import mirrors observe.history / _archive_context_lines and
+    # avoids a reeval<->select import edge (select is a leaf of the kernel).
+    from foundry.select import _selection_quality
+
+    return sorted(elites, key=lambda g: (_selection_quality(g), g.id))
+
+
 def _replication_ratio(recorded: float, held_out: float) -> float:
     """How much of ``recorded`` fitness the held-out re-run reproduced.
 
@@ -219,7 +250,7 @@ def _main(argv: list[str]) -> int:
     arc = Archive(args.archive)
     targets: list[Genome] = []
     if args.elites:
-        targets = sorted(arc.elites(), key=lambda g: -g.fitness)
+        targets = _elite_reeval_order(arc.elites())
     for gid in args.genomes:
         g = arc.get(gid)
         if g is None:
