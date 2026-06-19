@@ -780,6 +780,67 @@ def test_container_content_clears_stale_items():
     )
 
 
+def _build_container_content_inc(
+    items: list[tuple[int, int, int, int, int, int, int]],
+) -> bytes:
+    """Build a 0x3C packet exposing the graphic-increment byte.
+
+    Each item: (serial, graphic, graphic_inc, amount, x, y, container).
+    """
+    body = struct.pack(">H", len(items))
+    for serial, graphic, graphic_inc, amount, x, y, container in items:
+        body += struct.pack(
+            ">IHBHHHBIH",
+            serial, graphic, graphic_inc, amount, x, y, 0, container, 0,
+        )
+    length = 3 + len(body)
+    return struct.pack(">BH", 0x3C, length) + body
+
+
+def test_container_content_adds_graphic_increment():
+    """0x3C item graphic must be base + increment byte (ClassicUO semantics).
+
+    ClassicUO decodes ``graphic = ReadUInt16BE() + ReadUInt8()``; the
+    increment byte selects an animation/variant frame and must be folded
+    into the graphic id, not dropped. Dropping it makes variant items
+    (e.g. animated tiles) collide on a single base id, which breaks the
+    0x74 vendor buy-list correlation that matches by graphic.
+    """
+    h, p, _ = _make_stack()
+    container = 0x40000001
+
+    h.dispatch(0x3C, _build_container_content_inc([
+        (0x50000001, 0x0FBB, 0, 1, 1, 1, container),  # no increment
+        (0x50000002, 0x1F2D, 3, 1, 2, 1, container),  # +3 variant
+    ]))
+
+    items = {it.serial: it for it in p.world.items.values()}
+    assert items[0x50000001].graphic == 0x0FBB
+    assert items[0x50000002].graphic == 0x1F2D + 3, (
+        f"graphic increment was dropped: got 0x{items[0x50000002].graphic:04X}"
+    )
+
+
+def test_add_item_to_container_adds_graphic_increment():
+    """0x25 AddItemToContainer must also fold the increment byte into graphic."""
+    h, p, _ = _make_stack()
+    container = 0x40000001
+    serial = 0x50000010
+    # 0x25: id, serial, graphic, graphic_inc, amount, x, y, grid_index,
+    #       container, hue  (fixed length 21).
+    packet = struct.pack(
+        ">BIHBHHHBIH",
+        0x25, serial, 0x09E2, 5, 1, 4, 4, 0, container, 0,
+    )
+    h.dispatch(0x25, packet)
+
+    item = p.world.items[serial]
+    assert item.graphic == 0x09E2 + 5, (
+        f"graphic increment was dropped: got 0x{item.graphic:04X}"
+    )
+    assert item.container == container
+
+
 def test_container_content_does_not_clear_other_containers():
     """Refreshing container A must not touch items that belong to container B."""
     h, p, _ = _make_stack()

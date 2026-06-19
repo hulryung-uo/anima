@@ -573,7 +573,9 @@ def register_handlers(
                 break
             serial = r.read_u32()
             graphic = r.read_u16()
-            r.skip(1)  # graphic_inc
+            # ClassicUO: graphic = ReadUInt16BE() + ReadUInt8() — the increment
+            # byte is ADDED to the base graphic, not discarded (animated/variant ids).
+            graphic = (graphic + r.read_u8()) & 0xFFFF
             amount = r.read_u16()
             x = r.read_u16()
             y = r.read_u16()
@@ -611,7 +613,9 @@ def register_handlers(
         r = PacketReader(data[1:])
         serial = r.read_u32()
         graphic = r.read_u16()
-        r.skip(1)  # graphic_inc
+        # ClassicUO: graphic = ReadUInt16BE() + ReadUInt8() — the increment
+        # byte is ADDED to the base graphic, not discarded.
+        graphic = (graphic + r.read_u8()) & 0xFFFF
         amount = r.read_u16()
         x = r.read_u16()
         y = r.read_u16()
