@@ -29,14 +29,21 @@ def reeval_genome(arc: Archive, g: Genome, seeds: int, window_s: int,
     fixed_start = cfg_src.get("fixed_start", "miner")
     wt = _prepare_worktree(slot, g.code_ref or "HEAD")
 
+    # Each slot owns a contiguous block of `seeds` lanes AND ports: run_eval_multi
+    # fans out the seeds as lane+k / proxy_port+k / web_port+k for k in 0..seeds-1.
+    # The ports already stride by `slot * seeds`, but lane was pinned to 0 — so two
+    # concurrent reeval slots put their agents on the SAME GM workplace lanes
+    # (0..seeds-1) and their fixed-start setups collide (the lane-collision class
+    # the orchestrator's lane budget exists to prevent). Stride lane with slot too.
+    span = max(1, seeds)
     cfg = EvalConfig(
         account_user=f"re{g.id.replace('g_', '')}",
         persona=persona,
         fixed_start=fixed_start,
         window_s=window_s,
-        proxy_port=2680 + slot * max(1, seeds),
-        web_port=8200 + slot * max(1, seeds),
-        lane=0,
+        proxy_port=2680 + slot * span,
+        web_port=8200 + slot * span,
+        lane=slot * span,
         repo_root=wt,
     )
     res = run_eval_multi(cfg, seeds=seeds)
