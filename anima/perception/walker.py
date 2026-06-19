@@ -64,6 +64,12 @@ class WalkerManager:
 
         # Pending step tile — set before sending walk, cleared on confirm/deny
         self._pending_step_tile: tuple[int, int] | None = None
+        # Sequence number stamped onto the in-flight walk/turn packet. A
+        # ConfirmWalk (0x22) / DenyWalk (0x21) only acts on the pending
+        # move/turn when its seq matches this — otherwise it is a stale or
+        # out-of-order ack (e.g. a turn confirm arriving after the next move
+        # packet was queued) and must NOT apply the pending tile/direction.
+        self._pending_seq: int | None = None
         # Pending direction — set before sending turn, applied on confirm
         self._pending_direction: int | None = None
 
@@ -78,6 +84,7 @@ class WalkerManager:
         self.consecutive_denials = 0
         self._denied_target = None
         self._pending_step_tile = None
+        self._pending_seq = None
 
     def set_fast_walk_keys(self, keys: list[int]) -> None:
         for i in range(min(len(keys), MAX_FAST_WALK_STACK_SIZE)):
@@ -99,6 +106,10 @@ class WalkerManager:
 
     def next_sequence(self) -> int:
         seq = self.walk_sequence
+        # Remember which seq the just-prepared pending op (move or turn) rides
+        # on; every send site sets _pending_step_tile/_pending_direction and
+        # then calls this immediately before send_packet().
+        self._pending_seq = seq
         # Stamp the moment this walk/turn packet's sequence is handed out.
         # Every send site (move/turn) calls next_sequence() immediately
         # before send_packet(), so this is the time of the last sent walk
@@ -113,6 +124,16 @@ class WalkerManager:
     def confirm_walk(self, seq: int) -> None:
         if self.steps_count > 0:
             self.steps_count -= 1
+        # Only the ack for the currently-pending op may apply its effect.
+        # A mismatched seq (stale duplicate, or a turn confirm that lands
+        # after the next move packet has already overwritten _pending_*)
+        # must decrement the outstanding-step budget above but leave the
+        # pending tile/direction untouched, so we never jump the avatar to a
+        # tile the server has not actually confirmed yet.
+        if self._pending_seq is not None and seq != self._pending_seq:
+            self._events.emit(GameEventType.WALK_CONFIRMED, {"seq": seq})
+            return
+        self._pending_seq = None
         # Apply pending direction (from turn packets)
         if self._pending_direction is not None:
             self._self_state.direction = self._pending_direction
@@ -133,10 +154,15 @@ class WalkerManager:
         self._events.emit(GameEventType.WALK_CONFIRMED, {"seq": seq})
 
     def deny_walk(self, seq: int, x: int, y: int, z: int, direction: int) -> None:
+        # A deny for a non-pending seq is stale; still resync position to the
+        # server-authoritative coordinates it carries, but do not blame the
+        # current pending tile (which belongs to a different, later request).
+        seq_matches = self._pending_seq is None or seq == self._pending_seq
+        self._pending_seq = None
         # Record the denied tile if we know which one we tried
-        if self._pending_step_tile is not None:
+        if seq_matches and self._pending_step_tile is not None:
             self.record_denied_tile(*self._pending_step_tile)
-            self._pending_step_tile = None
+        self._pending_step_tile = None
 
         self.steps_count = 0
         # Server resets state.Sequence to 0 on deny.
