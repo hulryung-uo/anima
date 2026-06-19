@@ -78,6 +78,20 @@ class CircuitBreaker:
         self._tripped_at.clear()
         self._half_open.clear()
 
+    def _is_open_pure(self, target: Hashable) -> bool:
+        """Non-mutating open check used by diagnostic/listing methods.
+
+        Unlike `is_open()`, this never transitions a cooldown-lapsed target
+        into the half-open state — so logging a `snapshot()` or scanning
+        `open_targets()` can never consume a probe slot or silently clear a
+        failure counter as a side effect of a read.
+        """
+        count = self._counts.get(target, 0)
+        if count < self._max:
+            return False
+        tripped_at = self._tripped_at.get(target, 0.0)
+        return time.time() - tripped_at < self._cooldown
+
     def is_open(self, target: Hashable) -> bool:
         """True while the target is in its cooldown window."""
         count = self._counts.get(target, 0)
@@ -106,11 +120,14 @@ class CircuitBreaker:
         return target in self._half_open
 
     def open_targets(self) -> list[Hashable]:
-        """List of targets whose breaker is currently open."""
-        return [t for t in list(self._counts.keys()) if self.is_open(t)]
+        """List of targets whose breaker is currently open.
+
+        Pure: never mutates breaker state (no half-open transition).
+        """
+        return [t for t in list(self._counts.keys()) if self._is_open_pure(t)]
 
     def snapshot(self) -> dict[str, Any]:
-        """Diagnostic snapshot for logging."""
+        """Diagnostic snapshot for logging (pure — never mutates state)."""
         now = time.time()
         return {
             "max_failures": self._max,

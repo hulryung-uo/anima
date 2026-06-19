@@ -129,3 +129,52 @@ class TestCircuitBreaker:
         assert cb.is_half_open("a") is True
         cb.reset("a")
         assert cb.is_half_open("a") is False
+
+    def test_snapshot_does_not_mutate_into_half_open(self):
+        """Logging a snapshot must not consume the half-open probe slot.
+
+        Regression: snapshot()/open_targets() routed through is_open(),
+        whose cooldown-lapse branch mutates state (clears the counter and
+        flips the target half-open). A pure diagnostic read silently armed
+        the one-shot probe and zeroed failure_count before any real gating
+        poll, so the next failure re-counted from zero instead of re-tripping.
+        """
+        cb = CircuitBreaker(max_failures=2, cooldown_s=0.05)
+        cb.record_failure("a")
+        cb.record_failure("a")
+        assert cb.is_open("a") is True
+        time.sleep(0.06)  # cooldown lapses, but no is_open() poll yet
+
+        snap = cb.snapshot()
+        # Read must not have flipped the target half-open or cleared its count.
+        assert cb.is_half_open("a") is False
+        assert cb.failure_count("a") == 2
+        # snapshot still correctly reports the lapsed target as no-longer-open.
+        assert snap["open"] == []
+
+        # The real gating poll is what arms the half-open probe.
+        assert cb.is_open("a") is False
+        assert cb.is_half_open("a") is True
+
+    def test_open_targets_is_pure(self):
+        """open_targets() must not transition lapsed targets to half-open."""
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.05)
+        cb.record_failure("a")
+        time.sleep(0.06)
+        assert cb.open_targets() == []  # lapsed -> not open
+        # ...but the read left the failure bookkeeping intact (no half-open).
+        assert cb.is_half_open("a") is False
+        assert cb.failure_count("a") == 1
+
+    def test_lapsed_failure_before_poll_still_retrips(self):
+        """A failure arriving after lapse (no poll) re-trips with a fresh window.
+
+        Because diagnostic reads no longer pre-arm half-open, the counter is
+        still at max when the failure lands, so the breaker stays open.
+        """
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.05)
+        cb.record_failure("a")
+        time.sleep(0.06)
+        cb.snapshot()  # pure read, must not disturb state
+        cb.record_failure("a")
+        assert cb.is_open("a") is True
