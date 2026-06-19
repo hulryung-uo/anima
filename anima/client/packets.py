@@ -517,7 +517,22 @@ def build_target_response(
 
 
 def build_use_skill(skill_id: int) -> bytes:
-    """Build UseSkill packet (0x12, variable)."""
+    """Build UseSkill packet (0x12 TextCommand, sub-type 0x24, variable).
+
+    Wire payload is the ASCII command ``"{skill_id} 0\\0"`` (ClassicUO
+    ``Send_UseSkill``: ``WriteUInt8(0x24)`` then ``WriteASCII($"{idx} 0")``,
+    where ``WriteASCII`` appends the NUL terminator). The trailing ``0`` is
+    ignored by ServUO, which parses ``command.Split(' ')[0]`` as the index.
+
+    ClassicUO ``GameActions.UseSkill`` refuses to send for ``index < 0``,
+    and ServUO ``Skills.UseSkill`` discards any ``skillID`` outside
+    ``[0, SkillInfo.Table.Length)``. A negative id therefore produces a
+    packet the server silently drops while the action layer still reports
+    success — a false "skill used". Reject it at the source instead so the
+    bug surfaces here rather than as an invisible no-op on the wire.
+    """
+    if skill_id < 0:
+        raise ValueError(f"skill_id must be >= 0, got {skill_id}")
     w = PacketWriter()
     w.write_u8(0x12)
     w.write_u16(0)  # length placeholder
