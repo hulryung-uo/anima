@@ -2592,6 +2592,19 @@ class Planner:
             # Don't attack humans unless clearly hostile
             if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
                 continue
+            # Skip invulnerable / blessed mobiles (yellow health bar). ServUO
+            # marks Healers and protected town NPCs with the YELLOW_BAR flag
+            # (MobileInfo.is_yellow_health) — they take zero damage however long
+            # we swing, yet can read as gray/ATTACKABLE notoriety. combat_loop.
+            # _find_target / _adjacent_hostiles and the survival flee gate
+            # (_is_live_hostile) all already skip them; this hunt scan must
+            # mirror that or deadlock-recovery hunting locks onto the immortal
+            # survival-arena Healer co-located at the resurrection spot (kernel
+            # K1+/K1/K3), swinging forever for zero gold and never escalating.
+            # `is True` (not truthy) so SimpleNamespace test mobs lacking the
+            # field aren't mis-excluded.
+            if getattr(m, "is_yellow_health", False) is True:
+                continue
             # Skip small town animals unless deadlock-hunting for gold
             if m.body in TOWN_PETS and not include_small_animals:
                 continue
