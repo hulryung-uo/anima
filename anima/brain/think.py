@@ -829,20 +829,49 @@ def _parse_action(text: str) -> dict | None:
         if idx == -1:
             continue
         if start == "{":
+            # Walk braces to find the first balanced object, but IGNORE any
+            # brace that lives inside a JSON string literal. The LLM is shown a
+            # JSON template and asked to fill ``"say": "<text>"`` / ``"reason"``,
+            # so the free-text values very commonly contain a brace or an
+            # emoticon (``"hi :} there"``, ``"use {x}"``). A naive depth counter
+            # treats that in-string ``}`` as the object's close, slices a
+            # truncated fragment, fails to parse, and returns None — silently
+            # dropping a perfectly good decision for that whole think tick.
+            # Track string/escape state so only structural braces move depth,
+            # and keep scanning for a later balanced object instead of bailing
+            # on the first parse failure.
             depth = 0
+            in_str = False
+            escaped = False
+            obj_start = idx
             for i in range(idx, len(text)):
-                if text[i] == "{":
+                ch = text[i]
+                if in_str:
+                    if escaped:
+                        escaped = False
+                    elif ch == "\\":
+                        escaped = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    if depth == 0:
+                        obj_start = i
                     depth += 1
-                elif text[i] == "}":
+                elif ch == "}":
                     depth -= 1
                     if depth == 0:
                         try:
-                            parsed = _coerce_action_dict(json.loads(text[idx : i + 1]))
+                            parsed = _coerce_action_dict(
+                                json.loads(text[obj_start : i + 1])
+                            )
                             if parsed is not None:
                                 return parsed
-                            break
                         except json.JSONDecodeError:
-                            break
+                            pass
+                        # Not a usable object — keep scanning for a later one.
         else:
             content_start = idx + len(start)
             assert end is not None
