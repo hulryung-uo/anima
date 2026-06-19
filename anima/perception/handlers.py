@@ -926,10 +926,20 @@ def register_handlers(
 
             base_text = cliloc_text(cliloc_num)
             if base_text and args:
+                # ClassicUO (ClilocLoader.Translate) substitutes each
+                # placeholder by the index embedded in it: ~N~ or
+                # ~N_label~ is replaced with the (N-1)th tab-separated
+                # argument. Drive substitution by that index — not by the
+                # positional order of the args — so out-of-order, repeated,
+                # and underscore-less (~1~~2~~3~, e.g. cliloc 1041522)
+                # placeholders all resolve correctly.
                 parts = args.split("\t")
-                text = base_text
-                for i, part in enumerate(parts):
-                    text = re.sub(rf"~{i + 1}_[^~]*~", part, text, count=1)
+
+                def _sub(m: "re.Match[str]") -> str:
+                    idx = int(m.group(1)) - 1
+                    return parts[idx] if 0 <= idx < len(parts) else m.group(0)
+
+                text = re.sub(r"~(\d+)(?:_[^~]*)?~", _sub, base_text)
                 properties.append(text)
             elif base_text:
                 properties.append(base_text)

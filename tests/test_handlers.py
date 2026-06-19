@@ -343,6 +343,65 @@ def test_mega_cliloc_populates_opl_cache():
     assert p.world.opl_properties.get(serial) == ["Test Vendor"]
 
 
+def _build_mega_cliloc(serial: int, entries: list[tuple[int, str]]) -> bytes:
+    """Build a 0xD6 MegaCliloc packet. Each entry is (cliloc_num, args)
+    where args is the tab-joined unicode argument string (LE)."""
+    buf = PacketWriter()
+    buf.write_u8(0xD6)
+    buf.write_u16(0)        # length placeholder
+    buf.write_u16(0x0001)   # unknown
+    buf.write_u32(serial)
+    buf.write_u16(0x0000)   # unknown
+    buf.write_u32(0xDEADBEEF)  # list_id / hash
+    for cliloc_num, args in entries:
+        buf.write_u32(cliloc_num)
+        raw = args.encode("utf-16-le")
+        buf.write_u16(len(raw))
+        for b in raw:
+            buf.write_u8(b)
+    buf.write_u32(0)        # terminator
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_mega_cliloc_arg_substitution_is_index_driven(monkeypatch):
+    """0xD6 OPL arg substitution must follow ClassicUO: replace ~N~ /
+    ~N_label~ with the (N-1)th tab arg, regardless of placeholder order,
+    repetition, or a missing underscore. The old positional loop dropped
+    underscore-less placeholders (e.g. cliloc 1041522 "~1~~2~~3~") and
+    only substituted the first occurrence of a repeated index."""
+    import anima.perception.handlers as handlers_mod
+
+    fake = {
+        # composite, underscore-less — the old regex (~N_[^~]*~) never matched
+        1041522: "~1~~2~~3~",
+        # repeated placeholder index — old loop used count=1 per arg
+        2000001: "~1_x~ and ~1_x~",
+    }
+    monkeypatch.setattr(handlers_mod, "cliloc_text", lambda n: fake.get(n, ""))
+
+    h, p, _ = _make_stack()
+    serial = 0x0000B00C
+    p.world.get_or_create_mobile(serial)
+
+    h.dispatch(
+        0xD6,
+        _build_mega_cliloc(
+            serial,
+            [
+                (1041522, "Strength\t Bonus: \t5"),
+                (2000001, "gold"),
+            ],
+        ),
+    )
+
+    props = p.world.opl_properties.get(serial)
+    assert props == ["Strength Bonus: 5", "gold and gold"]
+    # No raw placeholder must survive.
+    assert all("~" not in line for line in props)
+
+
 # ---------------------------------------------------------------------------
 # HP Update (0xA1)
 # ---------------------------------------------------------------------------
