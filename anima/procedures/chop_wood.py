@@ -75,6 +75,15 @@ class ChopWood(Procedure):
     # re-selects and re-targets the identical exhausted tree forever.
     _SKIP_TREE_SNIPPETS = ("not enough wood", "no wood here", "too far away")
 
+    # Success lines specifically. As with mining, ServUO sends the "...logs
+    # into your backpack" cliloc and the container-content update (0x25/0x1A)
+    # as two separate packets whose relative order is NOT guaranteed; the
+    # message is frequently processed first. If the wait loop breaks on the
+    # success line before the log item has been applied to world.items,
+    # logs_after == logs_before and a genuinely successful chop is mis-booked
+    # as a FAIL with zero yield credited. Track it so we can grace-poll.
+    _SUCCESS_SNIPPETS = ("logs into your backpack", "put some logs")
+
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
         world = ctx.perception.world
@@ -141,6 +150,16 @@ class ChopWood(Procedure):
                         return s
             return None
 
+        def _success_seen() -> bool:
+            """True if a chop-success journal line landed since the swing."""
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < chop_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in self._SUCCESS_SNIPPETS):
+                    return True
+            return False
+
         deadline = chop_start + 3.0
         result_snippet: str | None = None
         while time.time() < deadline:
@@ -148,6 +167,20 @@ class ChopWood(Procedure):
             result_snippet = _journal_result_seen()
             if _logs_in_pack() > logs_before or result_snippet:
                 break
+
+        # The success cliloc can arrive before the item-update packet that
+        # actually adds the logs to the pack. If the swing reported success
+        # but the logs are not visible yet (and no skip/terminal-failure line
+        # fired), grace-poll briefly for the container update so the yield is
+        # credited instead of being lost as a phantom skill-check miss.
+        if (_logs_in_pack() <= logs_before
+                and result_snippet not in self._SKIP_TREE_SNIPPETS
+                and _success_seen()):
+            grace_deadline = time.time() + 1.0
+            while time.time() < grace_deadline:
+                await asyncio.sleep(0.1)
+                if _logs_in_pack() > logs_before:
+                    break
 
         # A depleted / out-of-range tree must be parked in the shared cooldown
         # so _find_nearby_tree skips it next iteration; otherwise the loop pins
