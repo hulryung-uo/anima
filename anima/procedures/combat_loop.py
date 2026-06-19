@@ -881,7 +881,17 @@ class WanderForCombat(Procedure):
 
         ss = ctx.perception.self_state
         # Orbit the anchor (where mobs spawn / were last fought), not drift away.
-        ax, ay = ctx.blackboard.get("combat_anchor", (ss.x, ss.y))
+        # `combat_anchor` is set by HuntNearby.execute when a fight starts — but
+        # the whole point of this procedure is the case where NO fight has
+        # started yet (armed, no target in range), so on a fresh spot the key is
+        # absent. A plain `.get(..., (ss.x, ss.y))` then re-derived the orbit
+        # center from the agent's CURRENT position every sweep; since go_to walks
+        # the agent toward the perimeter tile, the center followed the drift and
+        # the warrior wandered unboundedly away from the arena instead of
+        # orbiting it. setdefault PINS the anchor on the first wander so every
+        # subsequent sweep orbits one fixed center (identical behaviour once a
+        # fight has already set the anchor).
+        ax, ay = ctx.blackboard.setdefault("combat_anchor", (ss.x, ss.y))
         idx = ctx.blackboard.get("_wander_dir_idx", 0) % len(WANDER_DIRS)
         ctx.blackboard["_wander_dir_idx"] = idx + 1
         dx, dy = WANDER_DIRS[idx]

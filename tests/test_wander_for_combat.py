@@ -102,6 +102,52 @@ class TestExecute:
         assert ctx.blackboard["_wander_dir_idx"] == 2
 
     @pytest.mark.asyncio
+    async def test_orbit_center_stays_fixed_while_agent_drifts(self, monkeypatch):
+        """Regression: with no prior fight, combat_anchor is unset. The orbit
+        center must be PINNED on the first sweep, not re-derived from the
+        agent's drifting position each tick — otherwise the warrior walks
+        unboundedly away from the spawn arena instead of orbiting it."""
+        async def drifting_go_to(ctx, x, y, run=False, interrupt_check=None):
+            ss = ctx.perception.self_state
+            ss.x += (1 if x > ss.x else -1 if x < ss.x else 0)
+            ss.y += (1 if y > ss.y else -1 if y < ss.y else 0)
+            return None
+
+        destinations: list[tuple[int, int]] = []
+
+        async def recording_go_to(ctx, x, y, run=False, interrupt_check=None):
+            destinations.append((x, y))
+            return await drifting_go_to(ctx, x, y, run=run, interrupt_check=interrupt_check)
+
+        monkeypatch.setattr(movement, "go_to", recording_go_to)
+
+        ctx = _ctx(self_x=100, self_y=100, mobiles=[])
+        assert "combat_anchor" not in ctx.blackboard  # no fight ran first
+        proc = WanderForCombat()
+        for _ in range(3):
+            await proc.execute(ctx)
+
+        assert ctx.blackboard["combat_anchor"] == (100, 100)
+        assert (ctx.perception.self_state.x, ctx.perception.self_state.y) != (100, 100)
+        from anima.procedures.combat_loop import WANDER_RADIUS
+        for dx, dy in destinations:
+            assert abs(dx - 100) <= WANDER_RADIUS
+            assert abs(dy - 100) <= WANDER_RADIUS
+
+    @pytest.mark.asyncio
+    async def test_respects_existing_anchor_from_a_prior_fight(self, monkeypatch):
+        """When HuntNearby already set combat_anchor, wander must orbit THAT
+        anchor, not the agent's current position (setdefault is a no-op)."""
+        async def fake_go_to(ctx, x, y, run=False, interrupt_check=None):
+            return None
+
+        monkeypatch.setattr(movement, "go_to", fake_go_to)
+        ctx = _ctx(self_x=200, self_y=200, mobiles=[])
+        ctx.blackboard["combat_anchor"] = (50, 50)  # from a previous fight
+        await WanderForCombat().execute(ctx)
+        assert ctx.blackboard["combat_anchor"] == (50, 50)
+
+    @pytest.mark.asyncio
     async def test_yields_to_other_work_after_max_empty_roams(self, monkeypatch):
         # Depleted arena (no hostiles ever): wander a few rounds then YIELD
         # (success=False) so the planner falls through to productive work,
