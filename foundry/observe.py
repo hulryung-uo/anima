@@ -69,13 +69,26 @@ def _reflect_window(gs: list, limit: int) -> list:
     re-attempts the same dead end it has no memory of. Keep every dead end that
     still fits, then backfill with the most recent genomes — preserving
     chronological (disk/id) order so the narrative still reads oldest->newest.
+
+    But dead-end retention must NOT crowd out the just-evaluated cycle. The
+    newest genome (``gs[-1]``) is the eval the orchestrator literally just ran
+    and is asking the mutator to react to; once a long run accumulates ``limit``
+    or more OLD dead ends, ``dead_ends[-limit:]`` fills the budget entirely and
+    the backfill loop never runs, so the latest cycle's outcome vanishes from
+    the REFLECT log and the mutator gets zero feedback on its own last move.
+    Reserve the newest genome's slot up front so it always survives the cull.
     """
     if len(gs) <= limit:
         return gs
     dead_ends = [g for g in gs if _is_dead_end(g)]
-    # Newest dead ends first if they overflow the budget; then backfill with the
-    # most recent remaining genomes. Finally restore chronological order.
-    keep = set(id(g) for g in dead_ends[-limit:])
+    # Always keep the just-evaluated cycle (gs[-1]); then fill the remaining
+    # budget with the newest dead ends; then backfill with the most recent
+    # remaining genomes. Finally restore chronological order.
+    keep = {id(gs[-1])}
+    for g in reversed(dead_ends):
+        if len(keep) >= limit:
+            break
+        keep.add(id(g))
     for g in reversed(gs):
         if len(keep) >= limit:
             break

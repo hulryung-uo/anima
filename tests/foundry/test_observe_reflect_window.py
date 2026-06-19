@@ -75,6 +75,26 @@ def test_window_never_exceeds_limit_even_with_many_dead_ends():
     assert [g.id for g in window] == ["g_00008", "g_00009", "g_00010"]
 
 
+def test_newest_cycle_survives_an_old_dead_end_backlog():
+    # A backlog of OLD dead ends (>= limit of them) followed by the freshly
+    # evaluated healthy cycle. The just-run eval (gs[-1]) is the feedback the
+    # mutator is being asked to react to and must never be culled by recency-
+    # blind dead-end retention.
+    old_dead = [_g(n, skill_rate=0.0) for n in range(1, 6)]  # 5 old dead ends
+    newest = _g(99)  # the cycle just evaluated, healthy
+    gs = [*old_dead, newest]
+
+    window = observe._reflect_window(gs, limit=3)
+    ids = [g.id for g in window]
+
+    assert len(window) == 3
+    assert newest.id in ids, "the just-evaluated cycle was evicted by an old dead-end backlog"
+    # at least one dead end is still retained alongside it
+    assert any(g.id in ids for g in old_dead)
+    # chronological order preserved (oldest -> newest by id)
+    assert ids == sorted(ids)
+
+
 def test_history_surfaces_an_old_dead_end_for_the_mutator():
     # End-to-end through history(): a stub archive with one old dead end and a
     # flood of newer healthy cycles. The rendered REFLECT log must mention it.
