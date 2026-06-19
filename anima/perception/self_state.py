@@ -76,6 +76,9 @@ class SelfState:
         self.stam: int = 0
         self.stam_max: int = 0
 
+        # Health-bar status flags (synced from 0x17 HealthBarStatusUpdate)
+        self.is_poisoned: bool = False
+
         # Stats
         self.strength: int = 0
         self.dexterity: int = 0

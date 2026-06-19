@@ -21,6 +21,7 @@ class MobileInfo:
     name: str = ""
     hits_max: int = 0
     hits: int = 0
+    is_poisoned: bool = False
     properties: list[str] = field(default_factory=list)  # OPL tooltip lines
 
     @property

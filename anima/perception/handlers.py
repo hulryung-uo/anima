@@ -1341,8 +1341,44 @@ def register_handlers(
     handler.register(0x88, handle_open_paperdoll)
 
     def handle_health_bar_status(packet_id: int, data: bytes) -> None:
-        """0x17 HealthBarStatusUpdate."""
-        pass  # silently ignore
+        """0x17 HealthBarStatusUpdate — color flags on a mobile's health bar.
+
+        Variable packet. Format (ServUO HealthbarPoison/HealthbarYellow,
+        Packets.cs:3792-3838):
+            [0x17][len:u16][serial:u32][count:u16]
+            then `count` entries of [status_type:u16][flag:u8]
+        status_type 1 = Poison (flag = poison level + 1, 0 = cured),
+        status_type 2 = Yellow/Blessed bar.
+
+        Without this handler the poison flag never reaches WorldState, so the
+        brain cannot tell a poisoned target (or itself) apart from a healthy
+        one. We translate status_type 1 into a boolean is_poisoned on the
+        mobile / self_state.
+        """
+        if len(data) < 9:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        serial = r.read_u32()
+        if r.remaining < 2:
+            return
+        count = r.read_u16()
+
+        poisoned: bool | None = None
+        for _ in range(count):
+            if r.remaining < 3:
+                break
+            status_type = r.read_u16()
+            flag = r.read_u8()
+            if status_type == 1:  # poison bar
+                poisoned = flag != 0
+
+        if poisoned is None:
+            return  # only yellow/blessed bars in this packet — nothing to do
+
+        if serial == p.self_state.serial:
+            p.self_state.is_poisoned = poisoned
+        else:
+            p.world.get_or_create_mobile(serial).is_poisoned = poisoned
 
     handler.register(0x17, handle_health_bar_status)
 
