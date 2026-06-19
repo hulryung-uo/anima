@@ -113,6 +113,37 @@ def reeval_genome(arc: Archive, g: Genome, seeds: int, window_s: int,
     return out
 
 
+def _summarize_ratios(ratios: list[float]) -> str | None:
+    """Human-readable summary of the per-genome replication ratios, or None for
+    fewer than two data points.
+
+    ``_replication_ratio`` deliberately returns ``float("inf")`` when a genome's
+    recorded fitness was ~0 but the held-out re-run recovered a positive score
+    (a clean over-replication — there is no finite scale to normalise against).
+    That per-genome sentinel is fine, but feeding it straight into
+    ``statistics.median`` POISONS the cross-genome verdict: a single ``inf`` at
+    (or straddling) the median position makes the whole summary read ``inf`` even
+    when most genomes clearly FAILED to replicate (e.g. median of
+    ``[0.2, 0.4, inf, inf]`` is ``inf``). The median is this tool's headline
+    demotion-evidence number, so a lone over-replicating genome silently erasing
+    a fleet of demotion signals defeats its purpose.
+
+    Take the median over the FINITE ratios (the genomes that have a meaningful
+    fraction-recovered), and report the over-replications as a separate count so
+    no information is lost. With nothing but over-replications, say so plainly.
+    """
+    if len(ratios) < 2:
+        return None
+    finite = [r for r in ratios if r != float("inf")]
+    n_over = len(ratios) - len(finite)
+    over = f"  ({n_over} over-replicated: recorded ~0, recovered positive)" if n_over else ""
+    if not finite:
+        return (f"median replication ratio: n/a — all {len(ratios)} genomes "
+                f"over-replicated (recorded ~0, recovered positive)")
+    return (f"median replication ratio: {statistics.median(finite):.2f} "
+            f"over {len(finite)} genomes{over}")
+
+
 def _verdict(r: dict) -> str:
     if not r["ok"]:
         return f"EVAL FAILED: {r.get('error')}"
@@ -181,9 +212,9 @@ def _main(argv: list[str]) -> int:
         else:
             print(f"[reeval] {g.id}: {_verdict(r)}")
 
-    if len(ratios) > 1:
-        print(f"\n[reeval] median replication ratio: {statistics.median(ratios):.2f} "
-              f"over {len(ratios)} genomes")
+    summary = _summarize_ratios(ratios)
+    if summary:
+        print(f"\n[reeval] {summary}")
     return 0
 
 
