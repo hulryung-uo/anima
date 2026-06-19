@@ -37,7 +37,11 @@ class MobileFlags(IntFlag):
     FROZEN = 0x01
     FEMALE = 0x02
     FLYING = 0x04
-    BLESSED = 0x08
+    # 0x08 is ClassicUO's Flags.YellowBar (EntityFlags.cs). ServUO's
+    # Mobile.GetPacketFlags sets it for `m_Blessed || m_YellowHealthbar`, so it
+    # rides in every 0x78 / 0x77 / 0x20 flags byte. ClassicUO derives
+    # Mobile.IsYellowHits straight from this bit (Mobile.cs).
+    YELLOW_BAR = 0x08
     WAR_MODE = 0x40
     HIDDEN = 0x80
 

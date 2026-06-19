@@ -93,6 +93,16 @@ def register_handlers(
             # ServUO pushes self 0x78 on flag changes (OnHiddenChanged) —
             # this is where the hidden bit (0x80) for our own char arrives.
             p.self_state.flags = MobileFlags(flags & 0xFF)
+            # The yellow/blessed bar (flag 0x08) rides in this same byte.
+            # ServUO sets it for `m_Blessed || m_YellowHealthbar`, but it only
+            # emits a standalone 0x17 HealthbarYellow when the YellowHealthbar
+            # *property* toggles — never for a statically Blessed mobile. So a
+            # self that the server blesses (or yellow-bars) arrives here with
+            # bit 0x08 set and no paired 0x17, leaving is_yellow_health stale at
+            # False. Mirror ClassicUO's Mobile.IsYellowHits (= Flags &
+            # Flags.YellowBar) and derive it from the flags byte too, so a flag
+            # delta and a 0x17 toggle stay in agreement.
+            p.self_state.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
             # The self 0x78 is a FULL, authoritative loadout: ClassicUO's
             # UpdateObject strips every worn item off the mobile (except the
             # backpack / opened containers) BEFORE replaying the item loop, so a
@@ -118,6 +128,7 @@ def register_handlers(
             mob.direction = Direction.from_byte(direction)
             mob.hue = hue
             mob.flags = MobileFlags(flags & 0xFF)
+            mob.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
             if 1 <= notoriety <= 7:
                 mob.notoriety = NotorietyFlag(notoriety)
 
@@ -186,6 +197,7 @@ def register_handlers(
             # .hidden stale until the next 0x78/0x20.
             p.self_state.body = body
             p.self_state.flags = MobileFlags(flags & 0xFF)
+            p.self_state.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
             return
 
         mob = p.world.get_or_create_mobile(serial)
@@ -196,6 +208,7 @@ def register_handlers(
         mob.direction = Direction.from_byte(direction)
         mob.hue = hue
         mob.flags = MobileFlags(flags & 0xFF)
+        mob.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
         if 1 <= notoriety <= 7:
             mob.notoriety = NotorietyFlag(notoriety)
 
@@ -223,6 +236,7 @@ def register_handlers(
             walker.walking_failed = False
             p.self_state.body = body
             p.self_state.flags = MobileFlags(flags & 0xFF)
+            p.self_state.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
         else:
             mob = p.world.get_or_create_mobile(serial)
             mob.body = body
@@ -232,6 +246,7 @@ def register_handlers(
             mob.direction = Direction.from_byte(direction)
             mob.hue = hue
             mob.flags = MobileFlags(flags & 0xFF)
+            mob.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
 
     handler.register(0x20, handle_mobile_update)
 
