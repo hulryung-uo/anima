@@ -167,8 +167,18 @@ async def loot_corpse(ctx: AgentContext, corpse_serial: int) -> ActionResult:
             ss.weight_max > 0
             and projected_weight + est > ss.weight_max - WEIGHT_HEADROOM
         ):
+            # SKIP, don't ``break``: a single item that won't fit must not
+            # abandon everything behind it. Candidates are sorted gold-first
+            # then lightest-to-heaviest, so a heavy GOLD pile (a 5k-coin pile
+            # is ~50 stones) is forced to index 0 regardless of weight — a
+            # ``break`` there stranded EVERY light, near-weightless valuable
+            # that followed it, the exact opposite of the gold-first intent.
+            # ``continue`` skips only the unaffordable item and keeps lifting
+            # the cheaper remainder that still fits the headroom band. The
+            # corpse is still PARTIAL (something was left behind), so the
+            # caller must keep it eligible for a post-sell/bank retry.
             weight_gated = True
-            break
+            continue
         await ctx.conn.send_packet(build_pick_up(it.serial, it.amount))
         await asyncio.sleep(LIFT_DELAY_S)
         await ctx.conn.send_packet(build_drop_item(it.serial, container=backpack))
