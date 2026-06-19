@@ -308,3 +308,32 @@ class TestWalkerDeniedTiles:
         for i in range(MAX_DENIED_TILES + 50):
             w.record_denied_tile(i, 0)
         assert len(w.denied_tiles) <= MAX_DENIED_TILES
+
+    def test_deny_walk_no_running_loop(self) -> None:
+        """deny_walk must not raise when called without a running event loop.
+
+        On Python 3.12+ ``asyncio.get_event_loop()`` raises outside a running
+        loop, which previously broke deny handling in synchronous callers.
+        """
+        w = self._make_walker()
+        w.steps_count = 3
+        # Must not raise RuntimeError("no current event loop") and must
+        # arm a future cooldown (last_step_time pushed into the future).
+        w.deny_walk(5, 300, 400, 10, 2)
+        assert w.steps_count == 0
+        assert w.last_step_time > 0
+
+    def test_can_walk_no_running_loop(self) -> None:
+        """can_walk must not raise when called without a running event loop."""
+        w = self._make_walker()
+        # Fresh walker: no pending steps, no cooldown -> walkable.
+        assert w.can_walk() is True
+
+    def test_now_ms_falls_back_without_loop(self) -> None:
+        """_now_ms returns a monotonic ms value when no loop is running."""
+        from anima.perception.walker import _now_ms
+        a = _now_ms()
+        b = _now_ms()
+        assert isinstance(a, float)
+        # Monotonic: never goes backwards.
+        assert b >= a

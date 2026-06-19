@@ -24,6 +24,22 @@ CONSECUTIVE_DENIAL_COOLDOWN = 5  # after 5 denials, long cooldown
 CONSECUTIVE_DENIAL_COOLDOWN_MS = 5000
 
 
+def _now_ms() -> float:
+    """Monotonic 'now' in milliseconds, safe with or without a running loop.
+
+    Python 3.12+ removed the implicit event-loop creation from
+    ``asyncio.get_event_loop()``, so calling it outside a running loop
+    raises ``RuntimeError: There is no current event loop``.  We prefer the
+    running loop's clock when one exists (keeps parity with the rest of the
+    async runtime) and fall back to ``time.monotonic()`` otherwise — both are
+    monotonic millisecond timestamps suitable for throttle comparisons.
+    """
+    try:
+        return asyncio.get_running_loop().time() * 1000
+    except RuntimeError:
+        return time.monotonic() * 1000
+
+
 class WalkerManager:
     """Mirrors ClassicUO's WalkerManager, syncs position to SelfState."""
 
@@ -125,7 +141,7 @@ class WalkerManager:
         self.walking_failed = False
         self.consecutive_denials += 1
         # Short cooldown — just enough for path recalculation
-        self.last_step_time = asyncio.get_event_loop().time() * 1000 + 200
+        self.last_step_time = _now_ms() + 200
         # Invalidate path cache so next step recalculates with denied tile
         self._path_dirty = True
         self.sync_position(x, y, z, direction)
@@ -146,7 +162,7 @@ class WalkerManager:
         )
 
     def can_walk(self) -> bool:
-        now = asyncio.get_event_loop().time() * 1000
+        now = _now_ms()
         # Auto-reset stale walk state: if steps_count > 0 but no
         # confirm/deny arrived for 5 seconds, the server has lost track
         # of our walk packets.  Reset to recover.
