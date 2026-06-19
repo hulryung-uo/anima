@@ -5,6 +5,7 @@ All handlers are synchronous — they mutate state in-place with no I/O.
 
 from __future__ import annotations
 
+import re
 import struct
 import time
 import zlib
@@ -22,6 +23,31 @@ from anima.perception.self_state import SkillInfo, VendorBuyItem, VendorSellItem
 from anima.perception.walker import WalkerManager
 
 logger = structlog.get_logger()
+
+# AffixType flags carried by 0xCC SendLocalizedMessageAffix.
+_AFFIX_PREPEND = 0x01
+_AFFIX_SYSTEM = 0x02
+
+
+def _resolve_cliloc_text(cliloc_num: int, args: str) -> str:
+    """Resolve a cliloc id + tab-separated args into display text.
+
+    Mirrors the 0xC1 substitution: replace ~N~ / ~N_label~ and #N with the
+    (N-1)th tab arg, then strip any unfilled ~...~ placeholders. Shared by the
+    0xC1 and 0xCC handlers so both decode identically.
+    """
+    base_text = cliloc_text(cliloc_num)
+    if base_text and args:
+        parts = args.split("\t")
+        text = base_text
+        for i, part in enumerate(parts):
+            text = re.sub(rf"~{i + 1}(?:_[^~]*)?~", part, text, count=1)
+            text = text.replace(f"#{i + 1}", part)
+    elif base_text:
+        text = base_text
+    else:
+        text = f"[cliloc {cliloc_num}]"
+    return re.sub(r"~\d+[^~]*~", "", text).strip()
 
 
 def register_handlers(
@@ -816,22 +842,7 @@ def register_handlers(
         except (UnicodeDecodeError, ValueError):
             args = ""
 
-        # Resolve cliloc text
-        base_text = cliloc_text(cliloc_num)
-        if base_text and args:
-            parts = args.split("\t")
-            text = base_text
-            import re as _re
-            for i, part in enumerate(parts):
-                text = _re.sub(rf"~{i + 1}(?:_[^~]*)?~", part, text, count=1)
-                text = text.replace(f"#{i + 1}", part)
-        elif base_text:
-            text = base_text
-        else:
-            text = f"[cliloc {cliloc_num}]"
-
-        import re as _re
-        text = _re.sub(r"~\d+[^~]*~", "", text).strip()
+        text = _resolve_cliloc_text(cliloc_num, args)
 
         if not name:
             name = "System"
@@ -843,6 +854,70 @@ def register_handlers(
         logger.info("speech_cliloc", name=name, text=text, cliloc=cliloc_num)
 
     handler.register(0xC1, handle_cliloc_message)
+
+    def handle_cliloc_affix(packet_id: int, data: bytes) -> None:
+        """0xCC SendLocalizedMessageAffix — localized message with an affix.
+
+        Differs from 0xC1: after the cliloc id there is a 1-byte AffixType
+        flag, then the 30-byte name, then a NUL-terminated ASCII affix string,
+        and finally the args are UTF-16 *Big-Endian* (not LE).
+
+        Format: [0xCC][len:u16][serial:u32][graphic:u16][msg_type:u8]
+                [hue:u16][font:u16][cliloc_num:u32][flags:u8][name:ascii 30]
+                [affix:ascii NUL-terminated][args:utf16-be]
+        """
+        if len(data) < 49:
+            return
+        r = PacketReader(data[3:])  # variable: skip id + length
+        serial = r.read_u32()
+        r.skip(2)  # graphic
+        msg_type = r.read_u8()
+        hue = r.read_u16()
+        r.skip(2)  # font
+        cliloc_num = r.read_u32()
+        flags = r.read_u8()
+        name_bytes = data[3 + r.position: 3 + r.position + 30]
+        r.skip(30)
+        name = name_bytes.split(b"\x00", 1)[0].decode("ascii", errors="replace")
+
+        # Affix is a NUL-terminated ASCII string of unknown length.
+        affix_start = 3 + r.position
+        nul = data.find(b"\x00", affix_start)
+        if nul == -1:
+            nul = len(data)
+        affix = data[affix_start:nul].decode("ascii", errors="replace")
+        r.skip((nul - affix_start) + 1)  # consume affix + its NUL terminator
+
+        # Args are UTF-16 BE on 0xCC (ClassicUO ReadUnicodeBE).
+        args_raw = data[3 + r.position:]
+        try:
+            args = args_raw.decode("utf-16-be").rstrip("\x00")
+        except (UnicodeDecodeError, ValueError):
+            args = ""
+
+        text = _resolve_cliloc_text(cliloc_num, args)
+
+        # Prepend or append the affix per the AffixType flag.
+        if affix:
+            if flags & _AFFIX_PREPEND:
+                text = f"{affix}{text}"
+            else:
+                text = f"{text}{affix}"
+        # System flag forces a system message.
+        if flags & _AFFIX_SYSTEM:
+            msg_type = 6
+
+        if not name:
+            name = "System"
+
+        p.social.add_speech(serial, name, text, msg_type, hue)
+        p.emit(GameEventType.SPEECH_HEARD, {
+            "serial": serial, "name": name, "text": text,
+        })
+        logger.info("speech_cliloc_affix", name=name, text=text,
+                    cliloc=cliloc_num, affix=affix)
+
+    handler.register(0xCC, handle_cliloc_affix)
 
     # ------------------------------------------------------------------
     # Movement packets

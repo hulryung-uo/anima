@@ -479,6 +479,108 @@ def test_mega_cliloc_arg_substitution_is_index_driven(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Cliloc Affix (0xCC SendLocalizedMessageAffix)
+# ---------------------------------------------------------------------------
+
+
+def _build_cliloc_affix(
+    serial: int,
+    cliloc_num: int,
+    flags: int,
+    name: str,
+    affix: str,
+    args: str,
+    *,
+    msg_type: int = 0,
+    hue: int = 0x03B2,
+) -> bytes:
+    """Build a 0xCC SendLocalizedMessageAffix packet.
+
+    Layout (per ClassicUO DisplayClilocString, 0xCC branch): the args are
+    UTF-16 *Big-Endian*, there is an extra 1-byte flags field after the
+    cliloc id, and a NUL-terminated ASCII affix follows the 30-byte name.
+    """
+    buf = PacketWriter()
+    buf.write_u8(0xCC)
+    buf.write_u16(0)            # length placeholder
+    buf.write_u32(serial)
+    buf.write_u16(0x0190)       # graphic
+    buf.write_u8(msg_type)
+    buf.write_u16(hue)
+    buf.write_u16(3)            # font
+    buf.write_u32(cliloc_num)
+    buf.write_u8(flags)         # AffixType
+    buf.write_ascii(name, 30)
+    buf.write_bytes(affix.encode("ascii") + b"\x00")  # NUL-terminated affix
+    buf.write_bytes(args.encode("utf-16-be"))         # BE args, no terminator
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_cliloc_affix_decodes_be_args_and_appends_affix(monkeypatch):
+    """0xCC must be routed at all (previously unhandled → dropped), and it
+    must decode using the 0xCC-specific layout: a flags byte, a variable
+    NUL-terminated affix, and UTF-16 *Big-Endian* args. Appending (flags=0)
+    puts the affix after the resolved cliloc text."""
+    import anima.perception.handlers as handlers_mod
+
+    # cliloc 1042971 is the classic "~1_NOTHING~" passthrough used for free
+    # text; use a placeholder that exercises arg substitution.
+    monkeypatch.setattr(
+        handlers_mod, "cliloc_text", lambda n: "You see: ~1_val~" if n == 500000 else ""
+    )
+
+    h, p, _ = _make_stack()
+
+    pkt = _build_cliloc_affix(
+        serial=0x00000099,
+        cliloc_num=500000,
+        flags=0x00,            # Append
+        name="Guard",
+        affix=" [criminal]",
+        args="a sword",
+    )
+    h.dispatch(0xCC, pkt)
+
+    # The packet was routed (not silently dropped).
+    assert len(p.social.journal) == 1
+    entry = p.social.journal[0]
+    assert entry.name == "Guard"
+    # BE args decoded correctly + affix appended after the text.
+    assert entry.text == "You see: a sword [criminal]"
+    assert "\x00" not in entry.text
+
+    events = p.poll_events()
+    assert any(e.type == GameEventType.SPEECH_HEARD for e in events)
+
+
+def test_cliloc_affix_prepend_flag(monkeypatch):
+    """flags bit 0x01 (Prepend) puts the affix before the cliloc text."""
+    import anima.perception.handlers as handlers_mod
+
+    monkeypatch.setattr(
+        handlers_mod, "cliloc_text", lambda n: "the dragon" if n == 500001 else ""
+    )
+
+    h, p, _ = _make_stack()
+    pkt = _build_cliloc_affix(
+        serial=0x000000AA,
+        cliloc_num=500001,
+        flags=0x01,            # Prepend
+        name="",
+        affix="An angry ",
+        args="",
+    )
+    h.dispatch(0xCC, pkt)
+
+    assert len(p.social.journal) == 1
+    assert p.social.journal[0].text == "An angry the dragon"
+    # Empty name falls back to "System".
+    assert p.social.journal[0].name == "System"
+
+
+# ---------------------------------------------------------------------------
 # HP Update (0xA1)
 # ---------------------------------------------------------------------------
 
