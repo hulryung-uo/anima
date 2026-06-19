@@ -610,7 +610,26 @@ def build_ascii_speech(
     ``Encoded`` bit (0xC0) is OR-ed into the type so ServUO's keyword dispatch
     fires. Unlike 0xAD, the 0x03 frame does *not* carry packed keyword bytes —
     only the type flag changes; the body stays plain ASCII.
+
+    ServUO's ``AsciiSpeech`` handler runs ``text = ReadStringSafe().Trim()`` and
+    then *silently drops the whole packet* when ``text.Length <= 0 ||
+    text.Length > 128`` (PacketHandlers.cs) — exactly the gate already guarded
+    for the 0xAD unicode path in ``build_unicode_speech``. Without the same
+    trim-then-clamp here, a 129+ char reply (the LLM path caps at 200) is framed,
+    sent, and discarded server-side: the agent looks like it answered but said
+    nothing. A whitespace-only reply is likewise framed and then trimmed to
+    length 0 and dropped. Mirror the server's ordering: ``Trim()`` first on the
+    same edges C#'s ``String.Trim()`` does, then clamp to 128 characters. The 0x03
+    body is single-byte ASCII (``errors="replace"``), so character count equals
+    byte count and clamping the string is the right measure. Keyword matching
+    runs on the final (trimmed, clamped) text so a surviving banker/vendor
+    keyword still trips the Encoded bit.
     """
+    # Match ServUO's trim-then-`Length > 128` gate (see docstring). Strip first
+    # so the 128-char budget is spent on real content, then clamp.
+    text = text.strip()
+    if len(text) > 128:
+        text = text[:128]
     encoded = bool(_match_keywords(text))
 
     w = PacketWriter()
