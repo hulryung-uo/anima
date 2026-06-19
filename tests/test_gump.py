@@ -166,9 +166,31 @@ class TestParseLayout:
         assert gump.texts[0].text_id == 0
 
     def test_croppedtext(self):
-        layout = "{ croppedtext 10 20 100 30 0 }"
-        gump = parse_layout(layout, ["Label"])
+        # croppedtext x y width height hue text_id  (ClassicUO CroppedText)
+        layout = "{ croppedtext 10 20 100 30 0 1 }"
+        gump = parse_layout(layout, ["First", "Second"])
         assert len(gump.texts) == 1
+        t = gump.texts[0]
+        assert t.x == 10
+        assert t.y == 20
+        # hue is parts[5] (=0), text_id is parts[6] (=1) -> "Second", not
+        # parts[3]/parts[4] (width/height) which the shared `text` branch used.
+        assert t.hue == 0
+        assert t.text_id == 1
+        assert gump.get_text(t.text_id) == "Second"
+
+    def test_find_button_near_croppedtext(self):
+        # A croppedtext caption must resolve so find_button_near_text matches it.
+        layout = (
+            "{ croppedtext 20 20 200 30 0 0 }"
+            "{ croppedtext 20 60 200 30 0 1 }"
+            "{ button 350 20 4005 4007 1 0 1 }"
+            "{ button 350 60 4005 4007 1 0 2 }"
+        )
+        gump = parse_layout(layout, ["Boards", "Furniture"])
+        btn = gump.find_button_near_text("Furniture")
+        assert btn is not None
+        assert btn.button_id == 2
 
 
 class TestGumpDataMethods:

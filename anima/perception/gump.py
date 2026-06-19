@@ -230,13 +230,33 @@ def parse_layout(layout: str, text_lines: list[str]) -> GumpData:
                 )
             )
 
-        elif cmd in ("text", "croppedtext") and len(tokens) >= 5:
+        elif cmd == "text" and len(tokens) >= 5:
+            # ClassicUO Label(parts, lines): text x y hue text_id
             gump.texts.append(
                 GumpText(
                     x=_safe_int(tokens[1]),
                     y=_safe_int(tokens[2]),
                     hue=_safe_int(tokens[3]),
                     text_id=_safe_int(tokens[4]),
+                )
+            )
+
+        elif cmd == "croppedtext" and len(tokens) >= 7:
+            # ClassicUO CroppedText(parts, lines): the layout is
+            #   croppedtext x y width height hue text_id
+            # so hue lives at parts[5] and the text-line index at parts[6] —
+            # NOT at parts[3]/parts[4] like a plain `text`. The old code shared
+            # the `text` branch, so it read `width` as the hue and `height` as
+            # the text_id, resolving every croppedtext label to the wrong
+            # (usually empty) line. Crafting / vendor / quest gumps that render
+            # their option captions as croppedtext therefore never matched in
+            # find_button_near_text, breaking gump-driven skills.
+            gump.texts.append(
+                GumpText(
+                    x=_safe_int(tokens[1]),
+                    y=_safe_int(tokens[2]),
+                    hue=_safe_int(tokens[5]),
+                    text_id=_safe_int(tokens[6]),
                 )
             )
 
