@@ -168,8 +168,23 @@ async def cancel_target(ctx: AgentContext) -> ActionResult:
     cursor_id = ss.pending_target.get("cursor_id", 0)
     ss.pending_target = None
 
-    # Send cancel (target_type=0, serial=0, coords=0)
+    # Send the canonical escape-cancel. ServUO recognises a cursor cancel ONLY
+    # via the "User pressed escape" branch (PacketHandlers.cs:1267):
+    #   ``x == -1 && y == -1 && !serial.IsValid``
+    # where x/y are read as signed Int16, so -1 is the wire value 0xFFFF. That
+    # branch is checked BEFORE the ``Target.TargetIDValidation`` guard
+    # (PacketHandlers.cs:1272), so an escape-form cancel always clears the
+    # cursor even when our cached cursor_id has gone stale. Mirrors ClassicUO
+    # ``Send_TargetCancel`` (OutgoingPackets.cs:1781), which writes serial=0 and
+    # x/y = 0xFFFF.
+    #
+    # The old zero-coordinate form (x=0, y=0, serial=0) does NOT hit the escape
+    # branch; it only cancels by falling through to the invalid-serial ``else``
+    # branch (PacketHandlers.cs:1339) — which sits *behind* the TargetID check,
+    # so with TargetIDValidation enabled and a stale cursor_id the server
+    # returns without cancelling and the cursor stays pending forever, wedging
+    # every subsequent targeted action.
     await ctx.conn.send_packet(build_target_response(
-        target_type=0, cursor_id=cursor_id,
+        target_type=0, cursor_id=cursor_id, serial=0, x=0xFFFF, y=0xFFFF,
     ))
     return ActionResult(success=True)
