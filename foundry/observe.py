@@ -117,6 +117,40 @@ def history(archive: Archive, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
+def _archive_context_lines(archive: Archive) -> list[str]:
+    """The mutator's "Archive context" panel — filled/QD-score + empty cells.
+
+    The headline figures here MUST describe the SAME universe as the
+    "empty cells to explore" list printed right below them, which comes from
+    ``select.empty_cells`` (TARGETABLE cells only — the NONE fallback row is
+    deliberately excluded; see select.TARGET_PROFESSIONS). The kernel's
+    ``Archive.filled_cells()`` is ``len(grid)`` and ``Archive.qd_score()`` sums
+    fitness over EVERY grid elite — both of which include a NONE-row elite (the
+    high-variance scoring artifact the backlog flags, e.g. g_00118) or any cell
+    whose profession/sociability is outside the active enumeration. Reporting
+    those next to a targetable-only empty list makes the panel contradict
+    itself: "filled cells N" counts ground the empty list says is un-fillable,
+    and the QD-score is a sum no targetable cell accounts for — the exact
+    headline-vs-body inconsistency status.py was hardened against. Derive the
+    filled count (against the targetable denominator) and the QD-score from the
+    targetable-cell elite set so the whole panel describes one universe.
+    """
+    from foundry.select import empty_cells, targetable_cells
+
+    targetable = {cell_to_str(c) for c in targetable_cells()}
+    elites = [g for g in archive.elites() if cell_to_str(g.cell) in targetable]
+    filled = len(elites)
+    qd_score = sum(g.fitness for g in elites)
+    empties = empty_cells(archive)
+    lines = ["## Archive context",
+             f"- filled cells {filled}/{len(targetable)}, QD-score {qd_score:.3f}"]
+    if empties:
+        shown = ", ".join(cell_to_str(c) for c in empties[:8])
+        lines.append(f"- empty cells to explore: {shown}{' …' if len(empties) > 8 else ''}")
+    lines.append("")
+    return lines
+
+
 def observe(res: EvalResult, archive: Archive | None = None) -> str:
     """Render a markdown observation of one eval for the mutator to read."""
     if not res.ok:
@@ -173,13 +207,6 @@ def observe(res: EvalResult, archive: Archive | None = None) -> str:
         lines.append("")
 
     if archive is not None:
-        from foundry.select import empty_cells
-        empties = empty_cells(archive)
-        lines.append("## Archive context")
-        lines.append(f"- filled cells {archive.filled_cells()}, QD-score {archive.qd_score():.3f}")
-        if empties:
-            shown = ", ".join(cell_to_str(c) for c in empties[:8])
-            lines.append(f"- empty cells to explore: {shown}{' …' if len(empties) > 8 else ''}")
-        lines.append("")
+        lines.extend(_archive_context_lines(archive))
 
     return "\n".join(lines)
