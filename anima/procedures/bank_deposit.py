@@ -115,6 +115,31 @@ def _is_colored_ingot(item) -> bool:
     return item.graphic in INGOT_GRAPHICS and item.hue != IRON_HUE
 
 
+def _is_heavy_depositable(item) -> bool:
+    """True if ``execute`` would actually bank this heavy material.
+
+    REGRESSION GUARD (sibling of HEAVY_DEPOSIT_RATIO): ``can_start`` and
+    ``execute`` must agree not just on the weight *threshold* but on *which
+    items* count as depositable, or the agent makes a wasted round-trip.
+
+    DEPOSIT_GRAPHICS includes the iron-ingot graphics, but ``execute`` keeps
+    iron ingots (needed for basic crafting) and KEEP_GRAPHICS tools. Before
+    this helper, ``can_start`` counted any DEPOSIT_GRAPHICS item — so an
+    overweight miner carrying ONLY iron ingots (no gold, no colored ingots,
+    no ore/logs/boards) passed ``can_start`` (iron-ingot graphic in
+    DEPOSIT_GRAPHICS) but ``execute`` skipped every one of them and returned
+    "nothing to deposit". The agent stayed overweight, so it tried the trip
+    again, and again — a permanent no-op bank loop. Sharing one predicate for
+    "is this worth depositing?" keeps the go/deposit decisions in lockstep,
+    exactly as ``_should_deposit_heavy`` does for the weight threshold.
+    """
+    return (
+        item.graphic in DEPOSIT_GRAPHICS
+        and item.graphic not in KEEP_GRAPHICS
+        and not (item.graphic in INGOT_GRAPHICS and item.hue == IRON_HUE)
+    )
+
+
 def _has_colored_ingots(ctx: AgentContext) -> bool:
     ss = ctx.perception.self_state
     backpack = ss.equipment.get(0x15)
@@ -146,7 +171,7 @@ class BankDeposit(Procedure):
             backpack = ss.equipment.get(0x15)
             if backpack:
                 has_heavy = any(
-                    it.graphic in DEPOSIT_GRAPHICS
+                    _is_heavy_depositable(it)
                     for it in world.items.values()
                     if it.container == backpack
                 )
@@ -220,10 +245,7 @@ class BankDeposit(Procedure):
         # for crafting; colored ingots already handled above)
         if _should_deposit_heavy(ss):
             for item in list(world.items.values()):
-                if (item.container == backpack
-                        and item.graphic in DEPOSIT_GRAPHICS
-                        and item.graphic not in KEEP_GRAPHICS
-                        and not (item.graphic in INGOT_GRAPHICS and item.hue == IRON_HUE)):
+                if item.container == backpack and _is_heavy_depositable(item):
                     await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
                     await asyncio.sleep(0.1)
                     await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))
