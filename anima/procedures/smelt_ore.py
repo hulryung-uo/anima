@@ -258,18 +258,28 @@ class SmeltOre(Procedure):
                     None,
                 )
                 if other_iron:
-                    combine_result = await use_on_object(ctx, ore_serial, other_iron.serial)
-                    if combine_result.success:
-                        await asyncio.sleep(0.5)
-                        logger.info("smelt_combined_ore",
-                                    from_serial=hex(ore_serial),
-                                    to_serial=hex(other_iron.serial))
-                        return ProcedureResult(
-                            success=False,
-                            reason=FailureReason.BLOCKED,
-                            message="Combined small ore piles, retrying",
-                            next_suggestion="smelt_ore",
-                        )
+                    # Merge same-type stacks with a lift + drop-onto-stack
+                    # (the UO stack-combine), NOT use_on_object: double-
+                    # clicking ore begins a *smelt* (Ore.OnDoubleClick ->
+                    # Smelt), so use_on_object would re-open the smelt cursor
+                    # and target the other pile, merging nothing. Dropping the
+                    # lifted pile with container=other_iron.serial stacks them.
+                    from anima.client.packets import build_drop_item, build_pick_up
+                    await ctx.conn.send_packet(build_pick_up(ore_serial, ore_amount))
+                    await asyncio.sleep(0.3)
+                    await ctx.conn.send_packet(
+                        build_drop_item(ore_serial, container=other_iron.serial)
+                    )
+                    await asyncio.sleep(0.5)
+                    logger.info("smelt_combined_ore",
+                                from_serial=hex(ore_serial),
+                                to_serial=hex(other_iron.serial))
+                    return ProcedureResult(
+                        success=False,
+                        reason=FailureReason.BLOCKED,
+                        message="Combined small ore piles, retrying",
+                        next_suggestion="smelt_ore",
+                    )
                 # No other pile or combine failed — skip this serial
                 small_set = ctx.blackboard.setdefault("_small_iron_ore_serials", set())
                 small_set.add(ore_serial)
