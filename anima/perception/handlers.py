@@ -1603,6 +1603,26 @@ def register_handlers(
             if name_len > 0 and r.remaining >= name_len:
                 name = r.read_ascii(name_len)
 
+            # ServUO's VendorSellList writes the per-item name as
+            # SellItemState.Name, which GenericSellInfo.GetNameFor returns as
+            # `item.LabelNumber.ToString()` whenever the item has no custom
+            # Name (Scripts/VendorInfo/GenericSell.cs:131-137) — i.e. for the
+            # vast majority of stock goods (ingots, ore, regs, tools). So the
+            # name field very commonly arrives as a bare cliloc id string like
+            # "1027154", NOT a readable label. ClassicUO's SellList handler
+            # (PacketHandlers.cs:3375-3382) resolves it: `int.TryParse(name) ->
+            # Clilocs.GetString(num)`. We previously stored the raw digits, so
+            # the sell flow's name-based item identification (e.g.
+            # sell_to_vendor keeping the cheapest of a tool group) compared
+            # against "1027154" instead of "iron ingot" — never matching by
+            # display name. Mirror ClassicUO: when the name is all digits and
+            # resolves to a cliloc string, swap in the resolved text; otherwise
+            # keep the literal (custom-named items stay as-is).
+            if name.isdigit():
+                resolved = cliloc_text(int(name))
+                if resolved:
+                    name = resolved
+
             sell_items.append(
                 VendorSellItem(
                     serial=serial,
