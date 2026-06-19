@@ -69,21 +69,28 @@ def register_handlers(
         if 1 <= notoriety <= 7:
             mob.notoriety = NotorietyFlag(notoriety)
 
-        # Parse equipment items that follow
+        # Parse equipment items that follow. ServUO's NewMobileIncoming
+        # (the default 0x78 format for modern/ClassicUO clients, protocol
+        # 70331+) writes each worn item as a FIXED record:
+        #   serial(u32) + graphic(u16) + layer(u8) + hue(u16)
+        # The hue is ALWAYS present and the graphic keeps all 16 bits — there
+        # is NO 0x8000 "has-hue" flag in this format (that belonged to the old
+        # MobileIncomingOld/SA layout). The previous code only consumed the
+        # hue when graphic & 0x8000, so for every ordinary item (graphic <
+        # 0x8000) it left the 2 hue bytes on the wire and the next read_u32()
+        # picked up [hue][next_serial_hi] — desyncing every following equipment
+        # entry into garbage items that polluted world.items. Read hue
+        # unconditionally to match ServUO MobileIncoming / ClassicUO's
+        # CV_70331 branch in UpdateObject.
         while r.remaining >= 4:
             item_serial = r.read_u32()
             if item_serial == 0:
                 break
-            if r.remaining < 3:  # need graphic(2) + layer(1)
+            if r.remaining < 5:  # need graphic(2) + layer(1) + hue(2)
                 break
             graphic = r.read_u16()
             layer = r.read_u8()
-            hue = 0
-            if graphic & 0x8000:
-                graphic &= 0x7FFF
-                if r.remaining < 2:
-                    break
-                hue = r.read_u16()
+            hue = r.read_u16()
             item = p.world.get_or_create_item(item_serial)
             item.graphic = graphic
             item.hue = hue

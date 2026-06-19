@@ -921,3 +921,74 @@ def test_world_item_plain_no_flags():
     assert item.y == 200
     assert item.z == 5
     assert item.hue == 0
+
+
+# ---------------------------------------------------------------------------
+# MobileIncoming (0x78) — NewMobileIncoming equipment record alignment
+# ---------------------------------------------------------------------------
+
+
+def _build_mobile_incoming(serial: int, equipment: list[tuple[int, int, int, int]]) -> bytes:
+    """Build a 0x78 NewMobileIncoming packet.
+
+    `equipment` is a list of (item_serial, graphic, layer, hue). Each worn item
+    is a fixed record: serial(u32)+graphic(u16)+layer(u8)+hue(u16), with the hue
+    ALWAYS present — matching ServUO's MobileIncoming (protocol 70331+).
+    """
+    buf = PacketWriter()
+    buf.write_u8(0x78)
+    buf.write_u16(0)       # length placeholder
+    buf.write_u32(serial)
+    buf.write_u16(0x0190)  # body
+    buf.write_u16(1000)    # x
+    buf.write_u16(2000)    # y
+    buf.write_i8(10)       # z
+    buf.write_u8(2)        # direction
+    buf.write_u16(0x0000)  # hue
+    buf.write_u8(0x00)     # flags
+    buf.write_u8(1)        # notoriety
+    for item_serial, graphic, layer, hue in equipment:
+        buf.write_u32(item_serial)
+        buf.write_u16(graphic)
+        buf.write_u8(layer)
+        buf.write_u16(hue)
+    buf.write_u32(0)       # terminator
+    data = bytearray(buf.to_bytes())
+    data[1:3] = struct.pack(">H", len(data))
+    return bytes(data)
+
+
+def test_mobile_incoming_equipment_always_has_hue():
+    """ServUO NewMobileIncoming writes a fixed serial+graphic+layer+hue record.
+
+    The decoder must consume the hue for EVERY item (no 0x8000 flag gate), or
+    the 2 unread hue bytes desync the next item's serial and corrupt the rest
+    of the equipment list.
+    """
+    h, p, w = _make_stack()
+
+    mob_serial = 0x00000099
+    # Two ordinary items (graphic < 0x8000) each carrying a real hue, followed
+    # by a third. Under the old flag-gated decode the first item's hue bytes
+    # would be misread as the second item's serial, corrupting items 2 and 3.
+    equipment = [
+        (0x40000001, 0x1F03, 0x02, 0x0021),  # robe, layer 2, hue 0x21
+        (0x40000002, 0x13B9, 0x01, 0x0455),  # sword, layer 1, hue 0x455
+        (0x40000003, 0x1515, 0x16, 0x0000),  # cloak, layer 0x16, hue 0
+    ]
+    data = _build_mobile_incoming(mob_serial, equipment)
+    h.dispatch(0x78, data)
+
+    # Exactly the three declared items must exist with correct fields, and no
+    # garbage serials from a misaligned read.
+    for item_serial, graphic, layer, hue in equipment:
+        item = p.world.items.get(item_serial)
+        assert item is not None, f"missing item 0x{item_serial:08X}"
+        assert item.graphic == graphic
+        assert item.layer == layer
+        assert item.hue == hue
+        assert item.container == mob_serial
+
+    # No spurious items beyond the three we sent (no desync garbage).
+    equip_items = [it for it in p.world.items.values() if it.container == mob_serial]
+    assert len(equip_items) == len(equipment)
