@@ -91,6 +91,22 @@ class BandageSelf(Procedure):
 
         # Dex-scaled apply delay — low-dex starters take ~8s
         finished = await wait_for_journal(ctx, _FINISH_PATTERNS, timeout=12.0, since=since)
+        # No finish line within the window means the bandage never RESOLVED:
+        # the server was lagging, the apply was disrupted (took damage / moved),
+        # or the cursor application was dropped. The old code fell straight
+        # through to the success return below — re-creating the exact phantom
+        # "+0 HP success" the docstring's finish-pattern fix set out to kill,
+        # just reached via timeout instead of an unmatched line. A phantom
+        # success writes a win to the ActionLog reward signal and tells the
+        # planner the heal is done, so a genuinely-wounded agent never retries
+        # the heal that never happened. Mirror mine_ore / chop_wood, which book
+        # an unresolved swing as a (retryable) failure, not a success.
+        if not finished.success:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.INTERRUPTED,
+                message="Bandage did not resolve (no finish line within timeout)",
+            )
         skill = ss.skills.get(SKILL_HEALING)
         gained = max(0.0, (skill.value if skill else 0.0) - before)
         healed = max(0, ss.hits - hp_before)

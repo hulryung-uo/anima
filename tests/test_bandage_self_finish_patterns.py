@@ -107,6 +107,25 @@ async def test_not_damaged_is_refusal_by_text_not_index(monkeypatch):
     assert res.reason is FailureReason.WRONG_LOCATION
 
 
+@pytest.mark.asyncio
+async def test_timeout_is_retryable_failure_not_phantom_success(monkeypatch):
+    """A bandage that never resolves (wait_for_journal times out) must NOT be
+    booked as a heal success.
+
+    ``_wire`` returns ``success=False`` from the stub wait_for_journal whenever
+    the supplied line matches no finish pattern — i.e. a true timeout. The agent
+    is wounded (50/100) and its HP never moved, so the old fall-through booked a
+    phantom ``success=True, +0 HP`` win that suppressed any retry. The procedure
+    must instead surface a retryable INTERRUPTED failure.
+    """
+    _wire(monkeypatch, "some unrelated journal noise that matches no pattern")
+    res = await bs.BandageSelf().execute(_ctx(hits=50))
+    assert res.success is False
+    assert res.reason is FailureReason.INTERRUPTED
+    # and it must not claim a heal/skill gain it never earned
+    assert not res.skill_gains
+
+
 def test_obsolete_pattern_is_gone():
     """Guard against re-introducing the cliloc-less 'barely manage' string."""
     assert "barely manage" not in bs._FINISH_PATTERNS
