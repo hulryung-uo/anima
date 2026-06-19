@@ -151,6 +151,12 @@ class Planner:
         self._backpack_refresh_fails: int = 0  # consecutive failed backpack refreshes
         # Idle / stuck loop detection
         self._idle_ticks: int = 0           # consecutive ticks with no procedure
+        # Highest idle threshold already escalated in the current idle run.
+        # _check_stuck() fires each escalation on a >= crossing (not ==) and
+        # uses this watermark to fire each rung at most once per idle run, so
+        # a counter that jumps past a threshold (health-break skip, a swallowed
+        # tick exception) still escalates instead of silently sailing past it.
+        self._idle_escalation_fired: int = 0
         self._repeat_counter: dict[str, int] = {}  # procedure → consecutive fail count
         self._last_procedure: str = ""
         self._last_escalation: float = 0.0  # last time we escalated a deadlock
@@ -2184,7 +2190,34 @@ class Planner:
             return
 
         # --- Idle detection: planner returning None repeatedly ---
-        if self._idle_ticks == self._IDLE_WARN:
+        #
+        # Escalate on a >= *crossing*, not an exact == match. _idle_ticks is
+        # incremented in _run_loop one tick before _check_stuck runs, but a
+        # tick can advance the counter without _check_stuck observing that
+        # exact value: the health-break early-return above skips a tick, and
+        # any exception earlier in the loop body skips the _check_stuck call
+        # while the increment already happened. With the old `== threshold`
+        # test, a single skipped observation at the threshold value meant the
+        # deadlock resolver / forum escalation NEVER fired and the agent sat
+        # idle for the rest of the session. Crossing detection + a per-run
+        # watermark fires each rung exactly once and is robust to skips.
+        if self._idle_ticks < self._IDLE_WARN:
+            # Counter reset (a procedure ran) — re-arm all rungs for the next
+            # idle run.
+            self._idle_escalation_fired = 0
+            return
+
+        if (self._idle_ticks >= self._IDLE_FORUM
+                and self._idle_escalation_fired < self._IDLE_FORUM):
+            self._idle_escalation_fired = self._IDLE_FORUM
+            await self._deadlock.escalate_to_forum(ctx)
+        elif (self._idle_ticks >= self._IDLE_ESCALATE
+                and self._idle_escalation_fired < self._IDLE_ESCALATE):
+            self._idle_escalation_fired = self._IDLE_ESCALATE
+            await self._deadlock.resolve(ctx)
+        elif (self._idle_ticks >= self._IDLE_WARN
+                and self._idle_escalation_fired < self._IDLE_WARN):
+            self._idle_escalation_fired = self._IDLE_WARN
             ss = ctx.perception.self_state
             logger.warning(
                 "planner_idle_warning",
@@ -2199,12 +2232,6 @@ class Planner:
                     "message": f"Planner idle {self._idle_ticks} ticks — no procedure available",
                     "importance": 2,
                 })
-
-        elif self._idle_ticks == self._IDLE_ESCALATE:
-            await self._deadlock.resolve(ctx)
-
-        elif self._idle_ticks == self._IDLE_FORUM:
-            await self._deadlock.escalate_to_forum(ctx)
 
         # --- Repeat failure: same procedure failing many times ---
         for proc_name, count in list(self._repeat_counter.items()):
