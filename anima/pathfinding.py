@@ -191,15 +191,26 @@ def _astar_core(
 
             # Diagonal corner-cutting check: both perpendicular tiles must
             # be walkable, otherwise the server will deny the diagonal move.
+            #
+            # The server's corner-cut rule is purely about *map* impassability
+            # (statics/land), NOT about our transient ``denied_tiles`` cache.
+            # That cache mostly holds tiles a wandering mobile happened to stand
+            # on when it denied us; a mobile on a perpendicular corner does not
+            # forbid a diagonal step. Feeding ``denied_tiles`` into the side
+            # checks turns one denied corner into a phantom wall that rejects
+            # *every* diagonal through it — often the only route around an
+            # obstacle — so go_to() replans in a loop and the agent gets stuck.
+            # Side checks therefore ignore ``denied_tiles``; the destination
+            # check below still honors it.
             is_diagonal = (dx != 0 and dy != 0)
             if is_diagonal:
                 side1_ok, _ = _is_walkable(
-                    map_reader, cx + dx, cy, denied_tiles,
+                    map_reader, cx + dx, cy, None,
                     current_z, z_at if current_z is not None else None, cx, cy,
                     doors_passable=doors_passable, door_tiles=door_tiles,
                 )
                 side2_ok, _ = _is_walkable(
-                    map_reader, cx, cy + dy, denied_tiles,
+                    map_reader, cx, cy + dy, None,
                     current_z, z_at if current_z is not None else None, cx, cy,
                     doors_passable=doors_passable, door_tiles=door_tiles,
                 )
