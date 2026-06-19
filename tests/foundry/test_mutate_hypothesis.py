@@ -89,3 +89,41 @@ def test_only_leftover_commit_does_not_return_placeholder_body(repo):
     hyp = _extract_hypothesis(repo, before, after)
     assert hyp == _LEFTOVER_COMMIT_SUBJECT  # whole subject, never the body
     assert "auto-commit" in hyp  # honest about what happened, not a fake hypothesis
+
+
+def test_iterated_mutation_records_the_final_hypothesis_not_the_first(repo):
+    # The agent committed early ("try A"), then refined and committed again
+    # ("do B"). The archived genome is the FINAL tree (B), so the recorded
+    # hypothesis must describe B — recording the stale first one ("try A")
+    # mis-labels the genome and poisons the REFLECT log the mutator reads back.
+    before = head(repo)
+
+    _write(repo, "anima_change.py", "x = 1\n")
+    _commit_all(repo, "foundry-mutation: try A — pin Mining at birth")
+
+    _write(repo, "anima_change.py", "x = 2\n")
+    _commit_all(repo, "foundry-mutation: do B — re-equip a worn pickaxe")
+    after = head(repo)
+
+    hyp = _extract_hypothesis(repo, before, after)
+    assert hyp == "do B — re-equip a worn pickaxe"
+    assert "try A" not in hyp
+
+
+def test_iterated_mutation_final_survives_a_trailing_leftover_commit(repo):
+    # Same as above, but the agent also left stray files folded into the
+    # placeholder (now HEAD). The final genuine subject must still win.
+    before = head(repo)
+
+    _write(repo, "anima_change.py", "x = 1\n")
+    _commit_all(repo, "foundry-mutation: try A")
+    _write(repo, "anima_change.py", "x = 2\n")
+    _commit_all(repo, "foundry-mutation: final B")
+    _write(repo, "leftover.txt", "stray\n")
+    _commit_all(repo, _LEFTOVER_COMMIT_SUBJECT)
+    after = head(repo)
+
+    hyp = _extract_hypothesis(repo, before, after)
+    assert hyp == "final B"
+    assert "auto-commit" not in hyp
+    assert "try A" not in hyp

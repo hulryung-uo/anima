@@ -78,22 +78,33 @@ def _extract_hypothesis(repo: str | Path, before: str, after: str) -> str:
     folds them into a *second* commit whose subject is the bookkeeping
     placeholder ``_LEFTOVER_COMMIT_SUBJECT`` — which then becomes HEAD. Reading
     only HEAD would record that placeholder as the hypothesis and lose the
-    real one, so scan ``before..after`` oldest-first and return the first
-    genuine ``foundry-mutation:`` subject, skipping the placeholder.
+    real one, so scan ``before..after`` (skipping the placeholder).
+
+    The agent is asked for ONE commit, but the budget guidance ("commit early")
+    actively invites an early commit followed by a refining one — and the agent
+    can iterate (``foundry-mutation: try A`` then ``foundry-mutation: do B``).
+    The archived genome IS the final tree (B), so the recorded hypothesis must
+    describe B, not the superseded A. Picking the FIRST tagged subject recorded
+    the stale intermediate and poisoned the REFLECT log (observe.history feeds
+    these back to the mutator). Return the LAST genuine ``foundry-mutation:``
+    subject — the one that describes the code that actually gets evaluated.
     """
     subjects = _git(repo, "log", "--reverse", "--pretty=%s",
                     f"{before}..{after}").stdout.splitlines()
     subjects = [s.strip() for s in subjects if s.strip()]
+    found = ""
     for subj in subjects:
         if subj == _LEFTOVER_COMMIT_SUBJECT:
             continue
         if "foundry-mutation:" in subj:
-            return subj.split("foundry-mutation:", 1)[-1].strip()
+            found = subj.split("foundry-mutation:", 1)[-1].strip()
+    if found:
+        return found
     # No tagged commit (older lineage / hand commit) — fall back to a real
-    # subject if any, else HEAD's subject.
-    for subj in subjects:
-        if subj != _LEFTOVER_COMMIT_SUBJECT:
-            return subj
+    # subject if any (the most recent real one), else HEAD's subject.
+    real = [s for s in subjects if s != _LEFTOVER_COMMIT_SUBJECT]
+    if real:
+        return real[-1]
     return _git(repo, "log", "-1", "--pretty=%s").stdout.strip()
 
 
