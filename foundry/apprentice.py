@@ -82,24 +82,46 @@ def analyze_deaths(summary: TrajectorySummary,
                    min_death_s: float = MIN_DEATH_S) -> list[DeathEvent]:
     """Reconstruct TRUE death/recovery intervals from the hp_samples timeline.
 
-    A death starts at the first sample with hits<=0 and ends at the next sample
-    with hits>0 (a resurrection) or at window end (never recovered). Intervals
-    shorter than ``min_death_s`` are dropped as transient hp=0 readings (not a
-    ghost death) so the autonomy metric counts real deaths only."""
+    A death starts at the first sample with hits<=0 and ends at a SUSTAINED
+    resurrection (a hits>0 stretch lasting at least ``min_death_s`` before any
+    relapse, or running to window end) — or at window end (never recovered).
+    Intervals shorter than ``min_death_s`` are dropped as transient hp readings
+    (not a ghost death) so the autonomy metric counts real deaths only.
+
+    A real UO death is a ghost state held until a healer resurrection (many
+    seconds), and the vitals stream flickers during it (a stale 0x11/0x16 hits
+    update can briefly read >0 before dropping back to 0). A naive "first hits>0
+    closes the death" loop treats that one flicker as a recovery, emits the
+    death, then opens a SECOND death on the relapse — DOUBLE-COUNTING one death
+    (inflating ``deaths``/``shadow_interventions`` and corrupting
+    ``self_rescue_rate``, the module's whole point). So a hits>0 reading only
+    closes a death if the agent then STAYS alive for ``min_death_s``; a briefer
+    blip leaves the death open and its interval intact."""
+    samples = summary.hp_samples
     events: list[DeathEvent] = []
     death_ts: float | None = None
-    for ts, hits, _ in summary.hp_samples:
-        if hits <= 0 and death_ts is None:
-            death_ts = ts
-        elif hits > 0 and death_ts is not None:
-            dead_s = ts - death_ts
-            if dead_s >= min_death_s:  # ignore transient hp=0 blips
-                events.append(DeathEvent(
-                    died_ts=death_ts, revived_ts=ts, dead_s=dead_s,
-                    self_rescued=dead_s <= grace_s,
-                    needed_intervention=dead_s > grace_s,
-                ))
-            death_ts = None
+    for i, (ts, hits, _) in enumerate(samples):
+        if hits <= 0:
+            if death_ts is None:
+                death_ts = ts
+            continue
+        if death_ts is None:
+            continue
+        # hits>0 while a death is open: a true resurrection only if the agent
+        # stays alive for >= min_death_s (else it's a transient mid-death
+        # flicker — keep the death open so it isn't split/double-counted).
+        relapse = next((t for t, h, _ in samples[i + 1:] if h <= 0), None)
+        alive_run = (relapse - ts) if relapse is not None else (summary.end_ts - ts)
+        if alive_run < min_death_s:
+            continue  # transient flicker — the death continues
+        dead_s = ts - death_ts
+        if dead_s >= min_death_s:  # ignore transient hp=0 blips
+            events.append(DeathEvent(
+                died_ts=death_ts, revived_ts=ts, dead_s=dead_s,
+                self_rescued=dead_s <= grace_s,
+                needed_intervention=dead_s > grace_s,
+            ))
+        death_ts = None
     if death_ts is not None:  # died and never revived before the window ended
         dead_s = max(0.0, summary.end_ts - death_ts)
         if dead_s >= min_death_s:

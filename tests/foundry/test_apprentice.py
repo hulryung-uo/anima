@@ -129,3 +129,48 @@ class TestBuildReport:
         assert r.shadow_interventions == 0
         assert r.self_rescue_rate == 1.0
         assert r.interventions_per_hour == 0.0
+
+
+class TestMidDeathFlickerNotDoubleCounted:
+    """A hits>0 flicker DURING a sustained ghost death is not a resurrection.
+
+    A real UO death holds a ghost state until a healer resurrection (many
+    seconds); the vitals stream flickers (a stale hits update briefly reads >0
+    then drops back to 0). The old loop closed the death on that first hits>0,
+    emitted it, then opened a SECOND death on the relapse — double-counting ONE
+    death as two (inflating deaths/shadow_interventions, corrupting
+    self_rescue_rate). A hits>0 reading now only closes a death if the agent
+    then stays alive for >= MIN_DEATH_S.
+    """
+
+    def test_single_long_death_with_midpoint_flicker_counts_once(self):
+        # Dead from 1100. A 1s hits>0 flicker at 1300 (relapses at 1301), then a
+        # true resurrection at 1500 that holds to window end. ONE death, not two.
+        s = _summary([(1000, 50, 50), (1100, 0, 50),
+                      (1300, 12, 50), (1301, 0, 50),   # transient mid-death blip
+                      (1500, 40, 50)])                  # real resurrection, sustained
+        ev = analyze_deaths(s, grace_s=180)
+        assert len(ev) == 1
+        assert ev[0].died_ts == 1100
+        assert ev[0].revived_ts == 1500
+        assert ev[0].dead_s == 400          # full interval, not split at the flicker
+        assert ev[0].needed_intervention is True   # 400s > 180s grace
+
+    def test_build_report_does_not_double_count_the_flicker(self):
+        s = _summary([(1000, 50, 50), (1100, 0, 50),
+                      (1300, 12, 50), (1301, 0, 50),
+                      (1500, 40, 50)])
+        r = build_report(s, "adventurer", "warrior", grace_s=180)
+        assert r.deaths == 1
+        assert r.shadow_interventions == 1
+        assert r.self_rescue_rate == 0.0    # the one real death was NOT self-rescued
+
+    def test_sustained_recovery_still_closes_the_death(self):
+        # Control: a hits>0 reading that DOES persist >= MIN_DEATH_S is a real
+        # resurrection and closes the death normally.
+        s = _summary([(1000, 50, 50), (1100, 0, 50),
+                      (1200, 40, 50), (1500, 40, 50)])  # alive run 1200->1500 = 300s
+        ev = analyze_deaths(s, grace_s=180)
+        assert len(ev) == 1
+        assert ev[0].dead_s == 100
+        assert ev[0].self_rescued is True
