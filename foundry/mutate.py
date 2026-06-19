@@ -55,6 +55,12 @@ def head(repo: str | Path) -> str:
     return r.stdout.strip()
 
 
+# Subject used when folding any uncommitted leftovers the mutator left behind
+# into a variant commit. It is bookkeeping, NOT a hypothesis — extraction must
+# skip it so the agent's real "foundry-mutation: ..." line is preserved.
+_LEFTOVER_COMMIT_SUBJECT = "foundry-mutation: (auto-commit leftover changes)"
+
+
 def _commit_all(repo: str | Path, message: str) -> tuple[bool, str]:
     """Stage everything and commit. Returns (committed, head_sha)."""
     if not _git(repo, "status", "--porcelain").stdout.strip():
@@ -62,6 +68,33 @@ def _commit_all(repo: str | Path, message: str) -> tuple[bool, str]:
     _git(repo, "add", "-A")
     r = _git(repo, "commit", "-m", message)
     return r.returncode == 0, head(repo)
+
+
+def _extract_hypothesis(repo: str | Path, before: str, after: str) -> str:
+    """Read the mutator's hypothesis from the commits it produced.
+
+    The hypothesis is the body of the agent's ``foundry-mutation: <...>``
+    commit. If the agent left uncommitted leftovers, ``mutate_with_claude``
+    folds them into a *second* commit whose subject is the bookkeeping
+    placeholder ``_LEFTOVER_COMMIT_SUBJECT`` — which then becomes HEAD. Reading
+    only HEAD would record that placeholder as the hypothesis and lose the
+    real one, so scan ``before..after`` oldest-first and return the first
+    genuine ``foundry-mutation:`` subject, skipping the placeholder.
+    """
+    subjects = _git(repo, "log", "--reverse", "--pretty=%s",
+                    f"{before}..{after}").stdout.splitlines()
+    subjects = [s.strip() for s in subjects if s.strip()]
+    for subj in subjects:
+        if subj == _LEFTOVER_COMMIT_SUBJECT:
+            continue
+        if "foundry-mutation:" in subj:
+            return subj.split("foundry-mutation:", 1)[-1].strip()
+    # No tagged commit (older lineage / hand commit) — fall back to a real
+    # subject if any, else HEAD's subject.
+    for subj in subjects:
+        if subj != _LEFTOVER_COMMIT_SUBJECT:
+            return subj
+    return _git(repo, "log", "-1", "--pretty=%s").stdout.strip()
 
 
 _MUTATION_PROMPT = """You are the mutation operator of Anima Foundry — an evolutionary
@@ -228,14 +261,12 @@ def mutate_with_claude(
         return MutationResult(False, error="claude CLI not found")
 
     # fold any uncommitted leftovers into a variant commit
-    _commit_all(repo, "foundry-mutation: (auto-commit leftover changes)")
+    _commit_all(repo, _LEFTOVER_COMMIT_SUBJECT)
     after = head(repo)
     if after == before:
         return MutationResult(False, code_ref=after, error="no commit produced")
 
-    subj = _git(repo, "log", "-1", "--pretty=%s").stdout.strip()
-    hypothesis = (subj.split("foundry-mutation:", 1)[-1].strip()
-                  if "foundry-mutation:" in subj else subj)
+    hypothesis = _extract_hypothesis(repo, before, after)
     return MutationResult(True, code_ref=after, hypothesis=hypothesis)
 
 
