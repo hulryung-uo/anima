@@ -84,6 +84,7 @@ class WalkerManager:
         self.consecutive_denials = 0
         self._denied_target = None
         self._pending_step_tile = None
+        self._pending_direction = None
         self._pending_seq = None
 
     def set_fast_walk_keys(self, keys: list[int]) -> None:
@@ -163,6 +164,11 @@ class WalkerManager:
         if seq_matches and self._pending_step_tile is not None:
             self.record_denied_tile(*self._pending_step_tile)
         self._pending_step_tile = None
+        # A denied turn must also drop its pending direction. Otherwise the
+        # rejected facing lingers and confirm_walk() would apply it to the
+        # NEXT (unrelated) move's confirm — silently snapping the avatar to a
+        # direction the server already refused, desyncing SelfState.direction.
+        self._pending_direction = None
 
         self.steps_count = 0
         # Server resets state.Sequence to 0 on deny.
