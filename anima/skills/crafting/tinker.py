@@ -43,6 +43,26 @@ GUMP_POLL_INTERVAL = 0.2
 CRAFT_WAIT_TIME = 3.0
 
 
+def _tool_broke(texts: list[str]) -> bool:
+    """True if any journal line reports the tinker tool wearing out.
+
+    ServUO's DefTinkering sends cliloc 1044038 "You have worn out your tool!"
+    when a tool's UsesRemaining hits zero — the SAME token blacksmithy and
+    carpentry already key on. The old check only looked for "broke"/"destroyed",
+    neither of which appears in that line, so a worn-out tinker tool was never
+    detected: ``execute`` skipped the ``skill_problem`` buy-a-new-tool signal,
+    and the agent kept re-opening the crafting gump with a phantom tool that no
+    longer exists, looping with zero output. Match the real token (plus the
+    legacy "broke"/"destroyed" phrasings some shards still use).
+    """
+    return any(
+        "worn out your tool" in t
+        or "broke" in t
+        or "destroyed" in t
+        for t in texts
+    )
+
+
 # --- Gump helpers ---
 
 
@@ -274,11 +294,10 @@ class CraftTinker(Skill):
 
         # 9. Check result via system messages in the journal
         new_entries = list(ctx.perception.social.journal)[journal_before:]
-        success = any("you create" in e.text.lower() for e in new_entries)
-        failed = any("you fail" in e.text.lower() for e in new_entries)
-        tool_broke = any(
-            "broke" in e.text.lower() or "destroyed" in e.text.lower() for e in new_entries
-        )
+        texts = [e.text.lower() for e in new_entries]
+        success = any("you create" in t for t in texts)
+        failed = any("you fail" in t for t in texts)
+        tool_broke = _tool_broke(texts)
 
         # 10. Close gump (server may have already closed it, but try anyway)
         current_gump = ss.gumps.get(updated_gump.gump_id, updated_gump)
