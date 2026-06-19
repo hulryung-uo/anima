@@ -656,6 +656,28 @@ def build_equip_item(serial: int, layer: int, mobile_serial: int) -> bytes:
     return w.to_bytes()
 
 
+# ServUO reads the per-item vendor amount as a *signed* Int16 in both
+# VendorBuyReply (`int amount = pvSrc.ReadInt16();` then drops when
+# `amount <= 0`) and VendorSellReply (`int Amount = pvSrc.ReadInt16();`
+# then keeps only `Amount > 0`). PacketWriter.write_u16 masks with
+# `& 0xFFFF` and never raises, so an amount >= 32768 (e.g. a stack of
+# 40000 logs/ingots/ore) wraps to a negative server-side value and the
+# whole item is silently dropped from the transaction — the procedure
+# then reports "expected ~Ngp but got 0". Clamp to [1, 32767] so the
+# planned amount always survives the round-trip. Mirrors the signed-byte
+# z-clamp already done in build_drop_item.
+_VENDOR_AMOUNT_MAX = 0x7FFF  # 32767 — largest positive signed Int16
+
+
+def _clamp_vendor_amount(amount: int) -> int:
+    """Clamp a vendor buy/sell amount into ServUO's signed-positive range."""
+    if amount < 1:
+        return 1
+    if amount > _VENDOR_AMOUNT_MAX:
+        return _VENDOR_AMOUNT_MAX
+    return amount
+
+
 def build_buy_items(vendor_serial: int, items: list[tuple[int, int]]) -> bytes:
     """Build BuyItems packet (0x3B, variable)."""
     w = PacketWriter()
@@ -666,7 +688,7 @@ def build_buy_items(vendor_serial: int, items: list[tuple[int, int]]) -> bytes:
     for item_serial, amount in items:
         w.write_u8(0x1A)  # item layer flag
         w.write_u32(item_serial)
-        w.write_u16(amount)
+        w.write_u16(_clamp_vendor_amount(amount))
     data = bytearray(w.to_bytes())
     length = len(data)
     data[1] = (length >> 8) & 0xFF
@@ -738,7 +760,7 @@ def build_sell_items(vendor_serial: int, items: list[tuple[int, int]]) -> bytes:
     w.write_u16(len(items))
     for item_serial, amount in items:
         w.write_u32(item_serial)
-        w.write_u16(amount)
+        w.write_u16(_clamp_vendor_amount(amount))
     data = bytearray(w.to_bytes())
     length = len(data)
     data[1] = (length >> 8) & 0xFF
