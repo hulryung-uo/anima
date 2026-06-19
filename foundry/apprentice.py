@@ -77,6 +77,34 @@ class SoakReport:
     death_events: list[dict] = field(default_factory=list)
 
 
+def _sustained_relapse_ts(samples: list, start: int, end_ts: float,
+                          min_death_s: float) -> float | None:
+    """Timestamp of the next SUSTAINED death onset at/after ``samples[start]``.
+
+    Scans forward for a ``hits<=0`` sample that stays dead for at least
+    ``min_death_s`` (the next hits>0 sample, or the window end, is that far
+    away). A hits<=0 reading that recovers sooner is a transient downward
+    flicker (a stale vitals packet), NOT a ghost death (MIN_DEATH_S), so it is
+    skipped — it must not be mistaken for the agent relapsing into death while
+    we measure how long a candidate resurrection actually held. Returns None
+    when no sustained relapse occurs before the window ends.
+    """
+    n = len(samples)
+    i = start
+    while i < n:
+        ts, hits, _ = samples[i]
+        if hits > 0:
+            i += 1
+            continue
+        # A hits<=0 sample: does it persist >= min_death_s?
+        recovered = next((t for t, h, _ in samples[i + 1:] if h > 0), None)
+        dead_run = (recovered - ts) if recovered is not None else (end_ts - ts)
+        if dead_run >= min_death_s:
+            return ts          # a real relapse into death
+        i += 1                 # transient dip — keep scanning past it
+    return None
+
+
 def analyze_deaths(summary: TrajectorySummary,
                    grace_s: float = RECOVERY_GRACE_S,
                    min_death_s: float = MIN_DEATH_S) -> list[DeathEvent]:
@@ -110,7 +138,18 @@ def analyze_deaths(summary: TrajectorySummary,
         # hits>0 while a death is open: a true resurrection only if the agent
         # stays alive for >= min_death_s (else it's a transient mid-death
         # flicker — keep the death open so it isn't split/double-counted).
-        relapse = next((t for t, h, _ in samples[i + 1:] if h <= 0), None)
+        #
+        # The post-resurrection alive-run must end at the next SUSTAINED death
+        # onset, not the first hits<=0 sample: a brief downward dip (a stale
+        # 0x11/0x16 hits packet that reads 0 for under min_death_s before
+        # recovering) is, by MIN_DEATH_S's own definition, NOT a ghost death.
+        # Treating that transient dip as the relapse truncates alive_run, wrongly
+        # rejects a genuine sustained resurrection as a "flicker", and keeps the
+        # long-resolved death open — inflating dead_s (and so flipping
+        # self_rescued / needed_intervention). This is the symmetric counterpart
+        # of the upward-flicker double-count guard (bd75575): a dip during the
+        # recovery is filtered exactly like a blip during the death.
+        relapse = _sustained_relapse_ts(samples, i + 1, summary.end_ts, min_death_s)
         alive_run = (relapse - ts) if relapse is not None else (summary.end_ts - ts)
         if alive_run < min_death_s:
             continue  # transient flicker — the death continues
