@@ -270,6 +270,48 @@ class TestTargetPrimitives:
         assert captured["cursor_flag"] == 2
 
 
+class TestSkillPrimitives:
+    @pytest.mark.asyncio
+    async def test_use_skill_on_echoes_cursor_flag(self):
+        """use_skill_on replays the server's cursor flag on the target response.
+
+        Targeted active skills (Provocation/Discordance) raise a HARMFUL (1)
+        cursor; a strict server rejects a response whose flag does not echo the
+        request, silently no-opping the skill. Mirrors the use_on_object /
+        cast_spell flag-echo guarantee for the targeted-skill primitive.
+        """
+        from anima.actions import skills as skills_mod
+
+        ctx = MagicMock()
+        ctx.conn.send_packet = AsyncMock()
+        ctx.perception.self_state.pending_target = None
+
+        captured: dict = {}
+
+        async def fake_wait_for_target(_ctx, timeout=3.0):
+            return ActionResult(
+                success=True,
+                data={"cursor_id": 0x77, "target_type": 0, "cursor_flag": 1},
+            )
+
+        async def fake_target_object(_ctx, cursor_id, serial, cursor_flag=0):
+            captured["cursor_id"] = cursor_id
+            captured["serial"] = serial
+            captured["cursor_flag"] = cursor_flag
+            return ActionResult(success=True)
+
+        with patch.object(skills_mod, "wait_for_target", fake_wait_for_target), \
+             patch.object(skills_mod, "target_object", fake_target_object):
+            res = await skills_mod.use_skill_on(
+                ctx, skill_id=skills_mod.SKILL_PEACEMAKING, target_serial=0xDEAD,
+            )
+
+        assert res.success
+        assert captured["serial"] == 0xDEAD
+        assert captured["cursor_id"] == 0x77
+        assert captured["cursor_flag"] == 1
+
+
 class TestInventoryPrimitives:
     def test_find_in_backpack_found(self):
         from anima.actions.inventory import find_in_backpack

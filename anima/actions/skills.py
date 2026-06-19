@@ -64,7 +64,16 @@ async def use_skill_on(
         return result
 
     cursor_id = result.data.get("cursor_id", 0)
-    return await target_object(ctx, cursor_id, target_serial)
+    # Echo the server's requested cursor flag (0=neutral, 1=harmful,
+    # 2=helpful) back on the response. Targeted active skills send a
+    # non-neutral cursor — Provocation/Discordance raise a HARMFUL (1)
+    # cursor — and strict servers reject a target response whose flag does
+    # not match the request, silently no-opping the skill even though we
+    # returned success. ``use_on_object``/``cast_spell`` already replay it
+    # (commits 775a99f / 7a60b31); this targeted-skill path dropped it,
+    # defaulting to 0. ``wait_for_target`` surfaces the flag for us.
+    cursor_flag = result.data.get("cursor_flag", 0)
+    return await target_object(ctx, cursor_id, target_serial, cursor_flag=cursor_flag)
 
 
 async def meditate(
