@@ -45,10 +45,12 @@ def find_in_backpack(
         if parent in seen:
             continue
         seen.add(parent)
-        for item in world.items.values():
-            if item.container == parent and item.serial not in reachable:
-                reachable.add(item.serial)
-                frontier.append(item.serial)
+        # world.items is keyed by serial, so use the key as the item's serial
+        # (robust even if the item object doesn't carry its own .serial).
+        for serial, item in world.items.items():
+            if item.container == parent and serial not in reachable:
+                reachable.add(serial)
+                frontier.append(serial)
 
     return [
         item for item in world.items.values()

@@ -286,8 +286,16 @@ class TestProcedureGates:
     async def test_practice_magery_needs_spellbook(self):
         from anima.procedures.practice_magery import PracticeMagery
 
+        from anima.core.spells import REAGENT_GRAPHICS
+
         proc = PracticeMagery()
         ctx = _make_ctx()
+        # Stock the backpack with a full Greater Heal reagent kit so this test
+        # isolates the SPELLBOOK gate (reagent gating is covered elsewhere).
+        for i, name in enumerate(
+            ("Ginseng", "Garlic", "Mandrake Root", "Sulfurous Ash")
+        ):
+            _add_item(ctx, 0x8000 + i, REAGENT_GRAPHICS[name], amount=5)
         assert await proc.can_start(ctx) is False
         # Spellbook equipped on a layer (creation book is worn)
         book = MagicMock(graphic=0x0EFA, serial=0x9002, container=0)
