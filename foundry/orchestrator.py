@@ -150,13 +150,22 @@ def _genome_from(arc: Archive, res: EvalResult, parent: str | None,
                  fixed_start: str | None = None) -> Genome:
     d = res.descriptor
     f = res.fitness
+    # Record the seed count that ACTUALLY backed this genome's evidence, not the
+    # requested base (rc.seeds). per_seed_fitness is the authoritative evidence
+    # that drives reliability (mean - lambda*pstdev) and the held-out semantics
+    # in select.py; its length diverges from rc.seeds whenever adaptive top-up
+    # ran extra seeds (max_seeds), confirm-on-promotion pooled a second round,
+    # or failed seeds were dropped. Storing rc.seeds would mislabel a genome
+    # confirmed across e.g. 12 pooled seeds as `seeds: 3` in status output, the
+    # mutator's parent observation, and any reliability audit.
+    n_seeds = len(res.per_seed_fitness) if res.per_seed_fitness else rc.seeds
     return Genome(
         id=arc.next_id(),
         parent=parent,
         code_ref=code_ref,
         config={"persona": persona if persona is not None else rc.persona,
                 "fixed_start": fixed_start if fixed_start is not None else rc.fixed_start,
-                "window_s": rc.window_s, "seeds": rc.seeds,
+                "window_s": rc.window_s, "seeds": n_seeds,
                 "target_cell": list(target_cell) if target_cell else None},
         eval={
             "fitness": f.total if f else 0.0,
