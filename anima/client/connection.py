@@ -70,7 +70,15 @@ class UoConnection:
             asyncio.open_connection(host, port),
             timeout=self._timeout,
         )
+        # Fresh socket => fresh protocol state. The two-phase login flow calls
+        # _close() then _connect() between phase 1 (raw) and phase 2 (game), and
+        # a reconnect may reuse this object. Phase 1 must start in raw mode and
+        # with empty framing buffers, otherwise recv_packet() would route the
+        # plaintext ServerList through the Huffman path, and any compressed bytes
+        # left over from a previous game session would corrupt the new stream.
+        self._game_mode = False
         self._recv_buffer.clear()
+        self._compressed_buffer.clear()
         logger.info("tcp_connected", host=host, port=port)
 
     async def _close(self) -> None:
@@ -82,6 +90,11 @@ class UoConnection:
                 pass
             self._writer = None
             self._reader = None
+        # Drop game-mode + any half-decoded frames so a subsequent reconnect on
+        # the same object does not resume mid-stream. _close() is idempotent.
+        self._game_mode = False
+        self._recv_buffer.clear()
+        self._compressed_buffer.clear()
 
     async def _send_raw(self, data: bytes) -> None:
         assert self._writer is not None
