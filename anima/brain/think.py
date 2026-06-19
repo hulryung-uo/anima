@@ -618,10 +618,31 @@ async def _step_toward(ctx: BrainContext, tx: int, ty: int) -> Status:
     return Status.SUCCESS if steps_sent > 0 else Status.RUNNING
 
 
+def _coerce_action_dict(value: object) -> dict | None:
+    """Normalize a parsed JSON value into an action dict, or None.
+
+    LLMs frequently wrap the action object in a list (``[{...}]``) or emit a
+    bare scalar/string.  The caller treats the result as a dict and calls
+    ``.get(...)`` on it, so anything that is not a dict must collapse to
+    ``None`` here — the ``if action is None`` branch then degrades gracefully
+    instead of raising ``AttributeError`` and killing the whole think tick.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        # Take the first dict element of a list-wrapped response.
+        for item in value:
+            if isinstance(item, dict):
+                return item
+    return None
+
+
 def _parse_action(text: str) -> dict | None:
     text = text.strip()
     try:
-        return json.loads(text)
+        parsed = _coerce_action_dict(json.loads(text))
+        if parsed is not None:
+            return parsed
     except json.JSONDecodeError:
         pass
 
@@ -639,7 +660,10 @@ def _parse_action(text: str) -> dict | None:
                     depth -= 1
                     if depth == 0:
                         try:
-                            return json.loads(text[idx : i + 1])
+                            parsed = _coerce_action_dict(json.loads(text[idx : i + 1]))
+                            if parsed is not None:
+                                return parsed
+                            break
                         except json.JSONDecodeError:
                             break
         else:
@@ -648,7 +672,12 @@ def _parse_action(text: str) -> dict | None:
             end_idx = text.find(end, content_start)
             if end_idx != -1:
                 try:
-                    return json.loads(text[content_start:end_idx].strip())
+                    parsed = _coerce_action_dict(
+                        json.loads(text[content_start:end_idx].strip())
+                    )
+                    if parsed is not None:
+                        return parsed
+                    continue
                 except json.JSONDecodeError:
                     continue
     return None
