@@ -123,10 +123,15 @@ def find_location(name: str) -> Location | None:
 
 
 def nearest_locations(x: int, y: int, count: int = 5) -> list[tuple[Location, int]]:
-    """Return nearest known locations with distances."""
+    """Return nearest known locations with distances.
+
+    Distance is measured to the navigable point (``nav_x``/``nav_y``) — the
+    spot the agent actually walks to — not the raw (possibly indoor) coords.
+    This matches every navigation consumer (planner/roaming/movement/think).
+    """
     results: list[tuple[Location, int]] = []
     for loc in ALL_LOCATIONS:
-        dist = max(abs(loc.x - x), abs(loc.y - y))  # Chebyshev distance
+        dist = max(abs(loc.nav_x - x), abs(loc.nav_y - y))  # Chebyshev distance
         results.append((loc, dist))
     results.sort(key=lambda r: r[1])
     return results[:count]
