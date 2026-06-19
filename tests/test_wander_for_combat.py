@@ -118,3 +118,67 @@ class TestExecute:
         assert all(r.success for r in results[:-1])      # earlier roams keep trying
         assert results[-1].success is False              # final sweep yields
         assert ctx.blackboard["_wander_empty"] == 0       # reset → can retry later
+        # ...but a yield arms a cooldown so the agent doesn't immediately re-arm
+        # wander and flap away from the productive work it just yielded to.
+        assert ctx.blackboard["_wander_cooldown_until"] > 0.0
+
+
+class TestYieldCooldown:
+    """Mode-transition contract: after wander yields to productive work, it must
+    stay OFF for a cooldown window so that work actually runs — otherwise
+    can_start (armed + no target) re-fires the very next tick and the adventurer
+    flaps wander↔mine, doing at most one productive invocation between sweeps."""
+
+    @pytest.mark.asyncio
+    async def test_can_start_false_during_cooldown(self, monkeypatch):
+        import anima.procedures.combat_loop as clmod
+
+        ctx = _ctx(mobiles=[])  # armed, no target → would normally activate
+        assert await WanderForCombat().can_start(ctx) is True
+        # Simulate a just-fired yield arming the cooldown.
+        now = 1_000.0
+        monkeypatch.setattr(clmod.time, "time", lambda: now)
+        ctx.blackboard["_wander_cooldown_until"] = now + clmod.WANDER_YIELD_COOLDOWN_S
+        # During the window wander must stay off so productive work can run.
+        assert await WanderForCombat().can_start(ctx) is False
+        # After the window lapses it re-arms (open world respawns hostiles).
+        monkeypatch.setattr(clmod.time, "time", lambda: now + clmod.WANDER_YIELD_COOLDOWN_S + 1)
+        assert await WanderForCombat().can_start(ctx) is True
+
+    @pytest.mark.asyncio
+    async def test_yield_then_no_immediate_reentry(self, monkeypatch):
+        # End-to-end: drive execute to the yield, then assert can_start is
+        # suppressed (the flap the fix prevents).
+        import anima.procedures.combat_loop as clmod
+        from anima.procedures.combat_loop import WANDER_MAX_EMPTY
+
+        async def fake_go_to(ctx, x, y, run=False, interrupt_check=None):
+            return None
+
+        monkeypatch.setattr(movement, "go_to", fake_go_to)
+        now = 5_000.0
+        monkeypatch.setattr(clmod.time, "time", lambda: now)
+        ctx = _ctx(mobiles=[])
+        proc = WanderForCombat()
+        for _ in range(WANDER_MAX_EMPTY):
+            await proc.execute(ctx)
+        # The final sweep armed the cooldown; wander must now refuse to start.
+        assert await proc.can_start(ctx) is False
+
+    @pytest.mark.asyncio
+    async def test_spotted_target_clears_cooldown(self, monkeypatch):
+        # If a fight reappears, a stale yield cooldown must not block hunting.
+        appeared = [_mob(0x2, 105, 100)]
+
+        async def fake_go_to(ctx, x, y, run=False, interrupt_check=None):
+            if interrupt_check:
+                interrupt_check()
+
+        monkeypatch.setattr(movement, "go_to", fake_go_to)
+        ctx = _ctx(mobiles=appeared)
+        ctx.perception.world.nearby_mobiles = lambda x, y, distance=0: list(appeared)
+        ctx.blackboard["_wander_cooldown_until"] = 9_999_999_999.0  # stale
+        result = await WanderForCombat().execute(ctx)
+        assert result.success is True
+        assert result.next_suggestion == "hunt_nearby"
+        assert ctx.blackboard["_wander_cooldown_until"] == 0.0

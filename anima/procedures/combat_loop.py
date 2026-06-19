@@ -718,6 +718,14 @@ WANDER_DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, 
 # After this many consecutive empty roams (area swept, no hostile), give up and
 # yield to productive work instead of looping until the planner health-break.
 WANDER_MAX_EMPTY = 4
+# When wander_for_combat yields (the spot is swept clean of hostiles) the
+# planner falls through to the adventurer loop's productive tail (sell_to_vendor
+# / the mining chain). But can_start fires again the very next tick (still armed,
+# still no target), so without a cooldown the agent re-enters wandering after a
+# SINGLE productive procedure invocation — a wander↔work flap that defeats the
+# yield. Suppress wander for this window so the productive work actually runs;
+# the open world keeps respawning, so combat resumes once the cooldown lapses.
+WANDER_YIELD_COOLDOWN_S = 30.0
 
 
 class WanderForCombat(Procedure):
@@ -731,6 +739,11 @@ class WanderForCombat(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         ss = ctx.perception.self_state
         if not ss.is_alive:
+            return False
+        # Post-yield cooldown: we already swept this spot clean and handed the
+        # tick to productive work — stay off until the cooldown lapses so that
+        # work isn't yanked away after one invocation (the wander↔work flap).
+        if time.time() < ctx.blackboard.get("_wander_cooldown_until", 0.0):
             return False
         if ss.hits_max > 0 and ss.hp_percent < 40:
             return False  # too wounded — let survival/bandage run first
@@ -765,6 +778,9 @@ class WanderForCombat(Procedure):
 
         if found.get("t") is not None or _find_target(ctx) is not None:
             ctx.blackboard["_wander_empty"] = 0
+            # A fight is back on — drop any pending cooldown so the agent can
+            # keep hunting without waiting out a stale yield window.
+            ctx.blackboard["_wander_cooldown_until"] = 0.0
             return ProcedureResult(
                 success=True,
                 message="Spotted a hostile while roaming → engaging",
@@ -780,6 +796,12 @@ class WanderForCombat(Procedure):
         ctx.blackboard["_wander_empty"] = empty
         if empty >= WANDER_MAX_EMPTY:
             ctx.blackboard["_wander_empty"] = 0
+            # Arm the cooldown so can_start stays off for WANDER_YIELD_COOLDOWN_S:
+            # without it, can_start (armed + no target) re-fires next tick and the
+            # agent flaps back into wandering after one productive invocation.
+            ctx.blackboard["_wander_cooldown_until"] = (
+                time.time() + WANDER_YIELD_COOLDOWN_S
+            )
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.MISSING_RESOURCE,
