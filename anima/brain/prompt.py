@@ -85,8 +85,16 @@ def build_speech_messages(
     for msg in history:
         messages.append(msg)
 
-    # Add the current speech
-    messages.append({"role": "user", "content": f"{speaker}: {text}"})
+    # Add the current speech — but only if the caller has not already recorded
+    # it into ``conversation_history``.  ``respond_to_speech`` calls
+    # ``record_conversation(ctx, "user", ...)`` *before* building messages, so
+    # the current turn is normally already the tail of ``history``.  Appending
+    # it again duplicated the user turn and produced two consecutive ``user``
+    # messages, breaking the strict user/assistant alternation that Anthropic
+    # (a configured provider) requires and wasting prompt tokens.
+    current = {"role": "user", "content": f"{speaker}: {text}"}
+    if not history or history[-1] != current:
+        messages.append(current)
     return messages
 
 
