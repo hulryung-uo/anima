@@ -200,11 +200,21 @@ KEEP_GRAPHICS: set[int] = (
 )
 
 # (graphic, max_to_buy) — tools we always want to have
-ESSENTIAL_TOOLS: list[tuple[int, int]] = [
-    (0x0F43, 1),  # hatchet
-    (0x1034, 1),  # saw
-    (0x0E86, 3),  # pickaxe — buy 3
-    (0x13E3, 1),  # smith hammer
+# (buy_graphic, max_to_buy, owned_family) — tools we always want to have.
+#
+# ``buy_graphic`` is the canonical graphic to request from the vendor's buy
+# list. ``owned_family`` is the full set of graphic IDs that count as "I
+# already own this tool" — a UO tool flips its graphic between its
+# held/ground/facing variants (a hatchet shows as 0x0F43/0x0F44/0x0F47/…, a
+# pickaxe as 0x0E85/0x0E86, a smith hammer as 0x13E3/0x13E4). Keying the
+# ownership check on a SINGLE graphic made the agent treat an already-owned
+# variant as missing and buy a duplicate every cycle — burning gold and
+# looping on the same purchase forever. Match the whole family instead.
+ESSENTIAL_TOOLS: list[tuple[int, int, set[int]]] = [
+    (0x0F43, 1, HATCHET_GRAPHICS),       # hatchet
+    (0x1034, 1, SAW_GRAPHICS),           # saw
+    (0x0E86, 3, PICKAXE_GRAPHICS),       # pickaxe — buy 3
+    (0x13E3, 1, SMITH_HAMMER_GRAPHICS),  # smith hammer
 ]
 
 
@@ -814,8 +824,8 @@ def _find_missing_tools(ctx: BrainContext) -> list[tuple[int, int]]:
                 owned_graphics.add(it.graphic)
 
     missing: list[tuple[int, int]] = []
-    for graphic, amount in ESSENTIAL_TOOLS:
-        if graphic not in owned_graphics:
+    for graphic, amount, family in ESSENTIAL_TOOLS:
+        if owned_graphics.isdisjoint(family):
             missing.append((graphic, amount))
 
     return missing
