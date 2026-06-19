@@ -101,6 +101,52 @@ async def test_out_of_reagents_returns_missing_resource(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_can_start_false_when_reagents_short(monkeypatch):
+    """The precondition fails fast on a reagent shortage instead of relying on
+    the reactive 'More reagents are needed' journal line after a wasted cast.
+
+    Greater Heal needs Ginseng+Garlic+Mandrake+Sulfurous Ash; the backpack here
+    holds only Ginseng, so can_start must be False (spellbook present)."""
+    from anima.core.spells import REAGENT_GRAPHICS
+
+    ginseng = REAGENT_GRAPHICS["Ginseng"]
+    spellbook = SimpleNamespace(graphic=0x0EFA, container=0x99)
+    one_ginseng = SimpleNamespace(graphic=ginseng, container=0x99, amount=5)
+    world = SimpleNamespace(items={0xA: one_ginseng})
+    ss = SimpleNamespace(
+        is_alive=True,
+        equipment={0x15: 0x99},  # backpack serial
+    )
+    ctx = SimpleNamespace(
+        perception=SimpleNamespace(self_state=ss, world=world)
+    )
+    # Spellbook present (equipped) but reagents short → can_start is False.
+    monkeypatch.setattr(PracticeMagery, "_has_spellbook", lambda self, _c: True)
+
+    assert await PracticeMagery().can_start(ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_can_start_true_with_full_reagent_kit(monkeypatch):
+    from anima.core.spells import REAGENT_GRAPHICS
+
+    gl = REAGENT_GRAPHICS["Ginseng"]
+    gs = REAGENT_GRAPHICS["Garlic"]
+    mr = REAGENT_GRAPHICS["Mandrake Root"]
+    sa = REAGENT_GRAPHICS["Sulfurous Ash"]
+    items = {
+        i: SimpleNamespace(graphic=g, container=0x99, amount=3)
+        for i, g in enumerate((gl, gs, mr, sa))
+    }
+    world = SimpleNamespace(items=items)
+    ss = SimpleNamespace(is_alive=True, equipment={0x15: 0x99})
+    ctx = SimpleNamespace(perception=SimpleNamespace(self_state=ss, world=world))
+    monkeypatch.setattr(PracticeMagery, "_has_spellbook", lambda self, _c: True)
+
+    assert await PracticeMagery().can_start(ctx) is True
+
+
+@pytest.mark.asyncio
 async def test_meditation_stall_does_not_spin_forever(monkeypatch):
     """Low mana pool: meditation can never lift mana above the cast threshold
     (MEDITATE_BELOW_MANA). The loop must NOT spin forever meditating — it must

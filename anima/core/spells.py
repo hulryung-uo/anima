@@ -330,3 +330,54 @@ def healing_spells() -> list[SpellDef]:
     names = {"heal", "greater heal", "cure", "arch cure", "close wounds",
              "cleanse by fire", "cleansing winds"}
     return [s for s in SPELLS.values() if s.name.lower() in names]
+
+
+# ── Reagent accounting ──
+
+
+def reagent_costs(spell: SpellDef) -> dict[str, int]:
+    """Per-cast reagent requirement as {name: count}.
+
+    ``SpellDef.reagents`` is a tuple of abbreviations in which a reagent may
+    appear MORE THAN ONCE — e.g. Recall is ``("BP", "BP", "MR")`` (2 Black
+    Pearl + 1 Mandrake Root) and Chain Lightning needs 2 Black Pearl too. A
+    naive ``set(reagents)`` check would treat "I have 1 Black Pearl" as enough
+    and let the cast be attempted anyway. Counting occurrences and keying by
+    the full reagent NAME (BM/BP both map to "Black Pearl") gives the true
+    per-cast cost.
+    """
+    costs: dict[str, int] = {}
+    for abbr in spell.reagents:
+        name = REAGENT_NAMES.get(abbr, abbr)
+        costs[name] = costs.get(name, 0) + 1
+    return costs
+
+
+def missing_reagents(
+    spell: SpellDef, available: dict[int, int]
+) -> list[str]:
+    """Reagent names for which ``available`` is short of one cast.
+
+    ``available`` maps reagent item graphic id → on-hand quantity (e.g. from
+    counting the backpack). Returns the reagent names whose on-hand count is
+    below the per-cast requirement, sorted for deterministic messaging. An
+    empty list means the spell can be cast at least once.
+
+    Reagent-free schools (Chivalry/Bushido/etc. have ``reagents=()``) trivially
+    return ``[]``.
+    """
+    short: list[str] = []
+    for name, need in reagent_costs(spell).items():
+        graphic = REAGENT_GRAPHICS.get(name)
+        # Unknown graphic (no inventory mapping) → can't prove we have it;
+        # treat as not-missing so we never block on bookkeeping gaps.
+        if graphic is None:
+            continue
+        if available.get(graphic, 0) < need:
+            short.append(name)
+    return sorted(short)
+
+
+def has_reagents_for(spell: SpellDef, available: dict[int, int]) -> bool:
+    """True when ``available`` covers at least one cast of ``spell``."""
+    return not missing_reagents(spell, available)

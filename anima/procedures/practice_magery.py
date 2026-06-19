@@ -25,6 +25,7 @@ from anima.actions.spells import (
     SPELL_GREATER_HEAL,
     cast_spell,
 )
+from anima.core.spells import REAGENT_GRAPHICS, get_spell_by_name, missing_reagents
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 
 if TYPE_CHECKING:
@@ -35,6 +36,9 @@ logger = structlog.get_logger()
 SKILL_MAGERY = 25
 SPELLBOOK_GRAPHICS = {0x0EFA}
 
+# Greater Heal is the grind spell; its reagents gate the whole run.
+GREATER_HEAL_REAGENT_GRAPHICS = frozenset(REAGENT_GRAPHICS.values())
+
 CASTS_PER_RUN = 10
 CAST_INTERVAL_S = 0.5  # cast_spell already awaits cursor + journal; 0.5s is just server recovery margin
 MEDITATE_BELOW_MANA = GREATER_HEAL_MANA + 1
@@ -44,6 +48,22 @@ class PracticeMagery(Procedure):
     timeout_s = 180.0
     name = "practice_magery"
     description = "Cast Greater Heal on self to practice Magery; meditate when low on mana."
+
+    def _reagent_shortage(self, ctx: AgentContext) -> list[str]:
+        """Reagent names the backpack lacks for one Greater Heal cast.
+
+        Counts every reagent stack in the backpack (keyed by graphic id) and
+        diffs it against the spell's per-cast requirement, so we fail fast with
+        MISSING_RESOURCE instead of burning a cast attempt only to read the
+        server's "More reagents are needed" journal line reactively.
+        """
+        spell = get_spell_by_name("greater heal")
+        if spell is None:
+            return []
+        have: dict[int, int] = {}
+        for item in find_in_backpack(ctx, set(GREATER_HEAL_REAGENT_GRAPHICS)):
+            have[item.graphic] = have.get(item.graphic, 0) + item.amount
+        return missing_reagents(spell, have)
 
     def _has_spellbook(self, ctx: AgentContext) -> bool:
         # The creation spellbook is EQUIPPED (a wearable layer), so check
@@ -59,7 +79,9 @@ class PracticeMagery(Procedure):
     async def can_start(self, ctx: AgentContext) -> bool:
         if not ctx.perception.self_state.is_alive:
             return False
-        return self._has_spellbook(ctx)
+        if not self._has_spellbook(ctx):
+            return False
+        return not self._reagent_shortage(ctx)
 
     async def execute(self, ctx: AgentContext) -> ProcedureResult:
         ss = ctx.perception.self_state
