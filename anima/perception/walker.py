@@ -99,6 +99,11 @@ class WalkerManager:
 
     def next_sequence(self) -> int:
         seq = self.walk_sequence
+        # Stamp the moment this walk/turn packet's sequence is handed out.
+        # Every send site (move/turn) calls next_sequence() immediately
+        # before send_packet(), so this is the time of the last sent walk
+        # packet — the clock can.walk()'s stale-state auto-reset depends on.
+        self._last_step_sent = _now_ms()
         if self.walk_sequence == 0xFF:
             self.walk_sequence = 1
         else:
