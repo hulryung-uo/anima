@@ -46,6 +46,47 @@ class LoginResult:
     body: int
 
 
+def parse_login_confirm(data: bytes) -> LoginResult:
+    """Parse a LoginConfirm (0x1B) packet body into a :class:`LoginResult`.
+
+    Wire layout (ServUO ``LoginConfirm`` Packets.cs:4542, read by ClassicUO
+    ``EnterWorld`` PacketHandlers.cs:883)::
+
+        [0x1B][serial:u32][0:u32][body:i16][x:i16][y:i16][z:i16]
+              [direction:u8][0:u8][-1:i32] ... (filled to 37)
+
+    Two fields were previously mis-aligned:
+
+    * **Z is a 16-bit field**, not a byte. ServUO writes ``(short)m.Z`` and
+      ClassicUO reads it as ``(sbyte)ReadUInt16BE()`` — a full u16 consumed,
+      then narrowed to a signed byte. The old parse did ``skip(1); read_i8()``,
+      which consumed the same two bytes and happened to land on the correct low
+      byte, so Z was right by luck.
+    * **Direction was read from the wrong byte.** After Z, ``direction`` is the
+      very next byte (masked ``& 0x7``). The old parse did ``skip(1)`` *after*
+      the i8 Z read, stepping over the real Direction byte, then read the
+      trailing constant ``0`` byte ServUO writes next — so ``direction`` was
+      **always 0 (North)** regardless of the character's actual facing. That
+      bogus facing was seeded straight into ``self_state.direction`` on login,
+      desyncing the very first movement/turn decisions until a later packet
+      corrected it.
+
+    Mirror ClassicUO exactly: read the u16 Z and narrow to a signed byte, then
+    take the next byte as the direction.
+    """
+    reader = PacketReader(data[1:])  # skip packet ID
+    serial = reader.read_u32()
+    reader.skip(4)  # unknown (always 0)
+    body = reader.read_u16()
+    x = reader.read_u16()
+    y = reader.read_u16()
+    z_raw = reader.read_u16()  # ServUO writes (short)Z; CUO narrows to sbyte
+    z = z_raw - 0x10000 if z_raw & 0x8000 else z_raw
+    z = (z + 128) % 256 - 128  # (sbyte) narrowing, matching ClassicUO
+    direction = reader.read_u8() & 0x07
+    return LoginResult(serial=serial, x=x, y=y, z=z, direction=direction, body=body)
+
+
 class UoConnection:
     """Manages a single TCP connection to a UO server.
 
@@ -411,25 +452,11 @@ class UoConnection:
 
             elif packet_id == 0x1B:
                 # LoginConfirm
-                reader = PacketReader(data[1:])
-                serial = reader.read_u32()
-                reader.skip(4)  # unknown
-                body = reader.read_u16()
-                x = reader.read_u16()
-                y = reader.read_u16()
-                reader.skip(1)  # unknown
-                z = reader.read_i8()
-                reader.skip(1)  # unknown
-                direction = reader.read_u8() & 0x07
-
-                login_result = LoginResult(
-                    serial=serial,
-                    x=x,
-                    y=y,
-                    z=z,
-                    direction=direction,
-                    body=body,
-                )
+                login_result = parse_login_confirm(data)
+                serial = login_result.serial
+                x, y, z = login_result.x, login_result.y, login_result.z
+                direction = login_result.direction
+                body = login_result.body
 
                 # Sync perception immediately so handlers have correct serial
                 if perception is not None:
