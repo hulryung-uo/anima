@@ -375,18 +375,34 @@ class SellToVendor(Procedure):
         )
 
         if gold_earned == 0 and expected_gold > 0:
+            # The sell packet was sent but gold never moved — the server
+            # rejected it (out of range, vendor closed, transient). This is
+            # NOT a success: returning success=True here writes a phantom win
+            # to the ActionLog reward signal and the planner won't retry the
+            # sell. Report it as a retryable BLOCKED failure instead.
             logger.warning(
                 "sell_no_gold_received",
                 vendor=vendor_name,
                 reason="sent sell packet but gold did not change — packet rejected?",
                 expected=expected_gold,
             )
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=(
+                    f"sell to {vendor_name} sent but gold did not change "
+                    f"(expected ~{expected_gold}gp, got 0)"
+                ),
+                gold_changed=0,
+                details={
+                    "vendor": vendor_name,
+                    "items_sold": sold_names,
+                    "gold_earned": 0,
+                    "expected_gold": expected_gold,
+                },
+            )
 
-        msg = f"Sold {len(items_to_sell)} items to {vendor_name}"
-        if gold_earned > 0:
-            msg += f", earned {gold_earned}gp"
-        elif expected_gold > 0:
-            msg += f" (expected ~{expected_gold}gp but got 0 — sell may have failed)"
+        msg = f"Sold {len(items_to_sell)} items to {vendor_name}, earned {gold_earned}gp"
 
         return ProcedureResult(
             success=True,
