@@ -296,7 +296,13 @@ def _find_target(ctx: AgentContext):
         return None
 
     def _key(m):
-        dist = abs(m.x - ss.x) + abs(m.y - ss.y)
+        # Chebyshev distance (max of the axis deltas) is UO's real step cost —
+        # a diagonal move is one step, so an enemy at (4,4) is 4 tiles away, not
+        # 8. The whole codebase ranges on Chebyshev (world.nearby_mobiles' box
+        # filter, craft_blacksmith._find_nearest, world_knowledge.nearest_
+        # locations); using Manhattan here over-penalised diagonal targets and
+        # could tiebreak onto a strictly farther-to-walk mob.
+        dist = max(abs(m.x - ss.x), abs(m.y - ss.y))
         # Focus-fire: known-wounded mobs sort first (lower hits fraction =
         # higher priority), distance is the tiebreaker. Health is "known"
         # only when hits_max is a positive number — un-queried mobs default
