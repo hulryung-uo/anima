@@ -66,9 +66,17 @@ def cycle_text(cell: tuple, status: str, fitness: float,
         # a DECREASE while asserting a gain — a self-contradiction. Only narrate a
         # numeric betterment when the point score actually rose; otherwise frame it
         # as the steadier result the promotion rule actually rewarded.
+        #
+        # The comparison must be on the SAME rounded integers the sentence prints
+        # (`:.0f`), not the raw floats: a sub-integer rise (e.g. 150.7 → 150.9,
+        # both render "151") satisfies `fitness > prev_fitness` yet displays
+        # "bettered my own best (151 → 151)" — the very arrow-with-equal-endpoints
+        # self-contradiction this branch exists to avoid. When the displayed
+        # numbers don't actually differ, fall through to the honest steadier
+        # framing (the gain was real but smaller than the resolution shown).
         if prev_fitness is None:
             gain = ""
-        elif fitness > prev_fitness:
+        elif round(fitness) > round(prev_fitness):
             gain = f" My work bettered my own best ({prev_fitness:.0f} → {fitness:.0f})."
         else:
             gain = (f" No louder than my old best ({prev_fitness:.0f}), but steadier "

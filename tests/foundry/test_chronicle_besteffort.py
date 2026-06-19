@@ -110,6 +110,20 @@ def test_improved_equal_point_fitness_is_not_framed_as_a_gain():
     assert "steadier" in body
 
 
+def test_improved_subinteger_gain_not_framed_as_equal_arrow():
+    # Point fitness genuinely ROSE (150.9 > 150.7) but both render "151" under
+    # the sentence's :.0f formatting. The old `fitness > prev_fitness` guard took
+    # the "bettered" branch and printed the self-contradicting "bettered my own
+    # best (151 → 151)" — an arrow whose endpoints are equal. The note must never
+    # claim a gain whose displayed numbers are identical: compare the ROUNDED
+    # integers and fall through to the honest steadier framing instead.
+    _title, body = chronicle.cycle_text(
+        ("GATHERING", 1), "improved", fitness=150.9, prev_fitness=150.7)
+    assert "151 → 151" not in body
+    assert "bettered my own best" not in body
+    assert "steadier" in body
+
+
 @pytest.mark.parametrize("prev", [None, 0.0])
 def test_improved_handles_missing_or_zero_prev(prev):
     # prev_fitness None (legacy/odd record) renders no gain clause; a real 0.0
