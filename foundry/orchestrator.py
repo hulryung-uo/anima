@@ -81,6 +81,19 @@ class RunConfig:
     def __post_init__(self) -> None:
         self.parallel = max(1, min(self.parallel, safety.MAX_CONCURRENT_EVALS))
         self.seeds = max(1, self.seeds)
+        # Even a SINGLE slot fans seed k onto lane `slot*span + k` (run_eval_multi),
+        # and the GM resolves the workplace as LANE_SPOTS[lane % len(LANE_SPOTS)]
+        # (gm.py). With slot 0 the highest lane is `seeds-1`; once that reaches
+        # LANE_BUDGET the lane wraps modulo and two of the SAME genome's seed evals
+        # share one fixed-start workplace — the multi-hour collision the lane budget
+        # exists to prevent (reeval._lane_safe_seeds guards the same class). The
+        # parallel reduction below only clamps `parallel`, never `seeds`, so
+        # `--seeds N` with N > LANE_BUDGET wedged even at parallel=1. Bound base
+        # seeds to the table FIRST, before deriving the parallel reduction from it.
+        if self.seeds > LANE_BUDGET:
+            print(f"[config] seeds {self.seeds} exceeds {LANE_BUDGET} lanes; "
+                  f"clamping seeds -> {LANE_BUDGET}")
+            self.seeds = LANE_BUDGET
         # --- lane/port budget enforcement (anti-collision) -----------------
         # Each slot owns `span` consecutive lanes/ports, where span is the
         # WORST-CASE seed count (adaptive top-up reaches max_seeds). Base seeds
