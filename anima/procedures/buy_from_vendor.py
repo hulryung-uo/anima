@@ -168,6 +168,30 @@ def _buy_quantity(ctx: AgentContext, item, budget: int) -> int:
     return max(1, want)
 
 
+def _is_buy_failure(*, item_gained: bool, gold_spent: int) -> bool:
+    """True when a buy attempt must be treated as a failure.
+
+    A buy succeeds ONLY when the tool actually arrives in the backpack
+    (``item_gained``). The previous logic flagged failure only on the
+    "nothing happened" outcome (``not item_gained and gold_spent == 0``),
+    which let the *worst* outcome slip through as a success: gold was
+    debited yet no item was delivered (``not item_gained and gold_spent
+    > 0``). That can happen when a competing buyer or a restock-timer
+    tick stales out the 0x74/0x3C stock snapshot between our plan and the
+    server's BaseVendor.OnBuyItems — the pouch is charged but ServUO
+    clamps delivery to zero current stock. Reporting that as success
+    (with ``gold_changed=-gold_spent``) silently loses money, leaves the
+    backpack still short of TOOL_MIN_STOCK, and skips both the per-item
+    blacklist and the buy-disable cooldown — so the planner re-picks the
+    same vendor/item next tick and bleeds gold in a tight loop.
+
+    Any no-delivery outcome is therefore a failure, regardless of whether
+    gold moved; the caller blacklists the item and trips the 10-min
+    cooldown so the loss is not repeated.
+    """
+    return not item_gained
+
+
 def _reconcile_bank_after_buy(
     ctx: AgentContext,
     *,
@@ -417,7 +441,7 @@ class BuyFromVendor(Procedure):
             item_gained=item_gained,
         )
 
-        if not item_gained and gold_spent == 0:
+        if _is_buy_failure(item_gained=item_gained, gold_spent=gold_spent):
             logger.warning(
                 "buy_failed_no_delivery",
                 vendor=vendor_name,
@@ -425,6 +449,7 @@ class BuyFromVendor(Procedure):
                 item_serial=target_item.serial,
                 price=target_item.price,
                 bank_before=bank_before,
+                gold_spent=gold_spent,
             )
             # Blacklist this item serial for this vendor
             bl = ctx.blackboard.setdefault("_buy_failed_items", {})
@@ -432,17 +457,18 @@ class BuyFromVendor(Procedure):
             vendor_bl[target_item.serial] = time.monotonic()
             _mark_refused(ctx, vendor.serial)
             # Disable buy attempts for 10 min ONLY when we believed we had
-            # funds but nothing came back. If the bank cache said zero
-            # (bank_before == 0) and backpack was empty too, can_start
-            # would have blocked us — reaching here with item_gained=False
-            # means our funds belief was wrong, so cooling off avoids a
-            # tight retry loop while the cache refreshes.
+            # funds but no tool came back. Either the funds belief was
+            # wrong (nothing moved) or gold was debited yet delivery was
+            # clamped to zero stock — both are no-progress outcomes that a
+            # tight retry loop would only repeat (and the second one bleeds
+            # gold each pass), so we cool off while the cache/stock refresh.
             ctx.blackboard["_buy_disabled_until"] = time.time() + 600
+            lost = f", lost {gold_spent}gp" if gold_spent > 0 else ""
             return ProcedureResult(
                 success=False,
                 reason=FailureReason.BLOCKED,
                 message=f"Buy {target_name} from {vendor_name} failed — "
-                        f"no item delivered (backpack {gold_before}gp, "
+                        f"no item delivered{lost} (backpack {gold_before}gp, "
                         f"bank cache {bank_before}gp, buy disabled 10min)",
             )
 
