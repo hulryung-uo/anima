@@ -72,6 +72,9 @@ class Avatar:
 
         # Subscribers (kept for cleanup)
         self._subscribers: list = []
+        # Background asyncio tasks spawned during create() — tracked so that
+        # close() can cancel them (otherwise they leak across reconnects).
+        self._background_tasks: list[asyncio.Task] = []
 
     @property
     def name(self) -> str:
@@ -327,10 +330,16 @@ class Avatar:
                     logger.warning("metrics_action_log_poll_failed", error=str(_e))
                 await asyncio.sleep(30)
 
-        asyncio.create_task(_state_diff_loop(), name="metrics_state_loop")
-        asyncio.create_task(_action_log_poll_loop(), name="metrics_action_log_loop")
-        asyncio.create_task(
-            _metrics_aggregator.run_forever(), name="metrics_aggregator_loop",
+        avatar._background_tasks.append(
+            asyncio.create_task(_state_diff_loop(), name="metrics_state_loop")
+        )
+        avatar._background_tasks.append(
+            asyncio.create_task(_action_log_poll_loop(), name="metrics_action_log_loop")
+        )
+        avatar._background_tasks.append(
+            asyncio.create_task(
+                _metrics_aggregator.run_forever(), name="metrics_aggregator_loop",
+            )
         )
         logger.info("metrics_pipeline_started")
 
@@ -403,6 +412,15 @@ class Avatar:
 
     async def close(self) -> None:
         """Clean up resources."""
+        # Cancel background tasks first so their while-True loops stop and do
+        # not leak across reconnects (create() is re-run on every session).
+        tasks = getattr(self, "_background_tasks", [])
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._background_tasks = []
         if self.memory_db:
             await self.memory_db.close()
         if hasattr(self, "_log_sub"):
