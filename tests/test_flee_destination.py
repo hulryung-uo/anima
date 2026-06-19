@@ -12,11 +12,11 @@ import pytest
 
 import anima.action.movement as movement
 from anima.perception.enums import NotorietyFlag
-from anima.planner.planner import _FleeFromHostiles, _flee_destination
+from anima.planner.planner import _FleeFromHostiles, _count_hostiles, _flee_destination
 
 
-def _mob(serial, x, y, notoriety=NotorietyFlag.ENEMY):
-    return SimpleNamespace(serial=serial, x=x, y=y, notoriety=notoriety)
+def _mob(serial, x, y, notoriety=NotorietyFlag.ENEMY, is_dead=False):
+    return SimpleNamespace(serial=serial, x=x, y=y, notoriety=notoriety, is_dead=is_dead)
 
 
 def _ss(x=100, y=100, serial=0x1):
@@ -108,6 +108,55 @@ class TestFleeFromHostilesRun:
 
         monkeypatch.setattr(movement, "go_to", fake_go_to)
         ctx = _ctx(100, 100, [])
+        result = await _FleeFromHostiles().run(ctx)
+        assert result.success is True
+        assert "No hostiles" in result.message
+
+
+class TestHostileCountExcludesCorpses:
+    """Right after a kill, the felled mob lingers in world.mobiles with its
+    enemy notoriety intact until 0x1D Delete. The survival flee gate must not
+    count those corpses, or a wounded agent flees from dead bodies instead of
+    healing in place on a fight it already won.
+    """
+
+    def test_count_hostiles_skips_dead_mobs(self):
+        ctx = _ctx(100, 100, [
+            _mob(0x2, 101, 100, is_dead=True),
+            _mob(0x3, 100, 101, is_dead=True),
+            _mob(0x4, 99, 100, is_dead=True),
+        ])
+        ss = ctx.perception.self_state
+        # All three are corpses → no live hostiles, so the flee gate stays off.
+        assert _count_hostiles(ctx, ss, dist=6) == 0
+
+    def test_count_hostiles_counts_only_living(self):
+        ctx = _ctx(100, 100, [
+            _mob(0x2, 101, 100, is_dead=True),   # corpse
+            _mob(0x3, 100, 101, is_dead=False),  # alive
+            _mob(0x4, 99, 100),                  # alive (default)
+        ])
+        ss = ctx.perception.self_state
+        assert _count_hostiles(ctx, ss, dist=6) == 2
+
+    def test_count_hostiles_ignores_missing_is_dead_attr(self):
+        # A mob object that omits is_dead entirely (e.g. a bare stub) must be
+        # treated as alive — never silently dropped as a corpse.
+        live = SimpleNamespace(serial=0x5, x=101, y=100, notoriety=NotorietyFlag.ENEMY)
+        ctx = _ctx(100, 100, [live])
+        ss = ctx.perception.self_state
+        assert _count_hostiles(ctx, ss, dist=6) == 1
+
+    @pytest.mark.asyncio
+    async def test_flee_run_treats_all_corpses_as_no_hostiles(self, monkeypatch):
+        async def fake_go_to(ctx, x, y, run=False, interrupt_check=None):
+            raise AssertionError("should not flee from corpses")
+
+        monkeypatch.setattr(movement, "go_to", fake_go_to)
+        ctx = _ctx(100, 100, [
+            _mob(0x2, 99, 100, is_dead=True),
+            _mob(0x3, 101, 100, is_dead=True),
+        ])
         result = await _FleeFromHostiles().run(ctx)
         assert result.success is True
         assert "No hostiles" in result.message

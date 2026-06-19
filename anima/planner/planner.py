@@ -4538,12 +4538,33 @@ def _attackable_set():
     }
 
 
+def _is_live_hostile(m, ss, attackable) -> bool:
+    """True only for a *living* enemy mobile that is not the agent itself.
+
+    The friend/foe gate is notoriety, but a just-felled mob lingers in
+    ``world.mobiles`` — with a known health bar reading zero, or already a
+    ghost body (``MobileInfo.is_dead``) — until its 0x1D Delete arrives. The
+    combat loop already drops corpses from its target/surround scans
+    (``combat_loop._find_target`` / ``_adjacent_hostiles``); the survival flee
+    gate must apply the same filter. Otherwise, right after clearing a swarm,
+    the corpses still satisfy the notoriety test and inflate the hostile count,
+    so a wounded agent flees from dead bodies instead of healing in place on a
+    fight it has already won. ``is True`` (not just truthy) so SimpleNamespace /
+    Mock test mobs that omit ``is_dead`` are treated as alive, never corpses.
+    """
+    if getattr(m, "serial", None) == getattr(ss, "serial", None):
+        return False
+    if getattr(m, "notoriety", None) not in attackable:
+        return False
+    return getattr(m, "is_dead", False) is not True
+
+
 def _count_hostiles(ctx, ss, dist: int) -> int:
     attackable = _attackable_set()
     return sum(
         1
         for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=dist)
-        if m.serial != ss.serial and getattr(m, "notoriety", None) in attackable
+        if _is_live_hostile(m, ss, attackable)
     )
 
 
@@ -4598,7 +4619,7 @@ class _FleeFromHostiles:
         attackable = _attackable_set()
         hostiles = [
             m for m in ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=12)
-            if m.serial != ss.serial and getattr(m, "notoriety", None) in attackable
+            if _is_live_hostile(m, ss, attackable)
         ]
         if not hostiles:
             return ProcedureResult(success=True, message="No hostiles to flee from")
