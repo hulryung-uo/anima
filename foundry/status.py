@@ -8,7 +8,7 @@ Mutator-editable (presentation only; reads the kernel archive, changes nothing).
 from __future__ import annotations
 
 from foundry.kernel import uoconst
-from foundry.kernel.archive import Archive
+from foundry.kernel.archive import Archive, cell_to_str
 from foundry.select import SOC_BINS, all_active_cells
 
 SOC_LABELS = ("low", "mid", "high")
@@ -17,8 +17,19 @@ SOC_LABELS = ("low", "mid", "high")
 def render(arc: Archive) -> str:
     lines: list[str] = []
     s = arc.summary()
+    # Count filled cells against the SAME universe the grid table renders
+    # (all_active_cells()), not the raw grid size. The kernel's
+    # summary()["filled_cells"] is len(grid), which can include a cell whose
+    # profession/sociability bin is NOT in the active enumeration (e.g. a
+    # profession dropped or renamed across an evolution). Such a cell inflates
+    # the numerator -- even past the denominator (e.g. "22/21") -- yet is
+    # silently absent from the table below, so the headline contradicts the
+    # body. Intersect so numerator is a subset of the denominator and matches
+    # exactly the cells rendered.
+    active = {cell_to_str(c) for c in all_active_cells()}
+    filled = sum(1 for k in arc.grid if k in active)
     lines.append(
-        f"genomes {s['total_genomes']}  filled {s['filled_cells']}/{len(all_active_cells())}"
+        f"genomes {s['total_genomes']}  filled {filled}/{len(active)}"
         f"  qd-score {s['qd_score']}  best {s['best_fitness']}"
     )
     lines.append("")
