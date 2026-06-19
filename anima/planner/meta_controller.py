@@ -369,6 +369,11 @@ class MetaController:
         # Samples track NET WORTH (backpack gold + last-known bank balance),
         # not backpack gold, so a bank deposit is a wash not a phantom loss.
         self._gold_samples: list[tuple[float, int]] = []  # (monotonic, gold)
+        # Last bank balance we ever observed *fresh*. Carried forward when the
+        # blackboard ``bank_balance`` cache ages out so net worth never
+        # phantom-collapses by the banked amount just because the agent hasn't
+        # re-polled the bank inside the freshness window (see ``_net_worth``).
+        self._last_known_bank: int = 0
 
     @property
     def active_mode(self) -> str | None:
@@ -390,8 +395,7 @@ class MetaController:
         self._decide_task = asyncio.create_task(self._do_decide(ctx))
         return True
 
-    @staticmethod
-    def _net_worth(ctx: "AgentContext") -> int:
+    def _net_worth(self, ctx: "AgentContext") -> int:
         """Backpack gold + fresh banked gold.
 
         The gold-earning loop ends in a bank deposit, which zeroes
@@ -403,12 +407,31 @@ class MetaController:
         ``bank_balance`` cache that ``check_bank_balance`` writes
         (``{"amount", "ts"}``); we honour the same 10-minute freshness
         window the buy/restock path uses (buy_from_vendor._BANK_CACHE_TTL).
+
+        When the cache ages out we DON'T drop the banked amount to zero —
+        that would phantom-collapse net worth by thousands of gold the moment
+        the agent simply stops re-polling the bank, and the rate window
+        (``_gold_rate_per_min``) would then read a huge *negative* slope
+        between an in-window sample that still saw the fresh balance and the
+        post-staleness sample that did not, spuriously firing the very
+        relocate/offload branch this whole accounting exists to suppress.
+        Instead we carry forward the last balance we ever saw fresh, so a
+        stale cache is a hold (net worth unchanged), a real deposit/withdraw
+        updates it, and only a controller that has NEVER seen a fresh balance
+        falls back to backpack-only.
         """
         ss = ctx.perception.self_state
         bal_cache = ctx.blackboard.get("bank_balance") or {}
         amount = bal_cache.get("amount")
         ts = bal_cache.get("ts", 0)
-        bank = amount if (amount is not None and time.time() - ts <= 600) else 0
+        if amount is not None and time.time() - ts <= 600:
+            # Fresh reading — trust it and remember it for the stale path.
+            bank = int(amount)
+            self._last_known_bank = bank
+        else:
+            # Stale/absent cache: hold the last fresh balance rather than
+            # collapsing it to zero (0 only before any fresh reading exists).
+            bank = self._last_known_bank
         return ss.gold + int(bank)
 
     def _gold_rate_per_min(self, net_worth: int) -> float:
