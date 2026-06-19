@@ -1103,7 +1103,31 @@ def register_handlers(
         r = PacketReader(data[1:])
         target_type = r.read_u8()  # 0=object, 1=ground
         cursor_id = r.read_u32()
-        cursor_flag = r.read_u8()  # 0=neutral, 1=harmful, 2=helpful
+        cursor_flag = r.read_u8()  # 0=neutral, 1=harmful, 2=helpful, 3=cancel
+
+        # A 0x6C with cursor_flag == 3 is the server WITHDRAWING the cursor,
+        # not a new request. ClassicUO's TargetManager.SetTargeting gates on
+        # ``IsTargeting = cursorType < TargetType.Cancel`` (TargetType.Cancel
+        # == 3) and, when a cancel arrives, runs CancelTarget()/Reset() rather
+        # than presenting a cursor to answer. We previously stored every 0x6C
+        # as ``pending_target`` regardless of flag, so a server cancel:
+        #   1. made ``wait_for_target`` return success on a dead cursor, and
+        #   2. lingered in ``pending_target`` to falsely satisfy the *next*
+        #      ``wait_for_target`` immediately, firing a response against the
+        #      already-cancelled cursor_id.
+        # Treat it as a clear of any in-flight target instead.
+        if cursor_flag == 3:
+            p.emit(
+                GameEventType.TARGET_REQUESTED,
+                {
+                    "target_type": target_type,
+                    "cursor_id": cursor_id,
+                    "cursor_flag": cursor_flag,
+                },
+            )
+            p.self_state.pending_target = None
+            logger.debug("target_cursor_cancelled", cursor_id=f"0x{cursor_id:08X}")
+            return
 
         p.emit(
             GameEventType.TARGET_REQUESTED,
