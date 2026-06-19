@@ -119,10 +119,25 @@ def choose_parent(archive: Archive, seed: int = 0) -> Genome | None:
     """Pick a parent elite to mutate, biased toward the frontier.
 
     Returns None when the grid is empty (caller should seed from a base genome).
+
+    NONE-fallback-row elites are excluded from the parent pool (mirroring the
+    target-side NONE exclusion in suggest_target_cell / empty_cells /
+    _frontier_potential). A NONE elite is a failed/degenerate agent that gained
+    no livelihood skill — it just wandered or died and banked a high-variance
+    score (the backlog's g_00118). Mutating FROM that code base propagates the
+    broken/wandering machinery as a lineage root, and it is the one parent the
+    frontier bias can't down-weight: its whole neighbourhood is the un-fillable
+    NONE row (frontier_potential 0), so a positive _selection_quality bonus is
+    its only weight and it can still be drawn. choose_parent_for_target's row
+    path never aims at NONE, but its no-row-match fallback lands HERE — so the
+    guard belongs here too. Keep the NONE elites only if the grid holds nothing
+    else (so the function stays total), matching suggest_target_cell's fallback.
     """
     elites = archive.elites()
     if not elites:
         return None
+    targetable = [g for g in elites if g.cell and g.cell[0] != uoconst.NONE]
+    elites = targetable or elites
     filled = set(archive.grid.keys())
     rng = random.Random(seed)
     weights = []
