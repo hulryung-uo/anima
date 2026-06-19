@@ -204,11 +204,27 @@ async def _maybe_bandage(ctx: AgentContext) -> None:
     (0x6C) with the agent's own serial, then returns immediately — no
     waiting for the "You finish applying" journal line, so war mode
     stays on and attack re-sends continue while the bandage timer runs.
+
+    Poison override: in ServUO (Bandage.cs ``Heal``) a bandage applied to a
+    *poisoned* target spends its resolve attempting a CURE, not an HP heal —
+    and poison ticks keep draining HP regardless of how full the bar reads.
+    The HP-percent trigger alone therefore lets a poisoned agent at, say, 80%%
+    HP sit there ticking down to death without ever applying a bandage
+    (``hp_percent >= trigger_pct`` skips it every tick). ``self_state`` already
+    carries ``is_poisoned`` (synced from the 0x17 health-bar status packet), so
+    we let an active poison force a bandage independent of the HP gate. The
+    reapply cooldown still applies — a cure attempt occupies the same ~8s
+    bandage timer as a heal, so re-arming inside it is wasted.
     """
     ss = ctx.perception.self_state
     now = time.monotonic()
     trigger_pct = _bandage_trigger_pct(ctx, ss.hp_percent, now)
-    if ss.hits_max <= 0 or ss.hp_percent >= trigger_pct:
+    if ss.hits_max <= 0:
+        return
+    poisoned = bool(getattr(ss, "is_poisoned", False))
+    # Poison forces a cure-bandage even at high HP; otherwise gate on the
+    # (DPS-adaptive) HP trigger as before.
+    if not poisoned and ss.hp_percent >= trigger_pct:
         return
     if now - ctx.blackboard.get("_bandage_last_ts", 0.0) < BANDAGE_REAPPLY_S:
         return
@@ -222,6 +238,7 @@ async def _maybe_bandage(ctx: AgentContext) -> None:
             "combat_bandage",
             hp_pct=round(ss.hp_percent, 1),
             trigger_pct=round(trigger_pct, 1),
+            poisoned=poisoned,
         )
     else:
         logger.debug("combat_bandage_failed", message=used.message)
