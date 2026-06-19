@@ -283,8 +283,22 @@ def build_create_character(appearance: CharacterAppearance, slot: int = 0) -> by
     w.write_u8(0)            # profession (0 = custom)
     w.write_zeros(15)        # reserved
 
-    # Gender+Race encoding: (race-1)*2 + (female?1:0), human race=1
-    gender_race = 0 + (1 if appearance.female else 0)
+    # Gender+Race byte. We frame the 0xF8 CreateCharacter70160 packet, which
+    # ServUO only dispatches for CV_70160+ clients — exactly the 7.0.102.3
+    # version we advertise in ``build_seed``. ClassicUO's modern path
+    # (Send_CreateCharacter, OutgoingPackets.cs) computes this byte as
+    # ``race * 2 + female`` with NO ``race--`` (the decrement applies only to
+    # CV < 7000), so a Human (Race id 1) sends 2 (male) or 3 (female) — NOT
+    # the legacy 0/1. ServUO's CreateCharacter handler then decodes it under
+    # StygianAbyss as ``raceID = genderRace < 4 ? 0 : genderRace/2 - 1`` →
+    # Human, and ``female = genderRace % 2``. The old 0/1 value only happened
+    # to resolve to Human because of the ``< 4 ? 0`` special-case; on a
+    # non-StygianAbyss shard (``race = Race.Races[genderRace/2]``) 0/1 still
+    # reads Human but the byte no longer matches what a real client sends,
+    # leaving the wire bytes diverged from ClassicUO. Emit the canonical
+    # Human encoding so the packet is byte-faithful on every shard.
+    _HUMAN_RACE_ID = 1
+    gender_race = _HUMAN_RACE_ID * 2 + (1 if appearance.female else 0)
     w.write_u8(gender_race)
 
     # Stats
