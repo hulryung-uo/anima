@@ -67,6 +67,7 @@ class ChopWood(Procedure):
         "fail to produce",              # skill-check fail
         "too far away",                 # 500446 out of range
         "can't use",                    # blocked
+        "worn out",                     # 1044038 hatchet destroyed at 0 uses
     )
 
     # Result lines that mean *this tree* is spent or unreachable, so it must be
@@ -74,6 +75,11 @@ class ChopWood(Procedure):
     # ``_find_nearby_tree`` honours) — otherwise the next loop iteration just
     # re-selects and re-targets the identical exhausted tree forever.
     _SKIP_TREE_SNIPPETS = ("not enough wood", "no wood here", "too far away")
+
+    # 1044038 "You have worn out your tool!" — ServUO HarvestSystem deletes the
+    # hatchet when UsesRemaining hits 0. This is NOT a depleted tree and NOT a
+    # skill-check miss: the *tool* is gone. Mirrors mine_ore's tool_broke path.
+    _TOOL_BROKE_SNIPPETS = ("worn out",)
 
     # Success lines specifically. As with mining, ServUO sends the "...logs
     # into your backpack" cliloc and the container-content update (0x25/0x1A)
@@ -181,6 +187,23 @@ class ChopWood(Procedure):
                 await asyncio.sleep(0.1)
                 if _logs_in_pack() > logs_before:
                     break
+
+        # A worn-out hatchet must be surfaced as MISSING_RESOURCE so the planner
+        # routes to make_tools / buy_from_vendor (mirroring mine_ore's tool_broke
+        # branch). Without this, the destroyed-tool swing (a) was absent from
+        # _RESULT_SNIPPETS so it stalled the full 3s deadline, and (b) fell
+        # through to the generic "Failed to chop wood" BLOCKED branch with no
+        # next_suggestion — and worse, "worn out" is NOT in _SKIP_TREE_SNIPPETS,
+        # so a perfectly good tree never got parked while the agent had no
+        # hatchet to swing. Check this BEFORE parking the tree as depleted.
+        if result_snippet in self._TOOL_BROKE_SNIPPETS:
+            logger.warning("chop_tool_broke", pos=f"({tx},{ty})")
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.MISSING_RESOURCE,
+                message="Hatchet worn out — need a replacement hatchet",
+                details={"tree": (tx, ty), "tool_broke": True},
+            )
 
         # A depleted / out-of-range tree must be parked in the shared cooldown
         # so _find_nearby_tree skips it next iteration; otherwise the loop pins
