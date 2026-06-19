@@ -179,6 +179,30 @@ class TestActivityJournal:
         assert "###" in narrative  # section headers present
 
     @pytest.mark.asyncio
+    async def test_compile_narrative_groups_interleaved_categories(self, journal):
+        # Entries are stored/returned in timestamp order, so the same category
+        # can recur interleaved with others (gather → craft → gather). The
+        # compiled essay must collect each category under ONE heading, not emit
+        # a fresh "자원 채집" header for every chronological run — otherwise the
+        # forum essay / self-reflection reads the same activity scattered across
+        # duplicate sections.
+        gather = SkillResult(success=True, reward=5.0, message="logs")
+        craft = SkillResult(success=True, reward=8.0, message="Hatchet")
+        await journal.record_skill("chop_wood", gather)  # gathering
+        await journal.record_skill("craft_tinker", craft)  # crafting
+        await journal.record_skill("mine_ore", gather)  # gathering again
+
+        narrative = await journal.compile_narrative(hours=1.0)
+
+        # The gathering header must appear exactly once despite the interleave...
+        assert narrative.count("### 자원 채집") == 1
+        assert narrative.count("### 제작 활동") == 1
+        # ...and BOTH gathering narratives live under that single header.
+        gather_section = narrative.split("### 자원 채집", 1)[1].split("###", 1)[0]
+        assert "통나무를 얻었다" in gather_section  # chop_wood success line
+        assert "광석을 캐내는 데 성공했다" in gather_section  # mine_ore success line
+
+    @pytest.mark.asyncio
     async def test_summarize_day(self, journal):
         r = SkillResult(success=True, reward=5.0, message="ok")
         await journal.record_skill("chop_wood", r)

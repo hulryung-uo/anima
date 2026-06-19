@@ -397,29 +397,26 @@ class ActivityJournal:
             "activity": "활동",
         }
 
-        # Group by category for coherent sections
-        sections: list[str] = []
-        current_category = ""
-        current_lines: list[str] = []
-
+        # Group by category for coherent sections. Entries arrive in timestamp
+        # order, so the same category can recur interleaved with others (chop →
+        # craft → chop). Coalescing only *consecutive* runs would emit the same
+        # category header twice and scatter that activity across the essay; a
+        # true group collects every entry of a category under one heading. Use a
+        # dict, which preserves first-appearance (insertion) order, so the
+        # section order still tracks when each activity was first seen.
+        grouped: dict[str, list[str]] = {}
         for entry in entries:
-            if entry.category != current_category and current_lines:
-                cat_title = _CATEGORY_TITLES.get(current_category, current_category)
-                section = f"### {cat_title}\n\n" + "\n".join(current_lines)
-                sections.append(section)
-                current_lines = []
-            current_category = entry.category
-
             # Notable entries (importance >= 2) get their title as emphasis
             if entry.importance >= 2 and entry.title:
-                current_lines.append(f"**{entry.title}** — {entry.narrative}")
+                line = f"**{entry.title}** — {entry.narrative}"
             else:
-                current_lines.append(entry.narrative)
+                line = entry.narrative
+            grouped.setdefault(entry.category, []).append(line)
 
-        if current_lines:
-            cat_title = _CATEGORY_TITLES.get(current_category, current_category)
-            section = f"### {cat_title}\n\n" + "\n".join(current_lines)
-            sections.append(section)
+        sections: list[str] = []
+        for category, lines in grouped.items():
+            cat_title = _CATEGORY_TITLES.get(category, category)
+            sections.append(f"### {cat_title}\n\n" + "\n".join(lines))
 
         return "\n\n".join(sections)
 
