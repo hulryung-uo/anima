@@ -1584,6 +1584,26 @@ def register_handlers(
             if name_len > 0 and r.remaining >= name_len:
                 name = r.read_ascii(name_len)
 
+            # ServUO's GenericBuyInfo names a stock item
+            # ``(1020000 + itemID).ToString()`` whenever it has no custom Name
+            # (Scripts/VendorInfo/GenericBuy.cs:65-66) — i.e. for the vast
+            # majority of vendor goods (ingots, ore, regs, tools), so the
+            # BuyItemState.Description that lands in this 0x74 field very
+            # commonly arrives as a bare cliloc id string like "1020386", NOT a
+            # readable label. ClassicUO's BuyList handler
+            # (PacketHandlers.cs:2758-2765) resolves it: `int.TryParse(name) ->
+            # Clilocs.Translate(num)`. Without this we stored the raw digits, so
+            # the buy flow's name-based reporting/journal (buy_from_vendor's
+            # target_name + buy_list_received feed) showed "1020386" instead of
+            # "iron ingot" — the same regression already fixed for the 0x9E
+            # sell list (commit 94d8e11). Mirror ClassicUO: when the name is all
+            # digits and resolves to a cliloc string, swap in the resolved text;
+            # otherwise keep the literal (custom-named items stay as-is).
+            if name.isdigit():
+                resolved = cliloc_text(int(name))
+                if resolved:
+                    name = resolved
+
             # Match with container item by index
             if i < len(container_items):
                 ci = container_items[i]
