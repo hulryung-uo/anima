@@ -26,6 +26,11 @@ logger = structlog.get_logger()
 
 THINK_COOLDOWN = 30.0  # seconds between LLM think calls (was 15 — too frequent)
 CONVERSATION_TIMEOUT = 10.0
+# When an LLM think call yields no usable text (timeout / transient backend
+# error → LLMResponse(text="")), we must NOT consume the whole THINK_COOLDOWN:
+# no decision was actually made.  Roll last_think_time back so the next tick
+# retries after only this short backoff instead of going brain-dead for 30s.
+THINK_RETRY_BACKOFF = 3.0
 
 THINK_PROMPT = """\
 Position: ({x}, {y}).
@@ -264,6 +269,10 @@ async def llm_think(ctx: BrainContext) -> Status:
         [{"role": "system", "content": system}, {"role": "user", "content": user_msg}]
     )
     if not result.text:
+        # Empty response = no decision. Don't waste the full cooldown — schedule
+        # a near-term retry so a flaky backend can't idle the agent for 30s.
+        ctx.blackboard["last_think_time"] = now - THINK_COOLDOWN + THINK_RETRY_BACKOFF
+        logger.warning("think_empty_response", retry_in_s=THINK_RETRY_BACKOFF)
         return Status.SUCCESS
 
     # Record LLM thinking to journal (if model supports extended thinking)
