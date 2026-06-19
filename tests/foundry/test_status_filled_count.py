@@ -5,7 +5,8 @@ whose profession/sociability is NOT in the active enumeration (a profession
 dropped or renamed across an evolution). Such a cell inflates the headline
 numerator -- potentially past the denominator -- yet is silently absent from the
 grid table render() prints below it, so the report contradicts itself. render()
-must count filled cells against the SAME active-cell universe it tabulates.
+must count filled cells -- AND derive qd-score / best -- against the SAME
+active-cell universe it tabulates.
 """
 from __future__ import annotations
 
@@ -23,6 +24,12 @@ def _headline_filled(header: str) -> tuple[int, int]:
     frac = [tok for tok in header.split() if "/" in tok][0]
     num, den = frac.split("/")
     return int(num), int(den)
+
+
+def _headline_value(header: str, label: str) -> float:
+    # "genomes N  filled X/Y  qd-score Q  best B" -> the token after `label`.
+    toks = header.split()
+    return float(toks[toks.index(label) + 1])
 
 
 def _table_filled(rendered: str) -> int:
@@ -69,3 +76,37 @@ def test_filled_count_matches_table_on_normal_grid(tmp_path):
     assert num == 3
     assert num == _table_filled(rendered)
     assert num <= den
+
+
+def test_qd_score_and_best_ignore_cell_outside_active_grid(tmp_path):
+    # Same integrity bug as the filled count, for the other two headline figures:
+    # an elite OUTSIDE the active enumeration is excluded from the filled count
+    # and the grid table, so its fitness must not inflate the headline qd-score
+    # (a sum) or claim "best" (a max) -- otherwise the headline advertises a cell
+    # the body never shows.
+    arc = Archive(tmp_path)
+    arc.add(_g("g_00001", ("MAGIC", 0), 10.0))            # active
+    arc.add(_g("g_00002", ("GATHERING", 2), 4.0))         # active
+    arc.add(_g("g_00003", ("LEGACYPROF", 0), 99.0))       # outside enumeration
+
+    header = status.render(arc).splitlines()[0]
+    # qd-score sums ONLY the active elites (10 + 4), not the stray 99.
+    assert _headline_value(header, "qd-score") == 14.0
+    # best is the max over active elites (10), not the inflated stray 99.
+    assert _headline_value(header, "best") == 10.0
+    # the kernel summary (which the headline previously trusted) DOES include
+    # the stray elite -- proving the headline now diverges from it on purpose.
+    s = arc.summary()
+    assert s["qd_score"] == 113.0 and s["best_fitness"] == 99.0
+
+
+def test_qd_score_and_best_match_kernel_on_clean_grid(tmp_path):
+    # With no stray cells the active-cell figures must still equal the kernel's.
+    arc = Archive(tmp_path)
+    arc.add(_g("g_00001", ("MAGIC", 0), 10.0))
+    arc.add(_g("g_00002", ("COMBAT", 1), 20.0))
+
+    header = status.render(arc).splitlines()[0]
+    s = arc.summary()
+    assert _headline_value(header, "qd-score") == round(s["qd_score"], 3)
+    assert _headline_value(header, "best") == round(s["best_fitness"], 3)

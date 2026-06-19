@@ -28,9 +28,21 @@ def render(arc: Archive) -> str:
     # exactly the cells rendered.
     active = {cell_to_str(c) for c in all_active_cells()}
     filled = sum(1 for k in arc.grid if k in active)
+    # qd-score and best are the SAME headline-vs-body integrity problem as the
+    # filled count: the kernel's summary() sums/maxes fitness over EVERY grid
+    # key, including an elite whose cell is outside the active enumeration (the
+    # dropped/renamed-profession case above). That stray elite is excluded from
+    # both the filled numerator and the grid table, yet its fitness still
+    # inflates the displayed qd-score (a sum no rendered cell accounts for) and
+    # can claim "best" for a row the table never shows -- the report contradicts
+    # itself. Derive both from the active-cell elite set so the three headline
+    # figures and the table all describe one universe.
+    active_elites = [g for g in arc.elites() if cell_to_str(g.cell) in active]
+    qd_score = round(sum(g.fitness for g in active_elites), 3)
+    best_fitness = round(max((g.fitness for g in active_elites), default=0.0), 3)
     lines.append(
         f"genomes {s['total_genomes']}  filled {filled}/{len(active)}"
-        f"  qd-score {s['qd_score']}  best {s['best_fitness']}"
+        f"  qd-score {qd_score}  best {best_fitness}"
     )
     lines.append("")
 
