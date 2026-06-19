@@ -209,3 +209,95 @@ def test_build_equip_item_layout():
     assert data[1:5] == bytes([0x40, 0x00, 0x33, 0x33])  # item serial BE
     assert data[5] == 0x02                               # layer (TwoHanded)
     assert data[6:10] == bytes([0x00, 0x01, 0x23, 0x45]) # wearer serial BE
+
+
+# --- Huffman streaming contract (game-phase server->client) --------------
+# These lock the contract that ConnectionManager._recv_game_packet relies on:
+# huffman_decompress_one must round-trip real multi-symbol frames, report the
+# exact bytes consumed so concatenated/spanning frames stay aligned, and return
+# (None, 0) for ANY partial frame so the receiver waits for more TCP data
+# instead of desyncing the stream. The pre-existing tests only exercised the
+# all-zero single-frame happy path via huffman_decompress.
+
+from anima.client.codec import _HUFFMAN_TABLE, huffman_decompress_one
+
+
+def _encode_frame(payload: bytes) -> bytes:
+    """Independently encode one Huffman frame (payload + terminal, zero-padded).
+
+    Mirrors the UO server's per-packet compression so the decoder can be
+    exercised against real bit streams rather than hand-computed constants.
+    """
+    bits: list[int] = []
+    for sym in list(payload) + [256]:  # 256 = terminal symbol
+        nbits, code = _HUFFMAN_TABLE[sym]
+        for i in range(nbits - 1, -1, -1):
+            bits.append((code >> i) & 1)
+    while len(bits) % 8:
+        bits.append(0)
+    out = bytearray()
+    for i in range(0, len(bits), 8):
+        v = 0
+        for b in bits[i : i + 8]:
+            v = (v << 1) | b
+        out.append(v)
+    return bytes(out)
+
+
+def test_huffman_one_roundtrip_multi_symbol():
+    payload = b"Hello, Britannia! \x00\x01\xfe\xff"
+    comp = _encode_frame(payload)
+    res, consumed = huffman_decompress_one(comp)
+    assert res == payload
+    assert consumed == len(comp)
+
+
+def test_huffman_one_partial_frame_returns_none():
+    # Every truncation strictly before the terminal must read as "need more
+    # data" (None, 0) — never a falsely-complete frame.
+    comp = _encode_frame(b"a-reasonably-long-server-packet-body")
+    for cut in range(1, len(comp)):
+        res, consumed = huffman_decompress_one(comp[:cut])
+        assert res is None and consumed == 0, (cut, res, consumed)
+    # ...and the full buffer decodes cleanly.
+    res, consumed = huffman_decompress_one(comp)
+    assert res == b"a-reasonably-long-server-packet-body"
+    assert consumed == len(comp)
+
+
+def test_huffman_one_spanning_frames_consumed():
+    # Two independently-compressed frames back-to-back: decode_one must stop at
+    # the first terminal and report exactly frame-1's byte length so the caller
+    # can advance and decode frame-2 from the remainder.
+    f1, f2 = b"frame-one", b"2"
+    c1, c2 = _encode_frame(f1), _encode_frame(f2)
+    res, consumed = huffman_decompress_one(c1 + c2)
+    assert res == f1 and consumed == len(c1)
+    res2, consumed2 = huffman_decompress_one((c1 + c2)[consumed:])
+    assert res2 == f2 and consumed2 == len(c2)
+
+
+def test_huffman_one_random_streaming_no_desync():
+    import random
+
+    rng = random.Random(20240619)
+    for _ in range(500):
+        f1 = bytes(rng.randrange(256) for _ in range(rng.randint(1, 8)))
+        f2 = bytes(rng.randrange(256) for _ in range(rng.randint(1, 8)))
+        c1, c2 = _encode_frame(f1), _encode_frame(f2)
+        buf = c1 + c2
+        # Feed every byte-length prefix: the first non-None result must be the
+        # complete frame-1 with the exact consumed count, and a complete frame
+        # must never be missed once all its bytes are present.
+        for plen in range(1, len(buf) + 1):
+            res, consumed = huffman_decompress_one(buf[:plen])
+            if res is not None:
+                assert res == f1 and consumed == len(c1)
+                break
+            assert plen < len(c1), "complete frame went undetected"
+
+
+def test_huffman_multi_decompresses_all_frames():
+    payloads = [b"AB", b"", b"\x00\xff\x10", b"x"]
+    buf = b"".join(_encode_frame(p) for p in payloads)
+    assert huffman_decompress(buf, 10_000) == b"".join(payloads)
