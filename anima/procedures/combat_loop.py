@@ -408,6 +408,12 @@ def _adjacent_hostiles(ctx: AgentContext) -> list:
             continue
         if getattr(m, "is_dead", False) is True:
             continue
+        # An invulnerable / blessed mobile (yellow health bar) can never be
+        # felled — see _find_target for why we exclude it everywhere. A boxed-in
+        # healer would otherwise inflate the surround count and trigger a
+        # reposition away from a target that isn't even a threat.
+        if getattr(m, "is_yellow_health", False) is True:
+            continue
         if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
             continue
         if max(abs(m.x - ss.x), abs(m.y - ss.y)) <= 1:
@@ -606,6 +612,24 @@ def _find_target(ctx: AgentContext):
         # don't define is_dead aren't spuriously treated as corpses — only a real
         # MobileInfo.is_dead bool counts.
         if getattr(m, "is_dead", False) is True:
+            continue
+        # Skip invulnerable / blessed mobiles (yellow health bar). ServUO marks
+        # Healers, town NPCs and other protected mobiles with the YELLOW_BAR flag
+        # (MobileInfo.is_yellow_health, synced from the 0x78/0x77/0x17 status
+        # packets) — they take zero damage no matter how long we swing. This is
+        # the DYNAMIC invulnerable signal, distinct from the static INVULNERABLE
+        # notoriety (which is already excluded by ATTACKABLE_NOTORIETY): a Healer
+        # can read as gray/ATTACKABLE notoriety yet still be unkillable. Without
+        # this guard such a mob is a valid candidate, gets selected (focus-fire
+        # even sorts it FIRST once its hits read non-full), and the engagement
+        # loop locks onto it — it never dies and never leaves view, so the loop
+        # only re-picks at the 45s ENGAGEMENT_CAP_S, burning the whole window
+        # landing zero real kills. Acutely relevant since the survival-arena
+        # Healer NPC was co-located at the resurrection spot (kernel commits K1+/
+        # K1/K3): the agent would farm swings on the immortal healer instead of
+        # the Ettins/HeadlessOnes it was spawned beside. `is True` (not truthy)
+        # so SimpleNamespace test mobs lacking the field aren't mis-excluded.
+        if getattr(m, "is_yellow_health", False) is True:
             continue
         if m.body in HUMAN_BODIES and m.notoriety == NotorietyFlag.ATTACKABLE:
             continue
