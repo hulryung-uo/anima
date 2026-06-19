@@ -189,6 +189,19 @@ def register_handlers(
         serial = r.read_u32()
         was_mobile = serial in p.world.mobiles
         p.world.remove(serial)
+        # If the removed item was something WE were wearing, drop its layer
+        # from self_state.equipment. self_state.equipment is layer->serial and
+        # lives on SelfState, so World.remove() (which only touches world.items
+        # / world.mobiles) can't clear it. When the agent dies its gear is
+        # moved onto the corpse and the server sends a 0x1D Delete for each worn
+        # item; likewise dragging a weapon out of hand to swap/drop it deletes
+        # the worn serial. Without this, equipment[layer] keeps pointing at a
+        # gone serial, so the "hand already occupied" / "already equipped"
+        # guards in equip_weapon_from_pack / equip_item see a phantom weapon and
+        # the agent never re-equips — it walks into the next fight bare-handed.
+        for layer, worn in list(p.self_state.equipment.items()):
+            if worn == serial:
+                del p.self_state.equipment[layer]
         if was_mobile:
             p.emit(GameEventType.MOBILE_REMOVED, {"serial": serial})
         else:

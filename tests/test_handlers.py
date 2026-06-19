@@ -1540,3 +1540,33 @@ def test_zero_damage_other_emits_no_event():
 
     events = p.poll_events()
     assert not any(e.type == GameEventType.DAMAGE_DEALT for e in events)
+
+
+def _build_delete(serial: int) -> bytes:
+    """Build a 0x1D Delete packet ([id][serial:u32], 5 bytes)."""
+    return struct.pack(">BI", 0x1D, serial)
+
+
+def test_delete_clears_worn_equipment_layer():
+    """0x1D Delete of a worn item must clear its self_state.equipment layer."""
+    h, p, _ = _make_stack()
+    weapon_serial = 0x40005678
+    backpack_serial = 0x40009999
+    # Layer 1 = right hand (one-handed weapon), 0x15 = backpack.
+    p.self_state.equipment[1] = weapon_serial
+    p.self_state.equipment[0x15] = backpack_serial
+
+    h.dispatch(0x1D, _build_delete(weapon_serial))
+
+    # The weapon's hand layer is gone, so equip guards see an empty hand.
+    assert 1 not in p.self_state.equipment
+    # Unrelated layers (the backpack) are untouched.
+    assert p.self_state.equipment.get(0x15) == backpack_serial
+
+
+def test_delete_unrelated_item_leaves_equipment_intact():
+    """Deleting an item we are NOT wearing must not disturb equipment."""
+    h, p, _ = _make_stack()
+    p.self_state.equipment[1] = 0x40001111
+    h.dispatch(0x1D, _build_delete(0x4000DEAD))
+    assert p.self_state.equipment.get(1) == 0x40001111
