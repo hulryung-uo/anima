@@ -120,16 +120,35 @@ class GoalStack:
         self._stack.clear()
 
     def update(self, ctx: "AgentContext") -> None:
-        """Check the active goal — pop it if satisfied or expired.
+        """Reap dead goals from the stack.
 
-        May pop multiple goals in a single call if several cascade.
+        Expiry is an unconditional contract ("after the deadline the goal
+        auto-expires"), so an expired goal is removed from *anywhere* in the
+        stack — a buried base goal whose deadline passed while an interrupting
+        sub-goal was active must not come back to life when the sub-goal pops.
+        A single ``now`` is captured so two goals sharing a deadline are
+        treated identically within one tick.
+
+        Satisfaction, by contrast, is only honoured from the *top* down:
+        interrupt-and-resume integrity means a buried parent that happens to
+        read as satisfied right now must stay (its world-state may flip back
+        before the agent resumes it). So satisfied goals are popped only while
+        they sit at the top of the stack.
         """
+        now = time.time()
+
+        # 1) Sweep expired goals from anywhere in the stack.
+        survivors: list[Goal] = []
+        for g in self._stack:
+            if g.is_expired(now):
+                logger.info("goal_expired", goal=g.name)
+                continue
+            survivors.append(g)
+        self._stack = survivors
+
+        # 2) Pop satisfied goals, but only consecutively from the top.
         while self._stack:
             top = self._stack[-1]
-            if top.is_expired():
-                logger.info("goal_expired", goal=top.name)
-                self._stack.pop()
-                continue
             if top.is_satisfied(ctx):
                 logger.info("goal_satisfied", goal=top.name)
                 self._stack.pop()

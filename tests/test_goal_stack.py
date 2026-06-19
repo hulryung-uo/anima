@@ -102,6 +102,36 @@ class TestGoalStack:
         s.update(MagicMock())
         assert s.depth == 0
 
+    def test_update_reaps_buried_expired_goal(self):
+        # Interrupt-and-resume: a long-running base goal A is interrupted by a
+        # sub-goal B. A's deadline passes while B is still active. Expiry is an
+        # unconditional contract, so A must be reaped from *under* B — when B
+        # later finishes the agent must not resume an already-dead goal.
+        s = GoalStack()
+        a = Goal(name="base", description="", deadline=time.time() - 5)
+        b = Goal(name="sub", description="", is_satisfied_fn=lambda c: False)
+        s.push(a)
+        s.push(b)
+        s.update(MagicMock())
+        # B is unsatisfied and stays active; the expired base A is gone.
+        assert s.active is b
+        assert s.depth == 1
+        assert "base" not in s.snapshot()["stack"]
+
+    def test_update_keeps_buried_satisfied_goal(self):
+        # Mirror image: a buried parent that merely *reads* satisfied right now
+        # must NOT be popped while an active sub-goal sits above it — its world
+        # state may flip back before the agent resumes it. Only top-down
+        # satisfaction is honoured.
+        s = GoalStack()
+        a = Goal(name="base", description="", is_satisfied_fn=lambda c: True)
+        b = Goal(name="sub", description="", is_satisfied_fn=lambda c: False)
+        s.push(a)
+        s.push(b)
+        s.update(MagicMock())
+        assert s.depth == 2
+        assert s.snapshot()["stack"] == ["base", "sub"]
+
     def test_update_stops_at_first_unsatisfied(self):
         s = GoalStack()
         s.push(Goal(name="a", description="", is_satisfied_fn=lambda c: False))
