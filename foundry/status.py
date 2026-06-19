@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from foundry.kernel import uoconst
 from foundry.kernel.archive import Archive, cell_to_str
-from foundry.select import SOC_BINS, all_active_cells
+from foundry.select import SOC_BINS, all_active_cells, targetable_cells
 
 SOC_LABELS = ("low", "mid", "high")
 
@@ -28,18 +28,23 @@ def render(arc: Archive) -> str:
     # exactly the cells rendered.
     active = {cell_to_str(c) for c in all_active_cells()}
     filled = sum(1 for k in arc.grid if k in active)
-    # qd-score and best are the SAME headline-vs-body integrity problem as the
-    # filled count: the kernel's summary() sums/maxes fitness over EVERY grid
-    # key, including an elite whose cell is outside the active enumeration (the
-    # dropped/renamed-profession case above). That stray elite is excluded from
-    # both the filled numerator and the grid table, yet its fitness still
-    # inflates the displayed qd-score (a sum no rendered cell accounts for) and
-    # can claim "best" for a row the table never shows -- the report contradicts
-    # itself. Derive both from the active-cell elite set so the three headline
-    # figures and the table all describe one universe.
     active_elites = [g for g in arc.elites() if cell_to_str(g.cell) in active]
-    qd_score = round(sum(g.fitness for g in active_elites), 3)
-    best_fitness = round(max((g.fitness for g in active_elites), default=0.0), 3)
+    # qd-score and best summarise RUN QUALITY, so they exclude the NONE fallback
+    # row (R33: NONE is not a real niche -- a failed/wandered agent that banked a
+    # high-variance score, never a behavioural cell exploration aims at). A
+    # volatile NONE-row elite would otherwise skew the headline qd-score (a sum)
+    # and could claim "best" (a max) for a row no targetable lineage occupies --
+    # the very skew commit 25ad63f set out to remove, which slipped through by
+    # reusing the NONE-inclusive `active` set instead of the targetable one. They
+    # also still drop any stray cell outside the active enumeration (a dropped or
+    # renamed profession). The filled count keeps the full active denominator
+    # (NONE is still a real, if degenerate, grid cell the table renders), so the
+    # figures diverge on purpose: filled describes grid COVERAGE, qd-score/best
+    # describe QUALITY.
+    targetable = {cell_to_str(c) for c in targetable_cells()}
+    quality_elites = [g for g in active_elites if cell_to_str(g.cell) in targetable]
+    qd_score = round(sum(g.fitness for g in quality_elites), 3)
+    best_fitness = round(max((g.fitness for g in quality_elites), default=0.0), 3)
     lines.append(
         f"genomes {s['total_genomes']}  filled {filled}/{len(active)}"
         f"  qd-score {qd_score}  best {best_fitness}"

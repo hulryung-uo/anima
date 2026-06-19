@@ -153,3 +153,42 @@ def test_elites_lineage_unchanged_on_clean_grid(tmp_path):
 
     section = _elites_section(status.render(arc))
     assert "g_00001" in section and "g_00002" in section
+
+
+def test_qd_score_and_best_exclude_the_none_fallback_row(tmp_path):
+    # RUN-QUALITY integrity: the NONE fallback row is not a real niche (R33) --
+    # a failed/wandered agent that banked a high-variance score. Commit 25ad63f
+    # set out to keep that volatile NONE-row score out of the headline qd-score
+    # (a sum) and best (a max), but the implementation reused the NONE-INCLUSIVE
+    # `active` set, so a NONE elite still skewed both figures. Give the NONE-row
+    # elite the highest fitness so the regression would crown it "best" and add
+    # its score to qd-score; the corrected headline must ignore it.
+    arc = Archive(tmp_path)
+    arc.add(_g("g_00001", ("MAGIC", 0), 10.0))            # real niche
+    arc.add(_g("g_00002", ("COMBAT", 1), 20.0))           # real niche
+    arc.add(_g("g_00003", ("NONE", 0), 99.0))             # fallback row, volatile
+
+    header = status.render(arc).splitlines()[0]
+    # qd-score sums ONLY the real niches (10 + 20), not the NONE-row 99.
+    assert _headline_value(header, "qd-score") == 30.0
+    # best is the max over real niches (20), not the inflated NONE-row 99.
+    assert _headline_value(header, "best") == 20.0
+    # The NONE row is still real grid COVERAGE, so it counts toward filled
+    # (denominator stays the full active enumeration -- the figures diverge on
+    # purpose: filled = coverage, qd-score/best = quality).
+    num, den = _headline_filled(header)
+    assert num == 3
+    assert den == len(all_active_cells())
+
+
+def test_qd_score_and_best_unaffected_when_no_none_elite(tmp_path):
+    # Without a NONE-row elite the quality figures are identical to the
+    # active-cell aggregate -- the NONE exclusion only ever removes a NONE elite,
+    # it never disturbs an ordinary grid.
+    arc = Archive(tmp_path)
+    arc.add(_g("g_00001", ("MAGIC", 0), 10.0))
+    arc.add(_g("g_00002", ("COMBAT", 1), 20.0))
+
+    header = status.render(arc).splitlines()[0]
+    assert _headline_value(header, "qd-score") == 30.0
+    assert _headline_value(header, "best") == 20.0
