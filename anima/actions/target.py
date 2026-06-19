@@ -103,6 +103,7 @@ async def target_tile(
     y: int,
     z: int,
     graphic: int = 0,
+    cursor_flag: int = 0,
 ) -> ActionResult:
     """Send target response for a ground/static tile."""
     await ctx.conn.send_packet(build_target_response(
@@ -110,6 +111,7 @@ async def target_tile(
         cursor_id=cursor_id,
         x=x, y=y, z=z,
         graphic=graphic,
+        cursor_flag=cursor_flag,
     ))
     logger.debug("target_tile", cursor_id=f"0x{cursor_id:08X}", pos=f"({x},{y},{z})")
     return ActionResult(success=True, data={"x": x, "y": y, "z": z})
@@ -119,12 +121,14 @@ async def target_object(
     ctx: AgentContext,
     cursor_id: int,
     serial: int,
+    cursor_flag: int = 0,
 ) -> ActionResult:
     """Send target response for an object/mobile."""
     await ctx.conn.send_packet(build_target_response(
         target_type=0,
         cursor_id=cursor_id,
         serial=serial,
+        cursor_flag=cursor_flag,
     ))
     logger.debug("target_object", cursor_id=f"0x{cursor_id:08X}", serial=f"0x{serial:08X}")
     return ActionResult(success=True, data={"serial": serial})

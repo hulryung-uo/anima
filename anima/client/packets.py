@@ -494,13 +494,20 @@ def build_target_response(
     y: int = 0,
     z: int = 0,
     graphic: int = 0,  # tile graphic (for ground targets)
+    cursor_flag: int = 0,  # echo of server cursor flag: 0=neutral,1=harmful,2=helpful
 ) -> bytes:
-    """Build TargetResponse packet (0x6C, 19 bytes)."""
+    """Build TargetResponse packet (0x6C, 19 bytes).
+
+    Layout (matches ClassicUO Send_TargetObject/Send_TargetXYZ):
+    ``[0x6C][type:u8][cursorID:u32][cursorFlag:u8][serial:u32][x:u16][y:u16][z:u16][graphic:u16]``.
+    The cursor flag byte must echo the flag from the server's 0x6C request;
+    several servers reject a response whose flag does not match the request.
+    """
     w = PacketWriter()
     w.write_u8(0x6C)
     w.write_u8(target_type)
     w.write_u32(cursor_id)
-    w.write_u8(0)  # flags
+    w.write_u8(cursor_flag & 0xFF)  # echo server's cursor flag (was hardcoded 0)
     w.write_u32(serial)
     w.write_u16(x)
     w.write_u16(y)
