@@ -1207,7 +1207,17 @@ def register_handlers(
             args = ""
             if text_len > 0 and r.remaining >= text_len:
                 raw = data[3 + r.position : 3 + r.position + text_len]
-                args = raw.decode("utf-16-le", errors="replace")
+                # ClassicUO's MegaCliloc reads each arg with ReadUnicodeLE(length/2)
+                # (PacketHandlers.cs:4947) — a C-string read that floors an odd
+                # tail byte and STOPS at the first NUL code unit. The old inline
+                # ``raw.decode("utf-16-le", errors="replace")`` did neither: an odd
+                # text_len produced a trailing U+FFFD, and an embedded NUL leaked
+                # the post-terminator padding/garbage straight into the property.
+                # Since MegaCliloc is anima's only mobile-name source, that garbage
+                # became mob.name / opl_names[serial] (e.g. "Healer\x00GHOST"),
+                # breaking every name-keyed gate. Route through the shared decoder
+                # so 0xD6 matches 0xC1/0xCC.
+                args = _decode_cliloc_args(raw, big_endian=False)
                 r.skip(text_len)
             elif text_len > 0:
                 break  # not enough data
