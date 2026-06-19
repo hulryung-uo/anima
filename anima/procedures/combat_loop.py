@@ -73,9 +73,41 @@ RETREAT_HP_PCT = 35.0    # break off and retreat below this
 TICK_S = 1.0
 
 BANDAGE_HP_PCT = 85.0    # interleave a self-bandage below this
+BANDAGE_HP_HEAVY_DPS_PCT = 98.0  # under heavy DPS, start as soon as we're scratched
+# Falling at/above this many HP-percent-per-second counts as "heavy DPS" — at a
+# ~8s bandage resolve time the agent would shed ~64% before the heal lands, so we
+# raise the trigger threshold and get a heal in flight while HP is still high
+# (the alternative is breaking at RETREAT_HP_PCT with no heal started).
+HEAVY_DPS_PCT_PER_S = 8.0
 BANDAGE_REAPPLY_S = 8.5  # min spacing — re-applying restarts the timer
 LOOT_RANGE = 2           # container-open range for corpses
 CORPSE_SPAWN_WAIT_S = 1.0  # kill → corpse item appears in world state
+
+
+def _bandage_trigger_pct(ctx: AgentContext, hp_pct: float, now: float) -> float:
+    """Effective HP%% below which we should interleave a self-bandage.
+
+    Normally ``BANDAGE_HP_PCT`` (85). But a self-bandage takes ~8s to resolve,
+    so against multiple hard-hitting mobs a heal started at 85%% lands long
+    after HP has crossed the 35%% retreat floor — the agent breaks off (or
+    dies) with no heal in flight. We track HP between ticks and, when it is
+    falling steeply, raise the trigger toward ``BANDAGE_HP_HEAVY_DPS_PCT`` so a
+    heal is already running by the time HP reaches dangerous levels. Only a
+    *drop* counts; healing/standing still never inflates the threshold.
+    """
+    last_pct = ctx.blackboard.get("_bandage_hp_last")
+    last_ts = ctx.blackboard.get("_bandage_hp_ts")
+    ctx.blackboard["_bandage_hp_last"] = hp_pct
+    ctx.blackboard["_bandage_hp_ts"] = now
+    if last_pct is None or last_ts is None:
+        return BANDAGE_HP_PCT
+    dt = now - last_ts
+    if dt <= 0.0:
+        return BANDAGE_HP_PCT
+    drop_per_s = (last_pct - hp_pct) / dt  # positive when HP is falling
+    if drop_per_s >= HEAVY_DPS_PCT_PER_S:
+        return BANDAGE_HP_HEAVY_DPS_PCT
+    return BANDAGE_HP_PCT
 
 
 async def _maybe_bandage(ctx: AgentContext) -> None:
@@ -87,9 +119,10 @@ async def _maybe_bandage(ctx: AgentContext) -> None:
     stays on and attack re-sends continue while the bandage timer runs.
     """
     ss = ctx.perception.self_state
-    if ss.hits_max <= 0 or ss.hp_percent >= BANDAGE_HP_PCT:
-        return
     now = time.monotonic()
+    trigger_pct = _bandage_trigger_pct(ctx, ss.hp_percent, now)
+    if ss.hits_max <= 0 or ss.hp_percent >= trigger_pct:
+        return
     if now - ctx.blackboard.get("_bandage_last_ts", 0.0) < BANDAGE_REAPPLY_S:
         return
     bandages = find_in_backpack(ctx, BANDAGE_GRAPHICS)
@@ -98,7 +131,11 @@ async def _maybe_bandage(ctx: AgentContext) -> None:
     used = await use_on_object(ctx, bandages[0].serial, ss.serial, timeout=2.0)
     if used.success:
         ctx.blackboard["_bandage_last_ts"] = now
-        logger.info("combat_bandage", hp_pct=round(ss.hp_percent, 1))
+        logger.info(
+            "combat_bandage",
+            hp_pct=round(ss.hp_percent, 1),
+            trigger_pct=round(trigger_pct, 1),
+        )
     else:
         logger.debug("combat_bandage_failed", message=used.message)
 
