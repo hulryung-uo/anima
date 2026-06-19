@@ -59,17 +59,34 @@ def _decode_cliloc_args(raw: bytes, *, big_endian: bool) -> str:
 def _resolve_cliloc_text(cliloc_num: int, args: str) -> str:
     """Resolve a cliloc id + tab-separated args into display text.
 
-    Mirrors the 0xC1 substitution: replace ~N~ / ~N_label~ and #N with the
-    (N-1)th tab arg, then strip any unfilled ~...~ placeholders. Shared by the
-    0xC1 and 0xCC handlers so both decode identically.
+    Mirrors ClassicUO ClilocLoader.Translate (ClilocLoader.cs:121-283): each
+    ``~N~`` / ``~N_label~`` placeholder is resolved by the index *embedded in
+    the placeholder* (the (N-1)th tab-separated arg) — never by the positional
+    order of the args — so out-of-order AND repeated placeholders all resolve.
+    Drives substitution off the placeholder index exactly like the 0xD6
+    MegaCliloc handler already does, so the 0xC1 / 0xCC system-message path
+    (combat / loot / skill / vendor lines) decodes identically.
+
+    The previous loop walked the args positionally and did ``re.sub(...,
+    count=1)``, replacing only the FIRST occurrence of each ``~N~``. A cliloc
+    that references one arg twice — e.g. 1156056 ``"~1_CHANCE~% chance to
+    reduce incoming damage by ~2_DAMAGE~%. Costs ~2_DAMAGE~% of original damage
+    in mana."`` — left the SECOND ``~2_DAMAGE~`` unfilled, which the trailing
+    cleanup regex below then stripped to empty ("Costs % of original damage"),
+    silently corrupting the message. It also did a bogus ``text.replace("#N",
+    arg)`` against the BASE string; ClassicUO only treats a leading ``#`` on an
+    *arg value* as a nested-cliloc ref, never the base text, so that line could
+    only mangle literal ``#N`` art names. Both are dropped here.
     """
     base_text = cliloc_text(cliloc_num)
     if base_text and args:
         parts = args.split("\t")
-        text = base_text
-        for i, part in enumerate(parts):
-            text = re.sub(rf"~{i + 1}(?:_[^~]*)?~", part, text, count=1)
-            text = text.replace(f"#{i + 1}", part)
+
+        def _sub(m: "re.Match[str]") -> str:
+            idx = int(m.group(1)) - 1
+            return parts[idx] if 0 <= idx < len(parts) else m.group(0)
+
+        text = re.sub(r"~(\d+)(?:_[^~]*)?~", _sub, base_text)
     elif base_text:
         text = base_text
     else:

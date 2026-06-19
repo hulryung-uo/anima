@@ -100,3 +100,35 @@ def test_c1_tab_separated_two_args():
     args = "Damage\t42".encode("utf-16-le") + b"\x00\x00" + b"\x00"
     h.dispatch(0xC1, _c1(CLILOC_TWO_ARG, args))
     assert _last_text(p) == "Damage: 42"
+
+
+# A real cliloc that references the SAME arg index twice. ClassicUO's
+# Translate substitutes every ~N~ by its embedded index, so both copies of
+# ~2_DAMAGE~ must be filled.
+CLILOC_REPEATED_ARG = 1156056  # "...by ~2_DAMAGE~%. Costs ~2_DAMAGE~%..."
+
+
+def test_c1_repeated_placeholder_fills_every_occurrence():
+    """Regression: count=1 positional substitution dropped the 2nd ~2~.
+
+    Before the fix the second ~2_DAMAGE~ survived the substitution loop and was
+    then nuked by the trailing unfilled-placeholder strip, so the rendered text
+    read "Costs % of original damage in mana." — the repeated arg vanished.
+    """
+    base = cliloc_text(CLILOC_REPEATED_ARG)
+    # Guard the fixture: the bundled cliloc table must actually carry the
+    # repeated placeholder this test exercises.
+    assert base.count("~2_DAMAGE~") == 2
+
+    h, p, _ = _make_stack()
+    args = "15\t30".encode("utf-16-le") + b"\x00\x00" + b"\x00"
+    h.dispatch(0xC1, _c1(CLILOC_REPEATED_ARG, args))
+
+    rendered = _last_text(p)
+    assert rendered == (
+        "15% chance to reduce incoming damage by 30%. "
+        "Costs 30% of original damage in mana."
+    )
+    # No placeholder text leaked through, and the repeated arg was filled twice.
+    assert "~" not in rendered
+    assert rendered.count("30%") == 2
