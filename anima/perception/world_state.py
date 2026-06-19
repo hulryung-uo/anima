@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from anima.perception.enums import Direction, MobileFlags, NotorietyFlag
@@ -22,6 +23,11 @@ class MobileInfo:
     hits_max: int = 0
     hits: int = 0
     is_poisoned: bool = False
+    # time.monotonic() of the last packet that touched this mobile. The UO
+    # server does NOT reliably send 0x1D Delete for every mobile that leaves
+    # view (notably after recall/teleport, or when many entities go out of
+    # range at once), so without an age stamp stale phantoms linger forever.
+    last_seen: float = 0.0
     properties: list[str] = field(default_factory=list)  # OPL tooltip lines
 
     @property
@@ -77,7 +83,12 @@ class WorldState:
             if cached_props:
                 mob.properties = list(cached_props)
             self.mobiles[serial] = mob
-        return self.mobiles[serial]
+        mob = self.mobiles[serial]
+        # Every handler that updates a mobile (0x77/0x78/0x20/0x17/0xA1/OPL)
+        # routes through here, so stamping last_seen on each touch keeps the
+        # freshness clock current with no per-handler changes.
+        mob.last_seen = time.monotonic()
+        return mob
 
     def get_or_create_item(self, serial: int) -> ItemInfo:
         if serial not in self.items:
@@ -89,6 +100,30 @@ class WorldState:
         self.items.pop(serial, None)
         # Intentionally keep opl_names/opl_properties — see
         # get_or_create_mobile.
+
+    def prune_stale_mobiles(
+        self, now: float | None = None, max_age: float = 30.0
+    ) -> list[int]:
+        """Drop mobiles the server has stopped updating.
+
+        A mobile whose ``last_seen`` is older than ``max_age`` seconds is
+        treated as despawned-without-Delete and removed, so ``nearby_mobiles``
+        never returns phantoms parked at stale coordinates (e.g. after the
+        player recalls/teleports and the server omits the 0x1D Delete).
+
+        Returns the list of pruned serials. ``last_seen == 0.0`` (never
+        stamped) is skipped so freshly seeded test fixtures aren't reaped.
+        """
+        if now is None:
+            now = time.monotonic()
+        stale = [
+            serial
+            for serial, m in self.mobiles.items()
+            if m.last_seen > 0.0 and (now - m.last_seen) > max_age
+        ]
+        for serial in stale:
+            self.mobiles.pop(serial, None)
+        return stale
 
     def nearby_mobiles(self, x: int, y: int, distance: int = 18) -> list[MobileInfo]:
         result = []
