@@ -313,8 +313,7 @@ def run(rc: RunConfig) -> Archive:
         slots.put(k)
     outcomes: queue.Queue[_CycleOutcome] = queue.Queue()
 
-    def job(i: int) -> None:
-        slot = slots.get()
+    def job(i: int, slot: int) -> None:
         out = _CycleOutcome(cycle=i, slot=slot)
         try:
             if safety.kill_switch_active():
@@ -394,50 +393,74 @@ def run(rc: RunConfig) -> Archive:
             # commit is pinned under refs/foundry/ — until then the worktree
             # HEAD is what keeps the variant reachable.
 
+    def _drain_one() -> None:
+        """Pin + archive one finished cycle's genome, then free its slot.
+
+        The slot is released HERE (not in the worker) so the variant's commit
+        stays reachable via the worktree HEAD until refs/foundry/<id> pins it —
+        only then may another cycle reuse the slot and `reset --hard` it.
+        """
+        out = outcomes.get()
+        i = out.cycle
+        try:
+            if out.skipped:
+                print(f"[cycle {i}] skipped (STOP)")
+                return
+            if out.error or out.result is None:
+                print(f"[cycle {i}] cycle FAILED: {out.error or 'no result'}")
+                return
+            if not out.result.ok:
+                print(f"[cycle {i}] eval FAILED: {out.result.error} — skipping insert")
+                return
+            mr = out.mutation
+            with arc_lock:
+                g = _genome_from(arc, out.result, parent=out.parent_id,
+                                 code_ref=mr.code_ref if mr else "",
+                                 hypothesis=mr.hypothesis if mr else "", rc=rc,
+                                 target_cell=out.target_cell,
+                                 persona=out.persona, fixed_start=out.fixed_start)
+                r = arc.add(g)
+            _pin_ref(g.id, g.code_ref)
+            prev = f" (prev {r.prev_fitness:.3f})" if r.prev_fitness is not None else ""
+            print(f"[cycle {i}] {g.id} fitness={g.fitness:.3f} "
+                  f"cell={g.cell} -> {r.status}{prev}")
+            if rc.forum_log:
+                # In-world training-log post, best-effort (never breaks the run).
+                from foundry import chronicle
+                chronicle.post_cycle_note(
+                    g.cell, r.status, g.fitness, r.prev_fitness)
+        finally:
+            slots.put(out.slot)
+
     with ThreadPoolExecutor(max_workers=rc.parallel) as pool:
         submitted = 0
+        in_flight = 0
         for i in range(1, rc.n_cycles + 1):
+            # Pace submission to slot availability: `pool.submit` never blocks,
+            # so submitting all cycles up front would queue them instantly and
+            # render the STOP/genome-cap guards below dead — every remaining
+            # cycle would already be enqueued before an operator's `touch STOP`
+            # or a cap could take effect. Free a slot first (draining a finished
+            # cycle when the pool is full), THEN re-check the guards at the REAL
+            # boundary of each cycle start.
+            while in_flight >= rc.parallel:
+                _drain_one()        # blocks on outcomes.get(); frees one slot
+                in_flight -= 1
+            slot = slots.get()
             if safety.kill_switch_active():
                 print("[run] STOP file present — not scheduling further cycles.")
+                slots.put(slot)
                 break
             if arc.summary()["total_genomes"] + submitted >= safety.MAX_GENOMES_PER_RUN:
                 print("[run] genome cap reached — not scheduling further cycles.")
+                slots.put(slot)
                 break
-            pool.submit(job, i)
+            pool.submit(job, i, slot)
             submitted += 1
+            in_flight += 1
 
-        for _ in range(submitted):
-            out = outcomes.get()
-            i = out.cycle
-            try:
-                if out.skipped:
-                    print(f"[cycle {i}] skipped (STOP)")
-                    continue
-                if out.error or out.result is None:
-                    print(f"[cycle {i}] cycle FAILED: {out.error or 'no result'}")
-                    continue
-                if not out.result.ok:
-                    print(f"[cycle {i}] eval FAILED: {out.result.error} — skipping insert")
-                    continue
-                mr = out.mutation
-                with arc_lock:
-                    g = _genome_from(arc, out.result, parent=out.parent_id,
-                                     code_ref=mr.code_ref if mr else "",
-                                     hypothesis=mr.hypothesis if mr else "", rc=rc,
-                                     target_cell=out.target_cell,
-                                     persona=out.persona, fixed_start=out.fixed_start)
-                    r = arc.add(g)
-                _pin_ref(g.id, g.code_ref)
-                prev = f" (prev {r.prev_fitness:.3f})" if r.prev_fitness is not None else ""
-                print(f"[cycle {i}] {g.id} fitness={g.fitness:.3f} "
-                      f"cell={g.cell} -> {r.status}{prev}")
-                if rc.forum_log:
-                    # In-world training-log post, best-effort (never breaks the run).
-                    from foundry import chronicle
-                    chronicle.post_cycle_note(
-                        g.cell, r.status, g.fitness, r.prev_fitness)
-            finally:
-                slots.put(out.slot)
+        for _ in range(in_flight):
+            _drain_one()
 
     s = arc.summary()
     print(f"\n[run] done. genomes={s['total_genomes']} filled_cells={s['filled_cells']} "
