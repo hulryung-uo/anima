@@ -12,7 +12,14 @@ import pytest
 
 import anima.action.movement as movement
 from anima.perception.enums import NotorietyFlag
-from anima.planner.planner import _FleeFromHostiles, _count_hostiles, _flee_destination
+from anima.planner.planner import (
+    Planner,
+    _FLEE_HP_PCT,
+    _FleeFromHostiles,
+    _count_hostiles,
+    _flee_destination,
+)
+from anima.procedures.base import Procedure, ProcedureRegistry, ProcedureResult
 
 
 def _mob(serial, x, y, notoriety=NotorietyFlag.ENEMY, is_dead=False):
@@ -160,3 +167,88 @@ class TestHostileCountExcludesCorpses:
         result = await _FleeFromHostiles().run(ctx)
         assert result.success is True
         assert "No hostiles" in result.message
+
+
+class _StubProc(Procedure):
+    def __init__(self, name: str):
+        self.name = name
+        self.description = f"stub {name}"
+
+    async def can_start(self, ctx):
+        return True
+
+    async def execute(self, ctx):
+        return ProcedureResult(success=True, message=f"{self.name} ran")
+
+
+def _planner_ctx(hits: int, mobiles):
+    """Minimal AgentContext for Planner.select_procedure with a swarm nearby."""
+    ss = SimpleNamespace(
+        x=100, y=100, z=0, serial=0x1,
+        hits=hits, hits_max=100,
+        weight=100, weight_max=400, gold=50,
+        is_alive=True,
+        equipment={0x15: 0x101},
+        skills={},
+    )
+
+    def nearby(x, y, distance=12):
+        return [
+            m for m in mobiles
+            if max(abs(m.x - x), abs(m.y - y)) <= distance
+        ]
+
+    world = SimpleNamespace(nearby_mobiles=nearby, items={})
+    ctx = SimpleNamespace(
+        perception=SimpleNamespace(self_state=ss, world=world),
+        blackboard={},
+        bus=None,
+        persona=SimpleNamespace(profession="adventurer", name="t"),
+        conn=SimpleNamespace(connected=True, send_packet=AsyncMock()),
+        memory_db=None,
+        # No map loaded in this unit context — the mining/gathering scans that
+        # select_procedure reaches when the agent does NOT flee short-circuit
+        # cleanly on a None map_reader instead of touching real .mul data.
+        map_reader=None,
+    )
+    return ctx
+
+
+class TestSwarmFleeDeathZone:
+    """Regression: a wounded, surrounded warrior must FLEE across the whole
+    30–40% HP band, not just below 30%. At 35% HP a hunt has already broken
+    off (RETREAT_HP_PCT=35); if the planner then bandages in place, the swarm
+    cancels the bandage and the agent dies. The flee gate must close that zone.
+    """
+
+    def _swarm(self):
+        return [_mob(0x2, 99, 100), _mob(0x3, 101, 100), _mob(0x4, 100, 99)]
+
+    @pytest.mark.asyncio
+    async def test_flees_in_30_to_40_band(self):
+        reg = ProcedureRegistry()
+        reg.register(_StubProc("heal_self"))
+        reg.register(_StubProc("bandage_self"))
+        planner = Planner(reg)
+        # 35% HP: above the old 0.30 floor (no flee) but inside the swarm
+        # death zone the raised floor now covers.
+        ctx = _planner_ctx(hits=35, mobiles=self._swarm())
+        proc = await planner.select_procedure(ctx)
+        assert proc.name == "flee_from_hostiles"
+
+    @pytest.mark.asyncio
+    async def test_no_flee_above_band(self):
+        reg = ProcedureRegistry()
+        reg.register(_StubProc("heal_self"))
+        planner = Planner(reg)
+        # 45% HP — above the flee floor; must NOT flee even when swarmed.
+        ctx = _planner_ctx(hits=45, mobiles=self._swarm())
+        proc = await planner.select_procedure(ctx)
+        assert proc is None or proc.name != "flee_from_hostiles"
+
+    @pytest.mark.asyncio
+    async def test_flee_floor_exceeds_combat_retreat(self):
+        # The flee floor must sit at or above combat's 35% retreat floor, or
+        # the death zone reopens.
+        from anima.procedures.combat_loop import RETREAT_HP_PCT
+        assert _FLEE_HP_PCT * 100 >= RETREAT_HP_PCT
