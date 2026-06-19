@@ -118,6 +118,10 @@ class EventStream:
 
     def peek(self, count: int = 1) -> list[GameEvent]:
         """Peek at the latest events without advancing the cursor."""
+        # count<=0 means "no events requested"; without this guard events[-0:]
+        # collapses to events[:] and returns the entire ring buffer.
+        if count <= 0:
+            return []
         events = list(self._events)
         return events[-count:]
 

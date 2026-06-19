@@ -190,6 +190,21 @@ class TestEventStream:
         events = es.poll()
         assert len(events) == 1
 
+    def test_peek_zero_returns_empty(self):
+        # peek(0) must mean "no events"; the naive events[-0:] slice
+        # collapses to events[:] and would leak the whole ring buffer.
+        es = EventStream()
+        for i in range(5):
+            es.emit(GameEventType.MOBILE_MOVED, {"i": i})
+        assert es.peek(0) == []
+        # negative counts are equally nonsensical and must not slice
+        # from the wrong end of the buffer.
+        assert es.peek(-1) == []
+        # peek still does not consume: a normal peek and poll work after.
+        assert len(es.peek(2)) == 2
+        assert es.peek(2)[-1].data["i"] == 4
+        assert len(es.poll()) == 5
+
     def test_pending_count(self):
         es = EventStream()
         assert es.pending_count == 0
