@@ -293,9 +293,15 @@ async def llm_think(ctx: BrainContext) -> Status:
         logger.warning("think_parse_failed", raw=result.text[:100])
         return Status.SUCCESS
 
-    act = action.get("action", "explore")
-    reason = action.get("reason", "")
-    say = action.get("say", "").strip()
+    # dict.get(..., default) only substitutes the default for MISSING keys, not
+    # for keys present with a JSON ``null`` value. LLMs routinely emit
+    # ``{"action": "speak", "say": null}`` (or null reason/action), which would
+    # make ``.get("say", "")`` return ``None`` and ``None.strip()`` raise
+    # AttributeError — crashing the whole think tick. Coerce null/non-string
+    # values back to their empty/default form so dispatch stays well-typed.
+    act = action.get("action") or "explore"
+    reason = action.get("reason") or ""
+    say = (action.get("say") or "").strip()
 
     logger.info(
         "think_decided",
