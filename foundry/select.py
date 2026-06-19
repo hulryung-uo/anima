@@ -98,7 +98,21 @@ def empty_cells(archive: Archive) -> list[tuple]:
 
 
 def _frontier_potential(cell: tuple, filled: set[str]) -> int:
-    return sum(1 for n in _neighbors(cell) if cell_to_str(n) not in filled)
+    """Count this cell's neighbors that an EXPLORE cycle could actually fill.
+
+    The frontier bias exists to favour parents sitting next to fillable ground,
+    so the count must match what ``empty_cells``/``suggest_target_cell`` will ever
+    aim at: a *targetable* empty neighbour. A neighbour in the NONE fallback row
+    is empty but never a target (see TARGET_PROFESSIONS) — counting it inflates
+    the frontier score for proximity to ground exploration will never claim, and
+    in particular over-weights degenerate NONE-row elites as parents (their whole
+    neighbourhood is the un-fillable NONE row, so they'd otherwise score a full
+    frontier bonus). Restrict the count to targetable empties so the parent-side
+    signal is consistent with the target-side NONE exclusion.
+    """
+    targetable = {cell_to_str(c) for c in targetable_cells()}
+    return sum(1 for n in _neighbors(cell)
+               if cell_to_str(n) in targetable and cell_to_str(n) not in filled)
 
 
 def choose_parent(archive: Archive, seed: int = 0) -> Genome | None:
