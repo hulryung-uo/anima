@@ -1064,12 +1064,24 @@ def register_handlers(
         mob = p.world.mobiles.get(serial)
         if mob is not None:
             mob.properties = properties
-            if name and not mob.name:
+            # Reflect the LATEST OPL name, not just the first one ever seen.
+            # MegaCliloc is anima's only mobile-name source (there is no 0x98
+            # NameRequest handler), so the old `not mob.name` pin froze a
+            # mobile to its first OPL name forever. That breaks two cases:
+            # (1) the name on a mobile genuinely changes (renamed pet/NPC), and
+            # (2) the server recycles a freed mobile serial for a DIFFERENT
+            # mobile — get_or_create_mobile re-seeds the live mob from the
+            # opl_names cache, and the pin then blocked the fresh OPL's correct
+            # name from ever landing. The cache below already overwrites
+            # unconditionally, so pinning the live entity also left mob.name and
+            # opl_names[serial] disagreeing. Overwrite when non-empty to match
+            # ClassicUO (entity.Name = latest OPL string) and keep them in sync.
+            if name:
                 mob.name = name
         item = p.world.items.get(serial)
         if item is not None:
             item.properties = properties
-            if name and not item.name:
+            if name:
                 item.name = name
         # Cache so a later 0x1D/0x78 round-trip for the same NPC doesn't
         # blank out the name we just learned.

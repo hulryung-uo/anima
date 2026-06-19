@@ -478,6 +478,44 @@ def test_mega_cliloc_arg_substitution_is_index_driven(monkeypatch):
     assert all("~" not in line for line in props)
 
 
+def test_mega_cliloc_refreshes_changed_mobile_name(monkeypatch):
+    """0xD6 MegaCliloc must reflect the LATEST OPL name on a mobile, not pin
+    the first one ever seen. MegaCliloc is anima's only mobile-name source, so
+    a stale pin froze the name on a rename OR — worse — when the server recycles
+    a freed mobile serial for a different mobile (the live mob is re-seeded from
+    the opl_names cache, and the pin then blocked the new mobile's correct OPL
+    name). Matches ClassicUO MegaCliloc (entity reflects the latest OPL string)
+    and keeps mob.name consistent with the opl_names cache."""
+    import anima.perception.handlers as handlers_mod
+
+    # No base cliloc text → the args string becomes the property/name verbatim.
+    monkeypatch.setattr(handlers_mod, "cliloc_text", lambda n: "")
+
+    h, p, _ = _make_stack()
+    serial = 0x0000C0DE
+    p.world.get_or_create_mobile(serial)
+
+    # First OPL: mobile is "Adranath".
+    h.dispatch(0xD6, _build_mega_cliloc(serial, [(1, "Adranath")]))
+    assert p.world.mobiles[serial].name == "Adranath"
+    assert p.world.opl_names[serial] == "Adranath"
+
+    # A later OPL for the SAME serial carries a different name (rename, or a
+    # recycled serial now belonging to another mobile). The live mobile must
+    # follow it — not keep "Adranath" — and stay in sync with the cache.
+    h.dispatch(0xD6, _build_mega_cliloc(serial, [(1, "Veda the provisioner")]))
+    assert p.world.mobiles[serial].name == "Veda the provisioner"
+    assert p.world.opl_names[serial] == "Veda the provisioner"
+
+    # Same divergence for items (ClassicUO always sets entity.Name on items).
+    item_serial = 0x40000123
+    p.world.get_or_create_item(item_serial)
+    h.dispatch(0xD6, _build_mega_cliloc(item_serial, [(1, "a dull sword")]))
+    assert p.world.items[item_serial].name == "a dull sword"
+    h.dispatch(0xD6, _build_mega_cliloc(item_serial, [(1, "a sharp katana")]))
+    assert p.world.items[item_serial].name == "a sharp katana"
+
+
 # ---------------------------------------------------------------------------
 # Cliloc Affix (0xCC SendLocalizedMessageAffix)
 # ---------------------------------------------------------------------------
