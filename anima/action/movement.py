@@ -661,6 +661,15 @@ async def wander_action(ctx: BrainContext) -> Status:
             "wander_turn",
             pos=f"({sx},{sy})", from_dir=old_dir_name, to_dir=dir_name,
         )
+        # Turn packet carries NO position — clear any stale pending move tile
+        # before stamping the turn's sequence, and route the facing through
+        # _pending_direction so it's applied on the turn's own confirm. Without
+        # the reset, a leftover _pending_step_tile from a prior un-acked move
+        # rides on the turn's seq; the turn's ConfirmWalk (which matches that
+        # seq) then snaps the avatar onto that stale tile — a desync. go_to and
+        # _walk_one_step already guard this; wander_action must too.
+        ctx.walker._pending_step_tile = None
+        ctx.walker._pending_direction = direction
         seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
         pkt = build_walk_request(direction, seq, fastwalk)
