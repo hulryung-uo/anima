@@ -238,6 +238,23 @@ def register_handlers(
         for layer, worn in list(p.self_state.equipment.items()):
             if worn == serial:
                 del p.self_state.equipment[layer]
+        # SelfState also caches the serial of the last-opened container
+        # (0x24 ContainerDisplay) and the last context-menu target. World.remove
+        # only touches world.items / world.mobiles, so when that container is
+        # destroyed — a looted corpse despawning, a dropped bag emptied, a
+        # bank box closed by the server, a vendor pack leaving view — these
+        # serials keep pointing at the gone entity. _wait_for_bank_box
+        # (skills/trade/banking.py) returns ss.open_container as the "bank is
+        # open" signal the instant it is non-zero and != backpack, so a stale
+        # corpse/bag serial makes the bank-deposit / withdraw flow target a
+        # container that no longer exists and spuriously report the bank ready.
+        # Clear them on the matching delete, mirroring the equipment clear above
+        # and the vendor_serial-on-close logic in handle_close_vendor.
+        if p.self_state.open_container == serial:
+            p.self_state.open_container = 0
+        if p.self_state.context_menu_serial == serial:
+            p.self_state.context_menu_serial = 0
+            p.self_state.context_menu = []
         if was_mobile:
             p.emit(GameEventType.MOBILE_REMOVED, {"serial": serial})
         else:
