@@ -698,13 +698,30 @@ class MemoryDB:
         """Get top locations for an activity.
 
         Returns [(region_x, region_y, avg_reward, visit_count), ...].
+
+        This is the "where does this activity actually *work*?" accessor — the
+        sibling the retrieval location-value block names as its model for a
+        recommendation. Two bugs made it betray that contract:
+
+        1. It returned the top-``limit`` rows by ``avg_reward DESC`` regardless
+           of sign. When every region the agent tried an activity in was a net
+           loss (e.g. it only ever died trying to "hunt" everywhere), the
+           *least-bad loss* came back framed as the "best location" — steering
+           a caller straight back toward a place that has only ever harmed it.
+           A recommendation must point at regions that genuinely pay off, so we
+           filter to a strictly positive per-visit average; the avoid/warning
+           side is the retrieval block's job, not this accessor's.
+        2. It divided ``total_reward / visit_count`` with no zero guard, unlike
+           the sibling ``get_location_values`` which uses ``NULLIF``. Mirror
+           that here so a malformed row can never crash the query.
         """
         rows = await self.db.execute_fetchall(
             """SELECT region_x, region_y,
-                      total_reward / visit_count AS avg_reward,
+                      total_reward / NULLIF(visit_count, 0) AS avg_reward,
                       visit_count
                FROM location_values
                WHERE agent_name = ? AND activity = ?
+                 AND total_reward / NULLIF(visit_count, 0) > 0
                ORDER BY avg_reward DESC
                LIMIT ?""",
             (agent_name, activity, limit),

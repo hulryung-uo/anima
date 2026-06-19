@@ -422,6 +422,45 @@ class TestLocationValues:
         assert total == pytest.approx(8.0)
         assert visits == 2
 
+    @pytest.mark.asyncio
+    async def test_best_locations_excludes_net_loss_regions(self) -> None:
+        """A 'best location for X' recommendation must never surface a region
+        where X has only ever lost on average — otherwise the least-bad loss is
+        framed as advice and steers the agent back toward a place that has only
+        harmed it. Uses a real in-memory SQLite store so the SQL filter runs.
+        """
+        mem = MemoryDB(":memory:")
+        await mem.init()
+        try:
+            # Three regions for "hunt": one genuinely profitable, two net-loss.
+            await mem.update_location_value("Anima", 1, 1, "hunt", reward=8.0)
+            await mem.update_location_value("Anima", 2, 2, "hunt", reward=-2.0)
+            await mem.update_location_value("Anima", 3, 3, "hunt", reward=-9.0)
+
+            best = await mem.get_best_locations("Anima", "hunt")
+            regions = {(r[0], r[1]) for r in best}
+            # Only the profitable region is returned; neither loss leaks in.
+            assert regions == {(1, 1)}
+            assert best[0][2] == pytest.approx(8.0)  # avg_reward, positive
+        finally:
+            await mem.close()
+
+    @pytest.mark.asyncio
+    async def test_best_locations_empty_when_all_regions_lose(self) -> None:
+        """If every region for an activity is a net loss, there is no 'best' —
+        the accessor must return nothing rather than the mildest loss.
+        """
+        mem = MemoryDB(":memory:")
+        await mem.init()
+        try:
+            await mem.update_location_value("Anima", 4, 4, "mine", reward=-1.0)
+            await mem.update_location_value("Anima", 5, 5, "mine", reward=-7.0)
+
+            best = await mem.get_best_locations("Anima", "mine")
+            assert best == []
+        finally:
+            await mem.close()
+
 
 # ---------------------------------------------------------------------------
 # Relationship concurrency tests
