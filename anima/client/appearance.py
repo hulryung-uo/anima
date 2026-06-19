@@ -59,6 +59,16 @@ logger = structlog.get_logger()
 # Known-good persona used when an unknown persona name is requested.
 _DEFAULT_PERSONA = "adventurer"
 
+# Facet/expansion bits ServUO stores in ``state.Flags`` from the 0xF8
+# CreateCharacter70160 client-flags field (Server/ExpansionInfo.cs
+# ``ClientFlags``): Felucca 0x01 | Trammel 0x02 | Ilshenar 0x04 | Malas 0x08 |
+# Tokuno 0x10 | TerMur 0x20 = 0x3F. Mirrors the value ``build_play_character``
+# (0x5D) already sends — both packets feed ``state.Flags`` and ClassicUO writes
+# its negotiated ``Protocol`` flags into each. A full-expansion client (the
+# 7.0.102.3 version we advertise) enables every facet, so 0x3F is the matching
+# value.
+_ALL_FACET_CLIENT_FLAGS = 0x3F
+
 # ---------------------------------------------------------------------------
 # Persona-to-creation mapping
 # ---------------------------------------------------------------------------
@@ -262,10 +272,23 @@ TEMPLATES: dict[str, CharacterAppearance] = {
 }
 
 
-def build_create_character(appearance: CharacterAppearance, slot: int = 0) -> bytes:
+def build_create_character(
+    appearance: CharacterAppearance,
+    slot: int = 0,
+    client_flags: int = _ALL_FACET_CLIENT_FLAGS,
+) -> bytes:
     """Build CreateCharacter packet (0xF8, 106 bytes).
 
     Packet format based on ClassicUO OutgoingPackets.cs Send_CreateCharacter70.
+
+    ServUO ``PacketHandlers.CreateCharacter70160`` reads the 4-byte client-flags
+    field (the same offset as 0x5D's) and assigns ``state.Flags =
+    (ClientFlags)flags``. ClassicUO fills it with its negotiated ``Protocol``
+    value (``Send_CreateCharacter``); sending a bare ``0`` makes the server
+    record ``ClientFlags.None`` at creation time, so facet-/expansion-aware
+    logic sees a client that claims support for nothing — the exact bug already
+    fixed for ``build_play_character`` (0x5D). Default to the full-facet mask
+    (0x3F) that matches the modern client version we advertise.
     """
     w = PacketWriter()
     w.write_u8(0xF8)
@@ -276,7 +299,7 @@ def build_create_character(appearance: CharacterAppearance, slot: int = 0) -> by
     w.write_ascii(appearance.name, 30)
     w.write_zeros(2)         # unknown
 
-    w.write_u32(0x00000000)  # client flags
+    w.write_u32(client_flags)  # client/facet flags (ServUO -> state.Flags)
     w.write_u32(0x00000001)  # unknown (ClassicUO sends 1)
     w.write_u32(0x00000000)  # login count
 
