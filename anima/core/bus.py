@@ -91,8 +91,15 @@ class EventBus:
         if len(self._history) > self._history_max:
             self._history = self._history[-self._history_max:]
 
-        # Dispatch to matching subscribers
-        for sub in self._subs.values():
+        # Dispatch to matching subscribers. Iterate over a snapshot: callbacks
+        # run synchronously inside publish() and several of them subscribe or
+        # unsubscribe in response (one-shot listeners, procedures that tear down
+        # their bus hooks on a terminal event, wait_for_condition). Mutating
+        # self._subs while iterating its live .values() raises
+        # "dictionary changed size during iteration", which would propagate out
+        # of publish() and crash whatever published the event (a packet handler
+        # or a running procedure). The snapshot keeps dispatch crash-free.
+        for sub in list(self._subs.values()):
             if fnmatch.fnmatch(topic, sub.pattern):
                 try:
                     sub.callback(topic, event.data)

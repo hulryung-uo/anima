@@ -92,3 +92,54 @@ def test_subscriber_count():
     assert bus.subscriber_count == 2
     bus.unsubscribe(s1)
     assert bus.subscriber_count == 1
+
+
+def test_callback_can_unsubscribe_itself_during_publish():
+    """A one-shot listener that unsubscribes itself inside its own callback
+    must not crash publish() (no 'dictionary changed size during iteration')."""
+    bus = EventBus()
+    hits: list[str] = []
+    # A second subscriber so the dispatch loop keeps iterating after the
+    # mutating callback runs — that's what triggers the RuntimeError on a
+    # live .values() iteration.
+    bus.subscribe("*", lambda t, d: hits.append("other"))
+
+    sub_box: dict = {}
+
+    def _one_shot(_topic: str, _data: dict) -> None:
+        hits.append("one_shot")
+        bus.unsubscribe(sub_box["sub"])
+
+    sub_box["sub"] = bus.subscribe("test.event", _one_shot)
+
+    # First publish fires the one-shot and removes it mid-dispatch.
+    bus.publish("test.event", {})
+    # Second publish must see it gone (fired exactly once) and still deliver
+    # to the other subscriber.
+    bus.publish("test.event", {})
+
+    assert hits.count("one_shot") == 1
+    assert hits.count("other") == 2
+
+
+def test_callback_can_subscribe_during_publish():
+    """A callback that adds a new subscriber mid-dispatch must not crash
+    publish(); the newcomer simply isn't invoked for the in-flight event."""
+    bus = EventBus()
+    late: list[str] = []
+
+    def _late(_topic: str, _data: dict) -> None:
+        late.append("late")
+
+    def _adder(_topic: str, _data: dict) -> None:
+        bus.subscribe("test.event", _late)
+
+    bus.subscribe("test.event", _adder)
+
+    # Must not raise despite _subs growing during iteration.
+    bus.publish("test.event", {})
+    # The late subscriber was added after the snapshot, so it sees nothing yet.
+    assert late == []
+    # But it is wired for subsequent events.
+    bus.publish("test.event", {})
+    assert late == ["late"]
