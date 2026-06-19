@@ -38,6 +38,31 @@ from anima.skills.crafting.smelt import INGOT_GRAPHICS
 IRON_HUE = 0
 
 
+# Weight ratio (carried / capacity) at which heavy DEPOSIT_GRAPHICS materials
+# (ore, logs, boards, iron ingots) become worth banking. ``can_start`` uses
+# this to decide a bank trip is warranted, and ``execute`` MUST use the SAME
+# threshold to actually deposit those materials once at the bank.
+#
+# REGRESSION GUARD: these two used to disagree — ``can_start`` triggered the
+# trip at 0.6 but ``execute`` only dumped heavy materials above 0.8. An agent
+# sitting at 0.6–0.8 with no gold and no colored ingots (a miner carrying iron
+# ore it earned no gold for) would walk all the way to the bank, open the box,
+# deposit nothing, and return a "nothing to deposit" failure — a pure wasted
+# round-trip that left it overweight and unable to keep gathering. One shared
+# constant keeps the "go to bank" and "deposit at bank" decisions in lockstep.
+HEAVY_DEPOSIT_RATIO = 0.6
+
+
+def _should_deposit_heavy(ss) -> bool:
+    """True when carried weight is high enough to bank heavy materials.
+
+    Used by both ``BankDeposit.can_start`` (should we make the trip?) and
+    ``BankDeposit.execute`` (should we dump heavy materials now?) so the two
+    can never disagree and strand the agent on a no-op bank visit.
+    """
+    return ss.weight_max > 0 and ss.weight > ss.weight_max * HEAVY_DEPOSIT_RATIO
+
+
 def _reconcile_bank_after_deposit(ctx: AgentContext, *, deposited: int) -> None:
     """Add freshly-deposited gold to the cached bank balance.
 
@@ -100,7 +125,7 @@ class BankDeposit(Procedure):
         has_colored = _has_colored_ingots(ctx)
 
         has_heavy = False
-        if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.6:
+        if _should_deposit_heavy(ss):
             backpack = ss.equipment.get(0x15)
             if backpack:
                 has_heavy = any(
@@ -176,7 +201,7 @@ class BankDeposit(Procedure):
 
         # Deposit heavy materials if overweight (skip iron ingots — needed
         # for crafting; colored ingots already handled above)
-        if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.8:
+        if _should_deposit_heavy(ss):
             for item in list(world.items.values()):
                 if (item.container == backpack
                         and item.graphic in DEPOSIT_GRAPHICS
