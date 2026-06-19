@@ -87,6 +87,21 @@ class TestMoodAndImportance:
         result = SkillResult(success=False, reward=-1.0, message="")
         assert result_to_importance(result) == 1
 
+    def test_catastrophic_negative_is_significant(self):
+        # A large negative reward (death / heavy damage) is as memorable as a
+        # windfall and must not be filed as routine and then filtered out of
+        # min_importance>=2 memory retrieval.
+        result = SkillResult(success=False, reward=-10.0, message="Died")
+        assert result_to_importance(result) == 3
+
+    def test_painful_negative_is_notable(self):
+        result = SkillResult(success=False, reward=-5.0, message="Hurt badly")
+        assert result_to_importance(result) == 2
+
+    def test_mild_negative_stays_routine(self):
+        result = SkillResult(success=False, reward=-2.0, message="Minor miss")
+        assert result_to_importance(result) == 1
+
 
 class TestActivityJournal:
     @pytest.mark.asyncio

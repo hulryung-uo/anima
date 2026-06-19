@@ -191,10 +191,20 @@ def result_to_mood(result: SkillResult) -> str:
 
 def result_to_importance(result: SkillResult) -> int:
     """Determine importance level of an event."""
+    # Significance scales with the *magnitude* of the reward signal, in either
+    # direction. A catastrophic outcome (large negative reward — e.g. a death or
+    # heavy damage) is just as memorable as a windfall, so it must not be filed
+    # as routine noise that ``recent_entries(min_importance=2)`` silently drops.
+    # Thresholds mirror the positive side and align with ``result_to_mood``'s
+    # -3.0 "frustrated" cutoff.
+    if result.reward <= -8.0:
+        return 3  # significant (catastrophic)
     if result.reward >= 8.0:
         return 3  # significant
     if result.success and result.reward >= 3.0:
         return 2  # notable
+    if result.reward <= -3.0:
+        return 2  # notable (painful)
     return 1  # routine
 
 
