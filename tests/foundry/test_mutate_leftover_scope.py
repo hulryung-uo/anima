@@ -29,6 +29,13 @@ def repo(tmp_path):
     _git(tmp_path, "config", "user.name", "t")
     (tmp_path / "anima").mkdir()
     (tmp_path / "anima" / "keep.py").write_text("base = 1\n")
+    # Tracked files OUTSIDE the genome body that the mutator must NOT carry into
+    # a variant: a persona template and a piece of non-kernel Foundry machinery
+    # (safety.revert_kernel only restores foundry/kernel, never foundry/select.py).
+    (tmp_path / "personas").mkdir()
+    (tmp_path / "personas" / "miner.yaml").write_text("name: miner\n")
+    (tmp_path / "foundry").mkdir()
+    (tmp_path / "foundry" / "select.py").write_text("PARENT_BIAS = 1.0\n")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-q", "-m", "base")
     return tmp_path
@@ -48,6 +55,25 @@ def test_untracked_anima_file_is_genome_content(repo):
 
 def test_modified_tracked_file_is_genome_content(repo):
     (repo / "anima" / "keep.py").write_text("base = 2\n")
+    assert _genome_leftovers(repo) == ["anima/keep.py"]
+
+
+def test_modified_tracked_file_outside_anima_is_not_genome_content(repo):
+    # The mutator is told to edit ONLY anima/, but headless claude CAN edit other
+    # tracked files. A persona template edit and -- critically -- a non-kernel
+    # Foundry-machinery edit (which safety.revert_kernel does NOT undo) must not
+    # be folded into the variant's genome commit / code_ref, or the change rides
+    # into the genome's lineage and every descendant worktree.
+    (repo / "personas" / "miner.yaml").write_text("name: miner\nhacked: true\n")
+    (repo / "foundry" / "select.py").write_text("PARENT_BIAS = 99.0  # self-edit\n")
+    assert _genome_leftovers(repo) == []
+
+
+def test_only_the_anima_part_of_a_mixed_change_is_folded(repo):
+    # Mutator legitimately edits anima/ AND incidentally touches a tracked file
+    # outside it: only the anima/ path counts as genome content.
+    (repo / "anima" / "keep.py").write_text("base = 2\n")
+    (repo / "foundry" / "select.py").write_text("PARENT_BIAS = 2.0\n")
     assert _genome_leftovers(repo) == ["anima/keep.py"]
 
 

@@ -75,8 +75,17 @@ def _genome_leftovers(repo: str | Path) -> list[str]:
     claude changed nothing (timed out / errored before editing), so the cycle
     reported ``changed=True``, burned a full eval window on a parent-identical
     variant, and planted a near-duplicate genome labelled with the placeholder
-    hypothesis. Only count REAL mutation content: any tracked change (status
-    other than ``??``) or an untracked file under ``anima/``.
+    hypothesis. Only count REAL mutation content, and the genome body is
+    EXCLUSIVELY the ``anima/`` package (the mutation prompt and this docstring
+    both say so) -- so a path is genome content only when it lives under
+    ``anima/``, whether it is tracked or untracked. Scoping to ``anima/`` also
+    closes an integrity hole: headless claude can edit tracked files OUTSIDE
+    ``anima/`` (e.g. ``personas/*.yaml``, ``docs/``, or -- worst -- non-kernel
+    Foundry machinery like ``foundry/select.py``/``foundry/mutate.py`` that
+    ``safety.revert_kernel`` does NOT revert, since it only restores
+    ``foundry/kernel``). Folding those into the variant commit would carry
+    non-genome edits to the evolution loop itself into a genome's ``code_ref``
+    and on into every descendant worktree. Keep the fold genome-only.
     """
     out: list[str] = []
     for line in _git(repo, "status", "--porcelain").stdout.splitlines():
@@ -86,10 +95,9 @@ def _genome_leftovers(repo: str | Path) -> list[str]:
         # Rename entries are "R  old -> new"; the new path is what matters.
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
-        if status == "??":
-            if path.startswith("anima/"):
-                out.append(path)
-        else:  # tracked modification / addition / deletion / rename
+        # Genome content lives only under anima/ -- for tracked changes
+        # (modification / addition / deletion / rename) and untracked files alike.
+        if path.startswith("anima/"):
             out.append(path)
     return out
 
