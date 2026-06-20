@@ -90,19 +90,33 @@ def _sustained_relapse_ts(samples: list, start: int, end_ts: float,
     when no sustained relapse occurs before the window ends.
     """
     n = len(samples)
-    i = start
-    while i < n:
+    # Single BACKWARD pass. A hits<=0 sample is a SUSTAINED relapse when the gap
+    # to the next hits>0 sample (or the window end) is >= min_death_s. The old
+    # forward loop re-scanned the entire remaining suffix with next() for EVERY
+    # hits<=0 sample, so a window with k dead samples cost O(k·n) — quadratic in
+    # the vitals stream. analyze_deaths calls this once per recovered death (and
+    # again for each failed upward flicker that keeps a death open), so on a long
+    # contested soak — thousands of vitals samples, many transient combat dips —
+    # the per-call O(n²) compounds and stalls build_report (which itself re-runs
+    # analyze_deaths three times via deaths / longest-alive / alive-fraction).
+    # Carry the nearest next-alive timestamp in from the right so every sample is
+    # touched exactly once; keep the LOWEST-index qualifier (overwrite as we walk
+    # toward `start`) so the EARLIEST sustained relapse still wins, identical to
+    # the original first-match-forward semantics.
+    next_alive_ts: float | None = None
+    relapse_ts: float | None = None
+    for i in range(n - 1, start - 1, -1):
         ts, hits, _ = samples[i]
         if hits > 0:
-            i += 1
+            next_alive_ts = ts          # nearest hits>0 sample to the right
             continue
-        # A hits<=0 sample: does it persist >= min_death_s?
-        recovered = next((t for t, h, _ in samples[i + 1:] if h > 0), None)
-        dead_run = (recovered - ts) if recovered is not None else (end_ts - ts)
+        # A hits<=0 sample: does it persist >= min_death_s before the next
+        # hits>0 sample (or, if none, before the window end)?
+        dead_run = ((next_alive_ts - ts) if next_alive_ts is not None
+                    else (end_ts - ts))
         if dead_run >= min_death_s:
-            return ts          # a real relapse into death
-        i += 1                 # transient dip — keep scanning past it
-    return None
+            relapse_ts = ts             # earliest qualifier wins (we walk left)
+    return relapse_ts
 
 
 def analyze_deaths(summary: TrajectorySummary,
