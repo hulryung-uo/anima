@@ -27,14 +27,56 @@ def _load_cliloc() -> dict[str, str]:
         return json.load(f)
 
 
+def _plural_adjust(name: str, *, plural: bool = False) -> str:
+    """Resolve a UO tiledata ``%...%`` plural/singular format code.
+
+    Faithful port of ClassicUO's ``StringHelper.GetPluralAdjustedString``
+    (StringHelper.cs:313-360). The tiledata name carries the count-dependent
+    suffix inside a single ``%...%`` token:
+
+    * ``"pear%s%"``            -> singular ``"pear"``,  plural ``"pears"``
+    * ``"slab%s% of bacon"``   -> ``"slab of bacon"`` / ``"slabs of bacon"``
+    * ``"rub%ies/y%"``         -> the token splits on ``/`` into
+      ``plural``/``singular`` halves: plural ``"rubies"``, singular ``"ruby"``
+
+    The previous ``name.replace("%s%", "").replace("%", "")`` only handled the
+    bare ``%s%`` token (correct by luck) and left the second half of every
+    slash form stranded in the name: ``"rub%ies/y%"`` rendered as the garbage
+    ``"rubies/y"``, ``"bread loa%ves/f%"`` as ``"bread loaves/f"`` and
+    ``"pil%es/e% of hides"`` as ``"piles/e of hides"``. That corrupted name
+    flows into the LLM surroundings/inventory context and into loot / vendor
+    name matching. Default to the singular form, matching ClassicUO's
+    ``plural = false`` default for an unknown / single-item count.
+    """
+    if "%" not in name:
+        return name
+    # RemoveEmptyEntries: ClassicUO splits on '%' dropping empty segments.
+    parts = [seg for seg in name.split("%") if seg != ""]
+    if len(parts) < 2:
+        return name
+    out = parts[0]
+    if "/" in parts[1]:
+        plural_parts = parts[1].split("/")
+        if plural:
+            out += plural_parts[0]
+        elif len(plural_parts) > 1:
+            out += plural_parts[1]
+    elif plural:
+        out += parts[1]
+    if len(parts) == 3:
+        out += parts[2]
+    return out
+
+
 def item_name(graphic: int) -> str:
     """Look up item name by graphic ID. Returns '' if not found."""
     data = _load_tiledata()
     entry = data.get(str(graphic))
     if entry:
-        name = entry["name"]
-        # Strip UO format codes like %s%
-        return name.replace("%s%", "").replace("%", "").strip()
+        # entry may be a regenerated/partial tiledata row missing "name".
+        name = entry.get("name", "") or ""
+        # Resolve UO ``%plural/singular%`` format codes the way ClassicUO does.
+        return _plural_adjust(name).strip()
     return ""
 
 
