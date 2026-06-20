@@ -97,6 +97,15 @@ def build_living_state(
     in docs/meta-controller.md §3.3 for tightening in later stages.
     """
     ss = ctx.perception.self_state
+    # Before the first 0x11/0x16 status packet arrives ``hits_max`` is 0 (and
+    # ``hits`` is 0 too). That is "HP unknown", NOT "HP zero" — the rest of the
+    # codebase encodes this convention explicitly (SelfState.hp_percent returns
+    # a 100.0 placeholder; combat_loop/planner gate every HP test behind
+    # ``hits_max > 0``; combat_loop._target_key falls back to hp_frac=1.0). The
+    # controller must follow the SAME convention or a freshly-spawned, perfectly
+    # healthy avatar reads as hp_frac=0/1=0.0 and the heuristic policy fires a
+    # spurious survival-defer (``hp_frac < 0.5``) on its very first decision.
+    hp_known = ss.hits_max > 0
     hp_max = ss.hits_max or 1
     weight_max = ss.weight_max or 1
 
@@ -133,11 +142,13 @@ def build_living_state(
         )
     except Exception:
         nearby_mobiles = 0
-    danger_nearby = nearby_mobiles > 0 and (ss.hits < hp_max * 0.6)
+    # Unknown HP (no status packet yet) is treated as full/safe, so an unknown
+    # reading never counts as "wounded" toward the danger proxy.
+    danger_nearby = nearby_mobiles > 0 and hp_known and (ss.hits < hp_max * 0.6)
 
     profession = getattr(ctx.persona, "profession", "") if ctx.persona else ""
     return LivingState(
-        hp_frac=ss.hits / hp_max,
+        hp_frac=(ss.hits / hp_max) if hp_known else 1.0,
         weight_frac=ss.weight / weight_max,
         gold=ss.gold,
         gold_rate_per_min=gold_rate_per_min,

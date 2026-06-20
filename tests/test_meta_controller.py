@@ -475,3 +475,39 @@ class TestLivingStateBuilder:
                                 session_minutes=60.0, last_modes=["combat"])
         assert st.nearby_mobiles == 0          # none are live foes
         assert st.danger_nearby is False        # wounded but not in danger
+
+    def test_unknown_hp_reads_as_full_not_zero(self):
+        """Before the first status packet (hits_max==0) HP is UNKNOWN, not 0.
+
+        Regression guard for a perception<->meta-controller default mismatch:
+        every other layer treats ``hits_max == 0`` as "HP unknown → full/safe"
+        (SelfState.hp_percent returns 100.0; combat_loop/planner gate HP tests
+        behind ``hits_max > 0``). ``build_living_state`` used ``hits_max or 1``
+        and ``ss.hits / hp_max``, so a freshly-spawned healthy avatar read as
+        hp_frac=0/1=0.0 — tripping the heuristic policy's ``hp_frac < 0.5``
+        survival-defer on its very first decision, and ``danger_nearby`` if any
+        foe was near. Unknown HP must read as full (1.0), never 0.0.
+        """
+        ctx = MagicMock()
+        ctx.persona.profession = "adventurer"
+        ss = ctx.perception.self_state
+        # No 0x11/0x16 status packet yet: both default to 0.
+        ss.hits = 0; ss.hits_max = 0; ss.weight = 0; ss.weight_max = 0
+        ss.gold = 0; ss.x = 5; ss.y = 5; ss.serial = 0x1
+        ss.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}
+        foe = SimpleNamespace(
+            serial=0x2, notoriety=NotorietyFlag.MURDERER,
+            body=0x0021, is_dead=False, is_yellow_health=False,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(return_value=[foe])
+
+        st = build_living_state(ctx, gold_rate_per_min=0.0,
+                                session_minutes=5.0, last_modes=["combat"])
+        assert st.hp_frac == pytest.approx(1.0)  # unknown HP → full, not 0.0
+        assert st.danger_nearby is False         # unknown HP is never "wounded"
+
+        # And the heuristic policy must NOT fire a spurious survival-defer.
+        import asyncio
+        d = asyncio.run(HeuristicModePolicy().choose(st))
+        assert d.mode != "rest"
