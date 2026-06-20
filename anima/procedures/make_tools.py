@@ -7,6 +7,7 @@ gump buttons, matching the approach used by the CraftTinker skill.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import TYPE_CHECKING
 
@@ -52,6 +53,41 @@ _CRAFT_TARGETS: dict[str, tuple[str, set[int]]] = {
     "Pickaxe": ("Tools", PICKAXE_GRAPHICS),
     "Shovel": ("Tools", SHOVEL_GRAPHICS),
 }
+
+
+def _extract_gump_notice(ss) -> str:
+    """Read the result notice from the NEWEST open tinkering CraftGump, or ''.
+
+    ServUO renders the craft result notice via AddHtmlLocalized(170, 295, …)
+    (CraftGump.cs); the "NOTICES" header label sits at x=10, y=302.
+
+    Two bugs in the old inline scan this replaces:
+
+    1. It iterated ``ss.gumps.values()`` in arbitrary dict order and returned
+       the FIRST match. make_tools re-suggests itself and runs back-to-back, so
+       a stale CraftGump from a prior attempt routinely lingers alongside the
+       fresh one the server just re-sent. Reading the stale gump's notice (or a
+       *missing* notice on a prior success) masked the real notice — so a
+       genuine "required skill" reply never tripped the give-up / buy-instead
+       breaker (``_tinkering_blocked_until``) and a low-Tinkering smith looped
+       forever burning ingots on a craft it cannot land. Mirror
+       ``craft_blacksmith._extract_gump_notice`` and read newest-first
+       (descending gump_id) so the notice comes from the SAME gump this craft
+       drove.
+    2. It matched ``t.y == 295`` exactly and never stripped HTML. String
+       notices arrive wrapped in ``<BASEFONT COLOR=#......>…</BASEFONT>`` and
+       the y can drift a few pixels; use the same ``280 <= y <= 310`` band with
+       an ``x >= 150`` gate (skips the x=10 header) and strip tags, exactly as
+       the blacksmith path does, so the notice is actually found and clean.
+    """
+    for gid in sorted(ss.gumps.keys(), reverse=True):
+        g = ss.gumps[gid]
+        for t in g.texts:
+            if 280 <= t.y <= 310 and t.x >= 150:
+                text = g.get_text(t.text_id)
+                if text:
+                    return re.sub(r"<[^>]+>", "", text).strip()
+    return ""
 
 
 def _journal_craft_outcome(journal, since: float) -> str | None:
@@ -324,15 +360,9 @@ class MakeTools(Procedure):
                 message=f"Craft failed for {craft_target}",
             )
 
-        # Read gump notices for server feedback (notice text at y≈295)
-        gump_notice = ""
-        for g in ctx.perception.self_state.gumps.values():
-            for t in g.texts:
-                if t.y == 295:
-                    gump_notice = g.get_text(t.text_id)
-                    break
-            if gump_notice:
-                break
+        # Read the craft notice from the NEWEST open gump (a stale prior-attempt
+        # gump must not mask THIS attempt's "required skill" / "no material").
+        gump_notice = _extract_gump_notice(ctx.perception.self_state)
 
         notice_lower = gump_notice.lower()
         if "sufficient" in notice_lower or "enough" in notice_lower:
