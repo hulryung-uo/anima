@@ -127,7 +127,12 @@ CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_agent ON knowledge(agent_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_relationships_agent
     ON relationships(agent_name, entity_serial);
-CREATE INDEX IF NOT EXISTS idx_action_stats_agent
+-- UNIQUE so update_action_stats can use an atomic ON CONFLICT upsert (like
+-- q_values / location_values) instead of a race-prone read-modify-write. Two
+-- concurrent outcomes for the same (agent, context, action) otherwise both
+-- SELECT "no row" and each INSERT, splitting one bucket into duplicate rows
+-- that get_action_stats then double-counts in the LLM "Past experience" block.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_action_stats_lookup
     ON action_stats(agent_name, context_pattern, action);
 
 CREATE TABLE IF NOT EXISTS action_logs (
@@ -543,40 +548,30 @@ class MemoryDB:
         success: bool,
         reward: float = 0.0,
     ) -> None:
-        """Record an action outcome for lightweight RL tracking."""
+        """Record an action outcome for lightweight RL tracking.
+
+        Accumulate the success/failure tallies and reward with a single atomic
+        upsert keyed on the UNIQUE (agent_name, context_pattern, action) index,
+        mirroring update_q_value / update_location_value. The previous
+        SELECT-then-INSERT/UPDATE could race two concurrent outcomes for the same
+        key into duplicate rows (each having read "no existing row"), which
+        get_action_stats would then return as split, double-counted stats.
+        """
         now = time.time()
-        rows = await self.db.execute_fetchall(
-            """SELECT id, successes, failures, total_reward FROM action_stats
-               WHERE agent_name = ? AND context_pattern = ? AND action = ?""",
-            (agent_name, context_pattern, action),
+        s_inc = 1 if success else 0
+        f_inc = 0 if success else 1
+        await self.db.execute(
+            """INSERT INTO action_stats
+               (agent_name, context_pattern, action,
+                successes, failures, total_reward, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(agent_name, context_pattern, action) DO UPDATE SET
+                   successes = action_stats.successes + excluded.successes,
+                   failures = action_stats.failures + excluded.failures,
+                   total_reward = action_stats.total_reward + excluded.total_reward,
+                   last_updated = excluded.last_updated""",
+            (agent_name, context_pattern, action, s_inc, f_inc, reward, now),
         )
-        if rows:
-            row = rows[0]
-            new_s = row["successes"] + (1 if success else 0)
-            new_f = row["failures"] + (0 if success else 1)
-            new_r = row["total_reward"] + reward
-            await self.db.execute(
-                """UPDATE action_stats SET successes = ?, failures = ?,
-                                           total_reward = ?, last_updated = ?
-                   WHERE id = ?""",
-                (new_s, new_f, new_r, now, row["id"]),
-            )
-        else:
-            await self.db.execute(
-                """INSERT INTO action_stats
-                   (agent_name, context_pattern, action,
-                    successes, failures, total_reward, last_updated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    agent_name,
-                    context_pattern,
-                    action,
-                    1 if success else 0,
-                    0 if success else 1,
-                    reward,
-                    now,
-                ),
-            )
         await self.db.commit()
 
     async def get_action_stats(self, agent_name: str, context_pattern: str) -> list[ActionStat]:
