@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from foundry.kernel import uoconst
 from foundry.kernel.archive import Archive, cell_to_str
-from foundry.select import SOC_BINS, all_active_cells, targetable_cells
+from foundry.select import SOC_BINS, _selection_quality, all_active_cells, targetable_cells
 
 SOC_LABELS = ("low", "mid", "high")
 
@@ -80,8 +80,20 @@ def render(arc: Archive) -> str:
     # narrowed this from arc.elites() but stopped at active_elites (still
     # NONE-inclusive), so a top-fitness NONE elite still headed the list while
     # the headline best excluded it; use quality_elites so the two agree.
+    #
+    # ORDER (and lead) the listing by the variance-aware trust signal
+    # _selection_quality = min(fitness, reliability) (reliability = mean -
+    # lambda*pstdev) -- the SAME signal select.py picks parents on, reeval
+    # --elites re-checks in, and observe.history's "PROVEN recipes" list was
+    # migrated to (985ff44). Sorting by the raw fitness MEAN floats a lucky
+    # high-variance elite (per_seed [400, 0] -> mean 200 but reliability 0) to
+    # the TOP of the operator-facing lineage, advertising as the run's best a
+    # recipe every other consumer ranks last. Lead with q... so the displayed
+    # number and the ordering agree, and keep the raw mean visible (labelled) so
+    # no information is lost -- the display-matches-trust consistency
+    # observe.history already enforces.
     lines.append("elites (lineage ← parents):")
-    for g in sorted(quality_elites, key=lambda g: -g.fitness):
+    for g in sorted(quality_elites, key=lambda g: -_selection_quality(g)):
         chain = []
         cur = g
         seen = set()
@@ -91,7 +103,8 @@ def render(arc: Archive) -> str:
             cur = arc.get(cur.parent) if cur.parent else None
         per_seed = g.eval.get("per_seed_fitness") or []
         seeds = f" seeds={[round(v, 2) for v in per_seed]}" if len(per_seed) > 1 else ""
-        lines.append(f"  {g.fitness:8.3f}  {' ← '.join(chain)}{seeds}")
+        lines.append(f"  q{_selection_quality(g):8.3f}  (mean {g.fitness:8.3f})  "
+                     f"{' ← '.join(chain)}{seeds}")
         if g.hypothesis:
             lines.append(f"            “{g.hypothesis}”")
     return "\n".join(lines)
