@@ -172,6 +172,32 @@ def _archive_genome(arc: Archive, g: Genome, promote: bool):
     return arc.add(g)
 
 
+def _confirm_uncorroborated(first: EvalResult, pooled: EvalResult,
+                            had_incumbent: bool) -> bool:
+    """Whether a confirm-on-promotion round leaves a would-be promotion UN-backed.
+
+    ``_pool_confirmation`` returns the SAME object only when it refused to pool
+    (the confirm failed or drifted off-cell), so ``pooled is first`` is the
+    "confirmation did not corroborate" signal.
+
+    But that signal must only BLOCK the promotion when there is a steadier
+    incumbent to protect. The whole point of ``--confirm-promotions`` is the
+    optimizer's curse (archive.py): a single LUCKY run DISPLACING a steadier
+    elite that already holds the cell (observed: g_00070's lucky [49,50,17]
+    evicting a steady elite). An EMPTY cell has no incumbent to displace, so
+    there is no curse to kill — gating it behind corroboration just discards a
+    perfectly valid first-round eval (AND the confirm eval already spent),
+    leaving the cell empty and contributing 0 to QD-score. Worse, the cell stays
+    a target for future EXPLORE cycles that re-run the same eval from scratch.
+    So an un-corroborated confirm is only "uncorroborated" (blocks the grid)
+    when an incumbent existed; against an empty cell, fill it from the first
+    round exactly as a no-confirm run would.
+    """
+    if pooled is not first:
+        return False  # corroborated (rounds pooled) — promote normally
+    return had_incumbent  # un-pooled: block only when displacing an incumbent
+
+
 def _pool_confirmation(first: EvalResult, confirm: EvalResult) -> EvalResult:
     """Pool a confirm-on-promotion round into ``first`` ONLY if it corroborates
     the SAME behavioral cell.
@@ -501,13 +527,12 @@ def run(rc: RunConfig) -> Archive:
                     )
                     first_round = out.result
                     out.result = _pool_confirmation(out.result, confirm)
-                    # _pool_confirmation returns the SAME object only when it
-                    # refused to pool (the confirm failed or drifted off-cell).
-                    # In that case the would-be promotion has no corroboration —
-                    # don't let the lone lucky round crown the cell. (When the
-                    # confirm DID pool, out.result is a fresh merged object.)
-                    if out.result is first_round:
-                        out.confirm_uncorroborated = True
+                    # An un-pooled confirm (failed/drifted) blocks the grid ONLY
+                    # when there was an incumbent to protect from the optimizer's
+                    # curse; against an EMPTY cell it still fills from the first
+                    # round (nothing to displace). See _confirm_uncorroborated.
+                    out.confirm_uncorroborated = _confirm_uncorroborated(
+                        first_round, out.result, incumbent is not None)
         except Exception as e:  # noqa: BLE001 — a broken cycle must not kill the run
             out.error = f"{type(e).__name__}: {e}"
         finally:
