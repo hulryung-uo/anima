@@ -1121,8 +1121,16 @@ def register_handlers(
             name = "System"
 
         p.social.add_speech(serial, name, text, msg_type, hue)
+        # The SPEECH_HEARD event MUST carry the on-wire ``type``. Brain._poll_events
+        # and respond_to_speech both classify chatter via ``data.get("type", 0)``,
+        # and a MISSING key defaults to 0 == MessageType.REGULAR — so a SYSTEM/LABEL
+        # cliloc line (a server notice, a single-click name label) slipped past the
+        # non-conversational filter, queued a bogus pending reply AND stamped
+        # last_player_speech, freezing fresh strategising for CONVERSATION_TIMEOUT.
+        # The 0x1C/0xAE talk handlers already forward ``type``; the cliloc emits must
+        # too (the journal write above already records the correct msg_type).
         p.emit(GameEventType.SPEECH_HEARD, {
-            "serial": serial, "name": name, "text": text,
+            "serial": serial, "name": name, "text": text, "type": msg_type,
         })
         logger.info("speech_cliloc", name=name, text=text, cliloc=cliloc_num)
 
@@ -1187,8 +1195,11 @@ def register_handlers(
             name = "System"
 
         p.social.add_speech(serial, name, text, msg_type, hue)
+        # Forward the (possibly System-forced) ``type`` so the poll/reply filters
+        # see it — see handle_cliloc_message. Without it the carefully-resolved
+        # ``msg_type = MessageType.SYSTEM`` above is dropped at the event layer.
         p.emit(GameEventType.SPEECH_HEARD, {
-            "serial": serial, "name": name, "text": text,
+            "serial": serial, "name": name, "text": text, "type": int(msg_type),
         })
         logger.info("speech_cliloc_affix", name=name, text=text,
                     cliloc=cliloc_num, affix=affix)
