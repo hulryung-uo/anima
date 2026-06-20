@@ -186,12 +186,37 @@ def _parse_location(char: Character, text: str) -> None:
 
 
 def _parse_threshold(char: Character, text: str) -> None:
-    """Parse: 'Min gold reserve: 500'"""
+    """Parse a threshold list item into ``thresholds[key] = int``.
+
+    Handles two real shapes that appear in the shipped character files:
+
+    * the ``key: value`` form — ``"Min gold reserve: 500"`` (and unit/comma
+      decorated values like ``"Min gold reserve: 1,000 gold"``), and
+    * the colonless natural-language form — ``"Bank when carrying 200+ ingots"``
+      (grimm.md / hully.md both ship a ``Bank when carrying N+ ...`` line).
+
+    The previous ``rsplit(":", 1)`` + ``int(...replace("+", ""))`` only handled
+    a bare integer after a colon: a colonless line produced a 1-element split
+    and was silently dropped, and a colon value carrying a unit/comma
+    (``"1,000 gold"``) raised ``ValueError`` and was likewise dropped. Both
+    forms therefore lost the threshold entirely. Extract the first integer
+    token (commas stripped) and derive the key from the remaining text.
+    """
     parts = text.rsplit(":", 1)
     if len(parts) == 2:
         key = parts[0].strip()
-        try:
-            value = int(parts[1].strip().replace("+", ""))
-            char.thresholds[key] = value
-        except ValueError:
-            pass
+        m = re.search(r"(\d[\d,]*)", parts[1])
+        if key and m:
+            char.thresholds[key] = int(m.group(1).replace(",", ""))
+        return
+
+    # Colonless form: pull the first integer and use the surrounding words as
+    # the key, e.g. "Bank when carrying 200+ ingots" -> {"Bank when carrying ingots": 200}.
+    m = re.search(r"(\d[\d,]*)", text)
+    if not m:
+        return
+    value = int(m.group(1).replace(",", ""))
+    key = (text[: m.start()] + text[m.end():]).replace("+", "")
+    key = re.sub(r"\s+", " ", key).strip(" :,")
+    if key:
+        char.thresholds[key] = value

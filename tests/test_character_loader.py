@@ -102,10 +102,35 @@ class TestParseCharacter:
     def test_thresholds(self):
         char = parse_character(SAMPLE_MD)
         assert char.thresholds["Min gold reserve"] == 500
+        # The colonless "Bank when carrying 200+ ingots" line is a real shipped
+        # threshold (grimm.md / hully.md) — it must not be silently dropped.
+        assert char.thresholds["Bank when carrying ingots"] == 200
 
     def test_raw_markdown_preserved(self):
         char = parse_character(SAMPLE_MD)
         assert "# TestChar" in char.raw_markdown
+
+
+class TestParseThreshold:
+    def _thresholds(self, line: str) -> dict[str, int]:
+        md = f"# C\n\n## Economy\n\n### Thresholds\n- {line}\n"
+        return parse_character(md).thresholds
+
+    def test_colon_form(self):
+        assert self._thresholds("Min gold reserve: 500") == {"Min gold reserve": 500}
+
+    def test_colon_form_with_unit_and_comma(self):
+        # Previously raised ValueError on int("1,000 gold") and was dropped.
+        assert self._thresholds("Min gold reserve: 1,000 gold") == {"Min gold reserve": 1000}
+
+    def test_colonless_natural_language(self):
+        # Previously dropped: rsplit(":") returned a single element.
+        assert self._thresholds("Bank when carrying 100+ boards") == {
+            "Bank when carrying boards": 100
+        }
+
+    def test_no_number_is_skipped(self):
+        assert self._thresholds("Bank often when convenient") == {}
 
 
 class TestLoadCharacter:
