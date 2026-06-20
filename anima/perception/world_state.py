@@ -85,6 +85,21 @@ class ItemInfo:
 class WorldState:
     """Tracks all mobiles and items visible in the game world."""
 
+    # The OPL name/property caches (opl_names/opl_properties/opl_revisions)
+    # deliberately survive remove() so a despawned-then-re-seen entity keeps its
+    # learned name (see get_or_create_mobile). But UO recycles serials slowly and
+    # a long soak streams an unbounded number of DISTINCT serials — every Spawner
+    # mob, ground-loot pile, and corpse gets a fresh serial that is OPL'd once and
+    # then dies/despawns forever. Nothing ever reaps those cache rows (remove()
+    # explicitly keeps them and prune is mobile-only), so the three dicts grow
+    # without bound across a 30-min+ session — a slow memory leak that also slows
+    # every full-dict scan. Cap them with FIFO eviction: a write re-inserts the
+    # serial as most-recent, so frequently-refreshed entities (the agent's own
+    # gear, a vendor it keeps clicking) stay hot while one-shot mob/loot serials
+    # age out. The cap is far larger than any plausible in-view entity count, so
+    # a still-relevant name is never evicted in practice.
+    OPL_CACHE_MAX: int = 4096
+
     def __init__(self) -> None:
         self.mobiles: dict[int, MobileInfo] = {}
         self.items: dict[int, ItemInfo] = {}
@@ -99,6 +114,39 @@ class WorldState:
         # by serial for items too, so get_or_create_item restores from it as well.
         self.opl_names: dict[int, str] = {}
         self.opl_properties: dict[int, list[str]] = {}
+
+    def _evict_opl_overflow(self) -> None:
+        """Trim the OPL caches back to ``OPL_CACHE_MAX`` by oldest insertion.
+
+        dicts preserve insertion order, so popping ``next(iter(...))`` evicts the
+        least-recently-written serial. A re-write of an existing serial re-inserts
+        it as most-recent (the callers pop-then-set), so a hot entity is never the
+        eviction victim while it keeps getting OPL refreshes.
+        """
+        cap = self.OPL_CACHE_MAX
+        for cache in (self.opl_names, self.opl_properties, self.opl_revisions):
+            while len(cache) > cap:
+                cache.pop(next(iter(cache)))
+
+    def remember_opl_name(self, serial: int, name: str) -> None:
+        """Cache a learned OPL/label name for ``serial`` under the FIFO cap."""
+        # Re-insert as most-recent (pop first) so refreshing a name keeps the
+        # entity hot against eviction, then enforce the cap.
+        self.opl_names.pop(serial, None)
+        self.opl_names[serial] = name
+        self._evict_opl_overflow()
+
+    def remember_opl_properties(self, serial: int, properties: list[str]) -> None:
+        """Cache OPL tooltip lines for ``serial`` under the FIFO cap."""
+        self.opl_properties.pop(serial, None)
+        self.opl_properties[serial] = properties
+        self._evict_opl_overflow()
+
+    def remember_opl_revision(self, serial: int, revision: int) -> None:
+        """Record the latest OPL revision hash for ``serial`` under the FIFO cap."""
+        self.opl_revisions.pop(serial, None)
+        self.opl_revisions[serial] = revision
+        self._evict_opl_overflow()
 
     def get_or_create_mobile(self, serial: int) -> MobileInfo:
         if serial not in self.mobiles:

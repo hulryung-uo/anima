@@ -1057,7 +1057,7 @@ def register_handlers(
             # cache, so scope the write to a known mobile serial. Mirror the
             # 0xD6 cache write so a label-learned name is just as durable.
             if mob is not None:
-                p.world.opl_names[serial] = text
+                p.world.remember_opl_name(serial, text)
 
         p.social.add_speech(serial, name, text, msg_type, hue)
         p.emit(
@@ -1308,8 +1308,9 @@ def register_handlers(
         r = PacketReader(data[1:])
         serial = r.read_u32()
         revision = r.read_u32()
-        # Store revision so we know OPL exists for this entity
-        p.world.opl_revisions[serial] = revision
+        # Store revision so we know OPL exists for this entity (bounded cache —
+        # see WorldState.OPL_CACHE_MAX; raw serials stream unboundedly over a soak)
+        p.world.remember_opl_revision(serial, revision)
 
     handler.register(0xDC, handle_opl_info)
 
@@ -1400,9 +1401,9 @@ def register_handlers(
         # Cache so a later 0x1D/0x78 round-trip for the same NPC doesn't
         # blank out the name we just learned.
         if name:
-            p.world.opl_names[serial] = name
+            p.world.remember_opl_name(serial, name)
         if properties:
-            p.world.opl_properties[serial] = properties
+            p.world.remember_opl_properties(serial, properties)
 
     handler.register(0xD6, handle_mega_cliloc)
 
