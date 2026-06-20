@@ -647,6 +647,21 @@ def register_handlers(
             if mob is None:
                 return
             mob.name = name
+            # Persist the status-reply name to the durable OPL cache, exactly
+            # like the 0x1C single-click LABEL (handle_ascii_talk) and 0xD6
+            # MegaCliloc paths already do. world.opl_names survives a 0x1D
+            # Delete (see WorldState.get_or_create_mobile): when this mobile
+            # leaves view and re-enters, MobileIncoming recreates a BLANK
+            # MobileInfo that is re-seeded ONLY from opl_names. 0x11 is the
+            # reply to a single-click / health-bar status request — a primary
+            # foe/NPC name source — yet it alone wrote the name only onto the
+            # live mob and never to the cache, so a name learned this way was
+            # silently lost on re-entry (the synchronous name-keyed gates —
+            # _is_vendor / _is_refused / huntable-name scans — then missed it
+            # until a fresh OPL round-trip). Mirror the other name sources so a
+            # status-learned name is just as durable. (Skip an empty field.)
+            if name:
+                p.world.remember_opl_name(serial, name)
             mob.hits = hits
             mob.hits_max = hits_max
 
