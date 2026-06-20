@@ -2015,8 +2015,17 @@ class Planner:
         # TOOL_MIN_STOCK. Buy more if a vendor is reachable right now;
         # otherwise fall through and keep mining — this is opportunistic,
         # not a hard block.
-        from anima.procedures.buy_from_vendor import TOOL_MIN_STOCK
-        if mining_tool_count < TOOL_MIN_STOCK and ss.gold >= 10:
+        #
+        # FUNDS GATE: vendor purchases on this shard deduct from BANK gold when
+        # the backpack is short (see Priority 4c and buy_from_vendor
+        # ._available_funds), so a backpack-only `ss.gold >= 10` pre-gate is
+        # wrong here: right after a normal sell→bank leg the agent carries ~0
+        # backpack gold but hundreds in the bank, and the old gate silently
+        # skipped restock forever — leaving a miner stuck at 1 tool with a full
+        # bank. Use the combined backpack+fresh-bank funds check that
+        # buy_from_vendor.can_start itself uses so the two agree.
+        from anima.procedures.buy_from_vendor import TOOL_MIN_STOCK, _has_purchase_funds
+        if mining_tool_count < TOOL_MIN_STOCK and _has_purchase_funds(ctx):
             proc = _get_proc("buy_from_vendor")
             if proc and await proc.can_start(ctx):
                 _intent(
