@@ -77,7 +77,12 @@ MODES: dict[str, Mode] = {
     ),
     "combat": Mode(
         name="combat",
-        loop=("bandage_self", "hunt_nearby"),
+        # MUST mirror PROFESSION_LOOPS["adventurer"] exactly (see module
+        # docstring): wander_for_combat re-engages instead of falling through
+        # to mining when no target is in range, and sell_to_vendor flushes
+        # looted gear to gold. Dropping either reintroduces the combat-uptime
+        # leak / structurally-0 worth the planner loop already fixed.
+        loop=("bandage_self", "hunt_nearby", "wander_for_combat", "sell_to_vendor"),
         good_for="Swords/Tactics/Anatomy/Healing + gold from kills",
         needs=("weapon", "bandages"),
         risk="high",
