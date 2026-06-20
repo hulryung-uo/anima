@@ -94,6 +94,9 @@ class WorldState:
         # 0x78 MobileIncoming; without this cache the name would be "" until
         # the next OPL round-trip completes, which races every synchronous
         # vendor lookup (_is_vendor / _is_refused).
+        #
+        # The same divergence hits ITEMS: 0xD6 MegaCliloc caches name/properties
+        # by serial for items too, so get_or_create_item restores from it as well.
         self.opl_names: dict[int, str] = {}
         self.opl_properties: dict[int, list[str]] = {}
 
@@ -143,7 +146,26 @@ class WorldState:
 
     def get_or_create_item(self, serial: int) -> ItemInfo:
         if serial not in self.items:
-            self.items[serial] = ItemInfo(serial=serial)
+            item = ItemInfo(serial=serial)
+            # Restore the cached OPL name/properties, exactly like
+            # get_or_create_mobile does for mobiles. 0xD6 MegaCliloc is the
+            # ONLY item-name source and is requested/pushed independently of the
+            # item's spatial packets (0x1A WorldItem / 0x3C ContainerContent /
+            # 0x25 AddItemToContainer). So an OPL can arrive BEFORE the item
+            # exists, or the item can leave view (0x1D Delete) and re-enter —
+            # either way the spatial packet recreates a BLANK ItemInfo. Without
+            # this restore the item's name/properties stay "" until a fresh OPL
+            # round-trip completes, racing every name-keyed item lookup (loot
+            # filtering, reagent/tool identification, the vendor buy-list name
+            # correlation). The cache (populated by handle_mega_cliloc) already
+            # survives remove(); mobiles consumed it, items silently did not.
+            cached_name = self.opl_names.get(serial)
+            if cached_name:
+                item.name = cached_name
+            cached_props = self.opl_properties.get(serial)
+            if cached_props:
+                item.properties = list(cached_props)
+            self.items[serial] = item
         return self.items[serial]
 
     def remove(self, serial: int) -> None:

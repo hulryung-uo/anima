@@ -86,6 +86,31 @@ class TestWorldState:
         assert mob2.name == "Veda the provisioner"
         assert mob2.properties == ["Veda the provisioner", "Minoc Provisioner"]
 
+    def test_item_name_persists_across_remove_and_recreate(self):
+        # 0xD6 MegaCliloc is the ONLY item-name source and arrives independently
+        # of the item's spatial packets. An item can leave view (0x1D Delete)
+        # and re-enter via 0x1A/0x3C/0x25 — which recreate a BLANK ItemInfo — or
+        # the OPL can arrive before the item exists. handle_mega_cliloc caches
+        # name/properties by serial (for items too), and the cache survives
+        # remove(); get_or_create_item must restore from it like the mobile path
+        # does, else name-keyed item lookups (loot/reagent/vendor) race a blank.
+        ws = WorldState()
+        serial = 0x40001234
+        item = ws.get_or_create_item(serial)
+        item.name = "spider's silk"
+        item.properties = ["spider's silk", "Weight: 1 Stone"]
+        ws.opl_names[serial] = item.name
+        ws.opl_properties[serial] = list(item.properties)
+
+        ws.remove(serial)
+        assert serial not in ws.items
+        # Cache intentionally survives remove() (see get_or_create_mobile note).
+        assert ws.opl_names.get(serial) == "spider's silk"
+
+        item2 = ws.get_or_create_item(serial)
+        assert item2.name == "spider's silk"
+        assert item2.properties == ["spider's silk", "Weight: 1 Stone"]
+
 
 # ---------------------------------------------------------------------------
 # SelfState
