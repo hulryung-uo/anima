@@ -111,3 +111,32 @@ def test_emote_and_yell_are_real_conversation() -> None:
 
 def test_empty_when_no_conversation() -> None:
     assert _build_recent_speech(_ctx([])) == ""
+
+
+def test_item_serial_regular_speech_is_not_conversation() -> None:
+    # A REGULAR-typed line attributed to an ITEM serial (>= 0x40000000) — a
+    # talking item, a sign, a moongate, or a server line keyed to an item — is
+    # NOT a person speaking. It passes the broadcast / msg_type / name=="system"
+    # filters, so without an item-range guard it leaked into the strategist's
+    # "Recent conversation" as a phantom dialogue partner. _poll_events and
+    # respond_to_speech already drop it; this context builder must too.
+    entries = [
+        _entry(0x40000123, "a magic gate", "Step through me", MessageType.REGULAR),
+    ]
+    assert _build_recent_speech(_ctx(entries)) == ""
+
+
+def test_item_serial_line_does_not_crowd_out_a_real_player_line() -> None:
+    # The window keeps only the last few REAL lines: item chatter must not
+    # consume a conversational slot and push out a genuine player message.
+    entries = [
+        _entry(PLAYER, "Aelius", "are you there?", MessageType.REGULAR),
+        _entry(0x40000123, "a sign", "Britain Bank", MessageType.REGULAR),
+        _entry(0x40000124, "a sign", "Open 9-5", MessageType.REGULAR),
+        _entry(0x40000125, "a sign", "No loitering", MessageType.REGULAR),
+    ]
+    out = _build_recent_speech(_ctx(entries))
+    assert "Aelius" in out
+    assert "are you there?" in out
+    assert "sign" not in out
+    assert "Britain Bank" not in out

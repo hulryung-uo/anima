@@ -163,6 +163,17 @@ def _build_recent_speech(ctx: BrainContext) -> str:
     for entry in recent:
         if entry.serial == 0xFFFFFFFF:
             continue  # broadcast/system pseudo-serial
+        # Item/multi-range serials (>= 0x40000000) are NOT a person: a talking
+        # item, a sign, a moongate, or a server line attributed to an item
+        # serial. _poll_events (f62dc14) and respond_to_speech already refuse to
+        # queue/answer these ("not a mobile, can't be a person speaking"), but
+        # this strategic-context builder was left out — so a REGULAR-typed item
+        # line still slipped into "Recent conversation" and fed the strategist a
+        # phantom dialogue partner: the LLM read the scene as social and could
+        # decide to ``speak`` back at an object. Mirror the established guard so
+        # only real mobile chatter reaches the think prompt.
+        if entry.serial >= 0x40000000:
+            continue
         if entry.msg_type in _NON_CONVERSATIONAL_TYPES:
             continue
         if entry.name.lower() == "system":
