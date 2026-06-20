@@ -72,8 +72,37 @@ async def drag_to_container(
     container_serial: int,
 ) -> bool:
     """Pick up an item and drop it into a container."""
+    # Snapshot pre-lift state. On a successful lift ServUO removes the item
+    # from view (it moves into the mobile's Holding), so the world entry
+    # either disappears or changes; a PARTIAL lift from a stack leaves the
+    # source serial in place but decrements its ``amount``. A REJECTED lift
+    # (0x27 LiftRej — out of range, locked-down, too heavy, server busy)
+    # leaves the item exactly where it was. Without this check a rejected
+    # lift still fired the follow-up DropItem (0x08) against an item we are
+    # not holding — the server drops it on the floor or silently ignores it —
+    # while this returns True, so the caller (bank/restock/store flows) marks
+    # the item moved and moves on, stranding it. Mirror the proven guard in
+    # ``anima.actions.inventory.drag_drop``: bail out before the drop when the
+    # item did not move.
+    world = ctx.perception.world
+    pre_state = None
+    if serial in world.items:
+        before = world.items[serial]
+        pre_state = (before.container, before.x, before.y, before.z, before.amount)
+
     await ctx.conn.send_packet(build_pick_up(serial, amount))
     await asyncio.sleep(0.3)
+
+    if pre_state is not None and serial in world.items:
+        after = world.items[serial]
+        if (after.container, after.x, after.y, after.z, after.amount) == pre_state:
+            logger.debug(
+                "drag_to_container_lift_rejected",
+                serial=f"0x{serial:08X}", amount=amount,
+                container=f"0x{container_serial:08X}",
+            )
+            return False
+
     await ctx.conn.send_packet(
         build_drop_item(serial, 0xFFFF, 0xFFFF, 0, container_serial)
     )
