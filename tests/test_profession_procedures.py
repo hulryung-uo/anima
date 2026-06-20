@@ -196,7 +196,11 @@ class TestPracticeHidingResolvedSlots:
         hide_calls = [c for c in use_skill_mock.await_args_list
                       if c.args[1] == ph.SKILL_HIDING]
         assert len(hide_calls) == ph.MAX_ATTEMPTS
-        assert f"0/{ph.ATTEMPTS_PER_RUN} hidden" in result.message
+        # A run where every attempt timed out resolved ZERO Hiding rolls — that
+        # is a retryable failure, not a phantom success (the skill never rolled,
+        # so no practice happened). See the practice_hiding zero-roll fix.
+        assert result.success is False
+        assert "skill never rolled" in result.message
 
     @pytest.mark.asyncio
     async def test_stealth_steps_count_only_actual_movement(self):
