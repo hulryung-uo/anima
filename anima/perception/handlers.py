@@ -914,6 +914,24 @@ def register_handlers(
         item.container = parent_serial
 
         if parent_serial == p.self_state.serial:
+            # Equipping a NEW serial onto a layer we already occupied displaces
+            # the OLD item off the paperdoll. ClassicUO's EquipItem removes the
+            # previous item from that owner/layer before adding the new one. We
+            # only overwrote self_state.equipment[layer], but the displaced item
+            # still lived in world.items with container == self and its old
+            # layer > 0. The equipment-recovery fallback (main.py: `it.container
+            # == serial and it.layer > 0`) then rebuilds equipment[layer] from
+            # that orphan, walking the just-replaced weapon straight back onto
+            # the paperdoll so the combat re-arm guards see a phantom worn
+            # weapon — the same stranded-reference class the 0x25 / 0x1D / 0x3C
+            # / 0x2E-reparent handlers already guard, missed only for self
+            # equip-replace. Strip the displaced item's worn-on-self markers.
+            old_serial = p.self_state.equipment.get(layer)
+            if old_serial and old_serial != serial:
+                old_item = p.world.items.get(old_serial)
+                if old_item is not None and old_item.container == p.self_state.serial:
+                    old_item.container = 0
+                    old_item.layer = 0
             p.self_state.equipment[layer] = serial
         else:
             # 0x2E re-parents an existing item. If a serial WE were wearing is
