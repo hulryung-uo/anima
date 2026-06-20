@@ -127,6 +127,29 @@ class PracticeMagery(Procedure):
         before_mag = mag.value if mag else 0.0
         before_med = med.value if med else 0.0
 
+        def _collect_gains() -> dict[int, float]:
+            """Magery/Meditation gained SO FAR this run, measured off ``before_*``.
+
+            Read fresh each call so an EARLY return (reagents run out part-way
+            through the run) still credits the casts that already rolled. Magery
+            and Meditation are skill streams that gain on every resolved cast /
+            regen tick, so by the time the loop hits ``no_reagents`` the agent
+            has typically already gained skill — dropping those gains on the
+            early return reports a real partial success as a pure failure and
+            silently under-credits the MAGIC loop's reward signal (the
+            phantom-success anti-pattern in reverse).
+            """
+            mag_s = ss.skills.get(SKILL_MAGERY)
+            med_s = ss.skills.get(SKILL_MEDITATION)
+            out: dict[int, float] = {}
+            mg = max(0.0, (mag_s.value if mag_s else 0.0) - before_mag)
+            md = max(0.0, (med_s.value if med_s else 0.0) - before_med)
+            if mg:
+                out[SKILL_MAGERY] = mg
+            if md:
+                out[SKILL_MEDITATION] = md
+            return out
+
         casts = fizzles = 0
         # g_00101 champion loop (fitness 233.8): count only RESOLVED casts, so a
         # low-mana meditation does NOT consume a cast slot — guarantees
@@ -165,6 +188,8 @@ class PracticeMagery(Procedure):
                     success=False,
                     reason=FailureReason.MISSING_RESOURCE,
                     message="Out of reagents for Greater Heal",
+                    skill_gains=_collect_gains(),
+                    details={"casts": casts, "fizzles": fizzles},
                 )
             if result.success:
                 casts += 1
@@ -173,13 +198,9 @@ class PracticeMagery(Procedure):
 
         mag = ss.skills.get(SKILL_MAGERY)
         med = ss.skills.get(SKILL_MEDITATION)
-        gains: dict[int, float] = {}
-        mag_gain = max(0.0, (mag.value if mag else 0.0) - before_mag)
-        med_gain = max(0.0, (med.value if med else 0.0) - before_med)
-        if mag_gain:
-            gains[SKILL_MAGERY] = mag_gain
-        if med_gain:
-            gains[SKILL_MEDITATION] = med_gain
+        gains = _collect_gains()
+        mag_gain = gains.get(SKILL_MAGERY, 0.0)
+        med_gain = gains.get(SKILL_MEDITATION, 0.0)
 
         return ProcedureResult(
             success=casts > 0,
