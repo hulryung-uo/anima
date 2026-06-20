@@ -64,7 +64,14 @@ def _is_dead_end(g) -> bool:
         return True
     if bd.get("viability_gate", 1) < 0.5:
         return True
-    target = g.config.get("target_cell")
+    # A legacy / hand-edited genome record can carry ``"config": null`` (the JSON
+    # loads to ``None`` via ``Genome.from_dict``'s ``d.get("config", {})``, which
+    # returns the explicit null when the KEY exists). ``g.config.get(…)`` would
+    # then raise ``AttributeError`` — and history() runs this over EVERY archived
+    # genome on the orchestrator's per-cycle hot path, so one bad record aborts
+    # the whole cycle (and, repeated each cycle, the whole run). Guard like
+    # reeval._main / reeval_genome already do (``g.config or {}``).
+    target = (g.config or {}).get("target_cell")
     if target and list(target) != list(g.cell):
         return True
     return False
@@ -168,7 +175,7 @@ def history(archive: Archive, limit: int = 12) -> str:
             notes.append("ZERO skill gain")
         if bd.get("viability_gate", 1) < 0.5:
             notes.append(f"gate {bd['viability_gate']:.2f} (barely alive/active)")
-        target = g.config.get("target_cell")
+        target = (g.config or {}).get("target_cell")  # null-config tolerant (see _is_dead_end)
         if target and list(target) != list(g.cell):
             notes.append(f"aimed {tuple(target)} but landed {g.cell}")
         note = ("  ⚠ " + "; ".join(notes)) if notes else ""
