@@ -91,11 +91,19 @@ def _summarize_mob_names(names: list[str]) -> str:
     counts: dict[str, int] = {}
     for name in names:
         counts[name] = counts.get(name, 0) + 1
-    parts = [n if c == 1 else f"{n} x{c}" for n, c in counts.items()]
+    grouped = list(counts.items())
+    parts = [n if c == 1 else f"{n} x{c}" for n, c in grouped]
     shown = parts[:_MAX_MOB_NAMES]
-    hidden = len(parts) - len(shown)
-    if hidden > 0:
-        shown.append(f"and {hidden} more")
+    # The overflow line must report the true number of additional MOBILES, not
+    # the number of additional distinct GROUPS. Summing ``len(parts) - shown``
+    # counted groups, so five spelled-out names plus a hidden "a headless one
+    # x4" surfaced as "and 1 more" — hiding three of the four overflow foes,
+    # the very magnitude-loss the docstring promises to prevent (the strategist
+    # then under-weights danger in exactly the crowded scene survival depends
+    # on). Sum the per-group counts of the dropped groups instead.
+    hidden_mobs = sum(c for _, c in grouped[_MAX_MOB_NAMES:])
+    if hidden_mobs > 0:
+        shown.append(f"and {hidden_mobs} more")
     return ", ".join(shown)
 
 

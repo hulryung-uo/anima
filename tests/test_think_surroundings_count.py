@@ -80,3 +80,28 @@ def test_friendly_duplicates_also_tallied():
     ctx = _ctx([_mob("a town guard", NotorietyFlag.INNOCENT) for _ in range(3)])
     line = _line(_build_surroundings(ctx), "People nearby:")
     assert line == "People nearby: a town guard x3"
+
+
+def test_overflow_count_is_mobs_not_groups():
+    """The "and N more" tail must count hidden MOBILES, not hidden groups.
+
+    Five distinct singletons fill the spelled-out quota; a sixth group of four
+    identical foes overflows. Counting the dropped *group* ("and 1 more") would
+    erase three of the four — exactly the danger under-report the summary is
+    meant to prevent. The tail must read "and 4 more".
+    """
+    mobs = [_mob(f"orc {i}", NotorietyFlag.ENEMY) for i in range(5)]
+    mobs += [_mob("a headless one", NotorietyFlag.ENEMY) for _ in range(4)]
+    line = _line(_build_surroundings(_ctx(mobs)), "Hostile nearby:")
+    assert "and 4 more" in line
+    assert "and 1 more" not in line
+
+
+def test_overflow_count_sums_multiple_hidden_groups():
+    """Several hidden multi-count groups all contribute to the overflow tally."""
+    mobs = [_mob(f"rat {i}", NotorietyFlag.ENEMY) for i in range(5)]
+    mobs += [_mob("an ettin", NotorietyFlag.ENEMY) for _ in range(2)]
+    mobs += [_mob("a troll", NotorietyFlag.ENEMY) for _ in range(3)]
+    line = _line(_build_surroundings(_ctx(mobs)), "Hostile nearby:")
+    # 2 ettins + 3 trolls hidden behind the 5 spelled-out rats == 5 more.
+    assert "and 5 more" in line
