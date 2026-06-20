@@ -137,15 +137,45 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_respects_existing_anchor_from_a_prior_fight(self, monkeypatch):
         """When HuntNearby already set combat_anchor, wander must orbit THAT
-        anchor, not the agent's current position (setdefault is a no-op)."""
+        anchor (when it is still nearby), not the agent's current position."""
         async def fake_go_to(ctx, x, y, run=False, interrupt_check=None):
             return None
 
         monkeypatch.setattr(movement, "go_to", fake_go_to)
-        ctx = _ctx(self_x=200, self_y=200, mobiles=[])
-        ctx.blackboard["combat_anchor"] = (50, 50)  # from a previous fight
+        # A recent fight a few tiles away: the agent stepped off-anchor while
+        # repositioning but is still within orbit reach — honour that anchor.
+        from anima.procedures.combat_loop import WANDER_RADIUS
+        ctx = _ctx(self_x=205, self_y=205, mobiles=[])
+        nearby = (205 + WANDER_RADIUS, 205)  # within 2*WANDER_RADIUS
+        ctx.blackboard["combat_anchor"] = nearby
         await WanderForCombat().execute(ctx)
-        assert ctx.blackboard["combat_anchor"] == (50, 50)
+        assert ctx.blackboard["combat_anchor"] == nearby
+
+    @pytest.mark.asyncio
+    async def test_reanchors_when_prior_anchor_is_a_stale_far_latch(self, monkeypatch):
+        """Regression: combat_anchor is a never-cleared latch. After the arena
+        swept clean the warrior YIELDED, the planner walked it far away to mine,
+        and wander re-armed at the new spot. The stale far-away anchor must NOT
+        be reused (it would orbit the OLD arena, sending the agent on a long walk
+        back) — wander re-anchors to the current position and sweeps locally."""
+        destinations: list[tuple[int, int]] = []
+
+        async def recording_go_to(ctx, x, y, run=False, interrupt_check=None):
+            destinations.append((x, y))
+            return None
+
+        monkeypatch.setattr(movement, "go_to", recording_go_to)
+        from anima.procedures.combat_loop import WANDER_RADIUS
+        ctx = _ctx(self_x=600, self_y=600, mobiles=[])
+        ctx.blackboard["combat_anchor"] = (50, 50)  # stale: ~550 tiles away
+        await WanderForCombat().execute(ctx)
+        # Re-anchored to where the agent actually stands, not the old arena.
+        assert ctx.blackboard["combat_anchor"] == (600, 600)
+        # ...and the sweep destination orbits the CURRENT spot, not (50, 50).
+        assert destinations, "wander should have issued a sweep move"
+        dx, dy = destinations[-1]
+        assert abs(dx - 600) <= WANDER_RADIUS
+        assert abs(dy - 600) <= WANDER_RADIUS
 
     @pytest.mark.asyncio
     async def test_yields_to_other_work_after_max_empty_roams(self, monkeypatch):

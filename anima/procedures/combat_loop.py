@@ -1198,7 +1198,28 @@ class WanderForCombat(Procedure):
         # orbiting it. setdefault PINS the anchor on the first wander so every
         # subsequent sweep orbits one fixed center (identical behaviour once a
         # fight has already set the anchor).
-        ax, ay = ctx.blackboard.setdefault("combat_anchor", (ss.x, ss.y))
+        #
+        # `combat_anchor` is a blackboard latch that is never cleared: once set
+        # it outlives the engagement that wrote it. After the arena sweeps clean
+        # the warrior YIELDS to the mining/sell tail and the planner can walk it
+        # far away (ore tiles out of range, a deadlock/forum relocation, a vendor
+        # trip). When wander re-arms at the new spot, the stale far-away anchor is
+        # still present, so `setdefault` would orbit the OLD arena — sending the
+        # agent on a long walk back across the map instead of sweeping where it
+        # actually stands. A legitimate anchor is always close: HuntNearby
+        # re-stamps it to the current tile whenever a real fight starts, and a
+        # wander sweep keeps the agent within WANDER_RADIUS of it. So an anchor
+        # farther than 2*WANDER_RADIUS away cannot have been reached by orbiting
+        # — it is a stale cross-area latch. Re-anchor to the current position in
+        # that case (and pin a fresh anchor when none exists), keeping the
+        # "pin on first wander / respect a recent nearby fight" behaviour intact.
+        anchor = ctx.blackboard.get("combat_anchor")
+        if anchor is None or max(
+            abs(anchor[0] - ss.x), abs(anchor[1] - ss.y)
+        ) > WANDER_RADIUS * 2:
+            anchor = (ss.x, ss.y)
+            ctx.blackboard["combat_anchor"] = anchor
+        ax, ay = anchor
         idx = ctx.blackboard.get("_wander_dir_idx", 0) % len(WANDER_DIRS)
         ctx.blackboard["_wander_dir_idx"] = idx + 1
         dx, dy = WANDER_DIRS[idx]
