@@ -30,6 +30,19 @@ from foundry.orchestrator import LANE_BUDGET, _prepare_worktree
 # filter in _summarize_ratios and single-handedly swamps the cross-genome median.
 _NEGLIGIBLE_FITNESS = 1e-6
 
+# The ~0-recorded guard below only fires UNDER ``_NEGLIGIBLE_FITNESS`` (1e-6),
+# but ``fitness = gate * inner`` produces a whole CONTINUUM of small-but-not-tiny
+# recorded scores: a low-viability-gate genome can archive e.g. 5e-4 (gate ~1e-3
+# × inner ~0.5) — well ABOVE 1e-6, yet still no usable scale. A held-out re-run
+# that recovered a real score (say 120) then yields a *finite* shortfall ratio in
+# the hundreds of thousands that slips past the inf-filter in _summarize_ratios
+# and swamps the cross-genome median exactly as the sub-1e-6 case did. That is
+# not a "fraction recovered" — it is an over-replication. Any ratio above this
+# ceiling (recovered far more than recorded) is reclassified as one, so the
+# verdict bands (≤0.8 replicates) and the legitimate small over-replications
+# (1.2, 1.5) are untouched while the absurd outliers join the inf bucket.
+_OVER_REPLICATION_CEILING = 10.0
+
 
 def _elite_reeval_order(elites: list[Genome]) -> list[Genome]:
     """Order grid elites so the LEAST trustworthy champion is re-checked FIRST.
@@ -89,7 +102,18 @@ def _replication_ratio(recorded: float, held_out: float) -> float:
     """
     if abs(recorded) <= _NEGLIGIBLE_FITNESS:
         return 1.0 if held_out <= 0.0 else float("inf")
-    return 1.0 - (recorded - held_out) / abs(recorded)
+    ratio = 1.0 - (recorded - held_out) / abs(recorded)
+    # A small-but-above-threshold recorded fitness with a much larger held-out
+    # recovery still has no meaningful finite scale: the shortfall ratio explodes
+    # into the hundreds/thousands. Treat that as the SAME over-replication the
+    # ~0-recorded branch returns ``inf`` for, so _summarize_ratios sets it aside
+    # (counted separately) instead of folding a multi-thousand finite value into
+    # the headline demotion median. The ceiling sits far above every legitimate
+    # verdict band (replicates tops out at ~1.0; a real over-replication like 1.5
+    # stays finite) so only the genuinely scale-free outliers are reclassified.
+    if ratio > _OVER_REPLICATION_CEILING:
+        return float("inf")
+    return ratio
 
 
 def _lane_safe_seeds(seeds: int, slot: int) -> int:
