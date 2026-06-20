@@ -305,6 +305,24 @@ def _reset_engagement_state(ctx: AgentContext) -> None:
     # roams" truly means consecutive — the count restarts the moment a fight
     # actually happens, exactly like the retreat/bandage scratch state above.
     ctx.blackboard["_wander_empty"] = 0
+    # ``_wander_cooldown_until`` is the post-yield suppression window: when a
+    # wander sweep declares the spot swept-clean (WANDER_MAX_EMPTY empty roams)
+    # it parks this timestamp ~30s in the future so wander stays off and the
+    # productive tail runs without the wander<->work flap. But HuntNearby is NOT
+    # gated by that cooldown — a mob can wander into range during the window and
+    # the agent fights it. A real fight is proof the spot is NOT swept clean, yet
+    # the stale cooldown survived the engagement: after the fight ends with
+    # hostiles still around the perimeter (no target in immediate range),
+    # WanderForCombat.can_start sees the future cooldown and refuses to roam,
+    # dropping the warrior into the mining fallthrough for the remainder of the
+    # stale window instead of re-engaging the active arena — the exact combat-
+    # uptime leak the wander loop exists to plug. The wander-spotted-a-target
+    # path already clears it for this reason (execute() sets it to 0.0 when a
+    # sweep spots a hostile); a fight reached via HuntNearby directly is the same
+    # evidence and must clear it too. Reset here (engagement start) so a genuine
+    # engagement always re-arms combat re-engagement, exactly like the
+    # consecutive-empty counter above.
+    ctx.blackboard["_wander_cooldown_until"] = 0.0
 
 
 def _bandage_trigger_pct(ctx: AgentContext, hp_pct: float, now: float) -> float:
