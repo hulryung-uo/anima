@@ -36,9 +36,18 @@ DOVETAIL_SAW_GRAPHICS = {0x1028, 0x1029}
 ALL_TOOL_GRAPHICS = SAW_GRAPHICS | DOVETAIL_SAW_GRAPHICS
 
 # Material graphics
-LOG_GRAPHIC = 0x1BDD
 BOARD_GRAPHIC = 0x1BD7
-MATERIAL_GRAPHICS = {LOG_GRAPHIC, BOARD_GRAPHIC}
+# A log stack flips between TWO graphic IDs depending on stack size (0x1BDD
+# and 0x1BE0) — every other module already keys on both (lumber.LOG_GRAPHICS,
+# make_boards.LOG_GRAPHICS, banking/vendor KEEP sets, skills.state). Carpentry
+# alone counted only 0x1BDD, so a carpenter whose logs happen to render as the
+# 0x1BE0 variant saw them as zero material: can_execute gated False (materials
+# < 4) with a full pack, and boards_available under-counted so _pick_target
+# either chose a smaller item or fired a phantom "need more wood" shortage
+# signal — stalling the whole carpentry loop. Count both stack graphics.
+LOG_GRAPHICS = {0x1BDD, 0x1BE0}
+LOG_GRAPHIC = 0x1BDD  # legacy single-graphic alias (kept for back-compat)
+MATERIAL_GRAPHICS = LOG_GRAPHICS | {BOARD_GRAPHIC}
 
 CARPENTRY_SKILL_ID = 11
 
