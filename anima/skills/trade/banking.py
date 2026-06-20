@@ -51,6 +51,18 @@ DEPOSIT_GRAPHICS = {
     0x1BF2, 0x1BEF, 0x1BF0, 0x1BF1,  # ingots
 }
 
+# ONE weight ratio drives both the decision to make the bank trip and the
+# decision to actually dump heavy DEPOSIT_GRAPHICS materials once the box is
+# open. They used to disagree — can_execute admitted the skill at ratio > 0.6
+# but execute only deposited heavy materials above 0.8. A miner carrying iron
+# ore at 0.6–0.8 weight (and no gold) therefore walked to the bank, opened the
+# box, deposited nothing, and returned success=False with a -0.5 reward: a
+# wasted round-trip that left it overweight and unable to keep gathering, and a
+# poisoned Q/skill signal. Keying both call sites off this single constant
+# closes the dead band — mirrors the procedures-path fix
+# (anima.procedures.bank_deposit.HEAVY_DEPOSIT_RATIO / _should_deposit_heavy).
+HEAVY_DEPOSIT_RATIO = 0.6
+
 # Timing
 BANK_OPEN_TIMEOUT = 5.0
 POLL_INTERVAL = 0.2
@@ -71,7 +83,7 @@ class BankDeposit(Skill):
 
         # Check if we have heavy depositable items when overweight
         has_heavy_items = False
-        if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.6:
+        if ss.weight_max > 0 and ss.weight > ss.weight_max * HEAVY_DEPOSIT_RATIO:
             backpack = ss.equipment.get(0x15)
             if backpack:
                 has_heavy_items = any(
@@ -164,7 +176,7 @@ class BankDeposit(Skill):
                 deposited_count += 1
 
         # Also deposit heavy materials if we're overweight
-        if ss.weight_max > 0 and ss.weight > ss.weight_max * 0.8:
+        if ss.weight_max > 0 and ss.weight > ss.weight_max * HEAVY_DEPOSIT_RATIO:
             for item in list(world.items.values()):
                 if (item.container == backpack
                         and item.graphic in DEPOSIT_GRAPHICS
