@@ -37,11 +37,29 @@ class _MoveToProcedure:
     async def run(self, ctx) -> ProcedureResult:
         from anima.action.movement import go_to
 
+        # Yield the walk back to the planner's survival ladder at the SAME HP
+        # floor that ladder fires on. select_procedure flees (_FLEE_HP_PCT) and
+        # heals-in-place (_HEAL_IN_PLACE_HP_PCT) at 0.40, but this long-running
+        # move (timeout_s=600) only re-entered selection when the old hardcoded
+        # 0.3 interrupt tripped. A wounded agent in the 30–40% band therefore
+        # kept walking to a forge/vendor/mine — unable to flee or heal — until
+        # HP fell below 30% or the destination was reached, the exact dead zone
+        # the heal-in-place floor was raised to 0.40 to close (commit b24d9cb).
+        # Pin the interrupt to the planner's floor so a move never strands the
+        # agent below the line where survival should have taken over. Lazy
+        # import: planner imports this module at load, so a module-level import
+        # is circular — but planner is fully loaded by the time run() executes.
+        try:
+            from anima.planner.planner import _HEAL_IN_PLACE_HP_PCT as _SURVIVAL_FLOOR
+        except Exception:
+            _SURVIVAL_FLOOR = 0.40
+
         arrived = await go_to(
             ctx, self._x, self._y,
             interrupt_check=lambda: (
                 ctx.perception.self_state.hits_max > 0
-                and ctx.perception.self_state.hits < ctx.perception.self_state.hits_max * 0.3
+                and ctx.perception.self_state.hits
+                < ctx.perception.self_state.hits_max * _SURVIVAL_FLOOR
             ),
         )
         if arrived:
