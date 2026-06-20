@@ -41,9 +41,18 @@ async def reflect(
     if len(episodes) < 5:
         return []
 
-    # Build episode summaries for the LLM
+    # Build episode summaries for the LLM.
+    #
+    # ``query_episodes`` returns rows ``ORDER BY timestamp DESC`` (newest first).
+    # Feeding them to the LLM in that order under a "Recent episodes:" header
+    # presents the agent's history *backwards* — "walked to the bank, then went
+    # mining" reads to the model as "went mining, then walked to the bank". The
+    # reflect prompt explicitly solicits temporal/causal patterns ("Walking near
+    # (X,Y) often gets blocked"), so a reversed log makes the model distill
+    # facts with the cause and effect swapped, poisoning the knowledge table.
+    # Iterate oldest→newest so the narrative matches real chronology.
     ep_lines = []
-    for ep in episodes:
+    for ep in reversed(episodes):
         line = f"- {ep.action}"
         if ep.target:
             line += f" → {ep.target}"

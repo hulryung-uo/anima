@@ -89,3 +89,59 @@ class TestReflection:
 
         facts = await reflect(db, mock_llm, "Anima")
         assert facts == []
+
+    @pytest.mark.asyncio
+    async def test_reflect_presents_episodes_in_chronological_order(self) -> None:
+        """The reflect prompt must list episodes oldest→newest.
+
+        ``query_episodes`` returns rows newest-first (``timestamp DESC``); if
+        ``reflect`` forwards them in that order the LLM reads the agent's history
+        backwards and extracts temporally-reversed facts. Uses in-memory SQLite
+        with monotonically increasing timestamps so the DESC ordering — and thus
+        the reversal the prompt must undo — is deterministic.
+        """
+        import anima.memory.database as database_mod
+
+        # Force strictly increasing timestamps so query_episodes' DESC ordering
+        # is well-defined (a tight loop can otherwise collide on time.time()).
+        clock = [1000.0]
+
+        def fake_time() -> float:
+            clock[0] += 1.0
+            return clock[0]
+
+        orig_time = database_mod.time.time
+        database_mod.time.time = fake_time  # type: ignore[assignment]
+        try:
+            mem = MemoryDB(":memory:")
+            await mem.init()
+            try:
+                # Record a clear A→B→C sequence (oldest to newest).
+                for label in ("first", "second", "third", "fourth", "fifth"):
+                    await mem.record_episode(
+                        "Anima", 1000, 2000, "go", label, "success", reward=5.0,
+                    )
+
+                captured: dict[str, str] = {}
+
+                async def capture_chat(messages):
+                    captured["prompt"] = messages[-1]["content"]
+                    return MagicMock(text="A useful fact about the journey")
+
+                mock_llm = MagicMock()
+                mock_llm.chat = AsyncMock(side_effect=capture_chat)
+
+                await reflect(mem, mock_llm, "Anima")
+
+                prompt = captured["prompt"]
+                positions = [prompt.index(lbl) for lbl in
+                             ("first", "second", "third", "fourth", "fifth")]
+                # Oldest ("first") must appear before newest ("fifth").
+                assert positions == sorted(positions), (
+                    "reflect must present episodes chronologically (oldest first), "
+                    f"got order {positions}"
+                )
+            finally:
+                await mem.close()
+        finally:
+            database_mod.time.time = orig_time  # type: ignore[assignment]
