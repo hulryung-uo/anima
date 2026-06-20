@@ -142,7 +142,22 @@ async def wait_for_gump(
     # Python dicts preserve insertion order and the 0xB0/0xDD handlers insert a
     # fresh key per newly-opened gump, so the last key is the newest arrival —
     # exactly the "most recent" this function documents.
-    gump_id = next(gid for gid in reversed(ss.gumps) if gid not in exclude)
+    #
+    # ``ok`` reflects the predicate at the instant ``wait_for_condition``
+    # resolved, but ``ss.gumps`` is mutated by packet handlers that run
+    # concurrently on the same event loop: a server-side CloseGump (0xBF sub
+    # 0x04 -> ss.gumps.pop) or a re-keyed gump arriving between the wait waking
+    # and this function resuming can leave NO eligible (non-excluded) gump by
+    # the time we select. A bare ``next(...)`` then raises ``StopIteration``,
+    # which PEP 479 turns into ``RuntimeError: coroutine raised StopIteration``
+    # — and that escapes the helper-procedure ``run()`` paths (which, unlike
+    # Procedure.run, have no try/except) and the planner's
+    # TimeoutError/CancelledError-only guard, killing the whole session over a
+    # benign timing race. Use a default and degrade to the normal "Gump
+    # timeout" failure the caller already handles instead of crashing.
+    gump_id = next((gid for gid in reversed(ss.gumps) if gid not in exclude), None)
+    if gump_id is None:
+        return ActionResult(success=False, message="Gump timeout")
     gump = ss.gumps[gump_id]
     return ActionResult(
         success=True,
