@@ -105,6 +105,15 @@ def _row_best_quality(elites: list[Genome]) -> dict[str, float]:
     """
     best: dict[str, float] = {}
     for g in elites:
+        # A failed-descriptor eval records ``eval["cell"] = []`` (orchestrator
+        # _genome_from), so its Genome.cell is the empty tuple () and has no
+        # profession row. Skip it rather than indexing ``g.cell[0]`` and raising
+        # IndexError — the same degenerate-grid tolerance choose_parent/_neighbors
+        # already grant (test_select_malformed_cell_parent). Without this guard a
+        # single empty-cell elite crashes suggest_target_cell and wedges every
+        # remaining cycle of the run.
+        if not g.cell:
+            continue
         prof = g.cell[0]
         q = _selection_quality(g)
         best[prof] = q if prof not in best else max(best[prof], q)
@@ -261,7 +270,12 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
     """
     empties = empty_cells(archive)
     row_filled: dict[str, int] = {}
-    elites_all = archive.elites()
+    # Exclude empty/malformed-cell elites (a failed-descriptor eval records
+    # cell []): they belong to no profession row, so indexing ``g.cell[0]``
+    # below (and in the full-grid branch) would raise IndexError and abort the
+    # cycle — the degenerate-grid crash choose_parent was hardened against
+    # (094f6ac) but which leaked through this target-suggestion path.
+    elites_all = [g for g in archive.elites() if g.cell]
     row_best = _row_best_quality(elites_all)
     for g in elites_all:
         prof = g.cell[0]
@@ -274,7 +288,9 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
         # pairing in play; IMPROVE cycles on bare frontier draws kept
         # handing weak cells to stale-code lineages (g_00068: 6.9 on a
         # pre-crash-fix parent while the row's fresh seed sat at 55.9).
-        elites = archive.elites()
+        # Reuse the well-formed-cell set (empty-cell elites already excluded) so
+        # the headroom weights below never index a malformed cell.
+        elites = elites_all
         if not elites:
             return None
         # Don't aim an IMPROVE cycle at a NONE-fallback elite (see
