@@ -701,9 +701,26 @@ def register_handlers(
             p.emit(GameEventType.MANA_CHANGED, {"mana": mana, "mana_max": mana_max})
             p.emit(GameEventType.STAM_CHANGED, {"stam": stam, "stam_max": stam_max})
         else:
-            # ClassicUO sets HitsMax/Hits for any entity; mana/stam are only
-            # meaningful for mobiles and we don't track them per-foe.
-            mob = p.world.get_or_create_mobile(serial)
+            # ClassicUO's MobileAttributes (PacketHandlers.cs:1765) fetches
+            # `world.Get(serial)` and bails when it is null — a bare attribute
+            # refresh NEVER creates an entity, because 0x2D carries no position
+            # (the spatial packets 0x78/0x77/0x20 are the only mobile-creating
+            # packets). This is the same divergence the 0xA1 handler already
+            # guards: ServUO's AttributeNormalizer pins a non-self bar to
+            # hits_max=25 with hits=(cur*25//max), so a foe at <2% HP — or one
+            # killed/resurrected between our 0x78 and its 0x2D (ServUO emits 0x2D
+            # on resurrect/login/bulk attribute changes for any mobile in view) —
+            # arrives here as hits_max=25, hits=0 for a serial we have not yet (or
+            # no longer) seen. get_or_create then spawned a brand-new MobileInfo
+            # at (0,0) whose `is_dead` (hits_max>0 and hits<=0) is immediately
+            # True: a positionless phantom corpse that leaks into world.mobiles
+            # and pollutes the swarm tally / _find_target / heal-target scans
+            # until pruned. Match ClassicUO and the 0xA1/0xAF invariant: only
+            # update a mobile that already exists. (mana/stam are only meaningful
+            # for mobiles and we don't track them per-foe.)
+            mob = p.world.mobiles.get(serial)
+            if mob is None:
+                return
             mob.hits = hits
             mob.hits_max = hits_max
 

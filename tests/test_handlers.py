@@ -717,6 +717,11 @@ def test_mobile_attributes_self_updates_all_vitals():
 def test_mobile_attributes_other_updates_hits_only():
     h, p, w = _make_stack()
 
+    # 0x2D carries no position and (per ClassicUO MobileAttributes) must NOT
+    # create an entity — only the spatial packets do. So a foe must already be
+    # in view before its attribute refresh updates its bar.
+    p.world.get_or_create_mobile(0x00000099)
+
     buf = PacketWriter()
     buf.write_u8(0x2D)
     buf.write_u32(0x00000099)  # other serial
@@ -732,6 +737,16 @@ def test_mobile_attributes_other_updates_hits_only():
     mob = p.world.mobiles[0x00000099]
     assert mob.hits == 120
     assert mob.hits_max == 200
+
+    # A 0x2D for a serial never in view does NOT spawn a phantom.
+    unseen = 0x000000AA
+    b2 = PacketWriter()
+    b2.write_u8(0x2D)
+    b2.write_u32(unseen)
+    for _ in range(6):
+        b2.write_u16(25)
+    h.dispatch(0x2D, b2.to_bytes())
+    assert unseen not in p.world.mobiles
 
 
 # ---------------------------------------------------------------------------
