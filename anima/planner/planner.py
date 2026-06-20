@@ -809,8 +809,18 @@ class Planner:
                 from anima.client.packets import build_double_click
                 await ctx.conn.send_packet(build_double_click(ss.serial))
 
-            # Still allow survival and movement without backpack
-            if ss.hits_max > 0 and ss.hits < ss.hits_max * 0.3:
+            # Still allow survival and movement without backpack.
+            # Reuse the shared heal-in-place floor (_HEAL_IN_PLACE_HP_PCT ==
+            # 0.40) instead of a hardcoded 0.30. This branch runs BEFORE the
+            # full Priority-1 survival ladder and returns early, so a
+            # backpack-less wounded agent never reaches the 0.40 floor that
+            # commits b24d9cb / 3170a8f raised everywhere else — recreating the
+            # exact 30-40% HP "dead zone" those fixes closed. Bandages live in
+            # the (undetected) backpack so they can't fire here anyway, but
+            # heal_self quaffs an on-hand potion and needs no backpack; gating
+            # it on the same 0.40 floor lets a wounded agent top up across the
+            # whole band instead of bleeding from 39% down to 29% untreated.
+            if self._should_heal_in_place(ss):
                 proc = self.registry.get("heal_self")
                 if (proc and not self._proc_breaker.is_open("heal_self")
                         and await proc.can_start(ctx)):
