@@ -132,8 +132,23 @@ def history(archive: Archive, limit: int = 12) -> str:
     targetable = {cell_to_str(c) for c in targetable_cells()}
     proven = [g for g in archive.elites() if cell_to_str(g.cell) in targetable]
     lines = ["## Current cell elites — the PROVEN recipes (mine these for tricks)"]
+    # Display the SAME variance-aware quality the list is ORDERED by, not the raw
+    # fitness mean. The list was migrated to sort by _selection_quality (=
+    # min(fitness, reliability); reliability = mean − λ·pstdev) precisely so a
+    # lucky high-variance or human-demoted genome can't head the recipe list — but
+    # the printed number stayed ``e.fitness`` (the raw mean). That number is what
+    # the LLM mutator actually reads, so a coin-flip elite (per_seed [400, 0],
+    # mean 200, quality 0) still ADVERTISED itself as a "200.00 proven recipe" even
+    # though it correctly sorted last, and a ruler-inflation genome demoted to
+    # fitness 3.06 but whose preserved-inflated per_seed re-inflates reliability
+    # would mis-advertise the inflated mean. Lead with the trust signal (q…) that
+    # drives the ordering so the displayed number and the ranking agree, and keep
+    # the raw mean visible (labelled) so no information is lost — the same
+    # display-matches-trust consistency status.py / select.py already enforce.
     for e in sorted(proven, key=lambda g: -_selection_quality(g)):
-        lines.append(f"- {e.cell} {e.fitness:.2f} ({e.id}): “{e.hypothesis}”")
+        q = _selection_quality(e)
+        lines.append(
+            f"- {e.cell} q{q:.2f} (mean {e.fitness:.2f}) ({e.id}): “{e.hypothesis}”")
     lines.append("")
     lines.append("## Prior mutations and what actually happened (learn from these)")
     for g in _reflect_window(gs, limit):
