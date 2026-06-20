@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import structlog
@@ -15,6 +16,16 @@ logger = structlog.get_logger()
 
 # Number of episodes between reflection cycles
 REFLECT_INTERVAL = 20
+
+# Strips a *genuine* leading list marker the LLM may emit (a "- ", "* ", "•"
+# bullet, or a "1." / "2)" numbering) and nothing else. The previous
+# ``line.lstrip("-•*0123456789.) ")`` removed ANY leading combination of those
+# characters, so a fact whose content legitimately starts with digits — exactly
+# the coordinate/count facts the reflect prompt solicits ("Walking near (1550,
+# 1620) gets blocked", "3 trolls guard the bridge") — got silently truncated
+# ("550...", "trolls guard the bridge"), corrupting the stored knowledge and any
+# coordinate later parsed out of it. Anchor to a real marker prefix instead.
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-•*]+\s*|\d+[.)]\s*)")
 
 
 async def reflect(
@@ -68,7 +79,7 @@ Reply with ONLY the facts, one per line. No numbering, no bullets, no extra text
     # Parse facts from LLM response
     new_facts: list[str] = []
     for line in result.text.strip().splitlines():
-        fact = line.strip().lstrip("-•*0123456789.) ")
+        fact = _LIST_MARKER_RE.sub("", line.strip()).strip()
         if fact and len(fact) > 10:
             await memory_db.add_knowledge(
                 agent_name, fact, source="reflection", confidence=0.5
