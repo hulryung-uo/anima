@@ -36,7 +36,17 @@ def _smells(res: EvalResult) -> list[str]:
     if s.death_count > 0:
         out.append(f"DIED {s.death_count}x: survival is gating fitness "
                    f"(alive={f.alive_fraction:.2f}).")
-    if not s.items_into_pack and f.skill_gain_rate < 0.5:
+    # "NO OUTPUT" shares the zero-skill condition with "NOT PRACTICING ITS
+    # TRADE" above, so it MUST share the same minimum-duration guard
+    # (``duration_h > 0.05``). On a structurally-short eval (the window was cut
+    # short, or the agent disconnected after a few seconds) zero items into the
+    # pack and ~0 skill gain are EXPECTED, not a productivity defect — the agent
+    # simply had no time to produce anything. Emitting "NO OUTPUT — net
+    # unproductive" there misdirects the mutator's single per-cycle attention/
+    # mutation budget at a phantom problem (and contradicts the un-emitted
+    # "NOT PRACTICING" smell, whose guard already recognised the run as too short
+    # to judge). Gate both on the same threshold so the hints stay consistent.
+    if not s.items_into_pack and f.skill_gain_rate < 0.5 and s.duration_h > 0.05:
         out.append("NO OUTPUT: nothing gathered/crafted and no skill gained "
                    "— net unproductive.")
     return out
