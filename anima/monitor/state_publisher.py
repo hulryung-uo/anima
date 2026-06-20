@@ -15,7 +15,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from anima.data import mobile_display_name
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from anima.core.bus import EventBus
@@ -64,8 +68,26 @@ class StatePublisher:
     async def run(self, interval: float = 0.5) -> None:
         """Publish state snapshots in a loop."""
         while True:
-            self.publish_all()
-            self._dump_to_file()
+            # This loop is one of the coroutines in the game-session
+            # asyncio.TaskGroup (main.py). With a TaskGroup, an unhandled
+            # exception here does NOT just stop telemetry — it cancels EVERY
+            # sibling task (recv_loop, the planner, the API server) and forces a
+            # full reconnect, discarding the agent's in-world progress. The
+            # snapshot is purely cosmetic/diagnostic state (it feeds the TUI,
+            # the web dashboard, and data/state.json which the metrics pipeline
+            # diffs), so a transient glitch — a half-populated perception field,
+            # a non-serialisable value, a momentary None — must be swallowed and
+            # the loop must keep ticking, exactly as the planner _run_loop and
+            # the metrics poll loops already do. A real shutdown
+            # (CancelledError) still propagates so the TaskGroup tears down
+            # cleanly.
+            try:
+                self.publish_all()
+                self._dump_to_file()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("state_publish_error", error=str(e))
             await asyncio.sleep(interval)
 
     def publish_all(self) -> None:
