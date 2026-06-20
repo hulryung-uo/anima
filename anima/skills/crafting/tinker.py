@@ -239,8 +239,15 @@ class CraftTinker(Skill):
         # Record existing gump IDs to distinguish the new crafting gump
         existing_gump_ids = set(ss.gumps.keys())
 
-        # Record journal size before crafting to detect new messages
-        journal_before = len(ctx.perception.social.journal)
+        # Mark the craft instant and read the outcome by TIMESTAMP, not by a
+        # journal length offset. ``social.journal`` is a bounded ``deque``
+        # (maxlen=100); once it is full, ``len()`` is pinned at the cap and every
+        # new craft line evicts an old one, so ``len()`` never grows. The old
+        # ``list(journal)[journal_before:]`` slice then returned an EMPTY list,
+        # and a real "you create" success was reported as "Crafting result
+        # unknown" (reward -1.0) — inverting the crafting Q/skill signal. Mirror
+        # the carpentry/blacksmith path, which already gates on ``timestamp``.
+        journal_mark = time.time()
 
         # 3. Double-click tinker tools to open crafting gump
         await ctx.conn.send_packet(build_double_click(tinker_tool.serial))
@@ -293,7 +300,12 @@ class CraftTinker(Skill):
         await asyncio.sleep(CRAFT_WAIT_TIME)
 
         # 9. Check result via system messages in the journal
-        new_entries = list(ctx.perception.social.journal)[journal_before:]
+        # Keep only lines emitted at/after the craft instant — robust to a full
+        # (wrapped) journal deque where an index offset would read nothing.
+        new_entries = [
+            e for e in ctx.perception.social.journal
+            if e.timestamp >= journal_mark
+        ]
         texts = [e.text.lower() for e in new_entries]
         success = any("you create" in t for t in texts)
         failed = any("you fail" in t for t in texts)
