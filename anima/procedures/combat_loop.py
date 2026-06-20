@@ -282,6 +282,18 @@ def _reset_engagement_state(ctx: AgentContext) -> None:
     ctx.blackboard["_retreat_strikes"] = 0
     ctx.blackboard.pop("_bandage_hp_last", None)
     ctx.blackboard.pop("_bandage_hp_ts", None)
+    # ``_wander_empty`` counts CONSECUTIVE empty wander sweeps so a swept-clean
+    # arena yields to productive work after WANDER_MAX_EMPTY roams. A real fight
+    # is proof the spot is NOT swept clean, but HuntNearby never cleared the
+    # counter — so a partial roam count (e.g. 3 empty sweeps that were
+    # interrupted by a mob wandering in and a hunt running) survived across the
+    # fight. The very next wander sweep then started at that stale count and a
+    # SINGLE empty roam tripped the WANDER_MAX_EMPTY yield prematurely, dropping
+    # the warrior into the mining fallthrough after one sweep instead of
+    # WANDER_MAX_EMPTY. Reset it here (engagement start) so "consecutive empty
+    # roams" truly means consecutive — the count restarts the moment a fight
+    # actually happens, exactly like the retreat/bandage scratch state above.
+    ctx.blackboard["_wander_empty"] = 0
 
 
 def _bandage_trigger_pct(ctx: AgentContext, hp_pct: float, now: float) -> float:
