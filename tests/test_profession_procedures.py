@@ -17,6 +17,7 @@ def _make_ctx(**overrides):
     ss.is_alive = True
     ss.hits, ss.hits_max = 100, 100
     ss.hp_percent = 100.0
+    ss.is_ghost = False  # living agent: real bool (MagicMock attr would be truthy)
     ss.is_poisoned = False  # real bool default (MagicMock attr would be truthy)
     ss.mana, ss.mana_max = 50, 50
     ss.stam, ss.stam_max = 100, 100
