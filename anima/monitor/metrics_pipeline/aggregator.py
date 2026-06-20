@@ -46,11 +46,11 @@ class MetricsAggregator:
 
         earned = sum(
             int(e["amount"]) for e in events
-            if e["type"] == "gold_delta" and e.get("amount", 0) > 0
+            if e.get("type") == "gold_delta" and e.get("amount", 0) > 0
         )
         spent = sum(
             -int(e["amount"]) for e in events
-            if e["type"] == "gold_delta" and e.get("amount", 0) < 0
+            if e.get("type") == "gold_delta" and e.get("amount", 0) < 0
         )
 
         hour_iso = (
@@ -64,7 +64,7 @@ class MetricsAggregator:
             "uptime_s": int(window_end - window_start),
             "procedures": procs,
             "cycles_completed": sum(
-                1 for e in events if e["type"] == "cycle_complete"
+                1 for e in events if e.get("type") == "cycle_complete"
             ),
             "phase_transitions": _count_phase_transitions(events),
             "gold": {
@@ -72,9 +72,9 @@ class MetricsAggregator:
                 "spent": spent,
                 "delta": earned - spent,
             },
-            "deaths": sum(1 for e in events if e["type"] == "death"),
+            "deaths": sum(1 for e in events if e.get("type") == "death"),
             "stuck_events": sum(
-                1 for e in events if e["type"] == "stuck_event"
+                1 for e in events if e.get("type") == "stuck_event"
             ),
             "skills": _aggregate_skill_deltas(events),
         }
@@ -328,7 +328,7 @@ async def _aggregate_procedures(
 def _count_phase_transitions(events: list[dict]) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
     for e in events:
-        if e["type"] != "phase_transition":
+        if e.get("type") != "phase_transition":
             continue
         key = f"{e.get('from_', '?')}->{e.get('to', '?')}"
         counts[key] += 1
@@ -338,7 +338,7 @@ def _count_phase_transitions(events: list[dict]) -> dict[str, int]:
 def _aggregate_skill_deltas(events: list[dict]) -> dict[str, dict]:
     per_skill: dict[int, dict] = {}
     for e in events:
-        if e["type"] != "skill_delta":
+        if e.get("type") != "skill_delta":
             continue
         sid = e.get("skill_id")
         if sid is None:

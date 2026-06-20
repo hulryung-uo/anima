@@ -83,6 +83,42 @@ class TestHourlyRollup:
         assert row["stuck_events"] == 1
 
     @pytest.mark.asyncio
+    async def test_typeless_event_does_not_crash_rollup(
+        self, events_file, hourly_file, tmp_path,
+    ):
+        # A valid-JSON event line that lacks a "type" key (older schema, a
+        # partially-flushed concurrent write, or another producer) lands in the
+        # window: _read_events_in_window keeps it (it only filters on ts), so
+        # build_hourly must tolerate it. The old `e["type"]` accesses raised
+        # KeyError here, aborting run_once() — and because next_start only
+        # advances after a SUCCESSFUL build_hourly, the whole hourly/daily
+        # rollup (and the 30-day trim) stayed permanently wedged at that hour,
+        # retrying the same crash every 60s. A typeless event must simply be
+        # ignored, like the read path already ignores unparseable lines.
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        _write_events(events_file, [
+            {"ts": 100.0, "type": "gold_delta", "amount": 50},
+            {"ts": 120.0, "foo": "bar"},  # valid JSON, no "type"
+            {"ts": 150.0, "type": "death", "pos": [0, 0]},
+            {"ts": 160.0, "skill_id": 45, "from": 1.0, "to": 2.0},  # no "type"
+        ])
+
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=tmp_path / "d.jsonl",
+            db_path=db,
+        )
+        # Must not raise; the typeless events are ignored, the well-formed
+        # ones still aggregate.
+        row = await agg.build_hourly(window_start=0.0, window_end=3600.0)
+        assert row["gold"]["earned"] == 50
+        assert row["deaths"] == 1
+        # The typeless skill-shaped event contributes no skill delta.
+        assert row["skills"] == {}
+
+    @pytest.mark.asyncio
     async def test_aggregates_procedures_from_action_logs(
         self, events_file, hourly_file, tmp_path,
     ):
