@@ -900,6 +900,23 @@ def register_handlers(
 
         if parent_serial == p.self_state.serial:
             p.self_state.equipment[layer] = serial
+        else:
+            # 0x2E re-parents an existing item. If a serial WE were wearing is
+            # now equipped on ANOTHER mobile (a thief re-equips a stolen weapon
+            # on themselves, gear handed to / worn by a pet or another player),
+            # the server reports the move with THIS 0x2E and parent != self,
+            # NOT a 0x1D Delete (the item still exists). self_state.equipment is
+            # layer->serial on SelfState, so get_or_create_item / world.remove
+            # never touch it. Without a symmetric clear, equipment[layer] keeps
+            # pointing at the serial that left our paperdoll, so the combat
+            # re-arm guards (ss.equipment.get(1)/.get(2)) and equip_weapon_from_pack
+            # see a phantom worn weapon and never re-arm — exactly the stranded
+            # reference the 0x1D Delete and 0x25 AddItemToContainer handlers
+            # already guard. ClassicUO's EquipItem moves the item off the old
+            # owner's layer slot; mirror that for our own loadout.
+            for worn_layer, worn in list(p.self_state.equipment.items()):
+                if worn == serial:
+                    del p.self_state.equipment[worn_layer]
 
     handler.register(0x2E, handle_equipment)
 
