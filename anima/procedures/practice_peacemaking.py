@@ -188,6 +188,31 @@ class PracticePeacemaking(Procedure):
             gains[SKILL_PEACEMAKING] = peace_gain
         if music_gain:
             gains[SKILL_MUSICIANSHIP] = music_gain
+        # A run that answered ZERO creature cursors rolled the Peacemaking
+        # CheckSkill zero times — the loop bailed out via the bounded
+        # ``cursor_misses >= MAX_CURSOR_MISSES`` guard (a wedged session, or a
+        # persistent skill-lockout desync where the target cursor never lands).
+        # Reporting that as ``success=True`` writes a phantom win to the
+        # ActionLog reward signal and inflates the BARD skill-rate metric even
+        # though no skill was practiced, exactly the phantom-success anti-pattern
+        # already killed in bandage_self (a timed-out heal is a retryable
+        # failure, ec92743), mine_ore / chop_wood (an unresolved swing is a
+        # failure, not a success) and sell_to_vendor (gold-debited-but-no-item
+        # is a FAILURE, 5a71d36). Surface it as a retryable BLOCKED failure with
+        # NO re-suggestion so the planner re-evaluates instead of chaining
+        # straight back into the same stall. (``resolved > 0`` — even one
+        # answered cursor — is a real success: the skill rolled, plays earned
+        # Musicianship, gains are credited.)
+        if resolved == 0:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=(
+                    f"Peacemaking practice resolved no attempts "
+                    f"({cursor_misses} cursor misses) — skill never rolled"
+                ),
+                skill_gains=gains,
+            )
         return ProcedureResult(
             success=True,
             message=(

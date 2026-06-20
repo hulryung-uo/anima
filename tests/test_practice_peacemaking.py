@@ -99,7 +99,11 @@ async def test_cursor_misses_do_not_consume_attempts(monkeypatch):
 @pytest.mark.asyncio
 async def test_persistent_cursor_miss_terminates(monkeypatch):
     """If the cursor NEVER arrives (wedged session), the loop must terminate via
-    the bounded miss guard rather than spinning forever — and resolve zero."""
+    the bounded miss guard rather than spinning forever — and resolve zero.
+
+    A zero-resolved run rolled the Peacemaking CheckSkill zero times, so it must
+    be reported as a retryable FAILURE, not a phantom ``success=True`` (which
+    would write a win to the reward signal for a run that practiced nothing)."""
     ss = _ss()
     target_calls = {"n": 0}
 
@@ -118,10 +122,16 @@ async def test_persistent_cursor_miss_terminates(monkeypatch):
         PracticePeacemaking().execute(_ctx(ss)), timeout=5.0
     )
 
-    # Never answered a creature cursor → zero resolved, message reflects 0/0.
+    # Never answered a creature cursor → zero resolved.
     assert target_calls["n"] == 0
-    assert result.success is True
-    assert "0/0 calmed" in result.message
+    # A run that practiced nothing must be a retryable failure, never a phantom
+    # success — mirrors bandage_self / mine_ore / sell_to_vendor.
+    assert result.success is False
+    assert result.reason is pp.FailureReason.BLOCKED
+    # No re-suggestion to chain straight back into the same stall.
+    assert result.next_suggestion is None
+    # ...and still no skill credited (nothing rolled).
+    assert not result.skill_gains
 
 
 def test_loop_counts_only_resolved_attempts():
