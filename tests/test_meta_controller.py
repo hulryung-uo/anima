@@ -6,10 +6,12 @@ the LLM plumbing (mirrors StrategySelector), and graceful degradation.
 """
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from anima.perception.enums import NotorietyFlag
 from anima.planner.modes import MODES, default_mode_for_profession
 from anima.planner.meta_controller import (
     HeuristicModePolicy,
@@ -417,7 +419,11 @@ class TestLivingStateBuilder:
         ss.gold = 50; ss.x = 5; ss.y = 5; ss.serial = 0x1
         ss.equipment = {0x15: 0x101}
         ctx.perception.world.items = {}
-        foe = MagicMock(serial=0x2)
+        # A real live foe (red/murderer, non-human body, alive, not blessed).
+        foe = SimpleNamespace(
+            serial=0x2, notoriety=NotorietyFlag.MURDERER,
+            body=0x0021, is_dead=False, is_yellow_health=False,
+        )
         ctx.perception.world.nearby_mobiles = MagicMock(return_value=[foe])
 
         st = build_living_state(ctx, gold_rate_per_min=0.0,
@@ -427,3 +433,45 @@ class TestLivingStateBuilder:
         assert st.nearby_mobiles == 1
         assert st.danger_nearby is True        # 30% hp + foe nearby
         assert st.hp_frac == pytest.approx(0.3)
+
+    def test_danger_proxy_excludes_friendly_and_invulnerable_mobiles(self):
+        """A wounded avatar surrounded only by NON-foes is NOT "in danger".
+
+        Regression guard for the friend/foe asymmetry: ``danger_nearby`` used
+        to count EVERY nearby mobile, so a wounded warrior standing next to the
+        co-located survival-arena Healer (invulnerable / yellow-bar) plus a
+        friendly innocent NPC read as danger and steered the controller to
+        ``rest`` away from a fight it had already won. The proxy must reuse the
+        planner's ``_is_live_hostile`` filter — the same population the flee
+        gate runs from — so friendlies, corpses and invulnerable Healers don't
+        inflate the count.
+        """
+        ctx = MagicMock()
+        ctx.persona.profession = "adventurer"
+        ss = ctx.perception.self_state
+        ss.hits = 30; ss.hits_max = 100; ss.weight = 200; ss.weight_max = 400
+        ss.gold = 50; ss.x = 5; ss.y = 5; ss.serial = 0x1
+        ss.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}
+        innocent_npc = SimpleNamespace(
+            serial=0x2, notoriety=NotorietyFlag.INNOCENT,
+            body=0x0190, is_dead=False, is_yellow_health=False,
+        )
+        # Invulnerable Healer (yellow health bar) — never a foe.
+        healer = SimpleNamespace(
+            serial=0x3, notoriety=NotorietyFlag.MURDERER,
+            body=0x0190, is_dead=False, is_yellow_health=True,
+        )
+        # A felled mob still lingering in world.mobiles as a corpse.
+        corpse = SimpleNamespace(
+            serial=0x4, notoriety=NotorietyFlag.MURDERER,
+            body=0x0021, is_dead=True, is_yellow_health=False,
+        )
+        ctx.perception.world.nearby_mobiles = MagicMock(
+            return_value=[innocent_npc, healer, corpse]
+        )
+
+        st = build_living_state(ctx, gold_rate_per_min=0.0,
+                                session_minutes=60.0, last_modes=["combat"])
+        assert st.nearby_mobiles == 0          # none are live foes
+        assert st.danger_nearby is False        # wounded but not in danger

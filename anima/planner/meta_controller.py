@@ -111,10 +111,25 @@ def build_living_state(
                 break
     inventory_text = ", ".join(inv) or "(empty)"
 
-    # Nearby mobiles as a coarse danger proxy (approximate — P0).
+    # Nearby HOSTILE mobiles as a coarse danger proxy (approximate — P0).
+    # Friend/foe matters: a wounded avatar standing next to the co-located
+    # survival-arena Healer (or any town NPC / vendor / other player / its own
+    # pet) must NOT read as "in danger" — counting those non-foes would steer
+    # the controller to `rest` mode away from a fight it has already won, the
+    # exact friend/foe asymmetry the planner's flee gate fixed in
+    # ``_is_live_hostile`` (corpses, bare-gray humans, invulnerable/yellow-bar
+    # Healers). Reuse that same predicate so the danger proxy and the flee gate
+    # count one population. Lazy import: planner imports THIS module at load, so
+    # a module-level import would be circular — but planner is fully imported by
+    # the time ``build_living_state`` runs at tick time.
     try:
+        from anima.planner.planner import _attackable_set, _is_live_hostile
+
+        attackable = _attackable_set()
         nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=8)
-        nearby_mobiles = sum(1 for m in nearby if m.serial != ss.serial)
+        nearby_mobiles = sum(
+            1 for m in nearby if _is_live_hostile(m, ss, attackable)
+        )
     except Exception:
         nearby_mobiles = 0
     danger_nearby = nearby_mobiles > 0 and (ss.hits < hp_max * 0.6)
