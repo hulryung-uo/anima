@@ -604,7 +604,23 @@ def register_handlers(
                 flag=flag,
             )
         else:
-            mob = p.world.get_or_create_mobile(serial)
+            # ClassicUO's CharacterStatus (PacketHandlers.cs:483) reads the
+            # serial, fetches `world.Get(serial)`, and returns when it is null —
+            # a status reply NEVER creates an entity, because 0x11 carries NO
+            # position (the spatial packets 0x78/0x77/0x20 are the only
+            # mobile-creating packets). ServUO emits 0x11 in response to a
+            # status request (single-click / health-bar query) and its
+            # AttributeNormalizer pins a non-self bar to hits_max=25 with
+            # hits=(cur*25//max), so a reply for a foe at <2% HP — or one killed
+            # between our 0x78 and this 0x11 — arrives as hits=0, hits_max=25
+            # for a serial we no longer have in view. get_or_create_mobile then
+            # spawned a brand-new MobileInfo at (0,0) whose `is_dead`
+            # (hits_max>0 and hits<=0) is immediately True: the same positionless
+            # phantom corpse the 0xA1 and 0x2D handlers already guard against.
+            # Only update a mobile that already exists.
+            mob = p.world.mobiles.get(serial)
+            if mob is None:
+                return
             mob.name = name
             mob.hits = hits
             mob.hits_max = hits_max
