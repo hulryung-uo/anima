@@ -29,6 +29,29 @@ _AFFIX_PREPEND = 0x01
 _AFFIX_SYSTEM = 0x02
 
 
+def _store_gump(self_state, gump_id: int, gump) -> None:
+    """Store a freshly-received gump so dict insertion order tracks recency.
+
+    ``ss.gumps`` is keyed by the gump TYPE id. ``wait_for_gump`` (and the
+    craft/vendor/res flows built on it) document and rely on "the last-inserted
+    key is the newest arrival" — it picks ``next(gid for gid in reversed(...))``
+    as the most recent gump.
+
+    A plain ``gumps[gump_id] = gump`` honours that ONLY for a brand-new id. When
+    the id is ALREADY present it overwrites the value in place but keeps the
+    key's ORIGINAL position, so a re-sent/refreshed gump is *not* recognised as
+    the newest. Craft gumps in particular refresh under a fixed type id after
+    each click: with another gump still on screen, the refreshed craft gump kept
+    its old (earlier) slot, ``wait_for_gump`` handed back the other (stale)
+    window, and ``craft_via_gump`` clicked against the wrong gump's
+    serial/buttons — matching no button (ServUO "Invalid gump response,
+    disconnecting...") or driving the wrong window. Pop first so a refreshed
+    gump moves to the end and reads as the genuine most-recent arrival.
+    """
+    self_state.gumps.pop(gump_id, None)
+    self_state.gumps[gump_id] = gump
+
+
 def _decode_cliloc_args(raw: bytes, *, big_endian: bool) -> str:
     """Decode the UTF-16 argument blob trailing a 0xC1 / 0xCC cliloc packet.
 
@@ -1525,7 +1548,7 @@ def register_handlers(
         gump.x = gx
         gump.y = gy
 
-        p.self_state.gumps[gump_id] = gump
+        _store_gump(p.self_state, gump_id, gump)
         p.emit(
             GameEventType.GUMP_OPENED,
             {"serial": serial, "gump_id": gump_id, "buttons": len(gump.buttons)},
@@ -1612,7 +1635,7 @@ def register_handlers(
         gump.x = gx
         gump.y = gy
 
-        p.self_state.gumps[gump_id] = gump
+        _store_gump(p.self_state, gump_id, gump)
         p.emit(
             GameEventType.GUMP_OPENED,
             {"serial": serial, "gump_id": gump_id, "buttons": len(gump.buttons)},
