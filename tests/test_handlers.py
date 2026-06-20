@@ -645,6 +645,11 @@ def test_hp_update_self():
 def test_hp_update_other():
     h, p, w = _make_stack()
 
+    # 0xA1 carries no position and (per ClassicUO UpdateHitpoints) must NOT
+    # create an entity — only the spatial packets do. So a foe must already be
+    # in view (entered via 0x78/0x77/0x20) before its health bar updates.
+    p.world.get_or_create_mobile(0x00000099)
+
     buf = PacketWriter()
     buf.write_u8(0xA1)
     buf.write_u32(0x00000099)  # other serial
@@ -656,6 +661,16 @@ def test_hp_update_other():
     mob = p.world.mobiles[0x00000099]
     assert mob.hits == 50
     assert mob.hits_max == 100
+
+    # A 0xA1 for a serial that was never in view does NOT spawn a phantom.
+    unseen = 0x000000AA
+    buf2 = PacketWriter()
+    buf2.write_u8(0xA1)
+    buf2.write_u32(unseen)
+    buf2.write_u16(25)
+    buf2.write_u16(0)
+    h.dispatch(0xA1, buf2.to_bytes())
+    assert unseen not in p.world.mobiles
 
 
 # ---------------------------------------------------------------------------

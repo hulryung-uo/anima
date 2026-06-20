@@ -622,7 +622,24 @@ def register_handlers(
             p.self_state.hits_max = hits_max
             p.emit(GameEventType.HP_CHANGED, {"hits": hits, "hits_max": hits_max})
         else:
-            mob = p.world.get_or_create_mobile(serial)
+            # ClassicUO's UpdateHitpoints (PacketHandlers.cs:3402) bails when
+            # `world.Get(serial) == null` — a bare health update NEVER creates
+            # an entity, because 0xA1 carries no position (the spatial packets
+            # 0x78/0x77/0x20 are the only mobile-creating packets). ServUO sends
+            # 0xA1 (MobileHitsN) for foes continuously during combat, and its
+            # AttributeNormalizer pins a non-self bar to hits_max=25 with
+            # hits=(cur*25//max), so a foe at <2% HP — or one killed between our
+            # 0x78 and its 0xA1 — arrives here as hits_max=25, hits=0 for a
+            # serial we have not yet (or no longer) seen in view. get_or_create
+            # then spawned a brand-new MobileInfo at (0,0) whose `is_dead`
+            # (hits_max>0 and hits<=0) is immediately True: a positionless
+            # phantom corpse that leaks into world.mobiles and pollutes the
+            # swarm tally / _find_target / heal-target scans until pruned. Match
+            # ClassicUO and the 0xAF DisplayDeath invariant: only update a
+            # mobile that already exists.
+            mob = p.world.mobiles.get(serial)
+            if mob is None:
+                return
             mob.hits = hits
             mob.hits_max = hits_max
 
