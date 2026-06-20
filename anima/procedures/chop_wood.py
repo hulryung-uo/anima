@@ -179,9 +179,21 @@ class ChopWood(Procedure):
         # but the logs are not visible yet (and no skip/terminal-failure line
         # fired), grace-poll briefly for the container update so the yield is
         # credited instead of being lost as a phantom skill-check miss.
-        if (_logs_in_pack() <= logs_before
-                and result_snippet not in self._SKIP_TREE_SNIPPETS
-                and _success_seen()):
+        #
+        # Gate the grace-poll on a STANDALONE success line, NOT on the
+        # ``result_snippet`` that drove tree-parking above. ``result_snippet``
+        # is only the FIRST ``_RESULT_SNIPPETS`` match in journal order, so on
+        # the swing that *strips* a tree — ServUO emits both a success line
+        # ("...logs into your backpack") AND a depletion line ("not enough wood
+        # here") within the same window — the depletion line can sort first.
+        # The old ``result_snippet not in _SKIP_TREE_SNIPPETS`` gate then SKIPS
+        # the grace-poll even though a real success line is present: if the log
+        # item-update packet lost the race, ``logs_gained == 0`` and the
+        # genuinely-successful final chop is mis-booked as a BLOCKED "Failed to
+        # chop wood" with zero yield credited. Mirror mine_ore / smelt_ore,
+        # which gate purely on a standalone ``_journal_success_seen()`` and so
+        # recover the credit regardless of which terminal line landed first.
+        if _logs_in_pack() <= logs_before and _success_seen():
             grace_deadline = time.time() + 1.0
             while time.time() < grace_deadline:
                 await asyncio.sleep(0.1)
