@@ -987,6 +987,21 @@ def register_handlers(
             item.x = x
             item.y = y
 
+            # An item that this bulk refresh re-parents INTO a container is no
+            # longer worn. When the agent disarms / swaps gear, the server may
+            # report the now-in-pack weapon via a 0x3C container refresh (e.g.
+            # the backpack is re-opened after a swap) rather than a single 0x25
+            # AddItemToContainer or a 0x1D Delete. The single-add (0x25), the
+            # delete (0x1D), and the re-equip-elsewhere (0x2E) handlers already
+            # drop a stranded self_state.equipment slot; this bulk-refresh
+            # sibling silently did not, so equipment[layer] kept pointing at the
+            # serial that just moved into the bag. The combat re-arm guards
+            # (ss.equipment.get(1)/.get(2)) and equip_weapon_from_pack then saw a
+            # phantom worn weapon and never re-armed. Mirror the siblings.
+            for worn_layer, worn in list(p.self_state.equipment.items()):
+                if worn == serial:
+                    del p.self_state.equipment[worn_layer]
+
     handler.register(0x3C, handle_container_content)
 
     def handle_add_item_to_container(packet_id: int, data: bytes) -> None:
