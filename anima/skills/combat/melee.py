@@ -271,6 +271,16 @@ def _find_target(ctx: BrainContext):
     if not candidates:
         return None
 
-    # Sort by distance (Manhattan)
-    candidates.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
+    # Sort by Chebyshev distance — the chess-king metric UO uses for ALL range
+    # and proximity (diagonals cost the same as orthogonals). The old Manhattan
+    # key (``|dx| + |dy|``) double-counts a diagonal, so a genuinely closer
+    # diagonal foe was ranked BEHIND a farther axis-aligned one: e.g. self at
+    # (0,0), foe A at (3,3) is 3 tiles away (Chebyshev 3) but Manhattan 6, while
+    # foe B at (4,0) is 4 tiles away (Chebyshev 4) yet Manhattan 4 — Manhattan
+    # picks B, the farther target, sending the agent on a longer approach and
+    # leaving it exposed in combat longer. The procedures-path twin
+    # ``combat_loop._find_target`` already ranges on ``max(abs(dx), abs(dy))``
+    # (combat_loop.py:673); match it so both engagement paths pick the same
+    # nearest foe.
+    candidates.sort(key=lambda m: max(abs(m.x - ss.x), abs(m.y - ss.y)))
     return candidates[0]
