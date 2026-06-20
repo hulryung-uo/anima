@@ -193,9 +193,16 @@ class LLMClient:
         # payloads omit it entirely, so ``response.usage`` raises AttributeError.
         # That would propagate past the retry guard and crash the whole think
         # tick, defeating the module's "must not raise" contract. Read it safely.
+        #
+        # Even when ``usage`` IS present, individual token counts can be ``None``
+        # (raw Ollama / proxy / coalesced-streaming payloads carry an untyped
+        # usage object whose fields litellm does not coerce). ``LLMResponse``
+        # declares these as ``int``; leaking ``None`` here breaks every downstream
+        # consumer that sums or compares token counts (and the debug log). Coerce
+        # missing-attribute *and* explicit-``None`` fields to 0.
         usage = getattr(response, "usage", None)
-        prompt_tokens = usage.prompt_tokens if usage else 0
-        eval_tokens = usage.completion_tokens if usage else 0
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
+        eval_tokens = getattr(usage, "completion_tokens", 0) or 0 if usage else 0
 
         result = LLMResponse(
             text=text,
