@@ -211,6 +211,17 @@ CORPSE_SPAWN_WAIT_S = 1.0  # kill → corpse item appears in world state
 # pack that frees up (a sell/bank between fights) still recovers stranded gold.
 LOOT_MAX_ATTEMPTS = 3
 
+# Cap on the per-session status-request de-dup tracker (combat_status_requested).
+# That tracker exists only to suppress a duplicate 0x34 per foe, but it is
+# keyed by raw mobile serial and ServUO streams an unbounded number of DISTINCT
+# serials over a soak — every Spawner mob the agent fights dies and despawns
+# forever with a fresh serial. Nothing ever reaped those entries, so the set
+# grew without bound across a long combat eval (a slow leak that also slowed the
+# ``serial in requested`` membership test). We bound it FIFO, far above any
+# plausible in-view foe count, so a still-relevant serial is never evicted while
+# it keeps getting re-engaged.
+STATUS_REQUEST_CACHE_MAX = 512
+
 # Emergency heal-potion quaff. A bandage and a potion run on two *independent*
 # timers in UO — drinking a heal potion gives an instant HP bump while a
 # bandage is still applying. The interleaved bandage (above) takes ~8s to
@@ -568,10 +579,23 @@ async def _loot_fresh_corpses(ctx: AgentContext) -> int:
 # mirroring ClassicUO's ``HitsRequest == Pending`` de-dup.
 async def _request_target_status(ctx: AgentContext, serial: int) -> bool:
     """Send a 0x34 status request for ``serial`` once. Returns True if sent."""
-    requested: set[int] = ctx.blackboard.setdefault("combat_status_requested", set())
+    # Insertion-ordered dict (used as a bounded set): the value is unused, but a
+    # dict lets us FIFO-evict the oldest serial by ``next(iter(...))`` once the
+    # tracker exceeds STATUS_REQUEST_CACHE_MAX. Raw foe serials stream
+    # unboundedly over a soak (every Spawner mob dies+despawns with a fresh
+    # serial), so an uncapped set leaked for the whole session.
+    requested: dict[int, None] = ctx.blackboard.setdefault(
+        "combat_status_requested", {}
+    )
     if serial in requested:
+        # Re-insert as most-recent so a foe we keep re-engaging stays hot
+        # against eviction (it never re-sends — the early return holds).
+        requested.pop(serial, None)
+        requested[serial] = None
         return False
-    requested.add(serial)
+    requested[serial] = None
+    while len(requested) > STATUS_REQUEST_CACHE_MAX:
+        requested.pop(next(iter(requested)))
     await ctx.conn.send_packet(build_status_request(4, serial))
     logger.debug("hunt_status_request", target=f"0x{serial:08X}")
     return True
