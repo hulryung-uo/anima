@@ -50,6 +50,13 @@ class WebServer:
         self._app = web.Application()
         self._clients: set[web.WebSocketResponse] = set()
         self._last_snapshot: str = "{}"
+        # Strong references to in-flight broadcast send tasks. asyncio only
+        # holds a *weak* reference to a scheduled task, so a fire-and-forget
+        # send with no other referent can be garbage-collected mid-await — the
+        # ws.send_str coroutine then silently stops at its first suspension
+        # point and the frame never reaches the browser. Holding the task here
+        # keeps it alive; the done-callback drops it (and reaps a dead client).
+        self._send_tasks: set[asyncio.Task[None]] = set()
         self._setup_routes()
 
     @property
@@ -177,17 +184,37 @@ class WebServer:
         if not self._clients:
             return
 
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop (e.g. called from a sync context / test without a
+            # running loop) — nothing can be scheduled, so skip silently.
+            return
+
         stale: list[web.WebSocketResponse] = []
-        for ws in self._clients:
+        for ws in list(self._clients):
             if ws.closed:
                 stale.append(ws)
                 continue
-            try:
-                asyncio.ensure_future(ws.send_str(data))
-            except Exception:
-                stale.append(ws)
+            # Schedule a *tracked* send. ensure_future returned a task the loop
+            # only weakly referenced — under GC pressure it could vanish before
+            # the await completed, dropping the frame; and because the send was
+            # never awaited, a send failure (client closed between the .closed
+            # check above and the actual write) raised inside an orphan task
+            # that nothing observed, so the dead client was never reaped here.
+            task = loop.create_task(self._send_one(ws, data))
+            self._send_tasks.add(task)
+            task.add_done_callback(self._send_tasks.discard)
 
         for ws in stale:
+            self._clients.discard(ws)
+
+    async def _send_one(self, ws: web.WebSocketResponse, data: str) -> None:
+        """Send one frame to a client; reap the client on any send failure."""
+        try:
+            await ws.send_str(data)
+        except Exception:
+            # Connection dropped mid-send — stop broadcasting to it.
             self._clients.discard(ws)
 
     async def start(self) -> None:
