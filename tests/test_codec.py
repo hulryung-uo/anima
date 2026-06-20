@@ -65,6 +65,34 @@ def test_read_unicode_remaining_stops_at_first_nul():
     assert r3.read_unicode_remaining() == "end"
 
 
+def test_read_unicode_be_fixed_length_stops_at_first_nul():
+    """read_unicode_be(length) must mirror ClassicUO's fixed-length
+    ReadUnicodeBE (StackDataReader.ReadString -> GetIndexOfZero): a NUL-padded
+    field ends at the FIRST 0x0000 code unit, but the cursor advances the full
+    `length` units regardless. The old rstrip-only path leaked anything before a
+    trailing run of NULs (e.g. an embedded NUL followed by more text/padding)."""
+    # "Hi" + NUL terminator + "Bob" -> 6 code units (12 bytes). Real client
+    # shows "Hi"; the old rstrip path wrongly yielded "Hi\x00\x00Bob".
+    raw = "Hi".encode("utf-16-be") + b"\x00\x00" + "Bob".encode("utf-16-be")
+    r = PacketReader(raw)
+    assert r.read_unicode_be(6) == "Hi"
+    # Cursor advanced the full length*2 bytes even though the value ended early.
+    assert r.remaining == 0
+
+    # Plain NUL-padded field (the common case): trailing NULs are dropped.
+    padded = "Name".encode("utf-16-be") + b"\x00\x00\x00\x00"
+    r2 = PacketReader(padded)
+    assert r2.read_unicode_be(6) == "Name"
+    assert r2.remaining == 0
+
+    # A field that fills its full width with no NUL keeps every code unit and
+    # consumes exactly length*2 bytes (no over/under-read).
+    full = "World".encode("utf-16-be")
+    r3 = PacketReader(full + b"\xAB\xCD")  # extra trailing byte must remain
+    assert r3.read_unicode_be(5) == "World"
+    assert r3.remaining == 2
+
+
 def test_huffman_roundtrip():
     """Verify Huffman decompression works with known data.
 

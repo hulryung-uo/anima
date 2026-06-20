@@ -238,7 +238,22 @@ class PacketReader:
         if length >= 0:
             raw = self._data[self._pos : self._pos + length * 2]
             self._pos += length * 2
-            return raw.decode("utf-16-be", errors="replace").rstrip("\x00")
+            # Mirror ClassicUO's fixed-length ReadUnicodeBE(length) (StackDataReader
+            # ReadString -> GetIndexOfZero): the field is a NUL-PADDED string, so
+            # the value ends at the FIRST 0x0000 UTF-16 code unit and everything
+            # after it (an embedded NUL plus more text, or frame padding) is
+            # dropped — while the cursor still advances the full `length` units.
+            # The old `rstrip("\x00")` only trimmed *trailing* NULs, so a field
+            # like "Hi\x00\x00Bob" decoded to "Hi\x00\x00Bob" (real client: "Hi"),
+            # leaking padding/garbage into parsed gump text-entry values. This is
+            # the same fix already applied to read_unicode_remaining (commit
+            # 6f555ad); the fixed-length variant was missed.
+            end = len(raw)
+            for off in range(0, len(raw) - 1, 2):
+                if raw[off] == 0 and raw[off + 1] == 0:
+                    end = off
+                    break
+            return raw[:end].decode("utf-16-be", errors="replace")
         # Read until double null
         chars = []
         while self._pos + 1 < len(self._data):
