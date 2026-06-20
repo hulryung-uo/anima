@@ -40,6 +40,38 @@ COMBAT_TICK = 1.0
 # How recently we must have taken damage to fight back in defensive mode
 DEFENSIVE_WINDOW = 10.0
 
+# --- Reward shaping -------------------------------------------------------
+# A confirmed kill is the strongest positive signal a melee fighter can
+# produce; a disengage (timeout/retreat) is a negative one. The penalty for
+# HP lost during the fight only *tapers* the magnitude — it must never flip
+# the SIGN of the outcome. Previously ``reward = 15.0 - hp_lost * 0.3`` was
+# unclamped: a hard-won kill that cost >=50 HP (an ordinary, level-appropriate
+# fight) produced a reward of 0 or *negative*, indistinguishable from a
+# disengage. This reward flows live into the location-value map and the
+# per-context action-stats (``_record_episode`` -> update_location_value /
+# update_action_stats), so an inverted kill reward pushes "MeleeAttack" into
+# the LLM's "avoid this region/action" section — actively training the agent
+# away from the very behaviour it just succeeded at. Clamp the kill path to a
+# strictly-positive floor so a win always reinforces as a win.
+KILL_REWARD = 15.0
+DISENGAGE_REWARD = -5.0
+DAMAGE_PENALTY_PER_HP = 0.3
+# Smallest reward a confirmed kill may yield, no matter how much HP it cost.
+KILL_REWARD_FLOOR = 1.0
+
+
+def _combat_reward(target_killed: bool, hp_lost: int) -> float:
+    """Map a combat outcome + HP cost to a reward, preserving the sign.
+
+    The HP penalty scales the magnitude down but may never invert a kill into
+    a non-positive (disengage-looking) reward — a kill is always positive
+    reinforcement, a disengage always negative.
+    """
+    penalty = max(0, hp_lost) * DAMAGE_PENALTY_PER_HP
+    if target_killed:
+        return max(KILL_REWARD_FLOOR, KILL_REWARD - penalty)
+    return DISENGAGE_REWARD - penalty
+
 
 def _corpse_serials(ctx: BrainContext) -> set[int]:
     """Serials of every corpse (graphic 0x2006) on the ground within range now.
@@ -202,10 +234,9 @@ class MeleeAttack(Skill):
 
         elapsed = (time.monotonic() - start) * 1000
         hp_lost = max(0, hp_before - ss.hits)
-        damage_penalty = hp_lost * 0.3
+        reward = _combat_reward(target_killed, hp_lost)
 
         if target_killed:
-            reward = 15.0 - damage_penalty
             logger.info(
                 "melee_kill", target=target_name,
                 hp_lost=hp_lost, duration_ms=f"{elapsed:.0f}",
@@ -219,7 +250,6 @@ class MeleeAttack(Skill):
                 duration_ms=elapsed,
             )
         else:
-            reward = -5.0 - damage_penalty
             logger.info(
                 "melee_disengage", target=target_name,
                 hp_lost=hp_lost, reason="timeout_or_retreat",
