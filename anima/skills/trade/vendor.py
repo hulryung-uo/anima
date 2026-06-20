@@ -218,6 +218,28 @@ ESSENTIAL_TOOLS: list[tuple[int, int, set[int]]] = [
 ]
 
 
+def _bounded_buy_qty(want: int, available: int) -> int:
+    """Bound a buy quantity by the vendor's displayed stock for this item.
+
+    ServUO's VendorBuyReply clamps the *delivered* amount down to the item's
+    on-shelf stock server-side, but the client still gets to *plan* whatever
+    quantity it asks for. Sending ``want`` unbounded therefore over-states
+    ``total_cost`` and the per-item buy detail (and on shards that reject an
+    over-stock line outright, sinks the whole order) whenever the agent wants
+    more tools than a thin vendor carries — e.g. asking for 3 pickaxes from a
+    vendor showing only 1. Mirror the procedures path
+    (``anima.procedures.buy_from_vendor._buy_quantity``), which already caps on
+    ``VendorBuyItem.amount``.
+
+    ``available`` is the 0x74/0x3C display count. A non-positive count means
+    the shelf is empty for this item, so nothing is buyable -> 0 (the caller
+    skips it). Otherwise return ``min(want, available)``, never below 0.
+    """
+    if available <= 0:
+        return 0
+    return max(0, min(want, available))
+
+
 class BuyFromNpc(Skill):
     """Buy essential tools from an NPC vendor via context menu."""
 
@@ -320,7 +342,12 @@ class BuyFromNpc(Skill):
 
         for bi in buy_list:
             if bi.graphic in missing_want:
-                want = missing_want[bi.graphic]
+                # Bound the request by the vendor's displayed stock — asking for
+                # more than the shelf holds over-states cost and can sink the
+                # whole order on shards that reject an over-stock line.
+                want = _bounded_buy_qty(missing_want[bi.graphic], bi.amount)
+                if want <= 0:
+                    continue
                 items_to_buy.append((bi.serial, want))
                 total_cost += want * bi.price
                 buying_detail.append(
