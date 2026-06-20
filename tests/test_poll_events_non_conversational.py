@@ -25,6 +25,7 @@ from anima.perception.event_stream import GameEvent, GameEventType
 
 MY_SERIAL = 0x00000001
 MOBILE_SERIAL = 0x00012345  # < 0x40000000: an NPC the label is attributed to
+ITEM_SERIAL = 0x40012345  # >= 0x40000000: an item/sign, never a person
 
 
 def _make_brain(events: list[GameEvent]) -> Brain:
@@ -85,3 +86,23 @@ def test_emote_and_whisper_still_count_as_conversation() -> None:
         bb = brain.context.blackboard
         assert bb.get("pending_speech"), f"{mt.name} is real speech and must queue"
         assert isinstance(bb.get("last_player_speech"), float)
+
+
+def test_item_range_serial_speech_does_not_queue_or_stamp_conversation() -> None:
+    # A REGULAR-typed line that carries an ITEM-range serial (>= 0x40000000) is a
+    # talking item / sign / server line attributed to an item, not a person.
+    # respond_to_speech rejects it outright, so the poll path must never queue it
+    # (the reply would be silently dropped) nor stamp the conversation clock
+    # (which would freeze llm_think's strategising for the whole timeout window).
+    brain = _make_brain(
+        [_speech_event(MessageType.REGULAR, serial=ITEM_SERIAL,
+                       name="a sign", text="Britain Bank")]
+    )
+    brain._poll_events()
+    bb = brain.context.blackboard
+    assert not bb.get("pending_speech"), (
+        "item-range-serial speech must not queue as pending speech"
+    )
+    assert "last_player_speech" not in bb, (
+        "a talking item must not start a conversation that freezes thinking"
+    )

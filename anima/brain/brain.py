@@ -309,6 +309,16 @@ class Brain:
                 # Skip own speech and system messages
                 if serial == my_serial or serial == 0xFFFFFFFF:
                     continue
+                # Item/multi-range serials (>= 0x40000000) are NOT a person:
+                # a talking item, a sign, or a server line attributed to an item
+                # serial. respond_to_speech already rejects exactly these (it is
+                # "not a mobile, can't be a person speaking"), so queuing one here
+                # only stamps last_player_speech — freezing fresh strategising for
+                # the whole CONVERSATION_TIMEOUT — and parks a pending entry that
+                # the reply path immediately drops. Mirror that guard so an item
+                # utterance never starts a bogus conversation.
+                if serial >= 0x40000000:
+                    continue
                 if event.data.get("name", "").lower() == "system":
                     continue
                 # LABEL/FOCUS/SYSTEM-typed lines are not chatter even when they
