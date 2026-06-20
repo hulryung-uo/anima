@@ -244,6 +244,28 @@ class SmeltOre(Procedure):
             if sub2:
                 ctx.bus.unsubscribe(sub2)
 
+        # The "not enough metal" outcome drives the WHOLE failure-path logic
+        # below — the sub-2 iron-pile COMBINE (ore_amount < 2) and the colored
+        # ore IMMEDIATE blacklist (ore_amount >= 2) both gate on
+        # ``_smelt_flags["not_enough"]``. But that flag is set ONLY by the bus
+        # callback (``_on_speech``); the bus is optional, and a cliloc can route
+        # to the journal without an ``avatar.speech_*`` publish. With no bus the
+        # flag stays False even when the server clearly said "not enough metal",
+        # so a sub-2 iron pile is never combined (it falls through to the generic
+        # iron retry and ``can_start`` re-selects the same un-smeltable 1-ore
+        # pile forever), and a genuinely-unsmelable colored hue takes 3 failures
+        # to blacklist instead of one. Reconcile it from the journal exactly as
+        # MineOre does for its terminal swing flags (commit e049b68), so both
+        # transports stay in lockstep. Only scan when the bus didn't already
+        # catch it.
+        if not _smelt_flags["not_enough"]:
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < smelt_start:
+                    continue
+                if "not enough metal" in entry.text.lower():
+                    _smelt_flags["not_enough"] = True
+                    break
+
         # The success cliloc can arrive before the item-update packet that
         # actually adds the ingots to the pack. If the smelt reported success
         # but the ingots are not visible yet (and the "not enough metal" flag
