@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -365,6 +366,11 @@ class MetaController:
     """
 
     MIN_INTERVAL_S = 60.0
+    # Decisions accrue one mode string per interval for the entire (open-ended)
+    # lifetime of the agent process. Only the last few are ever consumed
+    # (``build_living_state`` slices ``last_modes[-6:]``), so an unbounded list
+    # is a pure soak leak — keep a bounded ring with comfortable headroom.
+    _MODE_HISTORY_CAP = 32
 
     def __init__(
         self,
@@ -379,7 +385,7 @@ class MetaController:
         self._last_decide: float = 0.0
         self._decide_task: asyncio.Task | None = None
         self._started_at: float = time.monotonic()
-        self._mode_history: list[str] = []
+        self._mode_history: deque[str] = deque(maxlen=self._MODE_HISTORY_CAP)
         # gold-rate tracking
         # Samples track NET WORTH (backpack gold + last-known bank balance),
         # not backpack gold, so a bank deposit is a wash not a phantom loss.
@@ -474,7 +480,7 @@ class MetaController:
                 ctx,
                 gold_rate_per_min=self._gold_rate_per_min(self._net_worth(ctx)),
                 session_minutes=(time.monotonic() - self._started_at) / 60.0,
-                last_modes=self._mode_history,
+                last_modes=list(self._mode_history),
             )
             if llm is None:
                 decision = await HeuristicModePolicy().choose(state)
