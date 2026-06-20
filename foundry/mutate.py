@@ -88,7 +88,17 @@ def _genome_leftovers(repo: str | Path) -> list[str]:
     and on into every descendant worktree. Keep the fold genome-only.
     """
     out: list[str] = []
-    for line in _git(repo, "status", "--porcelain").stdout.splitlines():
+    # ``-c core.quotepath=false``: git's DEFAULT porcelain output C-quotes any
+    # path with non-ASCII bytes -- ``anima/föö.py`` is emitted as
+    # ``"anima/f\303\266\303\266.py"`` (leading double-quote, octal escapes). The
+    # ``path.startswith("anima/")`` test below then FAILS on that leading quote,
+    # so a mutation whose only edit is a non-ASCII-named genome file is silently
+    # dropped from the fold: ``mutate_with_claude`` sees ``after == before`` and
+    # reports ``changed=False``, burning the whole eval window on a "no variant"
+    # cycle (and for a mixed change, that file never enters the variant). Emit
+    # raw UTF-8 paths so the line-based parse matches real anima/ paths.
+    for line in _git(repo, "-c", "core.quotepath=false",
+                     "status", "--porcelain").stdout.splitlines():
         if not line.strip():
             continue
         status, path = line[:2], line[3:].strip()
