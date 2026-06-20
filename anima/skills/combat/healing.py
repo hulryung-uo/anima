@@ -52,16 +52,34 @@ class HealSelf(Skill):
         if not bandage:
             return SkillResult(success=False, reward=-1.0, message="No bandages")
 
-        # Double-click bandage
+        # Double-click bandage → server opens a target cursor (0x6C request).
         await ctx.conn.send_packet(build_double_click(bandage.serial))
 
-        # Wait briefly for target cursor
-        await asyncio.sleep(0.5)
+        # Wait for the server to actually send the target cursor, then echo its
+        # real cursor id back. Blindly sleeping and replying with cursor_id=0 (as
+        # this skill used to) sends a 0x6C response whose cursor id does not match
+        # the one ServUO just issued — Targeting.TargetID mismatch — so the server
+        # drops the bandage application and the heal never lands. Every sibling
+        # skill (mine_ore / smelt_ore / make_boards) polls pending_target and
+        # forwards the issued cursor id; heal_self must do the same.
+        ss.pending_target = None
+        for _ in range(20):
+            if ss.pending_target is not None:
+                break
+            await asyncio.sleep(0.1)
 
-        # Target self
+        if ss.pending_target is None:
+            return SkillResult(
+                success=False, reward=-1.0, message="No target cursor",
+            )
+
+        cursor_id = ss.pending_target.get("cursor_id", 0)
+        ss.pending_target = None
+
+        # Target self with the cursor the server actually issued.
         await ctx.conn.send_packet(build_target_response(
             target_type=0,
-            cursor_id=0,
+            cursor_id=cursor_id,
             serial=ss.serial,
         ))
 
