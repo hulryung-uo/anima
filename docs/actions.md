@@ -131,6 +131,15 @@ Skill ids = ServUO `SkillName` enum (table in `anima/client/appearance.py`).
 - `await equip_item(ctx, serial, layer)` — lift+equip, verified via the
   0x2E equipment update. Layers: 1=right hand, 2=left hand.
 - `await equip_weapon_from_pack(ctx, graphics, two_handed=False)`.
+- `await equip_shield_from_pack(ctx)` — equip a shield from the pack onto the
+  off-hand (layer 2) for the Parrying stream.
+
+## Loot — `anima/actions/loot.py`
+
+- `find_corpses(ctx, max_dist=3) -> list[ItemInfo]` — sync; corpses (graphic
+  0x2006) on the ground near the agent, nearest first.
+- `await loot_corpse(ctx, corpse_serial)` — open a corpse and lift gold +
+  valuables into the backpack; weight-gated (see `data["weight_gated"]`).
 
 ## Speech — `anima/action/speech.py` & raw packets
 
