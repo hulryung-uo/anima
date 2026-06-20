@@ -63,6 +63,16 @@ _EXPORTS = {
     # equip
     "equip_item": "anima.actions.equip",
     "equip_weapon_from_pack": "anima.actions.equip",
+    # The shield-equip primitive (Parrying stream) is just as public as the
+    # weapon one and is imported by combat_loop — it must be reachable through
+    # the façade too, or `from anima.actions import equip_shield_from_pack`
+    # (the documented single-import-façade pattern) raises AttributeError.
+    "equip_shield_from_pack": "anima.actions.equip",
+    # loot (anima/actions/loot.py) — a whole primitive module that was never
+    # wired into the façade despite being a first-class action used by
+    # combat_loop / planner / melee.
+    "find_corpses": "anima.actions.loot",
+    "loot_corpse": "anima.actions.loot",
 }
 
 __all__ = ["ActionResult", *_EXPORTS]
