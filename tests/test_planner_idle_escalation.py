@@ -66,14 +66,31 @@ async def test_escalate_fires_when_counter_overshoots_threshold():
 
 
 @pytest.mark.asyncio
-async def test_forum_fires_when_counter_overshoots_threshold():
-    """A counter that jumps PAST _IDLE_FORUM must still escalate to forum."""
+async def test_forum_overshoot_runs_resolver_first_then_forum():
+    """A counter that jumps PAST _IDLE_FORUM must run the cheap resolver BEFORE
+    the nuclear forum escalation — never skip straight to forum.
+
+    Regression: the old high→low ``elif`` chain jumped the escalation watermark
+    straight to _IDLE_FORUM on an overshoot, firing the forum post (which pauses
+    the agent for 5 minutes) without ever giving the cheap local deadlock
+    resolver — clear stale failed destinations / depleted banks / refused
+    vendors — its shot. The resolver clears most stalls in a single tick, so
+    skipping it to spam the forum is both wasteful and harmful.
+    """
     planner, calls = _make_planner()
     ctx = _ctx()
 
     planner._idle_ticks = planner._IDLE_FORUM + 5
-    await planner._check_stuck(ctx)
 
+    # First observation at/after the forum threshold: resolver runs, forum waits.
+    await planner._check_stuck(ctx)
+    assert calls["resolve"] == 1
+    assert calls["forum"] == 0
+
+    # Still idle on the next tick (counter climbing): NOW forum escalates.
+    planner._idle_ticks += 1
+    await planner._check_stuck(ctx)
+    assert calls["resolve"] == 1   # resolver fired exactly once
     assert calls["forum"] == 1
 
 

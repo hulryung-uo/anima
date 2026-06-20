@@ -2453,7 +2453,28 @@ class Planner:
             self._idle_escalation_fired = 0
             return
 
+        # The rungs are graduated by cost on purpose: the warning is free, the
+        # deadlock *resolver* is the cheap local recovery (clear stale failed
+        # destinations / depleted banks / refused vendors — usually enough to
+        # unstick the planner), and the forum escalation is the nuclear option
+        # (posts a public help request AND pauses the agent for 5 minutes).
+        #
+        # CRITICAL: the forum escalation must NEVER fire without the cheap
+        # resolver having had its shot first. The old ``elif`` chain checked
+        # high→low and jumped the watermark straight to the highest crossed
+        # rung, so a counter that OVERSHOOTS directly to _IDLE_FORUM (the
+        # docstring above lists exactly how this happens — a health-break
+        # early-return or an exception skips a _check_stuck observation while the
+        # increment already landed) ran the forum escalation having SKIPPED the
+        # resolver entirely. The agent then spammed the forum and ate a 5-minute
+        # pause for a stall the local resolver would have cleared in one tick.
+        #
+        # Guard the forum rung on the resolver watermark: if the resolver has
+        # not yet fired this idle run, run IT this tick and defer forum to the
+        # next still-idle tick. This keeps escalation graduated (resolve before
+        # forum) even when the idle counter skips the _IDLE_ESCALATE rung.
         if (self._idle_ticks >= self._IDLE_FORUM
+                and self._idle_escalation_fired >= self._IDLE_ESCALATE
                 and self._idle_escalation_fired < self._IDLE_FORUM):
             self._idle_escalation_fired = self._IDLE_FORUM
             await self._deadlock.escalate_to_forum(ctx)
