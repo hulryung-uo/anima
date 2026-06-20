@@ -79,6 +79,41 @@ def test_hp_update_refreshes_an_already_seen_mobile():
     assert (refreshed.x, refreshed.y) == (100, 200)
 
 
+def test_hp_update_refreshes_last_seen_against_prune():
+    """A stationary foe's only ongoing signal is the streaming 0xA1 health bar.
+
+    The phantom guard routes the non-self branch through
+    ``world.mobiles.get(serial)`` instead of ``get_or_create_mobile`` (so a
+    never-seen serial can't spawn a positionless corpse) — but that earlier
+    dropped the ``last_seen`` re-stamp every other touch goes through. Without
+    it, a foe that stays in melee range but never moves (no 0x77) has a frozen
+    freshness clock, so ``prune_stale_mobiles`` reaps it out of the world
+    mid-fight even while the server keeps streaming its hits. This locks the
+    invariant: a 0xA1 update keeps an existing foe fresh.
+    """
+    h, p, _ = _make_stack()
+    mob = p.world.get_or_create_mobile(FOE)
+    mob.x, mob.y = 100, 200
+    mob.hits_max, mob.hits = 25, 25
+    # Simulate a foe last touched long ago (entered view, then only health
+    # updates have arrived since — no movement packet to refresh it).
+    mob.last_seen = 1000.0
+
+    # A health update arrives well past the stale TTL.
+    h.dispatch(0xA1, _hp_update(FOE, 25, 6))
+
+    refreshed = p.world.mobiles[FOE]
+    # last_seen advanced to "now" (monotonic), far beyond the old stamp.
+    assert refreshed.last_seen > 1000.0
+    # And the freshness pruner now KEEPS the foe: the just-stamped last_seen is
+    # current, so a prune run at the current clock cannot reap it.
+    import time as _t
+
+    pruned = p.world.prune_stale_mobiles(now=_t.monotonic(), max_age=30.0)
+    assert FOE not in pruned
+    assert FOE in p.world.mobiles
+
+
 def test_hp_update_self_still_updates_self_state():
     """The self branch is unaffected: our own bar carries real (un-normalised)
     values and must still land on self_state."""

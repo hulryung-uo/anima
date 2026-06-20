@@ -114,6 +114,33 @@ class WorldState:
         mob.last_seen = time.monotonic()
         return mob
 
+    def touch_existing_mobile(self, serial: int) -> MobileInfo | None:
+        """Refresh ``last_seen`` on a mobile that already exists, else None.
+
+        The phantom-guard handlers (non-self 0xA1 UpdateCurrentHealth, 0x2D
+        MobileAttributes, 0x11 CharacterStatus) must NEVER create a mobile —
+        those packets carry no position, and a serial we no longer have in view
+        would spawn a positionless corpse (see the per-handler comments). They
+        therefore stopped routing through ``get_or_create_mobile`` and instead
+        do ``self.mobiles.get(serial)``, which silently dropped the ``last_seen``
+        stamp that every other touch goes through.
+
+        That matters during a STATIONARY melee fight: a foe that stays in range
+        but issues no 0x77 MobileMoving is refreshed ONLY by the streaming 0xA1
+        health updates. Without re-stamping ``last_seen`` here, those updates
+        leave the freshness clock frozen, so ``prune_stale_mobiles`` would reap
+        the foe out of ``world.mobiles`` mid-combat (breaking target acquisition
+        / focus-fire / the swarm tally) and the next 0xA1 — held back by the
+        very phantom guard — could not re-create it. Mirror ClassicUO: only the
+        spatial packets create a mobile, but ANY packet that updates one keeps it
+        fresh. Returns the existing mobile (with ``last_seen`` bumped) or None.
+        """
+        mob = self.mobiles.get(serial)
+        if mob is None:
+            return None
+        mob.last_seen = time.monotonic()
+        return mob
+
     def get_or_create_item(self, serial: int) -> ItemInfo:
         if serial not in self.items:
             self.items[serial] = ItemInfo(serial=serial)

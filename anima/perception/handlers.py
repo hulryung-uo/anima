@@ -640,8 +640,10 @@ def register_handlers(
             # spawned a brand-new MobileInfo at (0,0) whose `is_dead`
             # (hits_max>0 and hits<=0) is immediately True: the same positionless
             # phantom corpse the 0xA1 and 0x2D handlers already guard against.
-            # Only update a mobile that already exists.
-            mob = p.world.mobiles.get(serial)
+            # Only update a mobile that already exists. touch_existing_mobile
+            # also re-stamps last_seen so a status reply keeps the foe fresh
+            # against prune_stale_mobiles.
+            mob = p.world.touch_existing_mobile(serial)
             if mob is None:
                 return
             mob.name = name
@@ -675,8 +677,11 @@ def register_handlers(
             # phantom corpse that leaks into world.mobiles and pollutes the
             # swarm tally / _find_target / heal-target scans until pruned. Match
             # ClassicUO and the 0xAF DisplayDeath invariant: only update a
-            # mobile that already exists.
-            mob = p.world.mobiles.get(serial)
+            # mobile that already exists. touch_existing_mobile also re-stamps
+            # last_seen — during a stationary melee fight the streaming 0xA1
+            # is the only signal keeping the foe alive against the stale-mobile
+            # pruner, so dropping the stamp would let it be reaped mid-combat.
+            mob = p.world.touch_existing_mobile(serial)
             if mob is None:
                 return
             mob.hits = hits
@@ -756,8 +761,10 @@ def register_handlers(
             # and pollutes the swarm tally / _find_target / heal-target scans
             # until pruned. Match ClassicUO and the 0xA1/0xAF invariant: only
             # update a mobile that already exists. (mana/stam are only meaningful
-            # for mobiles and we don't track them per-foe.)
-            mob = p.world.mobiles.get(serial)
+            # for mobiles and we don't track them per-foe.) touch_existing_mobile
+            # also re-stamps last_seen so a stationary foe whose only signal is
+            # the periodic 0x2D refresh stays fresh against prune_stale_mobiles.
+            mob = p.world.touch_existing_mobile(serial)
             if mob is None:
                 return
             mob.hits = hits
