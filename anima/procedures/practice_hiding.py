@@ -33,7 +33,7 @@ from anima.actions.skills import (
     SKILL_USE_COOLDOWN_S,
     use_skill,
 )
-from anima.procedures.base import Procedure, ProcedureResult
+from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 
 if TYPE_CHECKING:
     from anima.core.context import AgentContext
@@ -115,6 +115,32 @@ class PracticeHiding(Procedure):
             gains[SKILL_HIDING] = hiding_gain
         if stealth_gain:
             gains[SKILL_STEALTH] = stealth_gain
+        # A run that RESOLVED zero Hiding rolls practiced nothing: every
+        # ``use_skill(Hiding)`` landed inside the 10s skill lockout (or a wedged
+        # session swallowed the cursor/journal), so ``wait_for_journal`` timed
+        # out every iteration and the loop bailed out via the bounded
+        # ``iterations < MAX_ATTEMPTS`` guard with ``resolved == 0``. Reporting
+        # that as ``success=True`` writes a phantom win to the ActionLog reward
+        # signal and inflates the THIEF-STEALTH skill-rate metric even though the
+        # Hiding CheckSkill never rolled once — the exact phantom-success
+        # anti-pattern already killed in the sibling BARD loop
+        # (practice_peacemaking, f1e95e0), bandage_self (ec92743), mine_ore /
+        # chop_wood (an unresolved swing is a failure, not a success) and
+        # sell_to_vendor (gold-debited-but-no-item is a FAILURE, 5a71d36).
+        # Surface it as a retryable BLOCKED failure with NO re-suggestion so the
+        # planner re-evaluates instead of chaining straight back into the same
+        # stall. (``resolved > 0`` — even one rolled attempt — is a real success:
+        # the skill rolled and any gain is credited.)
+        if resolved == 0:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=(
+                    f"Hiding practice resolved no attempts "
+                    f"({iterations} iterations) — skill never rolled"
+                ),
+                skill_gains=gains,
+            )
         return ProcedureResult(
             success=True,
             message=(
