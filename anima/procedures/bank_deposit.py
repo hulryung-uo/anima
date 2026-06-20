@@ -242,10 +242,22 @@ class BankDeposit(Procedure):
                 colored_ingots_deposited += item.amount
 
         # Deposit heavy materials if overweight (skip iron ingots — needed
-        # for crafting; colored ingots already handled above)
+        # for crafting; colored ingots already handled above).
+        #
+        # REGRESSION GUARD: ``_is_heavy_depositable`` is True for a colored
+        # (non-iron-hue) ingot — by design, so ``can_start`` promises the trip
+        # for a colored-ingot-only overweight load. But the colored-ingot loop
+        # ABOVE already lifted those very items, and ``world.items`` is not
+        # mutated synchronously by the pick_up/drop packets (the server echo
+        # lags the tight per-item sleeps), so each colored ingot is STILL in the
+        # backpack as far as this loop can see. Without an explicit skip it gets
+        # picked up a SECOND time — a wasted pick_up/drop round-trip that can
+        # strand the stack on the cursor, plus a double ``deposited_count``.
+        # Exclude colored ingots here so each is banked exactly once.
         if _should_deposit_heavy(ss):
             for item in list(world.items.values()):
-                if item.container == backpack and _is_heavy_depositable(item):
+                if (item.container == backpack and _is_heavy_depositable(item)
+                        and not _is_colored_ingot(item)):
                     await ctx.conn.send_packet(build_pick_up(item.serial, item.amount))
                     await asyncio.sleep(0.1)
                     await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))
