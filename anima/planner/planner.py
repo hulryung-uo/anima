@@ -2567,9 +2567,6 @@ class Planner:
                     procedure=proc_name,
                     consecutive_fails=count,
                 )
-                # Temporarily skip this procedure
-                skip = ctx.blackboard.setdefault("_skip_procedures", set())
-                skip.add(proc_name)
                 self._repeat_counter[proc_name] = 0
                 # mine_ore exhaustion: all veins depleted, server regen is
                 # 10-20 min — set a 5-minute cooldown so the agent does other
@@ -2577,6 +2574,22 @@ class Planner:
                 if proc_name == "mine_ore":
                     ctx.blackboard["_mine_exhausted_until"] = _time.time() + 300
                     logger.info("planner_mine_exhausted", cooldown_sec=300)
+                    # The cooldown is the self-clearing, time-bounded skip for
+                    # mining. Do NOT *also* drop mine_ore into the permanent
+                    # _skip_procedures set: that set is only ever cleared by the
+                    # deadlock resolver, which fires solely on a fully-IDLE
+                    # planner. A miner that keeps busy with other work (smelt /
+                    # craft / sell) after a depletion never goes idle, so the
+                    # resolver never runs — leaving mine_ore latched out FOREVER
+                    # even after the 5-minute cooldown expires and the veins have
+                    # regenerated. Two skip mechanisms for one procedure, only
+                    # one of which self-clears, is the asymmetric latch; let the
+                    # bounded cooldown own mining exclusively.
+                else:
+                    # Temporarily skip this procedure (cleared by the deadlock
+                    # resolver once the planner goes idle).
+                    skip = ctx.blackboard.setdefault("_skip_procedures", set())
+                    skip.add(proc_name)
                 ctx.blackboard["planner_intent"] = (
                     f"{proc_name} {count}회 연속 실패 → 일시 스킵"
                 )
