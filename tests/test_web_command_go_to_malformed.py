@@ -52,3 +52,26 @@ async def test_go_to_numeric_string_coords_accepted() -> None:
     result = await srv._handle_command(json.dumps({"cmd": "go_to", "x": "100", "y": "200"}))
     assert result["ok"] is True
     assert srv.command_bus.override_go_to == (100, 200)
+
+
+async def test_non_object_json_payload_returns_error_not_crash() -> None:
+    # ``json.loads`` returns a bare scalar/list/null for a top-level JSON value
+    # that is not an object. Before the fix, ``data.get("cmd", ...)`` raised
+    # AttributeError out of _handle_command (and out of the un-guarded
+    # _ws_handler loop). Every non-object payload must degrade to a cmd_result.
+    srv = _server()
+    for raw in ('"hello"', "[1, 2]", "42", "true", "null"):
+        result = await srv._handle_command(raw)
+        assert result["type"] == "cmd_result", raw
+        assert result["ok"] is False, raw
+    # A bad payload must never latch a side effect.
+    assert srv.command_bus.override_go_to is None
+    assert srv.command_bus.paused is False
+
+
+async def test_object_json_payload_still_dispatches() -> None:
+    # The non-object guard must not break ordinary object commands.
+    srv = _server()
+    result = await srv._handle_command(json.dumps({"cmd": "pause"}))
+    assert result["ok"] is True
+    assert srv.command_bus.paused is True

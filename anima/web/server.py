@@ -99,6 +99,18 @@ class WebServer:
         except json.JSONDecodeError:
             return {"type": "cmd_result", "cmd": "?", "ok": False, "message": "invalid JSON"}
 
+        # ``json.loads`` happily returns a bare scalar / list / null for a
+        # top-level JSON value that is not an object (``"hi"`` -> str, ``[1]`` ->
+        # list, ``42`` -> int, ``null`` -> None). The dispatch below immediately
+        # does ``data.get("cmd", ...)``, which raises AttributeError on any of
+        # those — and ``_ws_handler`` runs ``_handle_command`` with NO try/except,
+        # so it escapes the ``async for`` loop, 500s the request and drops the
+        # client without ever sending a cmd_result. Same failure mode the go_to
+        # int-coercion guard exists to prevent; reject a non-object payload here.
+        if not isinstance(data, dict):
+            return {"type": "cmd_result", "cmd": "?", "ok": False,
+                    "message": "command must be a JSON object"}
+
         cmd = data.get("cmd", "")
         logger.info("web_command", cmd=cmd, params={k: v for k, v in data.items() if k != "cmd"})
 
