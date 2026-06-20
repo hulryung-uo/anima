@@ -112,7 +112,15 @@ class WebServer:
                 return _ok(cmd, "Planner resumed")
 
             case "go_to":
-                x, y = int(data.get("x", 0)), int(data.get("y", 0))
+                # x/y come straight off the wire from an external client, so a
+                # malformed value (a non-numeric string, null, a list) must not
+                # escape as a ValueError/TypeError — that propagates out of the
+                # un-guarded _ws_handler loop, 500s the request and drops the
+                # client without ever sending a cmd_result. Coerce defensively.
+                try:
+                    x, y = int(data.get("x", 0)), int(data.get("y", 0))
+                except (TypeError, ValueError):
+                    return _err(cmd, "x and y must be integers")
                 if x == 0 and y == 0:
                     return _err(cmd, "x and y required")
                 self._cmd_bus._override_go_to = (x, y)
