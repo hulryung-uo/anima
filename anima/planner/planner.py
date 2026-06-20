@@ -660,6 +660,40 @@ class Planner:
         """
         return bool(getattr(ss, "is_poisoned", False))
 
+    def _post_res_should_yield_to_flee(self, ctx: AgentContext, ss) -> bool:
+        """True when freshly-revived corpse-recovery must defer to fleeing.
+
+        Priority 1a (``_RecoverAfterDeath``) runs the moment the agent crosses
+        dead→alive, and it walks the (typically weaponless) agent TO its corpse
+        to loot the gear back. But ServUO resurrects at a small fraction of max
+        HP, and the survival arena co-locates the spawn with the resurrection
+        spot (kernel commits K1+/K1/K3) — so the agent often revives at ~10% HP
+        standing inside the very swarm that just killed it. Running recovery
+        first marches that critically-wounded, unarmed agent straight back
+        through the swarm to its corpse, where it is beaten down before it can
+        loot or re-equip: the exact die→res→naked→die loop the recovery path
+        exists to break, just re-expressed as recovery preempting flight.
+
+        When the freshly-revived agent is flee-eligible (wounded below the flee
+        floor — or poisoned — AND swarmed), yield: skip the recovery return and
+        fall through to the Priority-1b flee gate so the agent breaks contact
+        first. ``_was_dead`` is left set, so recovery resumes once the swarm is
+        broken or the agent has healed up.
+
+        This is the SAME wounded-or-poisoned-AND-swarmed condition the flee gate
+        keys on, but computed WITHOUT touching ``_should_flee_swarm``'s
+        consecutive-flee counter — that counter must be driven by exactly one
+        caller (Priority 1b) or its give-up cap would trip twice as fast.
+        """
+        hits_max = getattr(ss, "hits_max", 0)
+        if not (isinstance(hits_max, (int, float)) and hits_max > 0):
+            return False
+        too_wounded = getattr(ss, "hits", hits_max) < hits_max * _FLEE_HP_PCT
+        poisoned = bool(getattr(ss, "is_poisoned", False))
+        if not (too_wounded or poisoned):
+            return False
+        return _count_hostiles(ctx, ss, dist=_FLEE_SCAN_DIST) >= _FLEE_HOSTILE_COUNT
+
     def _survival_pending(self, ctx: AgentContext) -> bool:
         """True when the Priority-1 survival block has something to do.
 
@@ -1003,11 +1037,17 @@ class Planner:
             # forum after far fewer than DEATH_ESCALATE_THRESHOLD failures —
             # dragging the agent into a 5-minute help-wait it doesn't need.
             self._repeat_counter["seek_resurrection"] = 0
-            recover = _RecoverAfterDeath()
-            if await recover.can_start(ctx):
-                _intent("부활 직후 — 시체 회수 + 재장착")
-                return recover
-            ctx.blackboard["_was_dead"] = False  # nothing left to recover
+            # Survival outranks recovery: if we revived into a swarm (arena
+            # spawn is co-located with the resurrection spot) while critically
+            # wounded or poisoned, break contact FIRST via the Priority-1b flee
+            # gate below. Keep ``_was_dead`` set so recovery resumes once the
+            # swarm is broken / we have healed.
+            if not self._post_res_should_yield_to_flee(ctx, ss):
+                recover = _RecoverAfterDeath()
+                if await recover.can_start(ctx):
+                    _intent("부활 직후 — 시체 회수 + 재장착")
+                    return recover
+                ctx.blackboard["_was_dead"] = False  # nothing left to recover
 
         # --- Priority 1b: Flee a swarm before healing ---
         # Bandaging in place fails when surrounded (melee cancels it), so a
