@@ -94,8 +94,28 @@ async def equip_weapon_from_pack(
 
     ss = ctx.perception.self_state
     layer = LAYER_TWO_HANDED if two_handed else LAYER_ONE_HANDED
-    if ss.equipment.get(layer):
-        return ActionResult(success=True, message="Hand already occupied")
+    occupant = ss.equipment.get(layer)
+    if occupant:
+        # The target layer is already occupied. Only report *success* when the
+        # item wearing it is one of the weapons we were asked to equip — then
+        # there is genuinely nothing to do. Anything else does NOT satisfy the
+        # request: most importantly a SHIELD sitting on the two-handed layer 2
+        # (the Parrying stream raises one and nothing ever takes it off). ServUO
+        # wears a two-handed axe/polearm on layer 2, so a shield there blocks
+        # the weapon outright — the EquipItem never takes. The old blanket
+        # ``success=True, "Hand already occupied"`` reported a FALSE success on
+        # exactly that case, so the caller believed the two-hander was wielded
+        # while the agent kept fighting bare-handed behind a shield (every swing
+        # rolling Wrestling, never the measured Swords/Tactics/Anatomy stream).
+        # Surface a failure so the caller knows the weapon was not equipped and
+        # can recover (drop the shield, retry) instead of silently fighting on.
+        worn = ctx.perception.world.items.get(occupant)
+        if worn is not None and worn.graphic in graphics:
+            return ActionResult(success=True, message="Already equipped")
+        return ActionResult(
+            success=False,
+            message="Target hand occupied by a non-matching item",
+        )
 
     # A two-handed weapon occupies BOTH hands. ServUO BaseWeapon.cs
     # CheckConflictingLayer refuses a two-hander outright when the
