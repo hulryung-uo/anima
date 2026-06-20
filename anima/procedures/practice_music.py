@@ -75,8 +75,18 @@ class PracticeMusic(Procedure):
         skill = ss.skills.get(SKILL_MUSICIANSHIP)
         before = skill.value if skill else 0.0
 
+        plays = 0
         for play in range(PLAYS_PER_RUN):
+            # Stop the moment the session drops. Musicianship success/fail is
+            # sound-only (NO journal line), so the only observable proof that a
+            # CheckSkill actually rolled is that the play packet was sent on a
+            # LIVE connection — a disconnected ``send_packet`` is a silent no-op
+            # that rolls nothing. Mirrors combat_loop's
+            # ``while ... and ctx.conn.connected`` and movement's step loop.
+            if not ctx.conn.connected:
+                break
             await ctx.conn.send_packet(build_double_click(instrument.serial))
+            plays += 1
             if (play + 1) % SPEECH_EVERY == 0:
                 line = random.choice(_BARD_LINES)
                 await ctx.conn.send_packet(build_unicode_speech(line))
@@ -85,9 +95,32 @@ class PracticeMusic(Procedure):
         skill = ss.skills.get(SKILL_MUSICIANSHIP)
         after = skill.value if skill else 0.0
         gained = max(0.0, after - before)
+        # A run that issued ZERO plays rolled the Musicianship CheckSkill zero
+        # times — every ``send_packet`` landed on a dead connection (the session
+        # dropped before/at the first play), so nothing was practiced. Reporting
+        # that as ``success=True`` writes a phantom win to the ActionLog reward
+        # signal and inflates the BARD-SOCIAL skill-rate metric even though the
+        # instrument never actually played — the exact phantom-success
+        # anti-pattern already killed in the sibling BARD loop
+        # (practice_peacemaking, f1e95e0 / a run that resolves zero checks is a
+        # failure), practice_hiding (c2a919d), bandage_self (ec92743) and
+        # mine_ore / chop_wood (an unresolved swing is a failure, not a success).
+        # A zero-gain run that DID play is still a real success: a failed
+        # Musicianship roll legitimately grants no skill, so we gate purely on
+        # whether any play was actually issued, never on ``gained``. Surface the
+        # zero-play case as a retryable BLOCKED failure with NO re-suggestion so
+        # the planner re-evaluates instead of chaining straight back into the
+        # same stall.
+        if plays == 0:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message="Music practice issued no plays (disconnected) — nothing rolled",
+                skill_gains={SKILL_MUSICIANSHIP: gained} if gained else {},
+            )
         return ProcedureResult(
             success=True,
-            message=f"Played {PLAYS_PER_RUN} tunes, +{gained:.1f} Musicianship",
+            message=f"Played {plays} tunes, +{gained:.1f} Musicianship",
             skill_gains={SKILL_MUSICIANSHIP: gained} if gained else {},
             next_suggestion="practice_music",
         )
