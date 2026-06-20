@@ -29,8 +29,14 @@ async def retrieve_context(ctx: BrainContext) -> str:
     parts: list[str] = []
 
     # 1. Recent episodes near current location
+    #
+    # Rank by signal, not recency: this block caps at five lines, so if it sorted
+    # purely by timestamp a run of zero-reward noise (neutral speech, no-op moves)
+    # at a spot the agent is standing on would crowd out the one memorable episode
+    # there — the death or windfall it should weigh before acting again. Surface
+    # the highest-|reward| episodes at this location instead (recency breaks ties).
     episodes = await memory_db.query_episodes(
-        agent_name, location_x=ss.x, location_y=ss.y, limit=5
+        agent_name, location_x=ss.x, location_y=ss.y, limit=5, order_by_signal=True
     )
     if episodes:
         ep_lines = []

@@ -269,8 +269,26 @@ class MemoryDB:
         location_y: int | None = None,
         action: str | None = None,
         limit: int = 5,
+        order_by_signal: bool = False,
     ) -> list[Episode]:
-        """Retrieve recent episodes, optionally filtered by location or action."""
+        """Retrieve recent episodes, optionally filtered by location or action.
+
+        By default rows come back ``ORDER BY timestamp DESC`` (newest first) — the
+        right shape for the reflection window and the forum recap, which both want
+        *recent* history. The location-filtered recall channel
+        (``retrieve_context`` section 1) is different: it caps at ``limit=5`` and
+        feeds those lines to the LLM as "what happened here before". Ordering that
+        channel by recency lets a flood of zero-signal episodes at a spot the agent
+        is loitering on (``speak: neutral``, no-op moves) fill all five slots and
+        evict the one episode that actually matters there — the death or windfall
+        the agent should weigh before acting again. That is the same failure the
+        relationship and action-stats channels were already fixed for; episodes
+        were the lone recall channel still surfaced by recency alone.
+
+        ``order_by_signal=True`` ranks by ``ABS(reward) DESC`` first (recency only
+        as the tie-break), so the high-|reward| memories at a location survive the
+        cap. Callers that genuinely want a chronological window leave it ``False``.
+        """
         conditions = ["agent_name = ?"]
         params: list = [agent_name]
 
@@ -285,8 +303,9 @@ class MemoryDB:
         where = " AND ".join(conditions)
         params.append(limit)
 
+        order = "ABS(reward) DESC, timestamp DESC" if order_by_signal else "timestamp DESC"
         rows = await self.db.execute_fetchall(
-            f"SELECT * FROM episodes WHERE {where} ORDER BY timestamp DESC LIMIT ?",
+            f"SELECT * FROM episodes WHERE {where} ORDER BY {order} LIMIT ?",
             params,
         )
         return [_row_to_episode(r) for r in rows]

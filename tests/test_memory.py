@@ -69,6 +69,57 @@ class TestEpisodes:
         assert go_episodes[0].action == "go"
 
     @pytest.mark.asyncio
+    async def test_location_recall_ranks_by_signal_not_recency(self) -> None:
+        """The location-filtered recall channel feeding ``retrieve_context``
+        section 1 caps at five lines. Ordered by recency alone, a flood of recent
+        zero-reward noise at a spot evicts the one memorable (high-|reward|)
+        episode there. ``order_by_signal=True`` must surface the high-magnitude
+        memories first so they survive the cap. In-memory SQLite so the ordering,
+        not a temp file, is under test."""
+        mem = MemoryDB(":memory:")
+        await mem.init()
+        try:
+            # An old, high-signal memory at this exact spot: a near-death event.
+            death = await mem.record_episode(
+                "Anima", 1000, 1000, "melee_attack", "ettin", "death", reward=-20.0
+            )
+            # A second high-signal memory here: a windfall, also old.
+            windfall = await mem.record_episode(
+                "Anima", 1000, 1000, "loot", "corpse", "success", reward=15.0
+            )
+            # Then a flood of recent, zero-signal noise at the same location.
+            for i in range(8):
+                await mem.record_episode(
+                    "Anima", 1000, 1000, "speak", f"hi_{i}", "neutral", reward=0.0
+                )
+
+            # Recency-only (default): the cap fills with the recent zero-reward
+            # noise and both memorable episodes are pushed out of the top 5.
+            by_recency = await mem.query_episodes(
+                "Anima", location_x=1000, location_y=1000, limit=5
+            )
+            recency_ids = {ep.id for ep in by_recency}
+            assert death not in recency_ids
+            assert windfall not in recency_ids
+
+            # Signal-ranked: the two high-|reward| episodes lead the result and
+            # therefore survive the cap, regardless of being the oldest rows.
+            by_signal = await mem.query_episodes(
+                "Anima",
+                location_x=1000,
+                location_y=1000,
+                limit=5,
+                order_by_signal=True,
+            )
+            assert by_signal[0].id == death     # |−20| is the strongest signal
+            assert by_signal[1].id == windfall  # |+15| next
+            signal_ids = {ep.id for ep in by_signal}
+            assert {death, windfall} <= signal_ids
+        finally:
+            await mem.close()
+
+
+    @pytest.mark.asyncio
     async def test_prune_episodes(self, db: MemoryDB) -> None:
         for i in range(10):
             await db.record_episode("Anima", 1000, 2000, "go", f"place_{i}", "success")
