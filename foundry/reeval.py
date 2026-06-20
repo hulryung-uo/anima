@@ -301,8 +301,17 @@ def _main(argv: list[str]) -> int:
 
     results: list[dict] = []
     for g in targets:
+        # A legacy / hand-edited genome record can carry ``"config": null`` (the
+        # JSON loads to ``None`` via ``Genome.from_dict``'s ``d.get("config",{})``,
+        # which returns the explicit null when the KEY exists). ``g.config.get(…)``
+        # would then raise ``AttributeError`` and abort the WHOLE ``--elites``
+        # demotion-evidence pass mid-run — silently dropping every genome queued
+        # after the bad one (the same one-bad-record-aborts-the-batch class the
+        # score.py loop and _summarize_ratios were hardened against). reeval_genome
+        # already guards with ``g.config or {}``; this status line must too.
+        cfg = g.config or {}
         print(f"[reeval] {g.id} cell={g.cell} recorded={g.fitness:.3f} "
-              f"persona={g.config.get('persona')}/{g.config.get('fixed_start')} …")
+              f"persona={cfg.get('persona')}/{cfg.get('fixed_start')} …")
         r = reeval_genome(arc, g, seeds=args.seeds, window_s=args.window)
         if r["ok"]:
             print(f"[reeval] {g.id}: held-out {r['held_out']:.3f} "
