@@ -849,9 +849,19 @@ class HuntNearby(Procedure):
                 # trip it, and even then routes to bandage_self (a ghost can't
                 # bandage) instead of resurrection. Death is a terminal state, not a
                 # low-HP blip: bail immediately so control returns to the planner.
-                # ``hits_max > 0`` guards the un-queried/test default where HP is
-                # simply unknown (is_alive already treats hits_max==0 as alive).
-                if ss.hits_max > 0 and not ss.is_alive:
+                # Two independent death oracles, because either can fire alone:
+                #  * the ghost BODY flip (``is_ghost``) is the authoritative signal
+                #    ServUO/ClassicUO use — and on death ServUO can recreate/update
+                #    self via a 0x78 ghost-incoming carrying ``hits_max == 0`` (or an
+                #    out-of-order 0xA1 lands stale hits). In that case the HP arm
+                #    below is silenced (``hits_max > 0`` false) yet we are plainly
+                #    dead, so the loop would spin a corpse for the full 45s cap —
+                #    the exact stall this short-circuit exists to kill. Check the
+                #    body first so a ghost always breaks regardless of the bar.
+                #  * the HP arm (``hits_max > 0 and not is_alive``) catches a
+                #    0-HP death while still wearing the living body; ``hits_max > 0``
+                #    guards the un-queried/test default where HP is simply unknown.
+                if getattr(ss, "is_ghost", False) or (ss.hits_max > 0 and not ss.is_alive):
                     died = True
                     break
 
