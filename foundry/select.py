@@ -53,6 +53,21 @@ _FRONTIER_STEP = 2.0
 _QUALITY_TIEBREAK_MAX = 0.9 * _FRONTIER_STEP  # < one frontier step, by design
 _QUALITY_HALF = 60.0  # quality at which the tiebreak reaches half its ceiling
 
+# suggest_target_cell weights empty cells toward PROVEN rows: the primary signal
+# is ``_PROVEN_STEP * row_filled`` (more covered cells = more working machinery),
+# with the row's best quality as a SECONDARY "this loop also scores well" nudge.
+# That nudge used to be ``min(2.0, max(0.0, q) / 20.0)`` — a linear ramp that
+# SATURATES at its 2.0 cap for any quality >= 40, so every proven row (live
+# quality reaches ~235) got the identical ceiling bonus and the documented
+# "higher best fitness in the row" preference was silently defeated: a q=50 row
+# and a q=235 row weighed exactly the same. Use the file's own bounded, strictly
+# monotone curve (q/(q+half)) instead, ceilinged BELOW one _PROVEN_STEP so the
+# quality nudge can never outweigh a genuinely more-covered row (mirroring how
+# _QUALITY_TIEBREAK_MAX stays under one _FRONTIER_STEP).
+_PROVEN_STEP = 2.0
+_ROW_QUALITY_MAX = 0.9 * _PROVEN_STEP  # < one proven-machinery step, by design
+_ROW_QUALITY_HALF = 40.0  # row quality at which the nudge reaches half its ceiling
+
 
 def _id_order(gid: str) -> tuple[int, str]:
     """Creation order of a genome id, robust to id WIDTH changes.
@@ -76,6 +91,18 @@ def _quality_tiebreak(q: float) -> float:
     """Bounded, monotone quality bonus in ``[0, _QUALITY_TIEBREAK_MAX)``."""
     q = max(0.0, q)
     return _QUALITY_TIEBREAK_MAX * (q / (q + _QUALITY_HALF))
+
+
+def _row_quality_bonus(q: float) -> float:
+    """Empty-cell row-quality nudge: bounded, STRICTLY monotone for q > 0.
+
+    In ``[0, _ROW_QUALITY_MAX)`` (< one _PROVEN_STEP, so a more-covered row always
+    wins), strictly increasing in the row's best quality so a higher-scoring
+    proven row is preferred over a barely-viable one — unlike the old linear ramp
+    that saturated flat for every quality >= 40.
+    """
+    q = max(0.0, q)
+    return _ROW_QUALITY_MAX * (q / (q + _ROW_QUALITY_HALF))
 
 
 def _selection_quality(g: Genome) -> float:
@@ -305,8 +332,8 @@ def suggest_target_cell(archive: Archive, seed: int = 0) -> tuple | None:
         return random.Random(seed).choices(cells, weights=weights, k=1)[0]
     weights = [
         1.0
-        + 2.0 * row_filled.get(c[0], 0)              # proven machinery
-        + min(2.0, max(0.0, row_best.get(c[0], 0.0)) / 20.0)   # row quality, capped (no negative bonus)
+        + _PROVEN_STEP * row_filled.get(c[0], 0)         # proven machinery (primary)
+        + _row_quality_bonus(row_best.get(c[0], 0.0))    # row quality (monotone, < one step)
         for c in empties
     ]
     return random.Random(seed).choices(empties, weights=weights, k=1)[0]
