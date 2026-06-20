@@ -54,14 +54,56 @@ def test_poison_cured_clears_flag_on_mobile():
     assert p.world.mobiles[serial].is_poisoned is False
 
 
-def test_poison_status_for_unknown_mobile_creates_entry():
+def test_poison_status_for_unknown_mobile_creates_no_phantom():
+    """A 0x17 status update must NEVER create a mobile.
+
+    The 0x16/0x17 NewHealthbarUpdate packet carries no position, so a
+    poison/yellow-bar update for a serial not (yet / no longer) in view used to
+    spawn a positionless phantom MobileInfo at (0,0) — the same bug the
+    0xA1 / 0x2D / 0x11 handlers already guard. ClassicUO's NewHealthbarUpdate
+    returns when ``world.Mobiles.Get(serial) == null``; only the spatial
+    packets (0x78/0x77/0x20) create mobiles. Lock that invariant.
+    """
     h, p, w = _make_stack()
     serial = 0x000000AB
     assert serial not in p.world.mobiles
 
     h.dispatch(0x17, _healthbar_packet(serial, status_type=1, flag=2))
 
+    # No phantom mobile spawned — nothing parked at the map origin.
+    assert serial not in p.world.mobiles
+    assert p.world.nearby_mobiles(0, 0) == []
+
+
+def test_yellow_bar_for_unknown_mobile_creates_no_phantom():
+    """Same guard for the status_type 2 (yellow/blessed) branch."""
+    h, p, w = _make_stack()
+    serial = 0x000000CD
+    assert serial not in p.world.mobiles
+
+    h.dispatch(0x17, _healthbar_packet(serial, status_type=2, flag=1))
+
+    assert serial not in p.world.mobiles
+
+
+def test_poison_status_refreshes_already_seen_mobile_last_seen():
+    """The guard only blocks CREATION: an existing foe is still updated, and
+    its last_seen is re-stamped so the status stream keeps it fresh against
+    prune_stale_mobiles (a stationary foe issues no 0x77 to refresh it)."""
+    import time as _t
+
+    h, p, w = _make_stack()
+    serial = 0x000000EF
+    mob = p.world.get_or_create_mobile(serial)
+    mob.x, mob.y = 100, 200
+    mob.last_seen = 1000.0  # last touched long ago
+
+    h.dispatch(0x17, _healthbar_packet(serial, status_type=1, flag=3))
+
     assert p.world.mobiles[serial].is_poisoned is True
+    assert p.world.mobiles[serial].last_seen > 1000.0
+    assert serial not in p.world.prune_stale_mobiles(now=_t.monotonic(), max_age=30.0)
+    assert serial in p.world.mobiles
 
 
 def test_poison_status_on_self():

@@ -2056,7 +2056,26 @@ def register_handlers(
         if serial == p.self_state.serial:
             target = p.self_state
         else:
-            target = p.world.get_or_create_mobile(serial)
+            # ClassicUO's NewHealthbarUpdate (PacketHandlers.cs:722-727) fetches
+            # ``world.Mobiles.Get(serial)`` and RETURNS when it is null — a bare
+            # poison/yellow-bar status update NEVER creates a mobile, because the
+            # 0x16/0x17 packet carries NO position (the spatial packets
+            # 0x78/0x77/0x20 are the only mobile-creating packets). This is the
+            # same divergence the 0xA1 / 0x2D / 0x11 handlers already guard:
+            # get_or_create_mobile spawned a brand-new MobileInfo at (0,0) for a
+            # serial we have not yet (or no longer) seen — e.g. ServUO sends a
+            # HealthbarPoison/Yellow for a foe that left view, or whose status
+            # update races ahead of its 0x78 — leaving a positionless phantom in
+            # world.mobiles (default INNOCENT notoriety, body 0) that pollutes
+            # the swarm tally / nearby_mobiles(0,0) / _find_target scans and,
+            # with its freshly-stamped last_seen, survives prune_stale_mobiles.
+            # Match ClassicUO and the rest of the phantom-guard family: only
+            # update a mobile that already exists. touch_existing_mobile also
+            # re-stamps last_seen so a stationary foe whose only ongoing signal
+            # is a periodic status refresh stays fresh against the pruner.
+            target = p.world.touch_existing_mobile(serial)
+            if target is None:
+                return
 
         # Each ServUO Healthbar* packet carries exactly ONE status kind, so
         # only update the field its entry was present for — never clobber the
