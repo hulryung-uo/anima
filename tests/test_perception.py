@@ -65,6 +65,31 @@ class TestWorldState:
         assert len(nearby) == 1
         assert nearby[0].serial == 1
 
+    def test_nearby_items_excludes_multis(self):
+        # A BaseMulti (house wall / sign / deco addon) tagged is_multi by the
+        # 0x1A / 0xF3 ground-item handlers must NOT show up in nearby_items: it
+        # is not a pickable item, and leaking it pollutes loot scans, the LLM
+        # landmark prompt, and the encoded RL location state.
+        ws = WorldState()
+        loot = ws.get_or_create_item(1)
+        loot.x, loot.y, loot.container, loot.is_multi = 100, 100, 0, False
+        house = ws.get_or_create_item(2)
+        house.x, house.y, house.container, house.is_multi = 100, 100, 0, True
+
+        nearby = ws.nearby_items(100, 100)
+        assert [it.serial for it in nearby] == [1]
+        assert all(not it.is_multi for it in nearby)
+
+    def test_nearby_items_include_multis_opt_in(self):
+        # The opt-in flag still surfaces multis for any caller that wants
+        # structure components.
+        ws = WorldState()
+        house = ws.get_or_create_item(2)
+        house.x, house.y, house.container, house.is_multi = 100, 100, 0, True
+
+        nearby = ws.nearby_items(100, 100, include_multis=True)
+        assert [it.serial for it in nearby] == [2]
+
     def test_mobile_name_persists_across_remove_and_recreate(self):
         # NPCs leave view via 0x1D Delete and re-enter via 0x78 MobileIncoming
         # when the agent walks away and comes back. Names/properties must

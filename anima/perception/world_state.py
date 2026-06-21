@@ -280,9 +280,28 @@ class WorldState:
                 result.append(m)
         return result
 
-    def nearby_items(self, x: int, y: int, distance: int = 18) -> list[ItemInfo]:
+    def nearby_items(
+        self, x: int, y: int, distance: int = 18, include_multis: bool = False
+    ) -> list[ItemInfo]:
+        # Multis (BaseMulti house/addon components, tagged is_multi by the
+        # 0x1A / 0xF3 ground-item handlers) are NOT pickable items — the
+        # ItemInfo docstring already states "callers filter them out of
+        # nearest-item / loot lookups". But every call site
+        # (main.py landmark log, brain/think.py LLM landmark prompt,
+        # skills/state.py RL location encoding, skills/base.py nearby-graphic
+        # preconditions, navigation/discovery.py, the craft procedures) reads
+        # this one accessor and none of them re-checked is_multi, so a house
+        # wall / sign / deco addon the agent walked past leaked into loot scans,
+        # the LLM's "nearby items" landmark list, and the encoded RL state
+        # string — corrupting both perception coherence and the learning signal.
+        # Enforce the contract centrally: drop multis by default, with an opt-in
+        # for any future caller that genuinely wants structure components.
         result = []
         for item in self.items.values():
-            if item.container == 0 and abs(item.x - x) <= distance and abs(item.y - y) <= distance:
+            if item.container != 0:
+                continue
+            if item.is_multi and not include_multis:
+                continue
+            if abs(item.x - x) <= distance and abs(item.y - y) <= distance:
                 result.append(item)
         return result
