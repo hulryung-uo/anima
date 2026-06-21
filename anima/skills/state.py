@@ -109,20 +109,28 @@ def _player_presence(ctx: BrainContext) -> str:
 def _enemy_presence(ctx: BrainContext) -> str:
     """Detect a *live* hostile mobile nearby.
 
-    A freshly-killed mob keeps its ATTACKABLE(3)/ENEMY(5)/MURDERER(6) notoriety
-    until the corpse despawns, so counting notoriety alone leaves the state key
-    stuck on ``enemies`` long after the threat is cleared — the Q-table never
-    observes the "field is now safe" state and survival/healing gating reacts to
-    phantom enemies. Skip dead mobiles, matching the combat loop which already
-    treats ``MobileInfo.is_dead`` (ghost body, or known health bar at zero) as
-    the source of truth for "this target is dead".
+    "Hostile" must match the SAME notoriety set the rest of the system treats as
+    a threat — ATTACKABLE(3), CRIMINAL(4), ENEMY(5), MURDERER(6) — exactly the
+    ``combat_loop.ATTACKABLE_NOTORIETY`` the agent will actually swing at and the
+    ``brain.think._HOSTILE_NOTORIETY`` set the strategist reads as danger. This
+    used to omit CRIMINAL(4): a lone gray criminal mobile encoded the state key
+    as ``...|safe|...`` while the combat loop was already fighting it and the LLM
+    saw danger, so the Q-table learned/acted on a "safe" key during live combat
+    and survival/healing gating under-reacted. Gate on the shared set instead.
+
+    A freshly-killed mob keeps its hostile notoriety until the corpse despawns,
+    so counting notoriety alone would leave the key stuck on ``enemies`` long
+    after the threat is cleared — the Q-table never observes "field is now safe".
+    Skip dead mobiles, matching the combat loop which already treats
+    ``MobileInfo.is_dead`` (ghost body, or known health bar at zero) as the
+    source of truth for "this target is dead".
     """
     ss = ctx.perception.self_state
     nearby = ctx.perception.world.nearby_mobiles(ss.x, ss.y, distance=18)
     has_enemies = any(
         not getattr(m, "is_dead", False)
         and m.notoriety is not None
-        and m.notoriety.value in (3, 5, 6)
+        and m.notoriety.value in (3, 4, 5, 6)
         for m in nearby
     )
     return "enemies" if has_enemies else "safe"
