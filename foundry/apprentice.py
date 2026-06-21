@@ -42,6 +42,28 @@ STALL_GAP_S = 120.0
 MIN_DEATH_S = 3.0
 
 
+def _is_dead_sample(hits: int, hits_max: int) -> bool:
+    """True only for a sample that is a REAL ghost death, not "HP unknown".
+
+    The kernel records ``hp_samples`` as ``(ts, hits, hits_max)``. A bare
+    ``hits <= 0`` test is NOT the death oracle the rest of the system uses:
+    ``anima.perception.self_state.SelfState.is_alive`` is ``hits > 0 or
+    hits_max == 0`` — i.e. ``hits_max == 0`` means HP has not been streamed yet
+    (placeholder), which is "alive/unknown", NOT dead. The kernel emits exactly
+    such a sample from a 0xA1 health-bar packet that lands before the first full
+    0x11 status (hits=0, hits_max=0), and it may persist past ``MIN_DEATH_S``
+    while login/world-load completes.
+
+    The apprentice's autonomy metrics (deaths / self_rescue_rate /
+    shadow_interventions — the module's whole reason to exist) read these
+    samples; treating an unknown-HP startup run as a ghost death fabricates a
+    death the agent never had and corrupts every downstream figure. Mirror the
+    perception convention here so death analysis and the live agent agree on
+    one definition of "dead".
+    """
+    return hits <= 0 and hits_max > 0
+
+
 @dataclass
 class DeathEvent:
     died_ts: float
@@ -106,8 +128,8 @@ def _sustained_relapse_ts(samples: list, start: int, end_ts: float,
     next_alive_ts: float | None = None
     relapse_ts: float | None = None
     for i in range(n - 1, start - 1, -1):
-        ts, hits, _ = samples[i]
-        if hits > 0:
+        ts, hits, hits_max = samples[i]
+        if not _is_dead_sample(hits, hits_max):
             next_alive_ts = ts          # nearest hits>0 sample to the right
             continue
         # A hits<=0 sample: does it persist >= min_death_s before the next
@@ -142,8 +164,8 @@ def analyze_deaths(summary: TrajectorySummary,
     samples = summary.hp_samples
     events: list[DeathEvent] = []
     death_ts: float | None = None
-    for i, (ts, hits, _) in enumerate(samples):
-        if hits <= 0:
+    for i, (ts, hits, hits_max) in enumerate(samples):
+        if _is_dead_sample(hits, hits_max):
             if death_ts is None:
                 death_ts = ts
             continue
