@@ -161,7 +161,16 @@ class WebServer:
 
             case "say":
                 text = data.get("text", "")
-                if not text:
+                # ``text`` comes straight off the wire from an external client, so
+                # a non-string value (a number, list, dict, bool) must not reach
+                # build_unicode_speech: its first op is ``text.strip()``, which
+                # raises AttributeError on a non-str (e.g. ``{"cmd":"say",
+                # "text":123}``). That escapes the un-guarded _ws_handler loop,
+                # 500s the request and drops the client without a cmd_result —
+                # the same failure mode the go_to int-coercion / non-object
+                # guards already fix. A bare ``if not text`` only catches the
+                # falsy cases; reject any non-(non-empty)-string here.
+                if not isinstance(text, str) or not text.strip():
                     return _err(cmd, "text required")
                 if not self._conn or not self._conn.connected:
                     return _err(cmd, "not connected to game server")
