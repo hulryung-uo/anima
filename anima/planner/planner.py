@@ -2771,7 +2771,15 @@ class Planner:
 
         # Prefer closest target, but skip unreachable ones (behind walls,
         # inside buildings) to avoid wasting go_to budget on hopeless targets.
-        candidates.sort(key=lambda m: abs(m.x - ss.x) + abs(m.y - ss.y))
+        # Chebyshev distance (max of the axis deltas) is UO's real step cost:
+        # movement is 8-directional, so a diagonal step covers one tile on BOTH
+        # axes at once. Manhattan (|dx|+|dy|) over-counts diagonals and would
+        # rank a foe 8 tiles due-south (8 steps) as "nearer" than one 5 tiles
+        # diagonally away (5 steps), sending the agent to walk the longer path.
+        # The combat loop's target scan (combat_loop._find_target) and
+        # world.nearby_mobiles' box both already rank on Chebyshev; this hunt
+        # scan must match so it picks the genuinely fewest-steps prey.
+        candidates.sort(key=lambda m: max(abs(m.x - ss.x), abs(m.y - ss.y)))
 
         if ctx.map_reader:
             from anima.pathfinding import find_path
