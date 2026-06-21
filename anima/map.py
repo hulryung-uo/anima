@@ -201,21 +201,31 @@ class MapReader:
         self._ensure_tiledata()
         assert self._item_data is not None
         entry = self._item_data.get(str(graphic))
-        return entry["flags"] if entry else 0
+        # A regenerated/partial tiledata row may omit "flags"; default to 0
+        # rather than KeyError (mirrors anima.data's missing-key tolerance).
+        return entry.get("flags", 0) if entry else 0
 
     def _get_item_height(self, graphic: int) -> int:
         self._ensure_tiledata()
         assert self._item_data is not None
         entry = self._item_data.get(str(graphic))
-        return entry["height"] if entry else 0
+        return entry.get("height", 0) if entry else 0
 
     def _get_item_name(self, graphic: int) -> str:
         self._ensure_tiledata()
         assert self._item_data is not None
         entry = self._item_data.get(str(graphic))
-        if entry:
-            return entry["name"].replace("%s%", "").replace("%", "").strip()
-        return ""
+        if not entry:
+            return ""
+        # Resolve UO ``%plural/singular%`` format codes the way ClassicUO does
+        # (anima.data._plural_adjust). The old ``.replace("%s%", "").replace(
+        # "%", "")`` left the stranded singular half of every slash form behind
+        # ("rub%ies/y%" -> "rubies/y", "pil%es/e% of hides" -> "piles/e of
+        # hides"), and ``entry["name"]`` KeyError'd on a partial row. This
+        # name flows into StaticItem.name and render_area's LLM map context.
+        from anima.data import _plural_adjust
+
+        return _plural_adjust(entry.get("name", "") or "").strip()
 
     def _load_land_block(self, bx: int, by: int) -> list[tuple[int, int]]:
         """Load a single 8×8 land block. Returns 64 (graphic, z) tuples."""
