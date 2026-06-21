@@ -151,3 +151,79 @@ class TestTavernHappyPath:
             TavernForumClient, "_request", _stub_request((201, {"id": "new1"}))
         )
         assert await client.create_post("t", "b", "tavern") == "new1"
+
+
+class TestTavernMalformedPayload:
+    """A 200 response whose body is structurally malformed external JSON must
+    degrade gracefully — NOT crash the (un-try/except'd) Forum brain tick."""
+
+    @pytest.mark.asyncio
+    async def test_read_posts_skips_non_dict_and_idless_elements(
+        self, client, monkeypatch
+    ) -> None:
+        # A real board can return null/string elements and an id-less post mixed
+        # in with a good one. The old ``p["id"]`` raised TypeError/KeyError here.
+        payload = {
+            "posts": [
+                None,
+                "oops-not-a-dict",
+                {"title": "no id here", "content": "x"},  # missing "id"
+                {
+                    "id": "p1",
+                    "title": "Hello",
+                    "content": "body",
+                    "agent": {"name": "Anima"},
+                },
+            ]
+        }
+        monkeypatch.setattr(
+            TavernForumClient, "_request", _stub_request((200, payload))
+        )
+        posts = await client.read_posts("tavern")
+        # Only the one well-formed post survives; no exception is raised.
+        assert [p.post_id for p in posts] == ["p1"]
+        assert posts[0].author == "Anima"
+
+    @pytest.mark.asyncio
+    async def test_read_posts_non_list_posts_field(self, client, monkeypatch) -> None:
+        # "posts" present but not a list (e.g. an error object) must not crash.
+        monkeypatch.setattr(
+            TavernForumClient,
+            "_request",
+            _stub_request((200, {"posts": {"unexpected": "shape"}})),
+        )
+        assert await client.read_posts("tavern") == []
+
+    @pytest.mark.asyncio
+    async def test_read_post_missing_id_returns_none(self, client, monkeypatch) -> None:
+        # A 200 post body with no "id" is unparseable — return None, don't crash.
+        monkeypatch.setattr(
+            TavernForumClient,
+            "_request",
+            _stub_request((200, {"title": "t", "content": "b"})),
+        )
+        assert await client.read_post("whatever") is None
+
+    @pytest.mark.asyncio
+    async def test_read_post_skips_malformed_comments(self, client, monkeypatch) -> None:
+        payload = {
+            "id": "p9",
+            "title": "Top",
+            "content": "body",
+            "agent": {"name": "Anima"},
+            "comments": [
+                None,
+                "nope",
+                {"content": "no id"},  # missing "id"
+                {"id": "c1", "content": "real reply", "agent": {"name": "Bob"}},
+            ],
+        }
+        monkeypatch.setattr(
+            TavernForumClient, "_request", _stub_request((200, payload))
+        )
+        post = await client.read_post("p9")
+        assert post is not None
+        assert post.post_id == "p9"
+        # Only the well-formed comment survives; no KeyError on the others.
+        assert [r.reply_id for r in post.replies] == ["c1"]
+        assert post.replies[0].author == "Bob"

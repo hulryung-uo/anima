@@ -66,10 +66,25 @@ class TavernForumClient(ForumClient):
             return []
 
         posts = []
-        for p in data.get("posts", []):
-            agent = p.get("agent") or {}
+        raw_posts = data.get("posts")
+        if not isinstance(raw_posts, list):
+            raw_posts = []
+        for p in raw_posts:
+            # Each list element is untrusted external JSON: a real board can
+            # return a non-dict element (null / string), or a post object with
+            # no "id". Indexing ``p["id"]`` then raised KeyError/TypeError and —
+            # because this read path runs in the behavior tree's Forum step,
+            # OUTSIDE the packet-dispatch try/except — propagated up and crashed
+            # the brain tick. Skip an element we can't key (its id is the
+            # identity used to reply), mirroring the write paths' ``.get("id")``.
+            if not isinstance(p, dict):
+                continue
+            post_id = p.get("id")
+            if not post_id:
+                continue
+            agent = p.get("agent") if isinstance(p.get("agent"), dict) else {}
             posts.append(ForumPost(
-                post_id=p["id"],
+                post_id=post_id,
                 title=p.get("title") or "",
                 body=p.get("content", ""),
                 author=agent.get("name", "unknown"),
@@ -84,19 +99,34 @@ class TavernForumClient(ForumClient):
         if status != 200 or not isinstance(p, dict):
             return None
 
-        agent = p.get("agent") or {}
+        # A 200 body with no "id" is a malformed/unparseable post — treat it as a
+        # parse failure (the post_id is the post's identity), the same way a
+        # non-dict body is rejected above. Without this, ``p["id"]`` below raised
+        # KeyError outside the packet try/except and crashed the Forum tick.
+        resolved_id = p.get("id")
+        if not resolved_id:
+            return None
+        agent = p.get("agent") if isinstance(p.get("agent"), dict) else {}
         replies = []
-        for c in p.get("comments", []):
-            c_agent = c.get("agent") or {}
+        raw_comments = p.get("comments")
+        if not isinstance(raw_comments, list):
+            raw_comments = []
+        for c in raw_comments:
+            if not isinstance(c, dict):
+                continue
+            reply_id = c.get("id")
+            if not reply_id:
+                continue
+            c_agent = c.get("agent") if isinstance(c.get("agent"), dict) else {}
             replies.append(ForumReply(
-                reply_id=c["id"],
+                reply_id=reply_id,
                 body=c.get("content", ""),
                 author=c_agent.get("name", "unknown"),
                 timestamp=_iso_to_ts(c.get("created_at", "")),
             ))
 
         return ForumPost(
-            post_id=p["id"],
+            post_id=resolved_id,
             title=p.get("title") or "",
             body=p.get("content", ""),
             author=agent.get("name", "unknown"),
