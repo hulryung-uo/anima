@@ -27,6 +27,13 @@ class MetricsCollector:
         self._was_dead: bool = False  # tracks hp==0 edge
         self._action_log_checkpoint: float = 0.0
 
+    # A real UO death is a ghost state held until a healer resurrection (many
+    # seconds); the vitals stream flickers during it (a stale 0x11/0x16 hits
+    # update can briefly read >0 before dropping back to 0). Treat a recovery
+    # to less than this fraction of hp_max as that flicker, NOT a resurrection,
+    # so the death-edge stays debounced and one death is counted once.
+    _ALIVE_RECOVERY_FRACTION = 0.10
+
     def _emit(self, event_type: str, **payload: Any) -> None:
         record(event_type, events_file=self.events_file, **payload)
 
@@ -47,14 +54,27 @@ class MetricsCollector:
             self._emit("gold_delta", amount=curr_gold - prev_gold)
 
         # Death edge (hp falling to zero from >0)
+        #
+        # Only the FIRST hits<=0 sample of a death is a death. While ``_was_dead``
+        # is latched, a hits>0 reading is treated as a transient stale-vitals
+        # flicker, not a resurrection, unless hp recovers to a meaningful share
+        # of hp_max -- so a ghost-state flicker (e.g. 0 -> 1 -> 0) does NOT clear
+        # the latch and the relapse to 0 cannot fire a SECOND death. Without this
+        # the hourly/daily ``deaths`` rollup and the death alert over-count one
+        # death as many. Mirrors foundry apprentice.analyze_deaths' MIN_DEATH_S
+        # transient-blip discipline for the live monitor.
         prev_hp = prev_s.get("hp", 0)
         curr_hp = curr_s.get("hp", 0)
-        if curr_hp <= 0 and prev_hp > 0:
+        if curr_hp <= 0 and prev_hp > 0 and not self._was_dead:
             pos = [curr_s.get("x", 0), curr_s.get("y", 0)]
             self._emit("death", pos=pos, hp_before=prev_hp)
             self._was_dead = True
         elif curr_hp > 0:
-            self._was_dead = False
+            hp_max = curr_s.get("hp_max", 0) or 0
+            # A genuine resurrection restores real HP; a 1-hp flicker does not.
+            recovered = curr_hp >= max(2, hp_max * self._ALIVE_RECOVERY_FRACTION)
+            if recovered:
+                self._was_dead = False
 
         # Skill deltas
         prev_skills = _skill_map(prev)

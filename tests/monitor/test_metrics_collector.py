@@ -77,6 +77,36 @@ class TestStateDiff:
         death_events = [e for e in events if e["type"] == "death"]
         assert len(death_events) == 1
 
+    def test_transient_hp_flicker_does_not_double_count_death(
+        self, events_file: Path,
+    ):
+        """A stale-vitals flicker (0 -> 1 -> 0) during the ghost state must
+        count as ONE death, not two. The brief 1-hp reading is not a real
+        resurrection (which restores meaningful HP), so the death-edge stays
+        debounced and the relapse to 0 does not fire a second death."""
+        col = MetricsCollector(events_file=events_file)
+        # Real death.
+        col._diff_state(_make_state(hp=20), _make_state(hp=0))
+        # Stale-packet flicker up to 1 hp (still a ghost), then back to 0.
+        col._diff_state(_make_state(hp=0), _make_state(hp=1))
+        col._diff_state(_make_state(hp=1), _make_state(hp=0))
+        death_events = [e for e in _read(events_file) if e["type"] == "death"]
+        assert len(death_events) == 1
+
+    def test_real_resurrection_then_new_death_counts_twice(
+        self, events_file: Path,
+    ):
+        """A genuine resurrection (HP restored to a meaningful share of max)
+        re-arms the death edge, so a subsequent death IS counted again."""
+        col = MetricsCollector(events_file=events_file)
+        col._diff_state(_make_state(hp=20, hp_max=112), _make_state(hp=0, hp_max=112))
+        # Healer res: HP back up well above the flicker threshold.
+        col._diff_state(_make_state(hp=0, hp_max=112), _make_state(hp=80, hp_max=112))
+        # Second real death.
+        col._diff_state(_make_state(hp=80, hp_max=112), _make_state(hp=0, hp_max=112))
+        death_events = [e for e in _read(events_file) if e["type"] == "death"]
+        assert len(death_events) == 2
+
     def test_skill_delta(self, events_file: Path):
         col = MetricsCollector(events_file=events_file)
         before = _make_state()
