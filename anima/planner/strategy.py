@@ -91,7 +91,13 @@ class StrategySelector:
             name=self.DEFAULT_STRATEGY,
             reasoning="initial default before first LLM call",
         )
-        self._last_refresh: float = 0.0
+        # Monotonic timestamp of the last refresh spawn. ``None`` means
+        # "never refreshed yet" so the first tick is always eligible — we
+        # must NOT seed this with 0.0 and read a monotonic clock, because
+        # ``time.monotonic()`` starts from an arbitrary (often small, e.g.
+        # seconds-since-boot) origin: on a freshly booted host ``now - 0.0``
+        # could be < interval_s and silently suppress the first refresh.
+        self._last_refresh: float | None = None
         # Strategy filtering is only applied after the first successful LLM
         # decision. Before that, the planner operates without restrictions.
         self._active: bool = False
@@ -103,7 +109,17 @@ class StrategySelector:
         return self._current
 
     def should_refresh(self, now: float | None = None) -> bool:
-        now = now if now is not None else time.time()
+        # Cadence gate runs on a MONOTONIC clock, not wall time. The interval
+        # is a "seconds since the last refresh" throttle, and wall time
+        # (``time.time()``) is not monotonic: an NTP correction or a VM
+        # resume can step it BACKWARD by minutes, making ``now - last`` go
+        # negative and the gate stay closed for the whole backward step —
+        # silently freezing strategy refreshes (and, by the same pattern in
+        # MetaController, the P0 shadow-decision log). ``time.monotonic()``
+        # is immune to clock steps.
+        if self._last_refresh is None:
+            return True  # never refreshed → always eligible on the first tick
+        now = now if now is not None else time.monotonic()
         return now - self._last_refresh >= self.interval_s
 
     async def maybe_refresh(self, ctx: "AgentContext") -> bool:
@@ -124,7 +140,7 @@ class StrategySelector:
             return False
         if self._refresh_task is not None and not self._refresh_task.done():
             return False
-        self._last_refresh = time.time()
+        self._last_refresh = time.monotonic()
         self._refresh_task = asyncio.create_task(self._do_refresh(ctx))
         return True
 

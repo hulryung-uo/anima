@@ -2,6 +2,7 @@
 import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -32,8 +33,45 @@ class TestStrategySelectorBasics:
 
     def test_should_refresh_false_right_after_refresh(self):
         s = StrategySelector(interval_s=60)
-        s._last_refresh = time.time()
+        # Cadence runs on the monotonic clock now (immune to wall-clock steps).
+        s._last_refresh = time.monotonic()
         assert s.should_refresh() is False
+
+    def test_should_refresh_uses_monotonic_clock(self):
+        """The refresh gate must read time.monotonic(), not time.time().
+
+        Regression: a wall-clock gate over-waits when the host clock steps
+        backward (NTP correction / VM resume). With a monotonic gate the
+        elapsed interval is measured against a clock that never jumps, so a
+        wall-clock step does not change refresh eligibility.
+        """
+        s = StrategySelector(interval_s=60)
+        # Last refresh happened "100s ago" on the monotonic clock.
+        with patch("anima.planner.strategy.time.monotonic", return_value=1_000.0):
+            s._last_refresh = s_last = None  # noqa: F841 — clarity only
+            s._last_refresh = 900.0  # 100s before the patched 'now'
+            # time.time() is left at its real (huge) value; if the gate read
+            # wall time it would always be eligible regardless of the interval.
+            assert s.should_refresh() is True  # 1000 - 900 = 100 >= 60
+
+        with patch("anima.planner.strategy.time.monotonic", return_value=1_000.0):
+            s._last_refresh = 970.0  # only 30s before 'now' → not yet eligible
+            assert s.should_refresh() is False  # 1000 - 970 = 30 < 60
+
+    def test_should_refresh_immune_to_backward_wallclock_step(self):
+        """A backward wall-clock step must NOT freeze refreshes.
+
+        Stamp a refresh, then simulate the wall clock jumping far into the
+        past while the monotonic clock keeps advancing past the interval.
+        The gate must re-open on monotonic progress alone.
+        """
+        s = StrategySelector(interval_s=60)
+        with patch("anima.planner.strategy.time.monotonic", return_value=5_000.0):
+            s._last_refresh = time.monotonic()  # stamp at 5000
+        # Monotonic advanced 120s (> interval) even though wall time may have
+        # jumped backward; the gate must be eligible again.
+        with patch("anima.planner.strategy.time.monotonic", return_value=5_120.0):
+            assert s.should_refresh() is True
 
 
 class TestStrategyExclusions:
