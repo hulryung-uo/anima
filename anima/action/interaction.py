@@ -48,14 +48,43 @@ async def drag_to_ground(
 
     Drop target must be within 2 tiles of the player.
     Works for items in backpack or already on the ground.
+
+    Returns True only when the lift actually took: on a server lift-reject
+    (0x27 LiftRej — out of range, locked-down, too heavy, server busy) the
+    item never leaves its slot, so firing the follow-up DropItem (0x08)
+    against an item we are not holding drops nothing (or dumps it on the
+    floor) while still reporting success. ``move_item_on_ground`` keys its
+    whole drag loop off this return: a phantom True makes it walk on as if
+    the item advanced (it did not), so it re-drags from the same spot every
+    iteration and burns its entire step budget without moving the item.
+    Mirror the proven guard in ``drag_to_container`` /
+    ``anima.actions.inventory.drag_drop``: snapshot the source slot and bail
+    out before the drop when the item did not move.
     """
     ss = ctx.perception.self_state
     drop_dist = max(abs(x - ss.x), abs(y - ss.y))
     if drop_dist > _DRAG_DROP_RANGE:
         logger.warning("drag_drop_too_far", pos=f"({x},{y})", dist=drop_dist)
         return False
+
+    world = ctx.perception.world
+    pre_state = None
+    if serial in world.items:
+        before = world.items[serial]
+        pre_state = (before.container, before.x, before.y, before.z, before.amount)
+
     await ctx.conn.send_packet(build_pick_up(serial, amount))
     await asyncio.sleep(0.3)
+
+    if pre_state is not None and serial in world.items:
+        after = world.items[serial]
+        if (after.container, after.x, after.y, after.z, after.amount) == pre_state:
+            logger.debug(
+                "drag_to_ground_lift_rejected",
+                serial=f"0x{serial:08X}", amount=amount, pos=f"({x},{y},{z})",
+            )
+            return False
+
     await ctx.conn.send_packet(build_drop_item(serial, x, y, z))
     await asyncio.sleep(0.3)
     logger.debug(
