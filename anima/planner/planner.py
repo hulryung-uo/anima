@@ -243,6 +243,12 @@ class Planner:
             # without this it survives session teardown — leaking the ctx/llm
             # and risking a post-shutdown LLM call / "pending task" warning.
             await self._meta.close()
+            # Same hazard for the strategy selector: maybe_refresh() spawns
+            # _do_refresh via a bare create_task that is not a TaskGroup child,
+            # so it would otherwise outlive the session (e.g. suspended in a
+            # slow LLM call) holding ctx/llm and risking a post-teardown
+            # strategy_changed write / "pending task" warning.
+            await self._strategy.close()
 
         logger.info("planner_stopped")
 
@@ -2779,6 +2785,22 @@ class Planner:
             # `is True` (not truthy) so SimpleNamespace test mobs lacking the
             # field aren't mis-excluded.
             if getattr(m, "is_yellow_health", False) is True:
+                continue
+            # Skip mobiles that are already dead. A just-felled mob lingers in
+            # world.mobiles (with a KNOWN health bar at zero, or a ghost body)
+            # until its 0x1D Delete arrives — exactly the corpse-reselect case
+            # combat_loop._find_target / _adjacent_hostiles already guard on
+            # `is_dead is True`. This hunt scan ranks the *closest* candidate
+            # first, so a corpse the agent is standing on (Chebyshev dist 0)
+            # sorts to the very top: without this guard the planner dispatches
+            # _HuntForGold at the corpse (or reports a huntable target exists)
+            # while the combat loop's own _find_target rejects it as dead and
+            # returns None — the agent burns its movement budget re-selecting
+            # the same corpse every tick until the Delete lands. MobileInfo.
+            # is_dead is True only when hits_max>0 and hits<=0 (or a ghost
+            # body), so un-queried mobs are unaffected. `is True` (not truthy)
+            # so SimpleNamespace test mobs lacking the field aren't mis-excluded.
+            if getattr(m, "is_dead", False) is True:
                 continue
             # Skip small town animals unless deadlock-hunting for gold
             if m.body in TOWN_PETS and not include_small_animals:
