@@ -171,12 +171,34 @@ class SelfState:
         instant we read a ghost body. (A living->living body change leaves the
         poison alone — only the genuine death transition resets it, and a real
         re-poison after resurrect arrives on its own fresh 0x17.)
+
+        The same death transition must also drop the cached *open-container* and
+        *context-menu* UI pointers. ``open_container`` (set by 0x24
+        ContainerDisplay) and ``context_menu_serial`` (0xBF sub 0x14) are only
+        ever cleared by a matching 0x1D Delete for that exact serial
+        (handle_delete). But death does NOT reliably delete the container the UI
+        was on: ServUO closes every open gump/container in the death sequence
+        without destroying the persistent entity behind it (the bank box stays
+        live server-side; a looted corpse keeps its serial), so no 0x1D arrives
+        for it. The pointer then survives the ghost period and out the other
+        side of a resurrect. ``_wait_for_bank_box`` (skills/trade/banking.py)
+        treats *any* non-zero ``open_container != backpack`` as "the bank is
+        open" the instant it polls — so a freshly-resurrected agent that walks
+        to a banker reads the pre-death bank serial and immediately reports the
+        bank ready, then drag-drops deposits into a container the server has
+        already closed: every deposit silently fails. Clear both on the genuine
+        death transition, mirroring the poison clear above and the per-serial
+        clears in handle_delete. (A living->living body change leaves them
+        alone; a real re-open after resurrect arrives on its own fresh 0x24.)
         """
         was_ghost = self.body in _GHOST_BODIES
         self.body = body
         if body in _GHOST_BODIES and not was_ghost:
             self.is_poisoned = False
             self.poison_level = -1
+            self.open_container = 0
+            self.context_menu_serial = 0
+            self.context_menu = []
 
     @property
     def hp_percent(self) -> float:
