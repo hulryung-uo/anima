@@ -427,6 +427,32 @@ class MetaController:
         self._decide_task = asyncio.create_task(self._do_decide(ctx))
         return True
 
+    async def close(self) -> None:
+        """Cancel and reap any in-flight background decision task.
+
+        ``maybe_decide`` spawns ``_do_decide`` with a bare
+        ``asyncio.create_task``, so the task is NOT a child of the planner's
+        ``TaskGroup`` and is therefore not torn down when the session ends
+        (disconnect, eval-window close, reconnect). With an LLM configured,
+        ``_do_decide`` may be suspended for the whole LLM timeout inside
+        ``policy.choose_with_llm``; left orphaned it keeps the ``ctx``/``llm``
+        references alive, may emit a stray LLM call or shadow-log write after
+        the world has been torn down, and trips asyncio's "Task was destroyed
+        but it is pending" warning. The planner calls this from its ``run``
+        ``finally`` so shutdown is deterministic. Idempotent and never raises.
+        """
+        task = self._decide_task
+        self._decide_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("meta_close_task_error", error=str(e))
+
     def _net_worth(self, ctx: "AgentContext") -> int:
         """Backpack gold + fresh banked gold.
 

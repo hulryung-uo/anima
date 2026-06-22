@@ -238,6 +238,11 @@ class Planner:
             await self._run_loop(ctx)
         finally:
             watchdog_task.cancel()
+            # Reap the meta-controller's detached background decision task. It
+            # is spawned with a bare create_task (not a TaskGroup child), so
+            # without this it survives session teardown — leaking the ctx/llm
+            # and risking a post-shutdown LLM call / "pending task" warning.
+            await self._meta.close()
 
         logger.info("planner_stopped")
 
@@ -2047,6 +2052,7 @@ class Planner:
         ctx.blackboard.pop("_deadlock_first_pos", None)
         ctx.blackboard.pop("_deadlock_cycles_completed", None)
         ctx.blackboard.pop("_deadlock_last_cycle_pos", None)
+        ctx.blackboard.pop("_deadlock_last_gold", None)
         ctx.blackboard.pop("_beg_consecutive_fails", None)
         ctx.blackboard.pop("_hunt_consecutive_fails", None)
 
