@@ -148,7 +148,19 @@ class CraftCarpentry(Skill):
         if not (bp_graphics & ALL_TOOL_GRAPHICS):
             return False
 
-        # Check minimum material amount (need at least 4 for cheapest recipe)
+        # Confirm something is ACTUALLY craftable with the boards + skill on
+        # hand by deferring to ``_pick_target`` — the same selector ``execute``
+        # uses. A static ``materials < 4`` gate disagreed with it: the cheapest
+        # recipe a *fresh* (skill 0.0) carpenter qualifies for is Barrel Staves
+        # at 5 boards, so a skill-0 carpenter holding exactly 4 boards passed
+        # this check (4 >= 4) yet ``_pick_target(0.0, 4)`` returns None — every
+        # time the planner then picked the "ready" skill, ``execute`` fell
+        # straight into the "need more wood" shortage path and returned
+        # ``reward=-0.5``, poisoning the carpentry Q/skill signal with a
+        # guaranteed failure. Gating both call sites off the one selector closes
+        # that dead band (mirrors the banking HEAVY_DEPOSIT_RATIO single-source
+        # fix). Keep the cheap ``materials < 4`` early-out as a fast pre-filter
+        # (no recipe needs fewer than 4 boards), then require a real target.
         materials = sum(
             it.amount for it in bp_items if it.graphic in MATERIAL_GRAPHICS
         )
@@ -158,7 +170,10 @@ class CraftCarpentry(Skill):
         skill_info = ss.skills.get(CARPENTRY_SKILL_ID)
         if skill_info is None or skill_info.value < 0.0:
             return False
-        return True
+
+        skill_val = skill_info.value
+        target, _best_feasible = self._pick_target(skill_val, materials)
+        return target is not None
 
     @staticmethod
     def _pick_target(
