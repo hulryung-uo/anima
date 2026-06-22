@@ -177,7 +177,7 @@ def register_handlers(
             # stale one after a gear swap) — re-equipping when already armed
             # or mis-judging a free hand mid-fight.
             walker.sync_position(x, y, z, direction & 0x07)
-            p.self_state.body = body
+            p.self_state.set_body(body)
             # ServUO pushes self 0x78 on flag changes (OnHiddenChanged) —
             # this is where the hidden bit (0x80) for our own char arrives.
             p.self_state.flags = MobileFlags(flags & 0xFF)
@@ -322,7 +322,7 @@ def register_handlers(
             # processed. ClassicUO's UpdateCharacter assigns `mobile.Flags`
             # for self here too; dropping it left self_state.in_war_mode /
             # .hidden stale until the next 0x78/0x20.
-            p.self_state.body = body
+            p.self_state.set_body(body)
             p.self_state.flags = MobileFlags(flags & 0xFF)
             p.self_state.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
             return
@@ -360,7 +360,7 @@ def register_handlers(
             walker.sync_position(x, y, z, direction)
             walker.steps_count = 0
             walker.walking_failed = False
-            p.self_state.body = body
+            p.self_state.set_body(body)
             p.self_state.flags = MobileFlags(flags & 0xFF)
             p.self_state.is_yellow_health = bool(flags & MobileFlags.YELLOW_BAR)
         else:

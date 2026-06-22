@@ -148,6 +148,36 @@ class SelfState:
         self.context_menu_serial: int = 0
         self.context_menu: list[ContextMenuEntry] = []
 
+    def set_body(self, body: int) -> None:
+        """Set our body graphic, clearing transient poison state on death.
+
+        ``is_poisoned`` / ``poison_level`` are a LIVING-mobile concept that
+        only ever arrive on the wire via the 0x17 NewHealthbarUpdate poison
+        entry (handle_health_bar_status). The poison-cured signal, however, is
+        NOT reliably re-sent for our own character around death/resurrect:
+        ServUO cures poison in ``Mobile.OnDeath`` (Poison = null), but the
+        body flip to a ghost (0x0192/0x0193 on foot, the mounted/flying ghost
+        bodies) — synced here from the 0x78/0x77/0x20 self-branches — is the
+        authoritative self-death oracle (see ``is_ghost``/``is_alive``), and a
+        ghost is never carried in the poison-bar stream. Without clearing the
+        flag on the ghost transition, a self that was poisoned at the moment of
+        death stays ``is_poisoned == True`` straight through the ghost period
+        and out the other side of a resurrect (which re-flips the body via a
+        plain 0x78/0x20 carrying no 0x17), so the planner's cure-priority gate
+        and combat_loop's poison branch keep firing a bandage/cure against a
+        phantom poison the freshly-resurrected, full-HP agent no longer has —
+        starving real actions. Mirror the way ``is_yellow_health`` is already
+        re-derived on every self body update: clear the stale poison the
+        instant we read a ghost body. (A living->living body change leaves the
+        poison alone — only the genuine death transition resets it, and a real
+        re-poison after resurrect arrives on its own fresh 0x17.)
+        """
+        was_ghost = self.body in _GHOST_BODIES
+        self.body = body
+        if body in _GHOST_BODIES and not was_ghost:
+            self.is_poisoned = False
+            self.poison_level = -1
+
     @property
     def hp_percent(self) -> float:
         if self.hits_max == 0:
