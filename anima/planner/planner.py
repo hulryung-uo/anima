@@ -725,6 +725,20 @@ class Planner:
             ss = ctx.perception.self_state
         except Exception:
             return False
+        # Death FIRST, via the authoritative oracle. Priority 0's dead branch
+        # gates on ``ss.is_alive``, which returns False for a GHOST body even
+        # when a stale / out-of-order 0xA1 health packet still reports
+        # ``hits > 0`` (the body flip is the real death signal — see
+        # SelfState.is_alive / is_ghost). Re-deriving "dead" from ``hits <= 0``
+        # alone therefore MISSES exactly that case: a freshly-dead ghost whose
+        # health bar has not yet zeroed reads as "not pending", so a death that
+        # lands during a 60s planner health break leaves the ghost frozen —
+        # unable to reach Priority 0's seek-resurrection — for the whole break,
+        # the very death-recovery starvation this gate exists to prevent. Use
+        # the same oracle Priority 0 does. ``getattr(..., True)`` keeps a
+        # minimal self_state (no ``is_alive``) falling through to the hits gate.
+        if getattr(ss, "is_alive", True) is False:
+            return True  # dead (incl. ghost w/ stale HP) — needs resurrection
         hits = getattr(ss, "hits", None)
         hits_max = getattr(ss, "hits_max", None)
         if isinstance(hits_max, (int, float)) and hits_max > 0 \
