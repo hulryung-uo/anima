@@ -393,7 +393,15 @@ class MetaController:
         self.interval_s = max(interval_s, self.MIN_INTERVAL_S)
         self.shadow = shadow
         self._decision: ModeDecision | None = None
-        self._last_decide: float = 0.0
+        # Monotonic timestamp of the last decision spawn. ``None`` means "never
+        # decided yet" so the first tick is always eligible. The cadence gate
+        # MUST run on a MONOTONIC clock, not wall time (see ``should_decide``):
+        # this mirrors the identical fix already shipped for
+        # ``StrategySelector`` (commit c1bef3d / strategy.py §should_refresh),
+        # whose docstring explicitly names THIS controller as still carrying
+        # the wall-clock pattern. ``_started_at`` and ``_gold_rate_per_min``
+        # are already monotonic; the decision cadence was the one straggler.
+        self._last_decide: float | None = None
         self._decide_task: asyncio.Task | None = None
         self._started_at: float = time.monotonic()
         self._mode_history: deque[str] = deque(maxlen=self._MODE_HISTORY_CAP)
@@ -413,7 +421,17 @@ class MetaController:
         return self._decision.mode if self._decision else None
 
     def should_decide(self, now: float | None = None) -> bool:
-        now = now if now is not None else time.time()
+        # Cadence gate runs on a MONOTONIC clock, not wall time. The interval
+        # is a "seconds since the last decision" throttle, and ``time.time()``
+        # is not monotonic: an NTP correction or a VM resume can step it
+        # BACKWARD by minutes, making ``now - last`` go negative and the gate
+        # stay closed for the whole backward step — silently freezing the P0
+        # shadow-decision log (and, once P1 promotes the controller to drive
+        # selection, freezing mode arbitration itself). ``time.monotonic()`` is
+        # immune to clock steps. Mirrors ``StrategySelector.should_refresh``.
+        if self._last_decide is None:
+            return True  # never decided → always eligible on the first tick
+        now = now if now is not None else time.monotonic()
         return now - self._last_decide >= self.interval_s
 
     async def maybe_decide(self, ctx: "AgentContext") -> bool:
@@ -423,7 +441,7 @@ class MetaController:
             return False
         if self._decide_task is not None and not self._decide_task.done():
             return False
-        self._last_decide = time.time()
+        self._last_decide = time.monotonic()
         self._decide_task = asyncio.create_task(self._do_decide(ctx))
         return True
 

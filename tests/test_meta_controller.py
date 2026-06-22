@@ -328,7 +328,7 @@ class TestMetaControllerShadow:
     @pytest.mark.asyncio
     async def test_interval_gate_blocks_second_call(self):
         c = MetaController(interval_s=60)
-        c._last_decide = time.time()
+        c._last_decide = time.monotonic()
         ctx = MagicMock()
         ctx.llm = None
         assert await c.maybe_decide(ctx) is False
