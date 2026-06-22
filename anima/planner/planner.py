@@ -147,6 +147,12 @@ class Planner:
         self._last_trade_time: float = 0.0
         self._move_fail_until: float = 0.0  # cooldown after move-to failure
         self._failed_destinations: dict[tuple[int, int], float] = {}  # (x,y) → time
+        # TTL after which a failed destination is no longer treated as
+        # blocked (the read sites use `now - v < 300.0`). Entries past this
+        # age are functionally dead, so they are pruned on insert to keep the
+        # dict bounded across a long roam — without it, every distinct failed
+        # (x,y) accumulates forever.
+        self._failed_dest_ttl_s: float = 300.0
         self._last_backpack_request: float = 0.0  # cooldown for re-requesting equipment
         self._backpack_refresh_fails: int = 0  # consecutive failed backpack refreshes
         # Idle / stuck loop detection
@@ -216,6 +222,25 @@ class Planner:
     _FALLBACK_WINDOW_S = 60.0     # forced-fallback selection window
     _STARVE_FAILS = 3             # consecutive failures → temp demotion
     _STARVE_COOLDOWN_S = 120.0    # demotion duration (auto-expires)
+
+    def _record_failed_destination(self, x: int, y: int) -> None:
+        """Mark (x, y) as a freshly-failed move destination.
+
+        Prunes entries older than the TTL on every insert so the dict stays
+        bounded across a long roam. This is purely a memory bound: the read
+        sites already ignore any entry with ``now - v >= ttl`` (cooldown
+        semantics unchanged), so dropping those expired keys here is a no-op
+        for behavior.
+        """
+        now = _time.time()
+        ttl = self._failed_dest_ttl_s
+        if self._failed_destinations:
+            self._failed_destinations = {
+                k: v
+                for k, v in self._failed_destinations.items()
+                if now - v < ttl
+            }
+        self._failed_destinations[(x, y)] = now
 
     def stop(self) -> None:
         self._running = False
@@ -556,8 +581,7 @@ class Planner:
             else:
                 self._roaming._location_stats.record_visit(loc_name, success=False)
                 self._roaming._location_stats.record_failure(loc_name)
-                import time
-                self._failed_destinations[(proc._x, proc._y)] = time.time()
+                self._record_failed_destination(proc._x, proc._y)
                 ctx.blackboard["planner_intent"] = (
                     f"이동 실패: {proc.description} ({proc._x},{proc._y}) — "
                     f"{result.message or '경로 없음'}"
