@@ -49,12 +49,12 @@ def test_loop_counts_only_resolved_casts_not_meditations():
     assert "for _ in range(CASTS_PER_RUN)" not in src
 
 
-def _ss(mana=50):
+def _ss(mana=50, mana_max=50):
     mag = SimpleNamespace(value=35.0)
     med = SimpleNamespace(value=50.0)
     skills = {pm.SKILL_MAGERY: mag, pm.SKILL_MEDITATION: med}
     return SimpleNamespace(
-        is_alive=True, serial=0x1, mana=mana,
+        is_alive=True, serial=0x1, mana=mana, mana_max=mana_max,
         skills=SimpleNamespace(get=skills.get),
     )
 
@@ -256,3 +256,42 @@ async def test_zero_cast_stall_is_blocked_and_not_resuggested(monkeypatch):
     assert result.success is False
     assert result.reason == FailureReason.BLOCKED
     assert result.next_suggestion is None
+
+
+@pytest.mark.asyncio
+async def test_mid_int_meditates_above_cast_cost_and_casts(monkeypatch):
+    """A mid-Int starter whose flat-60% meditation target lands BELOW the spell
+    cost must meditate to a target that COVERS the cost and then actually cast —
+    not stall at zero casts. mana_max=15 → old 60% target ≈ 9 < GREATER_HEAL_MANA
+    (11) and stalled the run; the fix aims just over the cost (~80% → 12)."""
+    from anima.procedures.base import FailureReason  # noqa: F401 (parity import)
+
+    ss = _ss(mana=0, mana_max=15)
+    ctx = SimpleNamespace(perception=SimpleNamespace(self_state=ss))
+
+    seen_targets: list[float] = []
+    cast_calls = {"n": 0}
+
+    async def fake_meditate(_ctx, target_pct=0.0, timeout=0.0):
+        seen_targets.append(target_pct)
+        # Realistic: meditation regenerates mana up to the requested fraction.
+        ss.mana = int(ss.mana_max * target_pct / 100.0)
+        return SimpleNamespace(success=True)
+
+    async def fake_cast(_ctx, _spell, target_serial=None, mana_cost=0):
+        cast_calls["n"] += 1
+        ss.mana -= pm.GREATER_HEAL_MANA  # a cast drains the spell cost
+        return SimpleNamespace(success=True, fizzled=False, no_reagents=False)
+
+    monkeypatch.setattr(pm, "meditate", fake_meditate)
+    monkeypatch.setattr(pm, "cast_spell", fake_cast)
+    monkeypatch.setattr(pm.asyncio, "sleep", AsyncMock())
+
+    result = await asyncio.wait_for(PracticeMagery().execute(ctx), timeout=5.0)
+
+    # The meditation target must clear the cast cost for this mana pool...
+    assert seen_targets, "the loop must have meditated at least once"
+    assert ss.mana_max * max(seen_targets) / 100.0 >= pm.GREATER_HEAL_MANA
+    # ...so the run actually casts (the bug stalled it at zero casts) and succeeds.
+    assert cast_calls["n"] == CASTS_PER_RUN
+    assert result.success is True

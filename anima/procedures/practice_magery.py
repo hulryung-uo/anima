@@ -166,9 +166,24 @@ class PracticeMagery(Procedure):
         # (and surfaces the stall).
         stalled_meditations = 0
         MAX_STALLED_MEDITATIONS = 2
+        # Meditate to a target that actually COVERS the spell cost. A fixed 60%
+        # stranded mid-Int starters: mana_max≈15 → 60% ≈ 9 < GREATER_HEAL_MANA
+        # (11), so meditation never lifted mana over the cast gate and the run
+        # resolved ZERO casts. Meditation regenerates mana fast, so aim a hair
+        # above the cast cost (the +1 clears integer-mana rounding), capped at
+        # 100%. When mana_max itself is below the cost, casting is physically
+        # impossible no matter how long we meditate — the zero-cast BLOCKED path
+        # below handles that. Floor stays at 60% so high-Int mages still bank a
+        # comfortable buffer for back-to-back casts.
+        mana_max = getattr(ss, "mana_max", 0) or 0
+        meditate_target_pct = (
+            min(100.0, max(60.0, (GREATER_HEAL_MANA + 1) / mana_max * 100.0))
+            if mana_max > 0
+            else 60.0
+        )
         while casts_done < CASTS_PER_RUN:
             if ss.mana < MEDITATE_BELOW_MANA:
-                await meditate(ctx, target_pct=60.0, timeout=20.0)
+                await meditate(ctx, target_pct=meditate_target_pct, timeout=20.0)
                 if ss.mana < MEDITATE_BELOW_MANA:
                     stalled_meditations += 1
                     if stalled_meditations >= MAX_STALLED_MEDITATIONS:
