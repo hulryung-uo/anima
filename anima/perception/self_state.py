@@ -190,6 +190,21 @@ class SelfState:
         death transition, mirroring the poison clear above and the per-serial
         clears in handle_delete. (A living->living body change leaves them
         alone; a real re-open after resurrect arrives on its own fresh 0x24.)
+
+        The cached *vendor* trading state is the third casualty of the same
+        no-Delete-on-death problem. ``vendor_serial`` / ``vendor_buy_list`` /
+        ``vendor_sell_list`` (set by the 0x74 / 0x9E handlers) are only ever
+        cleared by a matching 0x1D Delete for the vendor (handle_delete) or an
+        explicit 0xBF close (handle_close_vendor). But the vendor mobile stays
+        live server-side across our death, so no 0x1D arrives, and the death
+        sequence is not a vendor *close* either — so a vendor list we had open
+        at the moment of death survives the ghost period and the resurrect.
+        ``_wait_for_buy_list`` / ``_wait_for_sell_list`` (skills/trade/vendor.py)
+        poll a *non-empty* list as the "this vendor's list is ready" signal, so a
+        freshly-resurrected agent re-opening trade reads the pre-death list as
+        ready the instant it polls and fires build_buy_items/build_sell_items at
+        the stale ``vendor_serial`` — a doomed transaction against a vendor whose
+        gump the death sequence already closed. Clear all three on death too.
         """
         was_ghost = self.body in _GHOST_BODIES
         self.body = body
@@ -199,6 +214,9 @@ class SelfState:
             self.open_container = 0
             self.context_menu_serial = 0
             self.context_menu = []
+            self.vendor_serial = 0
+            self.vendor_buy_list = []
+            self.vendor_sell_list = []
 
     @property
     def hp_percent(self) -> float:
