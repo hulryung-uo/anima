@@ -383,8 +383,23 @@ class CraftBlacksmith(Procedure):
 
         def _journal_outcomes() -> set[str]:
             found: set[str] = set()
-            for entry in ctx.perception.social.recent(count=8):
-                if entry.timestamp >= journal_mark:
+            # Scan the WHOLE journal scoped by the ``journal_mark`` timestamp
+            # floor, NOT a fixed ``recent(count=8)`` tail. The batch loop waits
+            # up to ~6s per attempt, during which other journal traffic (gump
+            # craft chatter, combat keepalive, ambient speech) routinely pushes
+            # THIS attempt's own result line past the last 8 entries — so a
+            # windowed scan silently misses it. That is most damaging for the
+            # ``tool_broke`` outcome, which arrives ONLY on the journal (the
+            # tongs are deleted, so no CraftGump is re-sent): missing it drops
+            # the run into the ``''``/``unknown`` branch, which re-navigates with
+            # no tongs and returns a generic BLOCKED instead of the
+            # MISSING_RESOURCE that routes the planner to make_tools/buy — and a
+            # missed ``no_material`` line likewise never trips the material
+            # circuit breaker. The ``journal_mark`` floor already scopes the scan
+            # to THIS attempt (make_tools._journal_craft_outcome fixed the
+            # identical recent()-tail bug the same way).
+            for entry in ctx.perception.social.journal:
+                if getattr(entry, "timestamp", 0.0) >= journal_mark:
                     outcome = _classify_craft_text(entry.text)
                     if outcome:
                         found.add(outcome)
