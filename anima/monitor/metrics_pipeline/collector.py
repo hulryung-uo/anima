@@ -186,4 +186,32 @@ def _skill_map(snapshot: dict) -> dict[int, float]:
     """Extract {skill_id: value} from a state snapshot."""
     skills_block = snapshot.get("skills") or {}
     entries = skills_block.get("list") or []
-    return {int(e["id"]): float(e["value"]) for e in entries if "id" in e and "value" in e}
+    # ``state.json`` is read off disk every poll (``_state_diff_loop``) and can
+    # be a torn concurrent write or be shaped by a foreign/future producer, so an
+    # entry is NOT guaranteed to be a ``{"id", "value"}`` dict with numeric
+    # fields. The old comprehension only guarded the KEY presence
+    # (``"id" in e and "value" in e``) and still:
+    #   * raised ``TypeError`` on a non-container entry (``"id" in None`` /
+    #     ``"id" in 7`` — "argument of type ... is not iterable"), and
+    #   * raised ``ValueError`` / ``TypeError`` on a non-numeric id/value
+    #     (``int("x")`` / ``float(None)``).
+    # The state-diff loop catches the exception and retries every 5s against the
+    # SAME unchanged snapshot, so one malformed skills entry doesn't crash the
+    # session — it silently blackouts the whole metrics state-diff (gold / death /
+    # skill deltas) for as long as that entry persists. Skip a malformed entry the
+    # same way the rest of the metrics pipeline skips a torn/non-object event line
+    # (``_read_events_in_window`` / ``trim_events`` / ``_coerce_amount``), so a
+    # good entry beside a bad one still produces its delta.
+    out: dict[int, float] = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        sid = e.get("id")
+        val = e.get("value")
+        if sid is None or val is None:
+            continue
+        try:
+            out[int(sid)] = float(val)
+        except (TypeError, ValueError):
+            continue
+    return out

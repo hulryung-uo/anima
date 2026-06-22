@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from anima.monitor.metrics_pipeline.collector import MetricsCollector
+from anima.monitor.metrics_pipeline.collector import MetricsCollector, _skill_map
 
 
 @pytest.fixture
@@ -126,6 +126,49 @@ class TestStateDiff:
         col = MetricsCollector(events_file=events_file)
         col._diff_state(None, _make_state(gold=50))
         assert _read(events_file) == []
+
+    def test_malformed_skill_entry_does_not_crash_diff(self, events_file: Path):
+        """A torn/foreign state.json can carry a skills entry that is NOT a
+        well-formed ``{"id", "value"}`` dict with numeric fields. The state-diff
+        must skip it (and still emit deltas for the good entries beside it),
+        never raise — a raise here is caught by the poll loop and silently
+        blacks out gold/death/skill metrics until the snapshot changes."""
+        col = MetricsCollector(events_file=events_file)
+        before = _make_state()
+        before["skills"] = {"list": [{"id": 7, "value": 63.9}]}
+        after = _make_state()
+        # A non-dict entry, a non-numeric id, and a null value alongside a real
+        # skill gain that must still be reported.
+        after["skills"] = {
+            "list": [
+                None,
+                {"id": "bogus", "value": 1.0},
+                {"id": 8, "value": None},
+                {"id": 7, "value": 64.0},
+            ]
+        }
+        col._diff_state(before, after)  # must not raise
+        skill_events = [e for e in _read(events_file) if e["type"] == "skill_delta"]
+        assert len(skill_events) == 1
+        assert skill_events[0]["skill_id"] == 7
+        assert skill_events[0]["to"] == 64.0
+
+
+class TestSkillMap:
+    def test_non_dict_entry_skipped(self):
+        assert _skill_map({"skills": {"list": [None, 7, "x"]}}) == {}
+
+    def test_non_numeric_id_or_value_skipped(self):
+        m = _skill_map({"skills": {"list": [
+            {"id": "x", "value": 1.0},
+            {"id": 7, "value": None},
+            {"id": 9, "value": 50.0},
+        ]}})
+        assert m == {9: 50.0}
+
+    def test_well_formed_entries_parsed(self):
+        m = _skill_map({"skills": {"list": [{"id": "7", "value": "63.9"}]}})
+        assert m == {7: 63.9}
 
 
 class TestBusSubscriptions:
