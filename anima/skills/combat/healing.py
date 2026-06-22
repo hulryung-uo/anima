@@ -101,11 +101,21 @@ class HealSelf(Skill):
                 duration_ms=elapsed,
             )
         else:
+            # The cursor was accepted and the bandage was consumed (we got here
+            # past the no-backpack / no-bandage / no-cursor early returns), so
+            # the application RESOLVED — it simply healed 0 HP. That is the
+            # common low-skill outcome (a "barely help" roll, or healing at full
+            # HP), NOT a failure. Booking it success=False/reward=-0.5 punishes
+            # the agent for using the very skill it must grind: success drives
+            # skill_consecutive_fails, the 3-strike force-rethink, the
+            # action-stats buckets and the location-value map. A resolved heal
+            # is success=True with a small non-negative reward — distinct from a
+            # genuine no-bandage / rejected-cursor failure above (reward=-1.0).
             logger.info("heal_self_no_effect", hp=f"{hp_after}/{ss.hits_max}")
             return SkillResult(
-                success=False,
-                reward=-0.5,
-                message="Healing had no effect",
+                success=True,
+                reward=0.0,
+                message="Bandage applied (healed 0 HP)",
                 items_consumed=[bandage.serial],
                 duration_ms=elapsed,
             )
