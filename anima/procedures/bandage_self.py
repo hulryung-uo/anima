@@ -79,6 +79,7 @@ class BandageSelf(Procedure):
         skill = ss.skills.get(SKILL_HEALING)
         before = skill.value if skill else 0.0
         hp_before = ss.hits
+        poisoned_before = bool(getattr(ss, "is_poisoned", False))
 
         since = time.time()
         used = await use_on_object(ctx, bandages[0].serial, ss.serial)
@@ -121,6 +122,32 @@ class BandageSelf(Procedure):
                 success=False,
                 reason=FailureReason.WRONG_LOCATION,
                 message="Not damaged — nothing to heal",
+            )
+        # A poisoned cure-bandage that neither cured nor healed is a phantom
+        # success. can_start lets a near-full-HP agent run bandage_self ONLY
+        # while poisoned (ServUO Bandage.cs spends the resolve attempting a
+        # cure, not an HP heal). But that cure rolls CheckSkill and — crucially
+        # — requires Healing >= 60 AND Anatomy >= 60 (Bandage.cs ~L445); below
+        # that the cure can NEVER land, yet the server still sends 500969
+        # ("You finish applying the bandages.") first, so _FINISH_PATTERNS
+        # matches and the bandage RESOLVES. The old code then fell straight
+        # through to success=True, +0 HP on EVERY attempt for a low-skill
+        # starter — the bandage was consumed, the poison still ticks, and a
+        # phantom win is written to the ActionLog reward signal while the
+        # planner is told the heal is done and never retries / escalates. When
+        # we went in poisoned, the resolve restored no HP (healed == 0), and we
+        # are STILL poisoned, the attempt accomplished nothing: book it as a
+        # retryable failure exactly as the timeout branch above does, not a
+        # success. (A successful cure clears ss.is_poisoned via the 0x17 status
+        # push, and any HP restored — a non-poison heal that happened to fire —
+        # both fall through to the real success return below.)
+        still_poisoned = bool(getattr(ss, "is_poisoned", False))
+        if poisoned_before and still_poisoned and healed == 0:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message="Cure bandage did not cure (still poisoned, no HP healed)",
+                skill_gains={SKILL_HEALING: gained} if gained else {},
             )
         return ProcedureResult(
             success=True,
