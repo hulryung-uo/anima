@@ -60,6 +60,32 @@ class TestAlertRules:
         a3 = det.check(_hourly_row(cycles=1))
         assert any(a["rule"] == "cycles_regression" for a in a3)
 
+    def test_cycles_regression_needs_full_baseline_window(self, alerts_file):
+        # Regression: a single anomalously-high opening hour followed by three
+        # normal ramp-up hours must NOT fire a phantom regression. With only one
+        # baseline hour the prior-6h mean is undefined; the alert is supposed to
+        # wait for a full REGRESSION_BASELINE_HOURS window before judging.
+        det = MetricsAlertDetector(alerts_file=alerts_file)
+        # One unusually high hour, then three "low" hours (low only relative to
+        # that single outlier). Total history = 4 hours < 6-hour baseline + 3.
+        det.check(_hourly_row(cycles=100))
+        a1 = det.check(_hourly_row(cycles=1))
+        a2 = det.check(_hourly_row(cycles=1))
+        a3 = det.check(_hourly_row(cycles=1))
+        assert all(
+            a["rule"] != "cycles_regression" for a in (a1 + a2 + a3)
+        ), "regression must not fire on a partial (sub-6h) baseline"
+
+    def test_cycles_regression_fires_once_full_baseline_present(self, alerts_file):
+        # Same drop, but now with a full 6-hour baseline established first.
+        det = MetricsAlertDetector(alerts_file=alerts_file)
+        for _ in range(6):
+            det.check(_hourly_row(cycles=4))
+        det.check(_hourly_row(cycles=1))
+        det.check(_hourly_row(cycles=1))
+        a3 = det.check(_hourly_row(cycles=1))
+        assert any(a["rule"] == "cycles_regression" for a in a3)
+
     def test_cycles_recovery_clears_streak(self, alerts_file):
         det = MetricsAlertDetector(alerts_file=alerts_file)
         for _ in range(6):

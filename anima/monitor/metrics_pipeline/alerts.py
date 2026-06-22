@@ -99,7 +99,15 @@ class MetricsAlertDetector:
             -(self.REGRESSION_CONSECUTIVE_HOURS + self.REGRESSION_BASELINE_HOURS)
             : -self.REGRESSION_CONSECUTIVE_HOURS
         ]
-        if not baseline_slice:
+        # The rule is "3 consecutive hours <= 0.5 * the prior-6h mean". A bare
+        # ``if not baseline_slice`` only rejected an EMPTY baseline, so during
+        # the first hours after any (re)start the slice could hold as little as
+        # ONE hour and a single anomalously-high opening hour (e.g. a long
+        # backfill window) followed by three normal ramp-up hours would fire a
+        # phantom "regression". Require the full REGRESSION_BASELINE_HOURS window
+        # (the deque is sized 6+3=9 for exactly this) so the baseline mean is the
+        # documented prior-6h mean, not a 1-sample point estimate.
+        if len(baseline_slice) < self.REGRESSION_BASELINE_HOURS:
             return None
         baseline = sum(baseline_slice) / len(baseline_slice)
         threshold = self.REGRESSION_MULT * baseline
