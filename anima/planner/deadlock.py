@@ -103,9 +103,21 @@ class DeadlockResolver:
         # (they correctly prevent re-selecting the same wrong-type vendor).
         # Only clear entries older than 60s, giving the 300s per-vendor
         # cooldown room to work while still breaking true long stalls.
+        #
+        # ``refused_vendors`` timestamps are stamped with ``time.monotonic()``
+        # by ``skills/trade/vendor.py`` (``_mark_refused`` / ``_is_refused``),
+        # NOT wall time. Pruning them against ``now`` (= ``_time.time()``, the
+        # wall clock shared by ``_failed_destinations`` and ``depleted_banks``)
+        # subtracts a ~1e9-second epoch value from a ~1e5-second uptime value,
+        # so ``now - ts`` is always > 60 and EVERY refused vendor is cleared on
+        # the very first deadlock cycle — the exact opposite of the
+        # "don't wipe recent rejections" guarantee above, letting the agent
+        # immediately re-select the wrong-type vendor it just got refused by.
+        # Compare against the SAME monotonic clock the writer used.
+        mono_now = _time.monotonic()
         refused = ctx.blackboard.get("refused_vendors", {})
         if refused:
-            stale = [s for s, ts in refused.items() if now - ts > 60.0]
+            stale = [s for s, ts in refused.items() if mono_now - ts > 60.0]
             for s in stale:
                 refused.pop(s, None)
             if stale:
