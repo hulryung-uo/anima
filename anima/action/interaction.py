@@ -188,9 +188,22 @@ async def move_item_on_ground(
         if not ok:
             return False
 
-        # Wait for stamina to recover if low (heavy items drain stam)
-        while ss.stam_max > 0 and ss.stam < ss.stam_max * 0.3:
-            await asyncio.sleep(1.0)
+        # Wait for stamina to recover if low (heavy items drain stam).
+        # Bounded like the go_to fatigue wait in anima.action.movement: a
+        # desynced/stuck stamina value (e.g. the server stops sending 0x11
+        # stat updates) must never hang the drag forever, so cap the wait at
+        # a fixed number of 1s ticks and move on regardless.
+        if ss.stam_max > 0 and ss.stam < ss.stam_max * 0.3:
+            logger.info(
+                "move_item_stam_wait",
+                serial=f"0x{serial:08X}", stam=ss.stam, stam_max=ss.stam_max,
+            )
+            for _ in range(30):
+                await asyncio.sleep(1.0)
+                if not (ss.stam_max > 0 and ss.stam < ss.stam_max * 0.3):
+                    break
+            else:
+                logger.info("move_item_stam_timeout", serial=f"0x{serial:08X}", stam=ss.stam)
 
         # Walk to the drop position to continue dragging
         await go_to(ctx, next_x, next_y)
