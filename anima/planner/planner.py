@@ -262,7 +262,18 @@ class Planner:
         try:
             await self._run_loop(ctx)
         finally:
-            watchdog_task.cancel()
+            # Reap the liveness watchdog. ``cancel()`` only *schedules* the
+            # CancelledError; the task has not actually unwound when ``run()``
+            # returns unless we await it. ``run()`` is a child of the game
+            # session ``TaskGroup`` (main.py), so leaving the watchdog
+            # cancelled-but-pending here means its CancelledError is never
+            # retrieved — asyncio emits "Task was destroyed but it is pending"
+            # at loop teardown, and the watchdog's own CancelledError-only
+            # ``except`` (which re-raises for a clean shutdown) never completes.
+            # Await it (swallowing the expected CancelledError) exactly as
+            # ``_meta.close()`` / ``_strategy.close()`` do for their detached
+            # tasks, so teardown is deterministic.
+            await self._reap_watchdog(watchdog_task)
             # Reap the meta-controller's detached background decision task. It
             # is spawned with a bare create_task (not a TaskGroup child), so
             # without this it survives session teardown — leaking the ctx/llm
@@ -276,6 +287,29 @@ class Planner:
             await self._strategy.close()
 
         logger.info("planner_stopped")
+
+    @staticmethod
+    async def _reap_watchdog(task: asyncio.Task | None) -> None:
+        """Cancel and await the detached liveness-watchdog task.
+
+        ``_liveness_watchdog`` runs as a bare ``create_task`` (not a TaskGroup
+        child) so it can fire while ``tick()`` is blocked inside a frozen
+        procedure. On shutdown it must be cancelled AND awaited: a lone
+        ``task.cancel()`` only schedules the CancelledError, so the task is
+        still pending when ``run()`` returns — its CancelledError is never
+        retrieved and the loop logs "Task was destroyed but it is pending" at
+        teardown. Awaiting it (swallowing the expected CancelledError) drives
+        it to a terminal state. Idempotent and never raises.
+        """
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("watchdog_reap_error", error=str(e))
 
     async def _run_loop(self, ctx: AgentContext) -> None:
         while self._running and ctx.conn.connected:
@@ -802,6 +836,13 @@ class Planner:
         ctx.blackboard["expedition"] = self._expedition
         # Prune piles that have likely decayed server-side.
         self._expedition.prune_stale_piles()
+
+        # Lift the Tinkering skill-too-low latch once skill has trained up.
+        # Both the 4b craft-for-tools and 5e training gates read this latch,
+        # so leaving it armed would permanently disable the only path that
+        # raises Tinkering — a self-reinforcing deadlock.
+        from anima.procedures.make_tools import _rearm_gave_up_on_skill_gain
+        _rearm_gave_up_on_skill_gain(ctx)
 
         # Watchdog: if stuck in a non-IDLE phase for >10 minutes, reset.
         if (self._expedition.phase != Phase.IDLE
@@ -3305,6 +3346,26 @@ class _BegNpcForCoin:
     SKILL_ID = 6
     COOLDOWN_S = 30.0
     APPROACH_DIST = 3
+
+    @staticmethod
+    def prune_begged(begged: dict[int, float], now: float) -> None:
+        """Drop ``_begged_npcs`` entries whose cooldown has fully lapsed.
+
+        ``_begged_npcs`` maps NPC serial → last-begged timestamp and is only
+        ever inserted into (once per distinct NPC the agent begs from). The
+        sole reader (``Planner._find_beg_npc``) treats an entry as live only
+        while ``now - last < COOLDOWN_S`` and ignores anything older, so across
+        a long roam through many towns the dict accumulated one dead key per
+        NPC ever begged and never shrank — an unbounded per-session leak.
+
+        Pruning expired keys on insert is behavior-neutral (the reader already
+        skips them) and keeps the dict bounded to the NPCs begged within the
+        last ``COOLDOWN_S``. Mirrors ``Planner._record_failed_destination``.
+        """
+        cooldown = _BegNpcForCoin.COOLDOWN_S
+        for serial in [s for s, t in begged.items() if now - t >= cooldown]:
+            del begged[serial]
+
     # After this many consecutive procedure-level failures (no cursor,
     # refusal, blocked approach), the planner stops electing beg and lets
     # the deadlock ladder escalate past Lv0.  Cleared on successful begs
@@ -3353,7 +3414,11 @@ class _BegNpcForCoin:
         # Stamp cooldown up front so a hang/timeout doesn't re-elect the
         # same NPC next tick.
         begged = ctx.blackboard.setdefault("_begged_npcs", {})
-        begged[target.serial] = _time.time()
+        now = _time.time()
+        # Prune lapsed entries before inserting so the dict can't grow one
+        # dead key per distinct NPC ever begged across a long roam.
+        self.prune_begged(begged, now)
+        begged[target.serial] = now
 
         ss.pending_target = None
         try:
