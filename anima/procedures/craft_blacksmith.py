@@ -71,6 +71,17 @@ _RESULT_TIMEOUT_S = 6.0   # craft delay is ~2s; past 6s the re-sent gump is lost
 _TIMEOUT_MARGIN_S = 12.0  # stop batching this long before the planner cap
 
 
+# Batch stop reasons that describe a terminal RESOURCE/STATION condition,
+# not a per-attempt skill-check miss. When a batch records some skill-check
+# fails (consuming ingots) and THEN breaks on one of these, the generic
+# "skill check" failure branch must not swallow it — that branch returns a
+# retryable BLOCKED result with ``next_suggestion="craft_blacksmith"`` and
+# skips the material-mismatch cooldown / circuit-breaker (and the no-station
+# WRONG_LOCATION routing), so a smith that hit a stale Gold material context
+# or lost its forge mid-batch loops straight back into a craft it cannot land.
+_TERMINAL_RESOURCE_STOPS = frozenset({"no_material", "no_station"})
+
+
 def _classify_craft_text(text: str) -> str:
     """Map a craft notice / journal line to an outcome token ('' if none).
 
@@ -619,7 +630,18 @@ class CraftBlacksmith(Procedure):
                 message="Tongs broke — need replacement tool",
             )
 
-        if fails > 0 or ingots_after < ingots_before:
+        # Generic per-attempt skill-check failure. Gate it on the stop reason:
+        # a batch that records some skill fails (consuming ingots) and THEN
+        # breaks on a terminal material/station condition must fall through to
+        # the no_material / no_station branches below — they trip the cooldown /
+        # circuit-breaker and route WRONG_LOCATION. Without this guard the
+        # ``fails > 0`` test fires first (ingots were consumed by the earlier
+        # fails) and mis-books the run as a retryable skill-check miss, so the
+        # material breaker never trips and the agent re-enters a craft it cannot
+        # land — the exact phantom-classification anti-pattern this loop's
+        # tool_broke check (handled above) already guards against.
+        if (stop_reason not in _TERMINAL_RESOURCE_STOPS
+                and (fails > 0 or ingots_after < ingots_before)):
             lost = ingots_before - ingots_after
             logger.info(
                 "craft_blacksmith_failed",
