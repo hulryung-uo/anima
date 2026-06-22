@@ -105,3 +105,24 @@ def test_near_zero_recorded_does_not_poison_the_cross_genome_median():
     # Pre-fix: the near-zero genome produced a ~5e10 FINITE ratio, the median of
     # [0.2, 0.4, 5e10] was 0.4, and "over-replicated" was 0 — the demotion
     # signal silently shifted by a genome the summary should have set aside.
+
+
+def test_catastrophic_regression_is_floored_finite():
+    """A scale-free regression outlier is clamped to a FINITE floor, not -inf.
+
+    A small-magnitude recorded fitness with a large-negative held_out yields a
+    huge finite negative ratio (e.g. -1e6) that — unlike the over-replication
+    case which becomes inf and is set aside — survives _summarize_ratios'
+    finite-filter and single-handedly swamps the even-count cross-genome median.
+    Clamp it to a finite floor so it stays in the median as demotion evidence
+    (a regression IS real evidence) but cannot dominate it.
+    """
+    r = reeval._replication_ratio(1e-3, -1000.0)
+    assert r == reeval._CATASTROPHIC_REGRESSION_FLOOR
+    assert r != float("-inf")          # finite — stays in the median
+    assert r < 0.5                     # still reads as "does not replicate"
+    # A moderate regression at/above the floor is left exactly as computed:
+    # recorded=-1.0, held_out=-1.5 -> ratio = 1 - (-1 - -1.5)/1 = 0.5
+    assert reeval._replication_ratio(-1.0, -1.5) == 0.5
+    # The over-replication ceiling (the opposite extreme) is unaffected.
+    assert reeval._replication_ratio(1e-3, 1000.0) == float("inf")

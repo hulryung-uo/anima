@@ -43,6 +43,17 @@ _NEGLIGIBLE_FITNESS = 1e-6
 # (1.2, 1.5) are untouched while the absurd outliers join the inf bucket.
 _OVER_REPLICATION_CEILING = 10.0
 
+# Symmetric lower clamp. A small-magnitude recorded fitness paired with a large
+# NEGATIVE held_out produces a huge-magnitude FINITE negative ratio (e.g.
+# _replication_ratio(1e-3, -1000) ≈ -1e6). Unlike the over-replication case it is
+# NOT inf, so it survives the finite-filter in _summarize_ratios and one such
+# genome single-handedly swamps the even-count cross-genome median. A regression
+# IS real demotion evidence and must STAY in the median (so we clamp to a finite
+# floor, never -inf): every catastrophic regression then reads as a uniform,
+# bounded "does not replicate" (well below the 0.5 demote band) instead of an
+# unbounded outlier. Moderate regressions at/above the floor are untouched.
+_CATASTROPHIC_REGRESSION_FLOOR = -1.0
+
 
 def _elite_reeval_order(elites: list[Genome]) -> list[Genome]:
     """Order grid elites so the LEAST trustworthy champion is re-checked FIRST.
@@ -113,6 +124,11 @@ def _replication_ratio(recorded: float, held_out: float) -> float:
     # stays finite) so only the genuinely scale-free outliers are reclassified.
     if ratio > _OVER_REPLICATION_CEILING:
         return float("inf")
+    # Symmetric finite floor for catastrophic regressions (see the constant's
+    # comment): keep it in the median as demotion evidence, but bounded so a
+    # scale-free -1e6 outlier can't swamp the cross-genome median.
+    if ratio < _CATASTROPHIC_REGRESSION_FLOOR:
+        return _CATASTROPHIC_REGRESSION_FLOOR
     return ratio
 
 
