@@ -146,6 +146,29 @@ def _tool_restock_qty(ctx: AgentContext, graphic: int) -> int:
     return 1
 
 
+def _in_stock(item) -> bool:
+    """True if the vendor currently lists at least one unit of ``item``.
+
+    The 0x74/0x3C buy list ServUO sends carries the per-item *stock* count in
+    ``VendorBuyItem.amount`` (the matched container item's amount). A listing
+    whose stock has drained to 0 — a competing buyer cleaned it out, or the
+    restock timer has not ticked yet — still appears in the list with
+    ``amount == 0``. ServUO's BaseVendor.OnBuyItems clamps delivery to the
+    *current* stock and delivers NOTHING for a 0-stock line, so buying one is a
+    guaranteed no-delivery.
+
+    The selection loops below only gate on price/affordability; without this
+    stock gate an out-of-stock line could be picked, ``_buy_quantity`` floors
+    the order to 1, and the doomed buy fires anyway. The failure path then
+    blacklists the item AND trips the 10-minute ``_buy_disabled_until``
+    cooldown — starving the entire tool-restock loop for 10 minutes even though
+    other in-stock, affordable tools were available on the very same vendor.
+    Treat a 0-stock line like a blacklisted one: skip it and pick the next
+    real, in-stock tool instead.
+    """
+    return (getattr(item, "amount", 0) or 0) > 0
+
+
 def _buy_quantity(ctx: AgentContext, item, budget: int) -> int:
     """Decide how many of `item` to buy from the vendor this trip.
 
@@ -351,6 +374,8 @@ class BuyFromVendor(Procedure):
             for item in buy_list:
                 if item.serial in active_bl:
                     continue
+                if not _in_stock(item):
+                    continue
                 if item.graphic in graphics_set and 0 < item.price <= budget:
                     target_item = item
                     break
@@ -361,6 +386,8 @@ class BuyFromVendor(Procedure):
         if not target_item:
             for item in buy_list:
                 if item.serial in active_bl:
+                    continue
+                if not _in_stock(item):
                     continue
                 if item.graphic in _ALL_TOOL_GRAPHICS and 0 < item.price <= budget:
                     target_item = item
