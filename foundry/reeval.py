@@ -233,7 +233,20 @@ def _verdict(r: dict) -> str:
     if not r["ok"]:
         return f"EVAL FAILED: {r.get('error')}"
     notes = []
-    if r["ratio"] < 0.5:
+    # An over-replication sentinel (``inf``): the recorded fitness was ~0 (or had
+    # no usable finite scale) but the held-out re-run recovered a real positive
+    # score. ``_summarize_ratios`` deliberately sets these aside as a SEPARATE
+    # "over-replicated (recorded ~0, recovered positive)" category — they are NOT
+    # a clean fraction-recovered. The per-line verdict must say the SAME thing:
+    # ``inf`` is not ``>= 0.8`` in any meaningful sense, so the bare ``< 0.5`` /
+    # ``< 0.8`` chain below (where ``inf`` falls through to "replicates") would
+    # tell the operator the archived score reproduced cleanly when in fact the
+    # archived number was unreliable — the exact case this demotion-evidence tool
+    # exists to surface. Flag it explicitly so the line agrees with the aggregate.
+    if r["ratio"] == float("inf"):
+        notes.append("OVER-REPLICATES (recorded ~0, held-out recovered positive "
+                     "— archived score unreliable, not a clean replication)")
+    elif r["ratio"] < 0.5:
         notes.append("DOES NOT REPLICATE (held-out < 50% of recorded) — consider demotion")
     elif r["ratio"] < 0.8:
         notes.append("weak replication (50-80%)")

@@ -126,3 +126,35 @@ def test_catastrophic_regression_is_floored_finite():
     assert reeval._replication_ratio(-1.0, -1.5) == 0.5
     # The over-replication ceiling (the opposite extreme) is unaffected.
     assert reeval._replication_ratio(1e-3, 1000.0) == float("inf")
+
+
+def test_verdict_over_replication_is_not_labelled_clean_replication():
+    """An ``inf`` (over-replication) ratio must NOT read as "replicates".
+
+    ``_summarize_ratios`` already sets ``inf`` aside as a distinct
+    "over-replicated (recorded ~0, recovered positive)" category. The per-line
+    ``_verdict`` used a bare ``< 0.5`` / ``< 0.8`` / else chain in which ``inf``
+    fell straight through to the "replicates" branch — telling the operator the
+    archived score reproduced cleanly for exactly the genome whose archived
+    number was unreliable (recorded ~0). The verdict must agree with the
+    aggregate framing.
+    """
+    over = {
+        "ok": True,
+        "ratio": reeval._replication_ratio(1e-9, 50.0),  # → inf
+        "cell": ["COMBAT", 1],
+        "held_out_cell": ["COMBAT", 1],
+    }
+    assert over["ratio"] == float("inf")
+    verdict = reeval._verdict(over)
+    assert "OVER-REPLICAT" in verdict
+    assert "replicates" not in verdict  # not the clean-replication label
+
+    # A genuine clean replication is untouched, and a shortfall still demotes —
+    # the other branches must keep working.
+    clean = {"ok": True, "ratio": 0.95, "cell": ["COMBAT", 1],
+             "held_out_cell": ["COMBAT", 1]}
+    assert reeval._verdict(clean) == "replicates"
+    short = {"ok": True, "ratio": 0.3, "cell": ["COMBAT", 1],
+             "held_out_cell": ["COMBAT", 1]}
+    assert "DOES NOT REPLICATE" in reeval._verdict(short)
