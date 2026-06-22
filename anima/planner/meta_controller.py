@@ -244,11 +244,24 @@ class HeuristicModePolicy:
 
         # (d) balance: if the last N stints were all the current mode, rotate to
         # a different low-risk productive mode (deterministic next-in-list).
+        #
+        # Gate on ``actual in _LOW_RISK_PRODUCTIVE`` — NOT merely ``actual in
+        # MODES``. The balance lever exists to keep a *rounded* resident from
+        # over-grinding ONE low-risk trade (mining/smithing/magery/bard); the
+        # rotation target list is exactly those modes. A high-risk profession
+        # (``combat``) or a medium-risk one (``thief``) is NOT in that list, so
+        # ``_next_low_risk`` falls back to its FIRST entry — ``mining`` — and the
+        # old ``actual in MODES`` gate fired branch (d) for a warrior after 3
+        # combat stints, shadow-steering it OFF combat and onto low-yield,
+        # off-profession mining: the exact combat-uptime anti-pattern the planner
+        # combat loop (``wander_for_combat`` re-engage) was built to avoid. A
+        # combat/thief persona's day-phase default (branch e) keeps its own mode;
+        # only the genuinely-interchangeable low-risk grinds get balance-rotated.
         recent = state.last_modes[-self._BALANCE_STINTS :]
         if (
             len(recent) >= self._BALANCE_STINTS
             and all(m == actual for m in recent)
-            and actual in MODES
+            and actual in self._LOW_RISK_PRODUCTIVE
         ):
             rotated = self._next_low_risk(actual)
             if rotated != actual:
