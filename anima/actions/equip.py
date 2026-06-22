@@ -62,8 +62,39 @@ async def equip_item(
     if ss.equipment.get(layer) == item_serial:
         return ActionResult(success=True, message="Already equipped")
 
+    # Snapshot the item's pre-lift slot. On a server lift-reject (0x27 LiftRej
+    # — out of range, locked down, too heavy, or the mobile already holding
+    # something) the item never leaves its slot, so the world entry is
+    # unchanged after the PickUp. The old code fired the follow-up EquipItem
+    # (0x13) anyway — against an item it is not holding, which the server
+    # silently ignores — and then reported a *soft success* ("Equip sent
+    # (unverified)"), so the caller (equip_weapon_from_pack /
+    # _ReequipFromBackpack after a death) believed the weapon was wielded while
+    # the agent kept fighting bare-handed, every swing rolling Wrestling
+    # instead of the measured Swords/Tactics/Anatomy stream. Mirror the proven
+    # guard already in drag_drop / drag_to_container / drag_to_ground: bail out
+    # before the wear when the item did not move. A successful lift removes the
+    # item from view (it moves into the mobile's Holding) or — for a split —
+    # decrements its amount, so any change to the snapshot counts as a real
+    # lift.
+    world = getattr(ctx.perception, "world", None)
+    pre_state = None
+    if world is not None and item_serial in world.items:
+        before = world.items[item_serial]
+        pre_state = (before.container, before.x, before.y, before.z, before.amount)
+
     await ctx.conn.send_packet(build_pick_up(item_serial, 1))
     await asyncio.sleep(0.3)
+
+    if pre_state is not None and world is not None and item_serial in world.items:
+        after = world.items[item_serial]
+        if (after.container, after.x, after.y, after.z, after.amount) == pre_state:
+            logger.debug("equip_lift_rejected", serial=f"0x{item_serial:08X}", layer=layer)
+            return ActionResult(
+                success=False,
+                message="lift rejected (item did not move) — not equipped",
+            )
+
     await ctx.conn.send_packet(build_equip_item(item_serial, layer, ss.serial))
 
     deadline = asyncio.get_event_loop().time() + timeout
