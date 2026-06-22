@@ -202,9 +202,34 @@ class PracticeMagery(Procedure):
         mag_gain = gains.get(SKILL_MAGERY, 0.0)
         med_gain = gains.get(SKILL_MEDITATION, 0.0)
 
+        # A run that resolved ZERO casts rolled the Magery CheckSkill zero times:
+        # the loop bailed via the MAX_STALLED_MEDITATIONS breaker because a small
+        # mana pool never regenerated to the cast cost (low-Int starter). This is
+        # NOT a reagent shortage — the reagent gate already passed in can_start —
+        # so keying it as MISSING_RESOURCE sends the planner chasing a reagent
+        # restock that does nothing, and re-suggesting "practice_magery" chains
+        # the planner straight back into the identical mana stall. Surface it as
+        # a retryable BLOCKED failure with NO re-suggestion so the planner
+        # re-evaluates (e.g. picks a different MAGIC procedure or idles to regen),
+        # mirroring the sibling profession loops where a run that resolves zero
+        # checks is a BLOCKED, non-re-suggesting failure (practice_hiding,
+        # practice_peacemaking, practice_music). Meditation gains earned while
+        # trying to reach the cast threshold are still credited.
+        if casts == 0:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message=(
+                    f"Magery practice resolved no casts — mana never reached "
+                    f"the {GREATER_HEAL_MANA} cost (+{med_gain:.1f} Meditation)"
+                ),
+                skill_gains=gains,
+                details={"casts": casts, "fizzles": fizzles},
+            )
+
         return ProcedureResult(
-            success=casts > 0,
-            reason=None if casts > 0 else FailureReason.MISSING_RESOURCE,
+            success=True,
+            reason=None,
             message=(
                 f"Cast {casts} ({fizzles} fizzles), "
                 f"+{mag_gain:.1f} Magery +{med_gain:.1f} Meditation"

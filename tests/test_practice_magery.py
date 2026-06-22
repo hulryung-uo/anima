@@ -226,3 +226,33 @@ async def test_meditation_stall_does_not_spin_forever(monkeypatch):
     assert cast_calls["n"] == 0
     assert med_calls["n"] <= 3
     assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_zero_cast_stall_is_blocked_and_not_resuggested(monkeypatch):
+    """A zero-cast mana stall must be a retryable BLOCKED failure with NO
+    re-suggestion — not MISSING_RESOURCE (reagents are fine) and not a
+    self-chaining ``next_suggestion`` that drops the planner straight back into
+    the identical mana stall (the phantom-re-suggestion anti-pattern fixed in
+    the sibling profession loops)."""
+    from anima.procedures.base import FailureReason
+
+    ss = _ss(mana=0)  # permanently below threshold; meditation never helps
+    ctx = SimpleNamespace(perception=SimpleNamespace(self_state=ss))
+
+    async def fake_cast(_ctx, _spell, target_serial=None, mana_cost=0):
+        # Should never be reached — mana never clears the cast gate.
+        raise AssertionError("cast must not fire while stalled")
+
+    async def fake_meditate(_ctx, target_pct=0.0, timeout=0.0):
+        return SimpleNamespace(success=True)  # mana stays at 0
+
+    monkeypatch.setattr(pm, "cast_spell", fake_cast)
+    monkeypatch.setattr(pm, "meditate", fake_meditate)
+    monkeypatch.setattr(pm.asyncio, "sleep", AsyncMock())
+
+    result = await asyncio.wait_for(PracticeMagery().execute(ctx), timeout=5.0)
+
+    assert result.success is False
+    assert result.reason == FailureReason.BLOCKED
+    assert result.next_suggestion is None
