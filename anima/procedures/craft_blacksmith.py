@@ -615,6 +615,20 @@ class CraftBlacksmith(Procedure):
             ctx.blackboard["_craft_bs_fails"] = 0
             ctx.blackboard["_craft_bs_material_fails"] = 0
             ctx.blackboard["_craft_bs_location_fails"] = 0
+            # A landed craft is proof the material context and the station are
+            # both usable again, so the legacy timed cooldowns those failure
+            # ladders armed (``_craft_bs_material_cooldown`` at >=3 material
+            # misses, ``_craft_bs_location_cooldown`` at >=3 walk-to-forge
+            # misses) must be cleared too — symmetric with the ``_fails`` resets
+            # above and the CircuitBreaker recovery below. Without this the
+            # fails *counters* reset but the up-to-1800s timestamp latch
+            # survives, and ``can_start`` (and the planner's profession gate)
+            # keep refusing to re-enter craft_blacksmith for the rest of that
+            # window even though the very batch that just succeeded proved the
+            # block is stale — a cooldown that never resets after its trigger
+            # cleared. (Clearing to 0 is a no-op when no cooldown was armed.)
+            ctx.blackboard["_craft_bs_material_cooldown"] = 0
+            ctx.blackboard["_craft_bs_location_cooldown"] = 0
             breaker = ctx.blackboard.get("_craft_material_breaker")
             if breaker is not None:
                 breaker.record_success("iron")
