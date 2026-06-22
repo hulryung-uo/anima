@@ -252,6 +252,13 @@ class MetricsAggregator:
             except Exception:
                 kept.append(line)
                 continue
+            # A non-object JSON line (bare number/string/list/null) has no
+            # ``ts`` to compare and would crash ``obj.get`` — and the trim is
+            # exactly what would otherwise PURGE such a wedging line. Keep it
+            # verbatim (like an unparseable line) rather than crash the trim.
+            if not isinstance(obj, dict):
+                kept.append(line)
+                continue
             if obj.get("ts", 0) < cutoff_ts:
                 removed += 1
             else:
@@ -280,6 +287,15 @@ def _read_events_in_window(
         try:
             obj = json.loads(line)
         except Exception:
+            continue
+        # A torn concurrent append (or any other producer) can leave a line
+        # that is valid JSON but NOT an object — a bare number/string/list/
+        # null. ``obj.get`` would then raise AttributeError, aborting the
+        # whole rollup; since run_once() only advances past an hour after a
+        # SUCCESSFUL build_hourly, one such line wedges the hourly/daily
+        # pipeline forever (retrying the same crash every 60s). Skip it, the
+        # same way an unparseable line above is skipped.
+        if not isinstance(obj, dict):
             continue
         ts = obj.get("ts", 0)
         if start <= ts < end:

@@ -119,6 +119,45 @@ class TestHourlyRollup:
         assert row["skills"] == {}
 
     @pytest.mark.asyncio
+    async def test_non_dict_event_line_does_not_crash_rollup(
+        self, events_file, hourly_file, tmp_path,
+    ):
+        # A torn concurrent append (or a stray write from another producer) can
+        # leave a line that is VALID JSON but not an object — a bare number,
+        # string, list, or null. _read_events_in_window's `obj.get("ts", 0)`
+        # then raised AttributeError, aborting build_hourly. Because run_once()
+        # only advances next_start after a SUCCESSFUL build_hourly, that one
+        # line wedged the entire hourly/daily/trim pipeline forever, retrying
+        # the same crash every 60s. The reader must skip a non-object line the
+        # same way it skips an unparseable one.
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        # Write raw lines directly (not via _write_events, which json-dumps
+        # dicts) so the file contains genuine non-object JSON lines.
+        events_file.write_text(
+            "\n".join([
+                json.dumps({"ts": 100.0, "type": "gold_delta", "amount": 50}),
+                "42",            # bare number (e.g. a torn append)
+                '"orphan"',      # bare string
+                "[1, 2, 3]",     # bare list
+                "null",          # bare null
+                json.dumps({"ts": 150.0, "type": "death", "pos": [0, 0]}),
+            ]) + "\n"
+        )
+
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=tmp_path / "d.jsonl",
+            db_path=db,
+        )
+        # Must not raise; the non-object lines are ignored, the well-formed
+        # events still aggregate.
+        row = await agg.build_hourly(window_start=0.0, window_end=3600.0)
+        assert row["gold"]["earned"] == 50
+        assert row["deaths"] == 1
+
+    @pytest.mark.asyncio
     async def test_aggregates_procedures_from_action_logs(
         self, events_file, hourly_file, tmp_path,
     ):
@@ -287,6 +326,38 @@ class TestRetention:
         ]
         assert len(remaining) == 1
         assert remaining[0]["ts"] == 300.0
+
+    @pytest.mark.asyncio
+    async def test_trim_keeps_non_dict_line_without_crashing(
+        self, events_file, tmp_path,
+    ):
+        # trim_events is exactly the path that would PURGE a wedging line, so
+        # it must survive a non-object JSON line (bare number/string/list/null)
+        # rather than crash on `obj.get("ts", 0)`. It keeps such a line verbatim
+        # (it has no comparable ts), like an unparseable line, while still
+        # trimming the real expired dict events around it.
+        events_file.write_text(
+            "\n".join([
+                json.dumps({"ts": 100.0, "type": "gold_delta", "amount": 1}),
+                "42",            # non-object line: no ts to compare
+                json.dumps({"ts": 300.0, "type": "gold_delta", "amount": 3}),
+            ]) + "\n"
+        )
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=tmp_path / "h.jsonl",
+            daily_file=tmp_path / "d.jsonl",
+            db_path=tmp_path / "t.db",
+        )
+        removed = await agg.trim_events(cutoff_ts=250.0)
+        assert removed == 1  # only the ts=100 dict is expired
+        remaining = [
+            line for line in events_file.read_text().splitlines() if line.strip()
+        ]
+        # The non-object line is preserved verbatim alongside the kept dict.
+        assert "42" in remaining
+        assert any('"ts": 300.0' in r for r in remaining)
+        assert len(remaining) == 2
 
     @pytest.mark.asyncio
     async def test_trim_noop_when_nothing_to_remove(self, events_file, tmp_path):
