@@ -132,7 +132,16 @@ class MetricsAggregator:
                 total_fail += stats.get("fail", 0)
                 fail_by_proc[proc] += stats.get("fail", 0)
         total_runs = total_ok + total_fail
-        success_rate = (total_ok / total_runs) if total_runs else 0.0
+        # No procedure runs in the whole day = "no data", NOT a 0% (total
+        # failure) success rate. The hourly summary (build_hourly: the
+        # ``rate`` line) and the alert path (alerts._success_rate) both treat
+        # an empty denominator as 1.0 for exactly this reason — defaulting the
+        # daily rollup to 0.0 instead made an agent-down / non-procedure day
+        # (or a fresh DB with no action_logs) read as a catastrophic 0% in the
+        # daily JSONL that the dashboard and tools/metrics.py consume, and it
+        # would also trip the low_success_rate alert if it were ever fed back.
+        # Align the empty-window default across all three producers.
+        success_rate = (total_ok / total_runs) if total_runs else 1.0
 
         top_failures = sorted(
             fail_by_proc.items(), key=lambda kv: (-kv[1], kv[0]),

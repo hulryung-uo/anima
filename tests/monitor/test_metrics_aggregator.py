@@ -302,6 +302,92 @@ class TestDailyRollup:
         assert row["hourly_missing"] is True
         assert row["cycles_total"] == 0
 
+    @pytest.mark.asyncio
+    async def test_no_procedure_runs_reports_no_data_not_zero(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        # A day whose hourly rows exist but contain ZERO procedure runs (agent
+        # was up but only did non-procedure activity, or action_logs was empty)
+        # must report procedure_success_rate as the "no data" sentinel 1.0 —
+        # the same empty-denominator convention build_hourly's summary and
+        # alerts._success_rate already use. Defaulting to 0.0 instead painted a
+        # no-data day as a catastrophic 0% (total failure) on the dashboard and
+        # in tools/metrics.py's consumer.
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        hourly_rows = [
+            {
+                "hour": "2026-04-18T00:00:00+00:00",
+                "uptime_s": 3600,
+                "procedures": {},  # no procedure runs at all
+                "cycles_completed": 0,
+                "phase_transitions": {},
+                "gold": {"earned": 0, "spent": 0, "delta": 0},
+                "deaths": 0,
+                "stuck_events": 0,
+                "skills": {},
+            },
+            {
+                "hour": "2026-04-18T01:00:00+00:00",
+                "uptime_s": 3600,
+                "procedures": {},  # still no procedure runs
+                "cycles_completed": 0,
+                "phase_transitions": {},
+                "gold": {"earned": 0, "spent": 0, "delta": 0},
+                "deaths": 0,
+                "stuck_events": 0,
+                "skills": {},
+            },
+        ]
+        hourly_file.write_text(
+            "\n".join(json.dumps(r) for r in hourly_rows) + "\n"
+        )
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        row = await agg.build_daily(date_iso="2026-04-18")
+        # hourly rows DO exist, so this is not a "missing hourly" case...
+        assert row["hourly_missing"] is False
+        # ...but with no procedure runs the rate is "no data" (1.0), not 0%.
+        assert row["procedure_success_rate"] == pytest.approx(1.0)
+
+    @pytest.mark.asyncio
+    async def test_real_failures_still_lower_success_rate(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        # Guard the fix against over-correction: a day that DOES have runs and
+        # some failures must still report the true ratio, not 1.0.
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        hourly_rows = [
+            {
+                "hour": "2026-04-19T00:00:00+00:00",
+                "uptime_s": 3600,
+                "procedures": {"mine_ore": {"ok": 1, "fail": 3, "avg_ms": 0}},
+                "cycles_completed": 0,
+                "phase_transitions": {},
+                "gold": {"earned": 0, "spent": 0, "delta": 0},
+                "deaths": 0,
+                "stuck_events": 0,
+                "skills": {},
+            },
+        ]
+        hourly_file.write_text(
+            "\n".join(json.dumps(r) for r in hourly_rows) + "\n"
+        )
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        row = await agg.build_daily(date_iso="2026-04-19")
+        # 1 ok / 4 runs = 0.25, unaffected by the empty-denominator default.
+        assert row["procedure_success_rate"] == pytest.approx(0.25)
+
 
 class TestRetention:
     @pytest.mark.asyncio
