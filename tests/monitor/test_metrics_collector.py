@@ -154,6 +154,67 @@ class TestBusSubscriptions:
         # Bus-sourced death carries no pos/hp_before; just verify we recorded.
         assert len(death_events) >= 1
 
+    def test_repeated_planner_death_counts_once(self, events_file: Path):
+        """The planner republishes ``planner.death`` on EVERY tick while the
+        agent is a ghost (planner.py priority-1 survival branch). The metrics
+        collector must count that as ONE death, not one per tick, until a real
+        resurrection clears the latch."""
+        from anima.core.bus import EventBus
+
+        bus = EventBus()
+        col = MetricsCollector(events_file=events_file)
+        col.attach_bus(bus)
+        for _ in range(5):
+            bus.publish("planner.death", {"message": "☠", "importance": 5})
+        death_events = [e for e in _read(events_file) if e["type"] == "death"]
+        assert len(death_events) == 1
+
+    def test_bus_and_statediff_death_not_double_counted(self, events_file: Path):
+        """A single real death is observed by BOTH producers — the planner's
+        bus ``planner.death`` and the state.json hp<=0 edge. They share one
+        death latch, so the death is recorded exactly once regardless of which
+        producer sees it first."""
+        from anima.core.bus import EventBus
+
+        bus = EventBus()
+        col = MetricsCollector(events_file=events_file)
+        col.attach_bus(bus)
+        # Bus fires first (planner detects hits<=0 in its loop)...
+        bus.publish("planner.death", {"message": "☠", "importance": 5})
+        # ...then the state.json poll observes the same hp<=0 edge.
+        col._diff_state(_make_state(hp=20), _make_state(hp=0))
+        death_events = [e for e in _read(events_file) if e["type"] == "death"]
+        assert len(death_events) == 1
+
+    def test_statediff_then_bus_death_not_double_counted(self, events_file: Path):
+        """Reverse ordering: the state-diff poll observes the death first, then
+        the bus event arrives. Still exactly one death."""
+        from anima.core.bus import EventBus
+
+        bus = EventBus()
+        col = MetricsCollector(events_file=events_file)
+        col.attach_bus(bus)
+        col._diff_state(_make_state(hp=20), _make_state(hp=0))
+        bus.publish("planner.death", {"message": "☠", "importance": 5})
+        death_events = [e for e in _read(events_file) if e["type"] == "death"]
+        assert len(death_events) == 1
+
+    def test_bus_death_recounts_after_real_resurrection(self, events_file: Path):
+        """After a genuine resurrection re-arms the latch via the state-diff
+        path, a fresh bus death IS counted again."""
+        from anima.core.bus import EventBus
+
+        bus = EventBus()
+        col = MetricsCollector(events_file=events_file)
+        col.attach_bus(bus)
+        bus.publish("planner.death", {"message": "☠", "importance": 5})
+        # Healer res clears the latch (HP well above the flicker threshold).
+        col._diff_state(_make_state(hp=0, hp_max=112), _make_state(hp=80, hp_max=112))
+        # A second, distinct death.
+        bus.publish("planner.death", {"message": "☠ again", "importance": 5})
+        death_events = [e for e in _read(events_file) if e["type"] == "death"]
+        assert len(death_events) == 2
+
     def test_supervisor_auto_recover_emitted(self, events_file: Path):
         from anima.core.bus import EventBus
 

@@ -112,6 +112,17 @@ class MetricsCollector:
         )
 
     def _on_death_event(self, _topic: str, data: dict) -> None:
+        # The bus (planner.death) and the state.json hp<=0 edge are TWO
+        # producers for the SAME real death: the planner publishes here in the
+        # same loop iteration that drives hits<=0 into state.json. Counting both
+        # double-counts one death in the hourly/daily ``deaths`` rollup and
+        # doubles the death alert's value. Gate the bus death through the same
+        # ``_was_dead`` latch the state-diff path uses, so whichever producer
+        # observes the death first wins and the other is suppressed until a real
+        # resurrection clears the latch (see ``_diff_state``).
+        if self._was_dead:
+            return
+        self._was_dead = True
         self._emit(
             "death",
             source="bus",
