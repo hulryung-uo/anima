@@ -44,7 +44,19 @@ def render(arc: Archive) -> str:
     targetable = {cell_to_str(c) for c in targetable_cells()}
     quality_elites = [g for g in active_elites if cell_to_str(g.cell) in targetable]
     qd_score = round(sum(g.fitness for g in quality_elites), 3)
-    best_fitness = round(max((g.fitness for g in quality_elites), default=0.0), 3)
+    # The headline "best" crowns ONE genome as the run's apparent champion, so it
+    # must read the SAME variance-aware trust signal the lineage listing below is
+    # sorted/led by (and that select.choose_parent picks parents on, reeval
+    # --elites re-checks in, and observe.history's "PROVEN recipes" list leads
+    # with -- 985ff44): _selection_quality = min(fitness, reliability) (reliability
+    # = mean - lambda*pstdev). max(g.fitness) is the raw MEAN, which floats a lucky
+    # high-variance elite (per_seed [400, 0] -> mean 200 but reliability 0) to the
+    # headline as "best 200.000" even though that same elite sorts LAST in the
+    # lineage and every other consumer distrusts it -- the exact display-vs-trust
+    # contradiction the lineage sort already removed. qd-score stays a sum of the
+    # raw means (a sum summarises aggregate coverage, not a single champion).
+    best_fitness = round(max((_selection_quality(g) for g in quality_elites),
+                             default=0.0), 3)
     lines.append(
         f"genomes {s['total_genomes']}  filled {filled}/{len(active)}"
         f"  qd-score {qd_score}  best {best_fitness}"
