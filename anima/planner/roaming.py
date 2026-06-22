@@ -195,23 +195,36 @@ class RoamingHelper:
         # Mark locations we're already standing at as temporarily failed.
         # This prevents ping-pong: arrive at vendor location → can't sell →
         # walk to next vendor → can't sell → walk back to first one → repeat.
+        #
+        # Key the failed-destination dedup on the location's NAVIGABLE point
+        # (``nav_x``/``nav_y``), NOT its raw (``x``/``y``). The move this method
+        # returns walks to ``nav_x``/``nav_y`` (``_MoveToProcedure(.., nav_x,
+        # nav_y)`` below), and when that walk fails the planner records the
+        # failure under those SAME nav coords (``_record_failed_destination(
+        # proc._x, proc._y)``). Reading/marking on the raw ``x``/``y`` here
+        # therefore looks up a different key for any indoor location whose
+        # approach point differs from its interior coords — so a destination
+        # whose move just failed is never recognised as failed and gets
+        # re-selected immediately, replaying the exact doomed-path ping-pong
+        # this dedup exists to stop. Pin all three (target, failure-record,
+        # dedup-check) to one key.
         for loc in ALL_LOCATIONS:
             name_lower = loc.name.lower()
             if any(kw in name_lower for kw in keywords):
-                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
-                if dist <= 3 and (loc.x, loc.y) not in self._planner._failed_destinations:
-                    self._planner._failed_destinations[(loc.x, loc.y)] = _time.time()
+                dist = max(abs(loc.nav_x - ss.x), abs(loc.nav_y - ss.y))
+                if dist <= 3 and (loc.nav_x, loc.nav_y) not in self._planner._failed_destinations:
+                    self._planner._failed_destinations[(loc.nav_x, loc.nav_y)] = _time.time()
 
         candidates: list[LocationScore] = []
         for loc in ALL_LOCATIONS:
             name_lower = loc.name.lower()
             if any(kw in name_lower for kw in keywords):
-                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
+                dist = max(abs(loc.nav_x - ss.x), abs(loc.nav_y - ss.y))
                 if dist > max_dist:
                     continue  # skip locations in other cities
                 if dist <= 3:
                     continue  # already here (handled above as temporarily failed)
-                if self.is_destination_failed(loc.x, loc.y):
+                if self.is_destination_failed(loc.nav_x, loc.nav_y):
                     continue
                 candidates.append(self._location_stats.get_score(loc, dist))
 
@@ -229,7 +242,7 @@ class RoamingHelper:
         if best_dist > 20:
             from anima.world_knowledge import ALL_LOCATIONS as _all_locs
             waypoint = _find_waypoint_toward(ss.x, ss.y, best.x, best.y, _all_locs)
-            if waypoint and not self.is_destination_failed(waypoint.x, waypoint.y):
+            if waypoint and not self.is_destination_failed(waypoint.nav_x, waypoint.nav_y):
                 logger.info(
                     "planner_waypoint_routing",
                     via=waypoint.name,
@@ -299,7 +312,11 @@ class RoamingHelper:
         candidates: list[LocationScore] = []
         for loc in ALL_LOCATIONS:
             if _ACTIVITY_RE.search(loc.name):
-                if self.is_destination_failed(loc.x, loc.y):
+                # Dedup on the navigable point (see move_to_location): the move
+                # target and the recorded failure both use nav_x/nav_y, so the
+                # skip check must too or an approach-point location whose walk
+                # just failed is re-selected on the next tick.
+                if self.is_destination_failed(loc.nav_x, loc.nav_y):
                     continue
                 if loc.name in exhausted:
                     continue  # recently exhausted — pick a different mine
@@ -322,7 +339,7 @@ class RoamingHelper:
         target = mine_loc
         if best_dist > 30:
             waypoint = _find_waypoint_toward(ss.x, ss.y, target.x, target.y, ALL_LOCATIONS)
-            if waypoint and not self.is_destination_failed(waypoint.x, waypoint.y):
+            if waypoint and not self.is_destination_failed(waypoint.nav_x, waypoint.nav_y):
                 logger.info(
                     "planner_waypoint_routing",
                     via=waypoint.name,
