@@ -58,7 +58,6 @@ class MetricsCollector:
     def __init__(self, window_seconds: float = 600.0) -> None:
         self._window = window_seconds
         self._events: list[tuple[float, str, dict]] = []  # (timestamp, event, data)
-        self._last_pos: tuple[int, int] | None = None
 
     def record(self, event: str, data: dict | None = None) -> None:
         """Record an event."""
@@ -72,6 +71,14 @@ class MetricsCollector:
         window = seconds or self._window
         cutoff = time.time() - window
         m = WindowMetrics(window_seconds=window)
+        # ``last_pos`` is window-local on purpose. It used to be instance
+        # state (``self._last_pos``) that persisted across get_window() calls,
+        # so the first in-window step diffed against a position left over from
+        # a previous (possibly now out-of-window) call — making distance_moved
+        # non-idempotent: calling get_window() twice on the same events yielded
+        # different totals. The analyzer calls this periodically, so the
+        # dashboard distance metric drifted. A fresh per-window cursor fixes it.
+        last_pos: tuple[int, int] | None = None
 
         for ts, event, data in self._events:
             if ts < cutoff:
@@ -82,9 +89,9 @@ class MetricsCollector:
                 pos = data.get("pos")
                 if pos:
                     m.unique_positions.add(pos)
-                    if self._last_pos and pos != self._last_pos:
+                    if last_pos and pos != last_pos:
                         m.distance_moved += 1
-                    self._last_pos = pos
+                    last_pos = pos
             elif event == "walk_denied":
                 m.walk_denied += 1
             elif event == "skill_success":
