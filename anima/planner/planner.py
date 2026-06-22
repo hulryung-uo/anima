@@ -1079,8 +1079,19 @@ class Planner:
                 except Exception:
                     pass
             proc = self.registry.get("heal_self")
-            if (proc and not self._proc_breaker.is_open("heal_self")
-                    and await proc.can_start(ctx)):
+            # Fetch heal_self DIRECTLY — the anti-thrash starvation breaker must
+            # never silence a last-resort survival heal. heal_self quaffs an
+            # on-hand potion; under sustained pressure its can_start can fail a
+            # few times in a row (no free hand, watchdog-cancelled tick), which
+            # demotes it in self._proc_breaker. If the breaker were honoured
+            # here and the agent also has no usable bandages (a mage / consumed
+            # bandages), BOTH survival heals would yield nothing and the
+            # critically-wounded agent would fall straight through to the
+            # profession / mining loop and bleed to death — the exact
+            # non-negotiable death the bandage fallback below was already fixed
+            # to prevent. Survival outranks the breaker; mirror the direct
+            # bandage_self fetch.
+            if proc and await proc.can_start(ctx):
                 _intent(f"HP 위험 ({ss.hits}/{ss.hits_max}) → 치료")
                 return proc
             # Bandages heal too (and grind Healing) — combat personas
