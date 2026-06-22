@@ -15,6 +15,27 @@ import structlog
 logger = structlog.get_logger()
 
 
+def _coerce_amount(value: Any) -> int | None:
+    """Coerce a ``gold_delta`` ``amount`` field to an int, or None if it is not
+    a usable number.
+
+    The metrics events file is an append-only JSONL stream that a torn
+    concurrent write or a foreign producer can corrupt — the very reason
+    ``_read_events_in_window`` already skips unparseable and non-object lines.
+    A ``gold_delta`` event whose ``amount`` is a string, null, list, or bool
+    slipped past those guards (it IS a valid dict), then crashed build_hourly:
+    ``e.get("amount", 0) > 0`` raises ``TypeError`` comparing str/None to int.
+    Because run_once() only advances past an hour after a SUCCESSFUL
+    build_hourly, that one event wedged the whole hourly/daily/trim pipeline
+    forever, retrying the same crash every 60s. Drop a non-numeric amount the
+    same way a malformed line is dropped. (``bool`` is excluded so a stray
+    ``True`` is not silently counted as +1 gold.)
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
 class MetricsAggregator:
     def __init__(
         self,
@@ -44,14 +65,17 @@ class MetricsAggregator:
         )
         procs = await _aggregate_procedures(self.db_path, window_start, window_end)
 
-        earned = sum(
-            int(e["amount"]) for e in events
-            if e.get("type") == "gold_delta" and e.get("amount", 0) > 0
-        )
-        spent = sum(
-            -int(e["amount"]) for e in events
-            if e.get("type") == "gold_delta" and e.get("amount", 0) < 0
-        )
+        # Coerce each amount to a number first (skip non-numeric), so a
+        # corrupt gold_delta event can't crash the rollup — see _coerce_amount.
+        _deltas = [
+            amt
+            for e in events
+            if e.get("type") == "gold_delta"
+            for amt in (_coerce_amount(e.get("amount")),)
+            if amt is not None
+        ]
+        earned = sum(a for a in _deltas if a > 0)
+        spent = sum(-a for a in _deltas if a < 0)
 
         hour_iso = (
             datetime.fromtimestamp(window_start, tz=timezone.utc)

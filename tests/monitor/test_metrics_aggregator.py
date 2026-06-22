@@ -119,6 +119,64 @@ class TestHourlyRollup:
         assert row["skills"] == {}
 
     @pytest.mark.asyncio
+    async def test_non_numeric_gold_amount_does_not_crash_rollup(
+        self, events_file, hourly_file, tmp_path,
+    ):
+        # A gold_delta event is a valid dict with a "type", so it sails past
+        # the non-object / typeless guards — but its "amount" field can still
+        # be corrupt (a torn concurrent append, an older string-typed schema,
+        # or another producer). The old `e.get("amount", 0) > 0` comparison
+        # then raised TypeError ("'>' not supported between instances of 'str'
+        # and 'int'") on a string/null/list amount, aborting build_hourly.
+        # Because run_once() only advances next_start after a SUCCESSFUL
+        # build_hourly, that one event wedged the whole hourly/daily/trim
+        # pipeline forever, retrying every 60s. The bad amount must be skipped,
+        # like a malformed line, while well-formed deltas still aggregate.
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        _write_events(events_file, [
+            {"ts": 100.0, "type": "gold_delta", "amount": 50},
+            {"ts": 110.0, "type": "gold_delta", "amount": "900"},   # string
+            {"ts": 120.0, "type": "gold_delta", "amount": None},    # null
+            {"ts": 130.0, "type": "gold_delta", "amount": [1, 2]},  # list
+            {"ts": 140.0, "type": "gold_delta"},                    # missing
+            {"ts": 150.0, "type": "gold_delta", "amount": -10},
+        ])
+
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=tmp_path / "d.jsonl",
+            db_path=db,
+        )
+        # Must not raise; only the two numeric amounts count.
+        row = await agg.build_hourly(window_start=0.0, window_end=3600.0)
+        assert row["gold"]["earned"] == 50
+        assert row["gold"]["spent"] == 10
+        assert row["gold"]["delta"] == 40
+
+    @pytest.mark.asyncio
+    async def test_bool_gold_amount_is_not_counted(
+        self, events_file, hourly_file, tmp_path,
+    ):
+        # bool is an int subclass, so a stray `True`/`False` amount would
+        # otherwise be summed as +1/0 gold. _coerce_amount drops it.
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        _write_events(events_file, [
+            {"ts": 100.0, "type": "gold_delta", "amount": True},
+            {"ts": 110.0, "type": "gold_delta", "amount": 7},
+        ])
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=tmp_path / "d.jsonl",
+            db_path=db,
+        )
+        row = await agg.build_hourly(window_start=0.0, window_end=3600.0)
+        assert row["gold"]["earned"] == 7
+
+    @pytest.mark.asyncio
     async def test_non_dict_event_line_does_not_crash_rollup(
         self, events_file, hourly_file, tmp_path,
     ):
