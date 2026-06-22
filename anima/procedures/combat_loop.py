@@ -222,6 +222,18 @@ LOOT_MAX_ATTEMPTS = 3
 # it keeps getting re-engaged.
 STATUS_REQUEST_CACHE_MAX = 512
 
+# Cap on the per-session looted-corpse de-dup set (``_looted_corpses``).
+# ``_loot_fresh_corpses`` adds one corpse serial here every time it empties (or
+# retires as empty) a body, and NEVER reaped them. ServUO streams an unbounded
+# number of DISTINCT corpse serials over a soak — every Spawner mob the agent
+# fights dies, drops a fresh-serial corpse, and despawns — so on a pure-combat
+# profile (the arena warrior loop drives kills directly, the planner's own
+# ``_LootCorpses`` 200-cap never runs) this set grew without bound for the whole
+# session, also slowing the ``serial in looted`` membership test on every kill.
+# We bound it FIFO-ish (sets aren't ordered, so we drop an arbitrary half once
+# over the cap), far above any plausible in-view corpse count.
+LOOTED_CORPSES_CACHE_MAX = 512
+
 # Emergency heal-potion quaff. A bandage and a potion run on two *independent*
 # timers in UO — drinking a heal potion gives an instant HP bump while a
 # bandage is still applying. The interleaved bandage (above) takes ~8s to
@@ -583,6 +595,13 @@ async def _loot_fresh_corpses(ctx: AgentContext) -> int:
             gold=result.data.get("gold", 0),
             message=result.message,
         )
+    # Reap the de-dup set so it can't grow for the whole soak. Drop the oldest
+    # (arbitrary, sets are unordered) half down toward the cap; an evicted
+    # serial belongs to a long-emptied corpse that will not stream again (a
+    # despawned mob keeps no serial), so re-admitting it is harmless.
+    if len(looted) > LOOTED_CORPSES_CACHE_MAX:
+        for serial in list(looted)[: len(looted) - LOOTED_CORPSES_CACHE_MAX // 2]:
+            looted.discard(serial)
     return gold
 
 
