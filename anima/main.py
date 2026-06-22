@@ -506,6 +506,35 @@ async def inspect_self(conn: UoConnection, perception: Perception) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _reap_task(task: asyncio.Task) -> None:
+    """Cancel a background task and AWAIT it to a real terminal state.
+
+    A bare ``task.cancel()`` only *requests* cancellation: the task keeps
+    running detached until the loop next schedules it, and the planner's
+    ``finally`` returns immediately. The reconnect loop then proceeds to
+    ``avatar.close()`` (tearing down the TCP connection / LLM) while the
+    forum task may still be suspended mid-``await`` on ``forum_client.
+    create_post`` (HTTP) or ``ctx.llm.chat`` — so it can issue a stray
+    network/LLM call against a half-torn-down world, and its unretrieved
+    CancelledError/exception trips asyncio's "Task was destroyed but it is
+    pending" / "Task exception was never retrieved" warnings.
+
+    Awaiting the cancelled task makes shutdown deterministic: the task is
+    fully unwound before we return. Mirrors MetaController.close() /
+    StrategySelector background-task reaping (commits a3956e4, 3142ad1).
+    Idempotent and never raises.
+    """
+    if task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("forum_task_reap_error", error=str(e))
+
+
 async def planner_loop(ctx: AgentContext, start_delay_s: float = 0.0,
                        warp_hold_s: float = 0.0) -> None:
     """Run the v2 rule-based planner instead of behavior tree brain."""
@@ -570,7 +599,7 @@ async def planner_loop(ctx: AgentContext, start_delay_s: float = 0.0,
     try:
         await planner.run(ctx)
     finally:
-        forum_task.cancel()
+        await _reap_task(forum_task)
 
 
 FORUM_INTERVAL = 3600  # minimum 1 hour between posts
