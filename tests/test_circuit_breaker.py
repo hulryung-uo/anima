@@ -215,3 +215,73 @@ class TestCircuitBreaker:
         time.sleep(0.06)                # window lapsed, but no is_open() poll
         cb.record_failure("a")          # re-trip with a fresh window
         assert cb.is_open("a") is True
+
+
+class TestCircuitBreakerNoLeak:
+    """The breaker must not accumulate one permanent entry per distinct key.
+
+    Regression: keys for ephemeral targets (depleted 8x8 ore-bank cells the
+    miner roams away from, one-shot ore-pile serials that despawn) were tripped
+    once and never revisited. The half-open eviction in ``is_open`` only fires
+    when that exact key is polled again post-cooldown — which never happens for
+    a key gone from the world — so ``_counts``/``_tripped_at`` grew without
+    bound across a long session. Mutations now opportunistically sweep targets
+    idle past the cooldown window.
+    """
+
+    def _size(self, cb: CircuitBreaker) -> int:
+        # Total distinct keys the breaker is holding state for.
+        return len(set(cb._counts) | set(cb._tripped_at) | set(cb._half_open))
+
+    def test_idle_tripped_keys_are_swept_on_next_mutation(self):
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.05)
+        # Trip 100 distinct, never-revisited keys (e.g. roamed-past ore banks).
+        for i in range(100):
+            cb.trip(("bank", i))
+        assert self._size(cb) == 100
+        time.sleep(0.06)  # every key's cooldown window has now lapsed
+        # A single later, unrelated trip sweeps all the lapsed, idle keys.
+        cb.trip(("bank", 9999))
+        # Only the just-touched key remains — not 101.
+        assert self._size(cb) == 1
+        assert cb.is_open(("bank", 9999)) is True
+
+    def test_explicit_prune_expired_bounds_memory(self):
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.05)
+        for i in range(50):
+            cb.trip(i)
+        assert self._size(cb) == 50
+        time.sleep(0.06)
+        evicted = cb.prune_expired()
+        assert evicted == 50
+        assert self._size(cb) == 0
+
+    def test_sweep_never_evicts_a_currently_open_target(self):
+        cb = CircuitBreaker(max_failures=1, cooldown_s=10.0)
+        cb.trip("hot")          # open, inside its long cooldown
+        cb.trip("also_hot")
+        assert cb.is_open("hot") is True
+        cb.record_failure("third")  # mutation triggers a sweep
+        # Nothing lapsed yet, so the open targets survive the sweep.
+        assert cb.is_open("hot") is True
+        assert cb.is_open("also_hot") is True
+
+    def test_lapsed_unpolled_failure_still_retrips_despite_sweep(self):
+        """The sweep must not break the fresh-window re-trip of the live key.
+
+        The key being recorded is ``exclude``-protected, so a failure landing
+        after its window lapsed (with no intervening poll) still re-opens it.
+        """
+        cb = CircuitBreaker(max_failures=1, cooldown_s=0.05)
+        cb.record_failure("a")
+        assert cb.is_open("a") is True
+        time.sleep(0.06)            # window lapsed, no is_open() poll
+        cb.record_failure("a")      # sweep runs, but "a" is excluded
+        assert cb.is_open("a") is True
+
+    def test_prune_keeps_recent_subthreshold_counters(self):
+        cb = CircuitBreaker(max_failures=3, cooldown_s=10.0)
+        cb.record_failure("a")  # 1 of 3, recent — must survive
+        cb.record_failure("b")  # triggers a sweep; "a" is recent, kept
+        assert cb.failure_count("a") == 1
+        assert cb.failure_count("b") == 1
