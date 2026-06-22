@@ -347,7 +347,19 @@ class SellToVendor(Procedure):
         expected_gold = sum(si.price * si.amount for si in sellable)
 
         if not items_to_sell:
-            _mark_refused(ctx, vendor.serial)
+            # Do NOT _mark_refused here: the vendor cooperated fully — it sent a
+            # complete 0x9E sell list — and the ONLY reason nothing is sellable
+            # is our OWN KEEP_GRAPHICS / surplus-tool protection (every offered
+            # item is something we deliberately chose to keep). The refused-vendor
+            # latch (_VENDOR_REFUSE_COOLDOWN, 300s) exists for vendors that
+            # genuinely won't trade with us — a rejection-speech "not interested"
+            # or a vendor that never answered the Sell request. Blacklisting a
+            # willing vendor for 5 minutes because WE kept everything strands the
+            # next run: once we accumulate a sellable item (e.g. after mining /
+            # crafting more), _find_vendor skips this nearest, perfectly-good
+            # vendor and either walks to a farther one or finds none at all. The
+            # "all protected" outcome is purely about our own pack contents, so
+            # surface a retryable BLOCKED failure and leave the vendor selectable.
             logger.info(
                 "sell_nothing_to_sell",
                 vendor=vendor_name,
