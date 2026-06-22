@@ -258,3 +258,54 @@ class TestMaybeRefreshLLM:
             await s._refresh_task
         except (asyncio.CancelledError, BaseException):
             pass
+
+
+class TestCloseReapsRefreshTask:
+    @pytest.mark.asyncio
+    async def test_close_cancels_in_flight_refresh(self):
+        """Regression: close() must cancel+await the detached refresh task.
+
+        maybe_refresh spawns _do_refresh with a bare asyncio.create_task that
+        is not a TaskGroup child, so without an explicit reap on shutdown it
+        outlives the session (suspended in a slow LLM call) holding ctx/llm.
+        """
+        s = StrategySelector()
+        s._last_refresh = 0.0
+
+        slow_done = asyncio.Event()
+
+        async def slow_chat(_messages):
+            await slow_done.wait()  # never completes during this test
+            return MagicMock(text="STRATEGY: grind_mining\nREASONING: x")
+
+        ctx = MagicMock()
+        fake_llm = MagicMock()
+        fake_llm.chat = slow_chat
+        ctx.llm = fake_llm
+        ctx.perception.self_state.gold = 0
+        ctx.perception.self_state.weight = 0
+        ctx.perception.self_state.weight_max = 400
+        ctx.perception.self_state.equipment = {0x15: 0x101}
+        ctx.perception.world.items = {}
+        # No active expedition cycle so _do_refresh reaches the LLM await.
+        ctx.blackboard = {}
+
+        spawned = await asyncio.wait_for(s.maybe_refresh(ctx), timeout=0.5)
+        assert spawned is True
+        task = s._refresh_task
+        assert task is not None
+        assert not task.done()
+
+        # Shutdown must cancel and reap the in-flight task — and clear the ref.
+        await asyncio.wait_for(s.close(), timeout=0.5)
+        assert task.cancelled()
+        assert s._refresh_task is None
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent_with_no_task(self):
+        """close() is a safe no-op when no refresh has ever been spawned."""
+        s = StrategySelector()
+        assert s._refresh_task is None
+        await s.close()  # must not raise
+        await s.close()  # idempotent
+        assert s._refresh_task is None

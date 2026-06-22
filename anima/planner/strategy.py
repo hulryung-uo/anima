@@ -325,3 +325,30 @@ REASONING: <one short sentence>"""
             return False
         excl = STRATEGY_EXCLUSIONS.get(self._current.name, set())
         return procedure_name in excl
+
+    async def close(self) -> None:
+        """Cancel and reap any in-flight background refresh task.
+
+        ``maybe_refresh`` spawns ``_do_refresh`` with a bare
+        ``asyncio.create_task``, so the task is NOT a child of the planner's
+        ``TaskGroup`` and is therefore not torn down when the session ends
+        (disconnect, eval-window close, reconnect). With an LLM configured,
+        ``_do_refresh`` may be suspended for the whole LLM timeout inside
+        ``_ask_llm``; left orphaned it keeps the ``ctx``/``llm`` references
+        alive, may emit a stray LLM call or ``strategy_changed`` write after
+        the world has been torn down, and trips asyncio's "Task was destroyed
+        but it is pending" warning. The planner calls this from its ``run``
+        ``finally`` so shutdown is deterministic. Mirrors
+        ``MetaController.close`` (commit a3956e4). Idempotent and never raises.
+        """
+        task = self._refresh_task
+        self._refresh_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("strategy_close_task_error", error=str(e))
