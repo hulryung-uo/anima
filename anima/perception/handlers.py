@@ -412,6 +412,23 @@ def register_handlers(
         if p.self_state.context_menu_serial == serial:
             p.self_state.context_menu_serial = 0
             p.self_state.context_menu = []
+        # The same stale-pointer hazard hits the vendor trading state. The
+        # cached vendor_serial + vendor_buy_list / vendor_sell_list are cleared
+        # by 0x3B CloseVendorInterface (handle_close_vendor) — but a vendor
+        # mobile can leave view via THIS 0x1D Delete with NO 0x3B (it walks out
+        # of range, the agent recalls/teleports away, or the vendor despawns).
+        # The buy/sell flows (skills/trade/vendor.py, procedures/*_vendor.py)
+        # poll a *non-empty* list as the "this vendor's list is ready" signal
+        # and then send build_buy_items/build_sell_items to vendor_serial. A
+        # leftover list for a gone vendor therefore races the next open: the
+        # poll fires on the stale list before the new 0x74/0x9E lands and the
+        # trade targets the wrong (departed) vendor — exactly the hazard
+        # handle_close_vendor's own comment warns about. Clear on the matching
+        # delete, mirroring the open_container / context_menu clears above.
+        if p.self_state.vendor_serial == serial:
+            p.self_state.vendor_serial = 0
+            p.self_state.vendor_buy_list = []
+            p.self_state.vendor_sell_list = []
         if was_mobile:
             p.emit(GameEventType.MOBILE_REMOVED, {"serial": serial})
         else:
