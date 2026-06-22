@@ -61,6 +61,48 @@ def head(repo: str | Path) -> str:
 _LEFTOVER_COMMIT_SUBJECT = "foundry-mutation: (auto-commit leftover changes)"
 
 
+def _git_unquote(path: str) -> str:
+    """Decode git's C-style-quoted porcelain path back to its real bytes.
+
+    ``-c core.quotepath=false`` only stops git from ESCAPING non-ASCII bytes; it
+    does NOT stop git from *quoting* a path that contains a space, tab, quote,
+    backslash, or other control char. Such a path is still emitted wrapped in
+    double-quotes with C-style escapes — e.g. ``anima/new feature.py`` prints as
+    ``"anima/new feature.py"`` and ``anima/with\\ttab.py`` as ``"anima/with\\ttab.py"``.
+    The bare ``path.startswith("anima/")`` test in ``_genome_leftovers`` then
+    fails on the leading ``"`` (exactly like the non-ASCII case commit 55d0273
+    fixed, which only covered byte-escaping), so a mutation whose only edit is a
+    genome file with a space/tab in its name is dropped from the fold:
+    ``mutate_with_claude`` sees ``after == before``, reports ``changed=False``,
+    and the whole eval window is wasted on a "no variant" cycle.
+
+    Unwrap a quoted path and resolve its C escapes byte-by-byte (preserving raw
+    UTF-8 — quotepath=false leaves non-ASCII unescaped, so a quoted UTF-8+space
+    name round-trips correctly). A path that isn't quoted is returned unchanged.
+    """
+    if not (len(path) >= 2 and path[0] == '"' and path[-1] == '"'):
+        return path
+    raw = path[1:-1].encode("utf-8", "surrogateescape")
+    # git C-escapes: \a \b \t \n \v \f \r \" \\ plus octal \ooo for other bytes.
+    simple = {0x61: 7, 0x62: 8, 0x74: 9, 0x6E: 10, 0x76: 11, 0x66: 12,
+              0x72: 13, 0x22: 0x22, 0x5C: 0x5C}
+    out = bytearray()
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == 0x5C and i + 1 < n:  # backslash
+            nxt = raw[i + 1]
+            if nxt in simple:
+                out.append(simple[nxt]); i += 2; continue
+            if 0x30 <= nxt <= 0x37:  # octal \ooo (1-3 digits)
+                j, octs = i + 1, b""
+                while j < n and len(octs) < 3 and 0x30 <= raw[j] <= 0x37:
+                    octs += bytes([raw[j]]); j += 1
+                out.append(int(octs, 8)); i = j; continue
+        out.append(c); i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
 def _genome_leftovers(repo: str | Path) -> list[str]:
     """Uncommitted paths that represent the mutator's OWN genome work.
 
@@ -103,8 +145,12 @@ def _genome_leftovers(repo: str | Path) -> list[str]:
             continue
         status, path = line[:2], line[3:].strip()
         # Rename entries are "R  old -> new"; the new path is what matters.
+        # The " -> " separator is emitted UNquoted, so split before unquoting.
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
+        # Resolve git's C-quoting (space/tab/special-char names stay quoted even
+        # under quotepath=false) so the anima/ prefix test sees the real path.
+        path = _git_unquote(path)
         # Genome content lives only under anima/ -- for tracked changes
         # (modification / addition / deletion / rename) and untracked files alike.
         if path.startswith("anima/"):
