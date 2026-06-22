@@ -99,6 +99,21 @@ _TONGS = [0x0FBB, 0x0FBC]
 for g in _TONGS:
     ITEM_VENDOR_MAP[g] = ["blacksmith", "tinker"]
 
+# Pickaxes — surplus (count >= 2) is sellable via the keep-at-least-1
+# logic.  Without a mapping the surplus resolved to None ("any vendor")
+# and the agent would walk to the wrong shop and get refused.  ServUO
+# SBTinker / SBBlacksmith / SBMiner all carry Pickaxe in their sell
+# lists (Add(typeof(Pickaxe), ...)), so route to those vendor types.
+_PICKAXES = [0x0E85, 0x0E86]
+for g in _PICKAXES:
+    ITEM_VENDOR_MAP[g] = ["tinker", "blacksmith", "miner"]
+
+# Saws — surplus sellable like pickaxes.  ServUO SBTinker buys Saw
+# (Add(typeof(Saw), 7)); no blacksmith/miner sell entry, so tinker only.
+_SAWS = [0x1034, 0x1035]
+for g in _SAWS:
+    ITEM_VENDOR_MAP[g] = ["tinker"]
+
 
 def get_vendor_keywords_for_items(item_graphics: set[int]) -> list[str]:
     """Given a set of item graphics, return vendor keywords to search for."""
