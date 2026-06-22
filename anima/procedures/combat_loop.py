@@ -880,6 +880,12 @@ class HuntNearby(Procedure):
         known_corpses = _corpse_serials(ctx)
 
         async def _send_attack(serial: int) -> None:
+            # Publish the engaged serial so the brain's periodic stale-mobile
+            # prune protects it: a fight whose 0xA1/0x2D updates briefly stall
+            # must not have its target reaped out of world.mobiles mid-swing
+            # (the loop holds the target in a local ref and re-reads
+            # world.mobiles.get(target.serial) every tick). Cleared in finally.
+            ctx.blackboard["combat_target_serial"] = serial
             await ctx.conn.send_packet(build_attack(serial))
             ctx.blackboard["_attack_last_ts"] = time.monotonic()
         try:
@@ -1098,6 +1104,9 @@ class HuntNearby(Procedure):
                     )
                     await _send_attack(target.serial)
         finally:
+            # Disengaged: drop the prune-protection latch so a foe we walked
+            # away from can age out of world.mobiles normally.
+            ctx.blackboard.pop("combat_target_serial", None)
             # Never leave war mode on — it blocks vendors/meditation/etc.
             try:
                 await ctx.conn.send_packet(build_war_mode(False))

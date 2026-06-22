@@ -28,6 +28,14 @@ logger = structlog.get_logger()
 # Cooldown between skill executions (seconds)
 SKILL_COOLDOWN = 0.5  # minimal gap between skill executions
 
+# How often the brain reaps stale mobiles out of world.mobiles. The UO server
+# does not reliably 0x1D-Delete every mobile that leaves view, so without a
+# periodic prune world.mobiles grows unbounded across a long eval. Run on the
+# TTL cadence, not every 200ms tick — pruning is O(mobiles) and the entries it
+# drops are >= PRUNE_MAX_AGE_S old anyway.
+PRUNE_INTERVAL_S = 15.0
+PRUNE_MAX_AGE_S = 30.0
+
 # Message types that ride the speech packets but are NOT a person talking to us:
 # server SYSTEM lines, single-click LABEL responses ("Hastin the baker"), and
 # FOCUS prompts. think._build_recent_speech and action.respond_to_speech both
@@ -294,11 +302,43 @@ class Brain:
     def __init__(self, context: BrainContext, root: Node | None = None) -> None:
         self.context = context
         self.root = root or build_default_tree()
+        self._last_prune: float = 0.0
 
     async def tick(self) -> Status:
         """One brain tick: poll events into blackboard, then run the tree."""
         self._poll_events()
+        self._prune_stale_world()
         return await self.root.tick(self.context)
+
+    def _prune_stale_world(self) -> None:
+        """Reap mobiles the server stopped updating, throttled to the TTL cadence.
+
+        WorldState.prune_stale_mobiles existed but had no runtime caller, so
+        world.mobiles (and the worn-item / backpack subtree each entry cascades
+        to) grew without bound across a long eval — every mob that ever wandered
+        into view and left without a 0x1D Delete lingered forever. Wire it here,
+        the one periodic hook every agent runs, guarding the agent's own serial
+        and the actively-engaged combat target so a live fight is never disturbed.
+        """
+        now = time.monotonic()
+        if now - self._last_prune < PRUNE_INTERVAL_S:
+            return
+        self._last_prune = now
+        world = getattr(self.context.perception, "world", None)
+        if world is None:
+            return
+        protect: set[int] = set()
+        my_serial = getattr(self.context.perception.self_state, "serial", 0)
+        if my_serial:
+            protect.add(my_serial)
+        target = self.context.blackboard.get("combat_target_serial")
+        if isinstance(target, int):
+            protect.add(target)
+        pruned = world.prune_stale_mobiles(
+            now=now, max_age=PRUNE_MAX_AGE_S, protect=protect
+        )
+        if pruned:
+            logger.debug("world_pruned_stale_mobiles", count=len(pruned))
 
     def _poll_events(self) -> None:
         events = self.context.perception.poll_events()

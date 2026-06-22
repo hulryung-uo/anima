@@ -242,7 +242,8 @@ class WorldState:
         # get_or_create_mobile.
 
     def prune_stale_mobiles(
-        self, now: float | None = None, max_age: float = 30.0
+        self, now: float | None = None, max_age: float = 30.0,
+        protect: set[int] | None = None,
     ) -> list[int]:
         """Drop mobiles the server has stopped updating.
 
@@ -253,13 +254,25 @@ class WorldState:
 
         Returns the list of pruned serials. ``last_seen == 0.0`` (never
         stamped) is skipped so freshly seeded test fixtures aren't reaped.
+
+        ``protect`` is a set of serials that must NEVER be reaped regardless of
+        age — the caller passes the agent's own serial plus the actively-engaged
+        combat target. The TTL alone usually keeps an engaged foe fresh (every
+        0xA1/0x2D health update re-stamps ``last_seen`` via touch_existing_mobile)
+        but a fight whose packets briefly stall must not have its target yanked
+        out from under the combat loop's local target reference — a phantom-free
+        world is not worth dropping the mob we are mid-swing on. Belt-and-braces
+        on top of the freshness clock.
         """
         if now is None:
             now = time.monotonic()
+        protect = protect or frozenset()
         stale = [
             serial
             for serial, m in self.mobiles.items()
-            if m.last_seen > 0.0 and (now - m.last_seen) > max_age
+            if serial not in protect
+            and m.last_seen > 0.0
+            and (now - m.last_seen) > max_age
         ]
         for serial in stale:
             # Route through remove() rather than popping the mobile directly:
