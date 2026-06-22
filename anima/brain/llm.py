@@ -177,16 +177,25 @@ class LLMClient:
         elapsed_ms = (time.monotonic() - start) * 1000
 
         # Extract response (defensively — a malformed/empty payload must not raise)
+        # A choice may be present yet carry ``message=None`` (content-filtered,
+        # tool-call-only, or coalesced-streaming payloads from some providers),
+        # and the message object may lack a ``content`` attribute entirely.
+        # Reaching through either with plain attribute access
+        # (``choice.message.content``) raises AttributeError *after* the retry
+        # guard, propagating up and crashing the whole think tick — the very
+        # thing this block's "must not raise" contract forbids. Bind ``message``
+        # once and pull every field via getattr so a None at any level degrades
+        # to empty text rather than an exception.
         choice = response.choices[0] if response.choices else None
-        text = choice.message.content.strip() if choice and choice.message.content else ""
+        message = getattr(choice, "message", None)
+        content = getattr(message, "content", None)
+        text = content.strip() if content else ""
 
         # Extract thinking content (Anthropic extended thinking, etc.)
-        thinking = ""
-        if choice and hasattr(choice.message, "thinking"):
-            thinking = choice.message.thinking or ""
+        thinking = getattr(message, "thinking", None) or ""
         # Some providers put thinking in tool_calls or other fields
-        if not thinking and choice and hasattr(choice.message, "reasoning_content"):
-            thinking = choice.message.reasoning_content or ""
+        if not thinking:
+            thinking = getattr(message, "reasoning_content", None) or ""
 
         # Token usage. litellm's ModelResponse does NOT always carry a ``usage``
         # attribute — some Ollama / OpenAI-compatible-proxy / streaming-coalesced
