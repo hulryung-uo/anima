@@ -11,6 +11,7 @@ import structlog
 from anima.actions.target import use_on_object, use_on_target
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.crafting.smelt import (
+    MINING_SKILL_ID,
     INGOT_GRAPHICS,
     ORE_GRAPHICS,
     _find_forge_dynamic,
@@ -21,6 +22,54 @@ if TYPE_CHECKING:
     from anima.core.context import AgentContext
 
 logger = structlog.get_logger()
+
+# Mining skill (tenths) that must accrue past the level recorded when a hue was
+# blacklisted before that hue is given another chance. 50 tenths == 5.0 skill
+# points — enough that a "not enough metal" (skill-too-low) verdict can flip.
+SMELT_REARM_SKILL_DELTA = 50.0
+
+
+def _mining_skill_tenths(ctx: "AgentContext") -> float:
+    """Current Mining skill value in tenths (0.0 if not streamed yet)."""
+    info = ctx.perception.self_state.skills.get(MINING_SKILL_ID)
+    return float(getattr(info, "value", 0.0)) if info is not None else 0.0
+
+
+def _rearm_unsmelable_on_skill_gain(ctx: "AgentContext") -> None:
+    """Clear blacklisted ore hues once Mining skill has risen enough to retry.
+
+    ``_unsmelable_ore_hues`` is a session-lifetime blacklist: a colored-ore hue
+    that fails with "not enough metal" at a given Mining skill is dropped as
+    junk for the REST of the session. But that verdict is a property of the
+    skill at blacklist time, and Mining rises continuously while smelting/mining.
+    The trigger ("skill too low for this hue") clears as skill grows, yet the
+    latch never reset — so ore that became smeltable was discarded forever.
+
+    Record the Mining value at blacklist time in ``_unsmelable_ore_hue_skill``
+    and, whenever skill has climbed ``SMELT_REARM_SKILL_DELTA`` tenths past that
+    mark, lift the hue off the blacklist so the next smelt attempt re-tests it.
+    Iron (hue 0) is never blacklisted, so this only ever re-arms colored ore.
+    """
+    blacklist = ctx.blackboard.get("_unsmelable_ore_hues")
+    if not blacklist:
+        return
+    recorded: dict[int, float] = ctx.blackboard.get("_unsmelable_ore_hue_skill", {})
+    now_skill = _mining_skill_tenths(ctx)
+    if now_skill <= 0.0:
+        return  # skill not streamed yet — don't re-arm on a placeholder reading
+    rearmed = [
+        hue for hue in list(blacklist)
+        if now_skill - recorded.get(hue, 0.0) >= SMELT_REARM_SKILL_DELTA
+    ]
+    for hue in rearmed:
+        blacklist.discard(hue)
+        recorded.pop(hue, None)
+    if rearmed:
+        logger.info(
+            "smelt_unsmelable_rearmed",
+            hues=[hex(h) for h in rearmed],
+            mining=round(now_skill / 10.0, 1),
+        )
 
 
 class SmeltOre(Procedure):
@@ -34,6 +83,7 @@ class SmeltOre(Procedure):
         if not backpack:
             return False
 
+        _rearm_unsmelable_on_skill_gain(ctx)
         unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
         small_iron = ctx.blackboard.get("_small_iron_ore_serials", set())
 
@@ -67,6 +117,7 @@ class SmeltOre(Procedure):
         # first — ServUO consumes the whole targeted pile per attempt, so
         # small piles first means more smelt attempts (more Mining gain
         # rolls) and less ore wasted on failures)
+        _rearm_unsmelable_on_skill_gain(ctx)
         unsmelable = ctx.blackboard.get("_unsmelable_ore_hues", set())
         small_iron = ctx.blackboard.get("_small_iron_ore_serials", set())
         ore_candidates = [
@@ -378,6 +429,12 @@ class SmeltOre(Procedure):
                 "_unsmelable_ore_hues", set()
             )
             unsmelable_set.add(ore_hue)
+            # Record the Mining skill at blacklist time so the hue can be
+            # re-armed (retried) once skill rises past it — the verdict is
+            # skill-relative, not permanent.
+            ctx.blackboard.setdefault("_unsmelable_ore_hue_skill", {})[ore_hue] = (
+                _mining_skill_tenths(ctx)
+            )
 
             # Drop only ore of this hue (not all ore)
             from anima.client.packets import build_drop_item, build_pick_up
