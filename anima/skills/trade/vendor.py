@@ -644,21 +644,37 @@ class SellToNpc(Skill):
         )
 
         if gold_earned == 0 and expected_gold > 0:
+            # The sell packet went out for a positive-value order but our gold
+            # never moved — ServUO's OnVendorSell silently drops the transaction
+            # when it is rejected (out of range, vendor window closed, etc.). The
+            # items were NOT sold. Reporting success=True here (as this path used
+            # to) writes a phantom win into the Q/location-value reward signal and
+            # tells the planner the sale landed, so it stops retrying a sell that
+            # never happened. Surface it as a negative-reward failure instead,
+            # mirroring the procedures twin (anima.procedures.sell_to_vendor,
+            # which already treats a no-gold-change sell as a retryable BLOCKED
+            # failure — see test_sell_no_gold_received.py).
             logger.warning(
                 "vendor_sell_no_gold",
                 vendor=vendor_name,
-                reason="sell packet sent but gold did not change — may have failed",
+                reason="sell packet sent but gold did not change — rejected",
                 expected=expected_gold,
                 sold=selling_detail,
+            )
+            return SkillResult(
+                success=False,
+                reward=-1.0,
+                message=(
+                    f"Sell to {vendor_name} rejected — expected ~{expected_gold}gp "
+                    f"but gold did not change ({', '.join(selling_detail)})"
+                ),
+                duration_ms=elapsed,
             )
 
         reward = 1.0 + gold_earned * 0.1 if gold_earned > 0 else 0.5
         msg = f"Sold {len(items_to_sell)} item(s) to {vendor_name}"
         if gold_earned > 0:
             msg += f", earned {gold_earned}gp ({', '.join(selling_detail)})"
-        elif expected_gold > 0:
-            msg += (f" (expected ~{expected_gold}gp but got 0 — "
-                    f"may have failed: {', '.join(selling_detail)})")
         else:
             msg += f" ({', '.join(selling_detail)})"
 
