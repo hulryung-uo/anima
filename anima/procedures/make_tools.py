@@ -36,6 +36,10 @@ MIN_INGOTS_FOR_TOOL = 4
 TINKERING_TRAIN_TARGET = 70.0
 TINKERING_SKILL_ID = 37
 
+# How far (skill tenths) Tinkering must climb past the value at give-up time
+# before the skill-too-low latch is re-armed (lifted) for another attempt.
+TINKERING_REARM_SKILL_DELTA = 50.0
+
 
 def _get_tinker_skill(ctx: AgentContext) -> float:
     """Return current Tinkering skill value (0.0 if unknown)."""
@@ -43,6 +47,44 @@ def _get_tinker_skill(ctx: AgentContext) -> float:
         if sk.id == TINKERING_SKILL_ID:
             return sk.value
     return 0.0
+
+
+def _rearm_gave_up_on_skill_gain(ctx: AgentContext) -> None:
+    """Lift the ``_make_tools_gave_up`` latch once Tinkering has trained up.
+
+    ``_make_tools_gave_up`` is armed on a "required skill" gump refusal (and on
+    the 5-strike unclear-result give-up). It is a *skill-relative* verdict: the
+    smith's Tinkering was too low to craft the tool right now. But the planner
+    gates BOTH the 4b craft-for-tools path AND the 5e Tinkering-training path on
+    ``not _make_tools_gave_up`` — so once the latch is set it disables the only
+    procedure that would ever raise Tinkering, making the verdict permanent and
+    self-reinforcing. The companion ``_tinkering_blocked_until`` cooldown
+    self-expires after 300s, but the boolean latch did not: its only clears were
+    the no-mining-tool -> mining-tool toggle (Priority 7) and deadlock recovery,
+    neither of which fires for a smith who already holds a pickaxe yet failed to
+    craft (e.g.) tongs. Record the Tinkering value at give-up time and re-arm
+    the latch once skill has climbed ``TINKERING_REARM_SKILL_DELTA`` tenths past
+    that mark, mirroring smelt_ore's ``_rearm_unsmelable_on_skill_gain``.
+    """
+    if not ctx.blackboard.get("_make_tools_gave_up"):
+        return
+    now_skill = _get_tinker_skill(ctx)
+    if now_skill <= 0.0:
+        return  # skill not streamed yet — don't re-arm on a placeholder reading
+    recorded = ctx.blackboard.get("_make_tools_gave_up_skill")
+    if recorded is None:
+        # Latch present without a recorded baseline (legacy/other code path):
+        # adopt the current reading so a future gain can still re-arm it.
+        ctx.blackboard["_make_tools_gave_up_skill"] = now_skill
+        return
+    if now_skill - recorded >= TINKERING_REARM_SKILL_DELTA:
+        ctx.blackboard.pop("_make_tools_gave_up", None)
+        ctx.blackboard.pop("_make_tools_gave_up_skill", None)
+        logger.info(
+            "make_tools_gave_up_rearmed",
+            tinkering=round(now_skill / 10.0, 1),
+            armed_at=round(recorded / 10.0, 1),
+        )
 
 SHOVEL_GRAPHICS = {0x0F39}
 
@@ -378,6 +420,7 @@ class MakeTools(Procedure):
             logger.warning("make_tools_skill_too_low", item=craft_target, notice=gump_notice)
             ctx.blackboard["_make_tools_fails"] = 0
             ctx.blackboard["_make_tools_gave_up"] = True
+            ctx.blackboard["_make_tools_gave_up_skill"] = _get_tinker_skill(ctx)
             ctx.blackboard["_tinkering_blocked_until"] = time.time() + 300
             await self._close_all_gumps(ctx)
             return ProcedureResult(
@@ -400,6 +443,7 @@ class MakeTools(Procedure):
         if fail_count >= 5:
             ctx.blackboard["_make_tools_fails"] = 0
             ctx.blackboard["_make_tools_gave_up"] = True  # planner should buy instead
+            ctx.blackboard["_make_tools_gave_up_skill"] = _get_tinker_skill(ctx)
             logger.warning("make_tools_gave_up", item=craft_target, fails=fail_count)
             return ProcedureResult(
                 success=False,
