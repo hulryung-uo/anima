@@ -18,8 +18,31 @@ logger = structlog.get_logger()
 
 HATCHET_GRAPHICS = {0x0F43, 0x0F44, 0x0F47, 0x0F48, 0x0F4B, 0x0F4D}
 LOG_GRAPHICS = {0x1BDD, 0x1BE0}
-BOARD_GRAPHIC = 0x1BD7
+# A board stack flips its graphic ID between 0x1BD7 and 0x1BDA depending on
+# orientation/stack — ServUO marks Board with ``[FlipableAttribute(0x1BD7,
+# 0x1BDA)]`` (Scripts/Items/Resource/Board.cs), exactly the way a log stack
+# flips between 0x1BDD and 0x1BE0. The before/after board delta below is the
+# ONLY success signal this skill has, but it used a single ``BOARD_GRAPHIC ==
+# 0x1BD7`` equality test: when the freshly-made boards render as the 0x1BDA
+# flip variant, ``boards_after`` counts zero, ``gained <= 0``, and a genuine,
+# completed conversion is reported as ``success=False, reward=-0.5`` — the same
+# inverted-reward bug already fixed for logs everywhere else (carpentry
+# be07cbd, vendor KEEP 1d4e5cf). The agent then loops re-running a "failing"
+# conversion that actually worked, poisoning the gathering reward signal. Count
+# both stack graphics, mirroring LOG_GRAPHICS.
+BOARD_GRAPHICS = {0x1BD7, 0x1BDA}
+BOARD_GRAPHIC = 0x1BD7  # legacy single-graphic alias (kept for back-compat)
 LUMBERJACK_SKILL_ID = 44
+
+
+def _count_boards(world, backpack: int | None) -> int:
+    """Sum every board stack in ``backpack``, across both flip graphics."""
+    if not backpack:
+        return 0
+    return sum(
+        it.amount for it in world.items.values()
+        if it.container == backpack and it.graphic in BOARD_GRAPHICS
+    )
 
 
 class MakeBoards(Skill):
@@ -53,10 +76,7 @@ class MakeBoards(Skill):
         if not log_item:
             return SkillResult(success=False, reward=-1.0, message="No logs")
 
-        boards_before = sum(
-            it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic == BOARD_GRAPHIC
-        )
+        boards_before = _count_boards(world, backpack)
 
         logger.info(
             "make_boards_start",
@@ -92,10 +112,7 @@ class MakeBoards(Skill):
         # Wait for conversion
         await asyncio.sleep(1.5)
 
-        boards_after = sum(
-            it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic == BOARD_GRAPHIC
-        )
+        boards_after = _count_boards(world, backpack)
         gained = boards_after - boards_before
         elapsed = (time.monotonic() - start) * 1000
 
