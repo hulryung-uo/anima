@@ -198,6 +198,33 @@ def _confirm_uncorroborated(first: EvalResult, pooled: EvalResult,
     return had_incumbent  # un-pooled: block only when displacing an incumbent
 
 
+def _should_confirm_promotion(inc_rel: float | None, cand_rel: float) -> bool:
+    """Whether to SPEND a confirm-on-promotion re-eval on this would-be winner.
+
+    ``--confirm-promotions`` exists for ONE reason: the optimizer's curse
+    (archive.py) — a single LUCKY run DISPLACING a STEADIER elite that already
+    holds the cell. That curse can only happen when an incumbent exists AND the
+    candidate's reliability bound would beat it (``cand_rel > inc_rel``); only
+    then can a lucky high-variance run evict a steady champion.
+
+    Against an EMPTY cell (``inc_rel is None``) there is nothing to displace, so
+    there is no curse to kill. ``_confirm_uncorroborated`` already documents that
+    such a cell is FILLED FROM THE FIRST ROUND regardless of whether the confirm
+    round corroborates — i.e. the confirm round cannot change the grid decision
+    for an empty cell, so it is "the confirm eval already spent" for no grid
+    effect. A future challenger for that cell will itself be confirmed (it WOULD
+    displace an incumbent), so the empty-cell elite's single-round reliability is
+    sufficient protection. Firing here anyway burns a full ~window_s eval on
+    (nearly) EVERY successful cycle while the grid is sparse — the exact opposite
+    of the feature's documented contract that it "only fires on would-be
+    promotions (~the minority of cycles)". Gate the spend on an incumbent
+    existing so confirm stays a minority cost aimed only where the curse bites.
+    """
+    if inc_rel is None:
+        return False  # empty cell: no incumbent to protect, no curse to kill
+    return cand_rel > inc_rel
+
+
 def _pool_confirmation(first: EvalResult, confirm: EvalResult) -> EvalResult:
     """Pool a confirm-on-promotion round into ``first`` ONLY if it corroborates
     the SAME behavioral cell.
@@ -519,7 +546,7 @@ def run(rc: RunConfig) -> Archive:
                     inc_rel = incumbent.reliability if incumbent else None
                 cand_rel = reliability_score(
                     out.result.per_seed_fitness, out.result.score)
-                if inc_rel is None or cand_rel > inc_rel:
+                if _should_confirm_promotion(inc_rel, cand_rel):
                     confirm = run_eval_multi(
                         _eval_cfg(rc, f"{user}cf", slot, wt,
                                   persona=out.persona, fixed_start=out.fixed_start),
