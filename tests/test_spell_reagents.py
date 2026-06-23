@@ -127,3 +127,32 @@ def test_mana_vampire_requires_bloodmoss_not_a_second_black_pearl():
     full = {_BP: 1, _BM: 1, _MR: 1, _SA: 1}
     assert missing_reagents(mv, full) == []
     assert has_reagents_for(mv, full)
+
+
+def test_heal_requires_spiders_silk_not_sulfurous_ash():
+    """Heal (Magery circle 1) consumes Garlic, Ginseng and Spider's Silk per
+    ServUO (Scripts/Spells/First/Heal.cs: Reagent.Garlic, Reagent.Ginseng,
+    Reagent.SpidersSilk) — NOT Sulfurous Ash.
+
+    Note the codebase's deliberate swapped map (SA=Spider's Silk,
+    SS=Sulfurous Ash); the earlier ("GL","GS","SS") row resolved the third
+    reagent to Sulfurous Ash, so an agent carrying ash but no Spider's Silk
+    passed the precondition gate on this most-used heal and then hit a "More
+    reagents are needed" abort the gate exists to prevent.
+    """
+    heal = get_spell_by_name("heal")
+    assert heal is not None
+    assert reagent_costs(heal) == {
+        "Ginseng": 1,
+        "Garlic": 1,
+        "Spider's Silk": 1,
+    }
+    # Holding Sulfurous Ash but no Spider's Silk must report Spider's Silk
+    # missing (this is exactly the false-pass the old SS row caused).
+    have = {_GL: 5, _GS: 5, _SS: 5}
+    assert missing_reagents(heal, have) == ["Spider's Silk"]
+    assert not has_reagents_for(heal, have)
+    # The real ServUO kit (Spider's Silk present) clears it.
+    full = {_GL: 1, _GS: 1, _SA: 1}
+    assert missing_reagents(heal, full) == []
+    assert has_reagents_for(heal, full)

@@ -117,7 +117,7 @@ _RAW_SPELLS: list[tuple[str, int, int, str, str, tuple[str, ...]]] = [
     ("H", 1, 1, "Clumsy", "Uus Jux", ("BP", "NS")),
     ("N", 2, 1, "Create Food", "In Mani Ylem", ("GL", "GS", "MR")),
     ("H", 3, 1, "Feeblemind", "Rel Wis", ("GS", "NS")),
-    ("B", 4, 1, "Heal", "In Mani", ("GL", "GS", "SS")),
+    ("B", 4, 1, "Heal", "In Mani", ("GL", "GS", "SA")),
     ("H", 5, 1, "Magic Arrow", "In Por Ylem", ("SA",)),
     ("N", 6, 1, "Night Sight", "In Lor", ("SS", "SA")),
     ("B", 7, 1, "Reactive Armor", "Flam Sanct", ("GL", "SA", "SS")),
