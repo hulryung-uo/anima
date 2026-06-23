@@ -146,7 +146,7 @@ _RAW_SPELLS: list[tuple[str, int, int, str, str, tuple[str, ...]]] = [
     ("N", 4, 4, "Fire Field", "In Flam Grav", ("BP", "SS", "SA")),
     ("B", 5, 4, "Greater Heal", "In Vas Mani", ("GL", "GS", "MR", "SS")),
     ("H", 6, 4, "Lightning", "Por Ort Grav", ("MR", "SA")),
-    ("H", 7, 4, "Mana Drain", "Ort Rel", ("BP", "MR", "SS")),
+    ("H", 7, 4, "Mana Drain", "Ort Rel", ("BP", "MR", "SA")),
     ("N", 8, 4, "Recall", "Kal Ort Por", ("BP", "BP", "MR")),
     # ── Magery Circle 5 ──
     ("H", 1, 5, "Blade Spirits", "In Jux Hur Ylem", ("BP", "MR", "NS")),
