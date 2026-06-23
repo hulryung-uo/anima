@@ -991,6 +991,23 @@ def register_handlers(
                 if old_item is not None and old_item.container == p.self_state.serial:
                     old_item.container = 0
                     old_item.layer = 0
+            # An item has exactly ONE layer. When the SAME serial we already
+            # wear on layer A is re-equipped onto a DIFFERENT layer B (a 1H
+            # weapon the server re-reports as wielded two-handed, a ring/
+            # bracelet the server re-slots), ClassicUO's EquipItem removes the
+            # item from its previous owner/layer before adding it at the new
+            # one. The displacement block above only inspects equipment[B] (the
+            # target layer) and overwrites it, so the stale equipment[A] == serial
+            # entry survived: the same serial then occupied TWO equipment slots.
+            # The combat re-arm guards (ss.equipment.get(1)/.get(2)) and
+            # equip_weapon_from_pack read those slots independently, so a phantom
+            # worn entry on the abandoned layer makes a now-free hand look armed.
+            # Drop the serial from any OTHER layer before claiming the new one.
+            for prev_layer in [
+                lyr for lyr, worn in p.self_state.equipment.items()
+                if worn == serial and lyr != layer
+            ]:
+                del p.self_state.equipment[prev_layer]
             p.self_state.equipment[layer] = serial
         else:
             # 0x2E re-parents an existing item. If a serial WE were wearing is
