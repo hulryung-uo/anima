@@ -137,7 +137,7 @@ _RAW_SPELLS: list[tuple[str, int, int, str, str, tuple[str, ...]]] = [
     ("N", 3, 3, "Magic Lock", "An Por", ("SA", "BP", "GL")),
     ("H", 4, 3, "Poison", "In Nox", ("NS",)),
     ("N", 5, 3, "Telekinesis", "Ort Por Ylem", ("BP", "MR")),
-    ("N", 6, 3, "Teleport", "Rel Por", ("BP", "MR")),
+    ("N", 6, 3, "Teleport", "Rel Por", ("BM", "MR")),
     ("N", 7, 3, "Unlock", "Ex Por", ("BP", "SA")),
     ("N", 8, 3, "Wall of Stone", "In Sanct Ylem", ("BP", "GL")),
     # ── Magery Circle 4 ──

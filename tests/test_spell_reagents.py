@@ -209,3 +209,32 @@ def test_recall_requires_bloodmoss_not_a_second_black_pearl():
     full = {_BP: 1, _BM: 1, _MR: 1}
     assert missing_reagents(recall, full) == []
     assert has_reagents_for(recall, full)
+
+
+def test_teleport_requires_bloodmoss_not_black_pearl():
+    """Teleport (Magery circle 3) consumes Bloodmoss and Mandrake Root per
+    ServUO (Scripts/Spells/Third/Teleport.cs: Reagent.Bloodmoss,
+    Reagent.MandrakeRoot) — NOT Black Pearl.
+
+    The earlier ("BP","MR") row resolved the first reagent to Black Pearl, so
+    an agent holding Black Pearl + Mandrake (but no Bloodmoss) falsely passed
+    the precondition gate on this short-range travel/escape spell and then hit
+    a "More reagents are needed" abort the gate exists to prevent — while a
+    correct Bloodmoss + Mandrake kit was rejected. Same class of bug as the
+    Recall BP→BM fix (afce640).
+    """
+    teleport = get_spell_by_name("teleport")
+    assert teleport is not None
+    assert reagent_costs(teleport) == {
+        "Bloodmoss": 1,
+        "Mandrake Root": 1,
+    }
+    # Black Pearl + Mandrake but no Bloodmoss → Bloodmoss reported missing
+    # (exactly the false-pass the old Black Pearl row caused).
+    have = {_BP: 5, _MR: 5}
+    assert missing_reagents(teleport, have) == ["Bloodmoss"]
+    assert not has_reagents_for(teleport, have)
+    # The real ServUO kit (Bloodmoss + Mandrake) clears it.
+    full = {_BM: 1, _MR: 1}
+    assert missing_reagents(teleport, full) == []
+    assert has_reagents_for(teleport, full)
