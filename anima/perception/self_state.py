@@ -219,6 +219,26 @@ class SelfState:
         Reset the clock on the genuine death transition (a living→living body
         change leaves it alone; a real new hit after resurrect re-stamps it on its
         own fresh swing packet), mirroring the other death-transition clears above.
+
+        The cached *gump* set (``self.gumps``, populated by the 0xB0 OpenGump /
+        0xDD CompressedGump handlers via ``_store_gump``) is the same no-Delete-
+        on-death casualty as the container / vendor pointers. A gump is only ever
+        removed from this dict by a matching 0xBF CloseGump for that exact gump_id
+        (handle_general_info_extended) or an explicit ``ss.gumps.clear()`` in a
+        procedure. But ServUO closes every open client gump in the death sequence
+        (NetState gump cleanup around ``Mobile.OnDeath``) WITHOUT sending a per-
+        gump 0xBF CloseGump, so a gump we had open at the moment of death — a
+        CraftGump mid-craft, a vendor/bank gump, a context dialog — survives the
+        ghost period and out the other side of a resurrect. The craft/bank/tool
+        procedures (craft_blacksmith.py, make_tools.py, banking.py) and
+        actions/gump.py read a *non-empty* ``ss.gumps`` as the "a gump is already
+        open / the craft window is ready" signal, so a freshly-resurrected agent
+        reads the pre-death gump as live the instant it polls and clicks a button
+        on / waits on a gump the server has already destroyed — a doomed
+        interaction that wedges the procedure. Clear the whole dict on the genuine
+        death transition, mirroring the container / vendor / target clears above
+        (a living→living body change leaves it alone; a real new gump after
+        resurrect arrives on its own fresh 0xB0/0xDD).
         """
         was_ghost = self.body in _GHOST_BODIES
         self.body = body
@@ -240,6 +260,7 @@ class SelfState:
             # the death transition alongside the other UI pointers.
             self.pending_target = None
             self.last_damage_taken_at = 0.0
+            self.gumps = {}
 
     @property
     def hp_percent(self) -> float:
