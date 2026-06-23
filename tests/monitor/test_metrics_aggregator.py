@@ -724,3 +724,54 @@ class TestMalformedHourlyRows:
         assert row["cycles_total"] == 3
         assert row["deaths"] == 1
         assert row["skills_gained"]["7"] == pytest.approx(0.5, rel=0.01)
+
+    @pytest.mark.asyncio
+    async def test_build_daily_survives_nondict_inner_fields(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        # A row can DECODE to a dict with a string `hour` (so it passes the
+        # line-level guard in _read_hourly_rows_for_date) yet carry a torn /
+        # foreign-shaped inner field: gold as a bare number, procedures null,
+        # skills a list, or a procedure's stats a non-dict. Each of these used
+        # to raise AttributeError ('int'/'NoneType'/'list' object has no
+        # attribute 'get'/'items') inside build_daily, which run_once retries
+        # against the SAME file every 60s — permanently blacking out the daily
+        # rollup AND the retention trim. The good row beside it must still
+        # aggregate.
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        bad_rows = [
+            {"hour": "2026-04-17T00:00:00+00:00", "gold": 5},
+            {"hour": "2026-04-17T02:00:00+00:00", "procedures": None},
+            {"hour": "2026-04-17T03:00:00+00:00", "skills": [1, 2, 3]},
+            {
+                "hour": "2026-04-17T04:00:00+00:00",
+                "procedures": {"mine_ore": "not-a-dict"},
+            },
+        ]
+        good = {
+            "hour": "2026-04-17T01:00:00+00:00",
+            "uptime_s": 3600,
+            "procedures": {"mine_ore": {"ok": 8, "fail": 2, "avg_ms": 3400}},
+            "cycles_completed": 2,
+            "gold": {"earned": 80, "spent": 10, "delta": 70},
+            "deaths": 1,
+            "stuck_events": 0,
+            "skills": {"7": {"from": 63.0, "to": 63.5}},
+        }
+        lines = [json.dumps(r) for r in bad_rows] + [json.dumps(good)]
+        hourly_file.write_text("\n".join(lines) + "\n")
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        row = await agg.build_daily(date_iso="2026-04-17")
+        # The good row's numbers survive; the malformed rows contribute nothing.
+        assert row["cycles_total"] == 2
+        assert row["gold_earned"] == 80
+        assert row["gold_spent"] == 10
+        assert row["deaths"] == 1
+        assert row["procedure_success_rate"] == pytest.approx(0.8, rel=0.01)
+        assert row["skills_gained"]["7"] == pytest.approx(0.5, rel=0.01)

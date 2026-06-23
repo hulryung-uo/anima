@@ -15,6 +15,25 @@ import structlog
 logger = structlog.get_logger()
 
 
+def _as_dict(value: Any) -> dict:
+    """Return ``value`` if it is a dict, else an empty dict.
+
+    The hourly JSONL is read off disk and ``_read_hourly_rows_for_date`` only
+    guarantees each surviving row is a dict with a string ``hour`` — it does NOT
+    validate the SHAPE of the inner ``gold`` / ``procedures`` / ``skills``
+    fields. A torn concurrent write or a foreign/future producer can emit a row
+    like ``{"hour": "...", "gold": 5, "procedures": null, "skills": [1, 2]}``:
+    that row passes the line-level guard, then crashes build_daily on
+    ``.get(...)`` / ``.items()`` against a non-dict (``'int' object has no
+    attribute 'get'``). Because run_once() catches and retries against the SAME
+    unchanged file every 60s, one such row permanently blacks out BOTH the daily
+    rollup AND the 30-day retention trim that runs right after it — the exact
+    failure mode the line-level guard and ``_coerce_amount`` already prevent for
+    their fields. Coerce a non-dict inner field to empty the same way.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _coerce_amount(value: Any) -> int | None:
     """Coerce a ``gold_delta`` ``amount`` field to an int, or None if it is not
     a usable number.
@@ -141,8 +160,12 @@ class MetricsAggregator:
         hourly_rows = _read_hourly_rows_for_date(self.hourly_file, date_iso)
 
         cycles_total = sum(r.get("cycles_completed", 0) for r in hourly_rows)
-        gold_earned = sum(r.get("gold", {}).get("earned", 0) for r in hourly_rows)
-        gold_spent = sum(r.get("gold", {}).get("spent", 0) for r in hourly_rows)
+        gold_earned = sum(
+            _as_dict(r.get("gold")).get("earned", 0) for r in hourly_rows
+        )
+        gold_spent = sum(
+            _as_dict(r.get("gold")).get("spent", 0) for r in hourly_rows
+        )
         deaths = sum(r.get("deaths", 0) for r in hourly_rows)
         stuck_events = sum(r.get("stuck_events", 0) for r in hourly_rows)
         uptime_s = sum(r.get("uptime_s", 0) for r in hourly_rows)
@@ -151,7 +174,8 @@ class MetricsAggregator:
         total_fail = 0
         fail_by_proc: dict[str, int] = defaultdict(int)
         for r in hourly_rows:
-            for proc, stats in r.get("procedures", {}).items():
+            for proc, stats in _as_dict(r.get("procedures")).items():
+                stats = _as_dict(stats)
                 total_ok += stats.get("ok", 0)
                 total_fail += stats.get("fail", 0)
                 fail_by_proc[proc] += stats.get("fail", 0)
@@ -174,7 +198,8 @@ class MetricsAggregator:
         # Skills gained = accumulate per-hour deltas (to - from for each row)
         skills_gained: dict[str, float] = {}
         for r in hourly_rows:
-            for sid, s in r.get("skills", {}).items():
+            for sid, s in _as_dict(r.get("skills")).items():
+                s = _as_dict(s)
                 if sid not in skills_gained:
                     skills_gained[sid] = 0.0
                 # Accumulate per-hour deltas
@@ -271,12 +296,26 @@ class MetricsAggregator:
         """Rewrite events file, dropping rows with ts < cutoff_ts.
 
         Returns the number of rows removed.
+
+        The trim is a read-all → rewrite-all over a file that ``record()``
+        appends to concurrently from other coroutines/loops/processes (its
+        docstring promises it is "Safe for use from any loop"). A naive
+        snapshot-then-``tmp.replace()`` would clobber the whole file with the
+        snapshot read at the start of the trim — silently DESTROYING every
+        event ``record()`` appended after that read but before the replace
+        (the exact window an LLM-slow rollup can keep open). Because
+        ``record()`` only ever appends, those new rows live strictly past the
+        byte offset we read up to: snapshot that offset, and after building the
+        trimmed body re-read any bytes that appeared beyond it and carry them
+        through verbatim, so a concurrent append is preserved, not lost.
         """
         if not self.events_file.exists():
             return 0
+        original_bytes = self.events_file.read_bytes()
+        read_len = len(original_bytes)
         kept: list[str] = []
         removed = 0
-        for line in self.events_file.read_text().splitlines():
+        for line in original_bytes.decode("utf-8", "replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -300,8 +339,23 @@ class MetricsAggregator:
         if removed == 0:
             return 0
 
+        # Capture anything appended past the snapshot offset by a concurrent
+        # record() during the filter above. These bytes are NEW events that
+        # must survive the replace; dropping them is the lost-update bug this
+        # block exists to prevent. They are raw, possibly mid-line if an append
+        # is in flight, so carry them through byte-for-byte rather than
+        # re-parsing — the readers tolerate a torn trailing line.
+        try:
+            tail = self.events_file.read_bytes()[read_len:]
+        except OSError:
+            tail = b""
+
+        body = ("\n".join(kept) + "\n") if kept else ""
         tmp = self.events_file.with_suffix(".jsonl.tmp")
-        tmp.write_text(("\n".join(kept) + "\n") if kept else "")
+        with open(tmp, "wb") as f:
+            f.write(body.encode("utf-8"))
+            if tail:
+                f.write(tail)
         tmp.replace(self.events_file)
         logger.info("metrics_trim_complete", removed=removed, kept=len(kept))
         return removed
