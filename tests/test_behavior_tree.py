@@ -377,6 +377,117 @@ class TestSequence:
 
 
 # ---------------------------------------------------------------------------
+# Reactive-interruption tests (priority Selector preempting a RUNNING Sequence)
+# ---------------------------------------------------------------------------
+
+
+class TestSelectorReactiveInterruption:
+    @pytest.mark.asyncio
+    async def test_preempted_sequence_does_not_resume_stale(self) -> None:
+        """A lower-priority Sequence left RUNNING must restart from the top
+        (re-running its setup Actions) when it is reached again *after* a
+        higher-priority branch preempted it — not silently resume its
+        suspended Action.
+
+        Mirrors the root tree: Survival (high prio) over SkillExec (low prio).
+        The SkillExec sequence is [setup, worker]; once worker is RUNNING the
+        sequence would normally resume straight at worker. But if Survival
+        fires in between, the world the setup established is stale, so on
+        fall-back the whole sequence must run again — setup included.
+        """
+        hp_low = False
+        setup_calls = 0
+        worker_ticks = 0
+
+        async def survival_act(ctx: BrainContext) -> Status:
+            return Status.SUCCESS
+
+        async def setup_act(ctx: BrainContext) -> Status:
+            nonlocal setup_calls
+            setup_calls += 1
+            return Status.SUCCESS
+
+        async def worker_act(ctx: BrainContext) -> Status:
+            nonlocal worker_ticks
+            worker_ticks += 1
+            return Status.RUNNING
+
+        skill_seq = Sequence(
+            "skill_exec",
+            [Action("setup", setup_act), Action("worker", worker_act)],
+        )
+        tree = Selector(
+            "root",
+            [
+                Sequence(
+                    "survival",
+                    [Condition("low_hp", lambda ctx: hp_low), Action("flee", survival_act)],
+                ),
+                skill_seq,
+            ],
+        )
+        ctx = make_ctx()
+
+        # Tick 1: HP fine -> survival fails its guard, SkillExec runs, worker
+        # goes RUNNING and the sequence suspends at it.
+        assert await tree.tick(ctx) == Status.RUNNING
+        assert setup_calls == 1
+        assert skill_seq._running_index == 1
+
+        # HP drops: Survival now wins and preempts the suspended SkillExec.
+        hp_low = True
+        assert await tree.tick(ctx) == Status.SUCCESS
+        # The preempted SkillExec sequence must have been reset.
+        assert skill_seq._running_index == 0
+        assert worker_ticks == 1  # worker NOT ticked while preempted
+
+        # HP recovers: control falls back to SkillExec, which must run fresh
+        # (setup fires again) rather than resume its old suspended worker.
+        hp_low = False
+        assert await tree.tick(ctx) == Status.RUNNING
+        assert setup_calls == 2, "setup must re-run after a preemption, not be skipped"
+
+    @pytest.mark.asyncio
+    async def test_running_branch_not_reset_when_it_keeps_winning(self) -> None:
+        """No preemption: the same RUNNING branch keeps its resume state and
+        does not re-run its setup Action tick after tick."""
+        setup_calls = 0
+        worker_ticks = 0
+
+        async def setup_act(ctx: BrainContext) -> Status:
+            nonlocal setup_calls
+            setup_calls += 1
+            return Status.SUCCESS
+
+        async def worker_act(ctx: BrainContext) -> Status:
+            nonlocal worker_ticks
+            worker_ticks += 1
+            return Status.RUNNING
+
+        skill_seq = Sequence(
+            "skill_exec",
+            [Action("setup", setup_act), Action("worker", worker_act)],
+        )
+        tree = Selector(
+            "root",
+            [
+                Sequence(
+                    "survival",
+                    [Condition("low_hp", lambda ctx: False), Action("flee", success_action)],
+                ),
+                skill_seq,
+            ],
+        )
+        ctx = make_ctx()
+
+        assert await tree.tick(ctx) == Status.RUNNING
+        assert await tree.tick(ctx) == Status.RUNNING
+        # Survival never won, so SkillExec was never preempted: setup fired once.
+        assert setup_calls == 1
+        assert worker_ticks == 2
+
+
+# ---------------------------------------------------------------------------
 # Composite tree tests
 # ---------------------------------------------------------------------------
 

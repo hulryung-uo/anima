@@ -24,20 +24,60 @@ class Node(ABC):
     @abstractmethod
     async def tick(self, ctx: BrainContext) -> Status: ...
 
+    def reset(self) -> None:
+        """Drop any RUNNING-resume state this node (and its subtree) holds.
+
+        Default is a no-op: leaf ``Condition``/``Action`` nodes are stateless.
+        Composite nodes that remember a suspended child (``Sequence``) override
+        this so a parent can *abandon* them cleanly. A reactive priority
+        ``Selector`` calls it on any lower-priority child it preempts, so a
+        Sequence that was left mid-RUNNING does not silently resume its
+        suspended Action the next time control falls back to it.
+        """
+
 
 class Selector(Node):
-    """Try children in order until one returns SUCCESS or RUNNING."""
+    """Try children in order until one returns SUCCESS or RUNNING.
+
+    Reactive interruption: this Selector is re-evaluated top-down every tick,
+    so a higher-priority branch can preempt a lower-priority one that was left
+    RUNNING on a previous tick (e.g. the Survival sequence firing while a
+    SkillExec sequence is suspended on a long-RUNNING Action). When that
+    happens the preempted child still holds its resume state, and the next time
+    the Selector falls back to it the child would blindly resume its suspended
+    Action — even though an unbounded amount of world change (a fight, a death
+    and resurrect via the higher-priority branch, target loss) happened in
+    between, invalidating the preconditions the now-skipped earlier children
+    had established. To stay correct the Selector remembers which child was
+    RUNNING and ``reset()``s it (and anything after it) whenever an
+    earlier-priority child wins instead, forcing a fresh run on fall-back.
+    """
 
     def __init__(self, name: str, children: list[Node]) -> None:
         self.name = name
         self.children = children
+        self._running_index: int | None = None
 
     async def tick(self, ctx: BrainContext) -> Status:
-        for child in self.children:
+        prev_running = self._running_index
+        for index, child in enumerate(self.children):
             result = await child.tick(ctx)
             if result in (Status.SUCCESS, Status.RUNNING):
+                # A higher-priority child won than the one suspended last tick:
+                # abandon the preempted child (and everything after the winner)
+                # so it cannot resume stale state on a later fall-back.
+                if prev_running is not None and index < prev_running:
+                    for stale in self.children[index + 1:]:
+                        stale.reset()
+                self._running_index = index if result is Status.RUNNING else None
                 return result
+        self._running_index = None
         return Status.FAILURE
+
+    def reset(self) -> None:
+        self._running_index = None
+        for child in self.children:
+            child.reset()
 
 
 class Sequence(Node):
@@ -92,6 +132,11 @@ class Sequence(Node):
                 return result
         self._running_index = 0
         return Status.SUCCESS
+
+    def reset(self) -> None:
+        self._running_index = 0
+        for child in self.children:
+            child.reset()
 
 
 class Condition(Node):
