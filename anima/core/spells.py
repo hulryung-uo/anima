@@ -148,7 +148,7 @@ _RAW_SPELLS: list[tuple[str, int, int, str, str, tuple[str, ...]]] = [
     ("B", 5, 4, "Greater Heal", "In Vas Mani", ("GL", "GS", "MR", "SS")),
     ("H", 6, 4, "Lightning", "Por Ort Grav", ("MR", "SA")),
     ("H", 7, 4, "Mana Drain", "Ort Rel", ("BP", "MR", "SA")),
-    ("N", 8, 4, "Recall", "Kal Ort Por", ("BP", "BP", "MR")),
+    ("N", 8, 4, "Recall", "Kal Ort Por", ("BP", "BM", "MR")),
     # ── Magery Circle 5 ──
     ("H", 1, 5, "Blade Spirits", "In Jux Hur Ylem", ("BP", "MR", "NS")),
     ("N", 2, 5, "Dispel Field", "An Grav", ("GL", "BP", "SS", "SA")),
@@ -340,12 +340,12 @@ def reagent_costs(spell: SpellDef) -> dict[str, int]:
     """Per-cast reagent requirement as {name: count}.
 
     ``SpellDef.reagents`` is a tuple of abbreviations in which a reagent may
-    appear MORE THAN ONCE — e.g. Recall is ``("BP", "BP", "MR")`` (2 Black
-    Pearl + 1 Mandrake Root) and Chain Lightning needs 2 Black Pearl too. A
-    naive ``set(reagents)`` check would treat "I have 1 Black Pearl" as enough
-    and let the cast be attempted anyway. Counting occurrences and keying by
-    the full reagent NAME (BM/BP both map to "Black Pearl") gives the true
-    per-cast cost.
+    appear MORE THAN ONCE — e.g. the table lists Mark as ``("BP", "BP", "MR")``
+    (2 Black Pearl + 1 Mandrake Root). A naive ``set(reagents)`` check would
+    treat "I have 1 Black Pearl" as enough and let the cast be attempted
+    anyway. Counting occurrences and keying by the full reagent NAME (each
+    abbreviation maps to one distinct reagent, e.g. BM→Bloodmoss, BP→Black
+    Pearl) gives the true per-cast cost.
     """
     costs: dict[str, int] = {}
     for abbr in spell.reagents:

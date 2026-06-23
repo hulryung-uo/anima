@@ -8,7 +8,10 @@ missing-reagent diff used to gate casting.
 """
 
 from anima.core.spells import (
+    SpellDef,
     REAGENT_GRAPHICS,
+    SpellFlag,
+    SpellSchool,
     get_spell_by_name,
     has_reagents_for,
     missing_reagents,
@@ -25,10 +28,21 @@ _BM = REAGENT_GRAPHICS["Bloodmoss"]
 
 
 def test_reagent_costs_counts_duplicates():
-    # Recall is ("BP", "BP", "MR") → 2 Black Pearl, 1 Mandrake Root.
-    recall = get_spell_by_name("recall")
-    assert recall is not None
-    assert reagent_costs(recall) == {"Black Pearl": 2, "Mandrake Root": 1}
+    # A reagent abbreviation may repeat in a row (the table lists Mark as
+    # ("BP", "BP", "MR")) — reagent_costs must COUNT occurrences, not set()-
+    # dedup them. Pin the mechanism on a constructed dup-row so it stays valid
+    # regardless of any single spell's data.
+    dup = SpellDef(
+        id=-1,
+        number=99,
+        circle=4,
+        name="__dup_probe__",
+        words_of_power="",
+        flag=SpellFlag.NEUTRAL,
+        school=SpellSchool.MAGERY,
+        reagents=("BP", "BP", "MR"),
+    )
+    assert reagent_costs(dup) == {"Black Pearl": 2, "Mandrake Root": 1}
 
 
 def test_reagent_costs_reagentless_school_is_empty():
@@ -40,18 +54,28 @@ def test_reagent_costs_reagentless_school_is_empty():
     assert has_reagents_for(close_wounds, {})
 
 
-def test_one_black_pearl_is_not_enough_for_recall():
-    """A single Black Pearl must NOT satisfy a 2-pearl spell — this is the
-    exact bug a set()-based check would have."""
-    recall = get_spell_by_name("recall")
+def test_one_unit_is_not_enough_for_a_two_unit_reagent():
+    """A single unit must NOT satisfy a 2-unit reagent — the exact bug a
+    set()-based check would have. Uses a constructed 2-Black-Pearl row so the
+    coverage is independent of any spell's (ServUO-correct) data."""
+    dup = SpellDef(
+        id=-1,
+        number=99,
+        circle=4,
+        name="__dup_probe__",
+        words_of_power="",
+        flag=SpellFlag.NEUTRAL,
+        school=SpellSchool.MAGERY,
+        reagents=("BP", "BP", "MR"),
+    )
     have = {_BP: 1, _MR: 5}  # 1 pearl, plenty of mandrake
-    assert missing_reagents(recall, have) == ["Black Pearl"]
-    assert not has_reagents_for(recall, have)
+    assert missing_reagents(dup, have) == ["Black Pearl"]
+    assert not has_reagents_for(dup, have)
 
     # Two pearls clears it.
     have2 = {_BP: 2, _MR: 5}
-    assert missing_reagents(recall, have2) == []
-    assert has_reagents_for(recall, have2)
+    assert missing_reagents(dup, have2) == []
+    assert has_reagents_for(dup, have2)
 
 
 def test_greater_heal_missing_is_sorted_and_complete():
@@ -156,3 +180,32 @@ def test_heal_requires_spiders_silk_not_sulfurous_ash():
     full = {_GL: 1, _GS: 1, _SA: 1}
     assert missing_reagents(heal, full) == []
     assert has_reagents_for(heal, full)
+
+
+def test_recall_requires_bloodmoss_not_a_second_black_pearl():
+    """Recall (Magery circle 4) consumes Black Pearl, Bloodmoss and Mandrake
+    Root per ServUO (Scripts/Spells/Fourth/Recall.cs: Reagent.BlackPearl,
+    Reagent.Bloodmoss, Reagent.MandrakeRoot) — one each, NOT two Black Pearl.
+
+    The earlier ("BP","BP","MR") row asked for a 2nd Black Pearl and omitted
+    Bloodmoss entirely, so an agent holding 2 Black Pearl + Mandrake (but no
+    Bloodmoss) falsely passed the precondition gate on the most-used travel
+    spell and then hit a "More reagents are needed" abort the gate exists to
+    prevent — while a correct single-pearl + Bloodmoss kit was rejected.
+    """
+    recall = get_spell_by_name("recall")
+    assert recall is not None
+    assert reagent_costs(recall) == {
+        "Black Pearl": 1,
+        "Bloodmoss": 1,
+        "Mandrake Root": 1,
+    }
+    # Two Black Pearl + Mandrake but no Bloodmoss → Bloodmoss reported missing
+    # (exactly the false-pass the old 2-pearl row caused).
+    have = {_BP: 2, _MR: 5}
+    assert missing_reagents(recall, have) == ["Bloodmoss"]
+    assert not has_reagents_for(recall, have)
+    # The real ServUO kit (single Black Pearl + Bloodmoss + Mandrake) clears it.
+    full = {_BP: 1, _BM: 1, _MR: 1}
+    assert missing_reagents(recall, full) == []
+    assert has_reagents_for(recall, full)
