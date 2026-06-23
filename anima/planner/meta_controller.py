@@ -215,6 +215,22 @@ class HeuristicModePolicy:
     async def choose(self, state: LivingState) -> ModeDecision:  # type: ignore[override]
         actual = state.actual_mode if state.actual_mode in MODES else "mining"
 
+        # The mode the controller is ACTUALLY running this stint. Branch (d)
+        # rotates a rounded resident off its profession default onto another
+        # low-risk grind and the sticky-continuation branch (below (e)) keeps it
+        # there, so for the rest of that stint ``actual`` (the FIXED profession
+        # default) is no longer what the avatar is doing. Every gate that reasons
+        # about "what loop am I in right now" must read this effective mode, not
+        # ``actual`` — otherwise a miner rotated onto a pure skill-grind
+        # (magery/bard) is still judged as "mining".
+        effective = actual
+        if (
+            state.last_modes
+            and state.last_modes[-1] != actual
+            and state.last_modes[-1] in self._LOW_RISK_PRODUCTIVE
+        ):
+            effective = state.last_modes[-1]
+
         # (a) survival-defer: low HP or danger → rest. Actual fleeing/healing is
         # still handled by the planner's Priority 0/1 below the controller; the
         # controller only steers the long-horizon mode, never the tick action.
@@ -238,8 +254,19 @@ class HeuristicModePolicy:
         # that is carrying a non-trivial pack is a dead loop — relocate/offload
         # via travel instead of grinding ground that no longer pays. Gated on
         # weight so we don't send an empty-handed avatar on a pointless trip.
+        #
+        # Key the gate on ``effective`` (the loop actually running), NOT
+        # ``actual``. When branch (d) has rotated a low-risk miner onto a PURE
+        # skill-grind (magery/bard), those modes are deliberately excluded from
+        # ``_GOLD_EARNING`` because a flat gold rate there is expected and is NOT
+        # a signal to abandon the stint. Reading ``actual`` ("mining", still in
+        # the set) instead fired this offload branch the instant a rotated
+        # magery/bard stint's gold rate went flat — yanking the resident OFF the
+        # skill-grind to ``travel`` and defeating the very exclusion this set
+        # encodes. ``effective`` collapses to ``actual`` whenever no rotation is
+        # in progress, so the un-rotated mining/smithing offload is unchanged.
         if (
-            actual in self._GOLD_EARNING
+            effective in self._GOLD_EARNING
             and state.phase != "early"
             and state.gold_rate_per_min <= 0.0
             and state.weight_frac >= 0.25
@@ -247,7 +274,7 @@ class HeuristicModePolicy:
             return ModeDecision(
                 mode="travel",
                 rationale=(
-                    f"economy: {actual} gold-rate {state.gold_rate_per_min:+.1f}/min "
+                    f"economy: {effective} gold-rate {state.gold_rate_per_min:+.1f}/min "
                     f"flat at weight={state.weight_frac:.0%} → relocate/offload"
                 ),
                 goal=None,
