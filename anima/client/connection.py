@@ -126,6 +126,13 @@ class UoConnection:
     def __init__(self, timeout: float = 10.0) -> None:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
+        # Serializes _send_raw. Multiple coroutines share one connection and
+        # call send_packet concurrently (the planner/engine loop, inspect_self,
+        # and ping_loop all run in the same TaskGroup — see main.py game_coros).
+        # asyncio.StreamWriter.drain() is NOT safe to await from two coroutines
+        # at once (it asserts a single waiter / corrupts flow-control state), so
+        # writes that span the drain() suspension point must be serialized.
+        self._send_lock = asyncio.Lock()
         self._game_mode = False
         self._recv_buffer = bytearray()  # decompressed packet bytes
         self._compressed_buffer = bytearray()  # raw compressed bytes from TCP
@@ -167,9 +174,19 @@ class UoConnection:
         self._compressed_buffer.clear()
 
     async def _send_raw(self, data: bytes) -> None:
-        assert self._writer is not None
-        self._writer.write(data)
-        await self._writer.drain()
+        # Hold the lock across write()+drain() so concurrent senders cannot
+        # interleave their frames on the wire or both await drain() at once.
+        async with self._send_lock:
+            # Snapshot the writer ONCE under the lock. A concurrent _close()
+            # (reconnect path) can null self._writer; reading it twice (assert
+            # then write) was a TOCTOU that surfaced as AttributeError —
+            # an unexpected crash type the reconnect loop does not treat as a
+            # connection loss. Raise ConnectionError instead, deterministically.
+            writer = self._writer
+            if writer is None or writer.is_closing():
+                raise ConnectionError("send on closed connection")
+            writer.write(data)
+            await writer.drain()
 
     async def send_packet(self, data: bytes) -> None:
         """Send a pre-built packet (no compression on client→server)."""
