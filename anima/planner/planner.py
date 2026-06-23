@@ -222,6 +222,23 @@ class Planner:
     _FALLBACK_WINDOW_S = 60.0     # forced-fallback selection window
     _STARVE_FAILS = 3             # consecutive failures → temp demotion
     _STARVE_COOLDOWN_S = 120.0    # demotion duration (auto-expires)
+    # Weight (stones) above which an EMPTY visible backpack is treated as a
+    # stale-contents stall worth re-requesting (the 0x3C container update never
+    # arrived / the serial is stale). Below it an empty pack is simply empty.
+    _BACKPACK_STUCK_WEIGHT = 50
+
+    @staticmethod
+    def _backpack_is_stuck(bp_items: int, weight: float) -> bool:
+        """True when the backpack looks STALE: nothing visible inside it yet the
+        agent is carrying real weight, so the server's container contents
+        (0x3C) are missing and a refresh is warranted. The
+        ``_backpack_refresh_fails`` escalation counter only means "CONSECUTIVE
+        refresh failures" while this stuck state holds — the moment it clears
+        (items reappeared, OR the pack legitimately emptied below the weight
+        floor after a bank deposit) the counter must reset, or a stale fail
+        count from a prior stall leaks into the next one and forces the slow
+        120s refresh interval on a fresh stall."""
+        return bp_items == 0 and weight > Planner._BACKPACK_STUCK_WEIGHT
 
     def _record_failed_destination(self, x: int, y: int) -> None:
         """Mark (x, y) as a freshly-failed move destination.
@@ -1066,7 +1083,7 @@ class Planner:
             1 for it in ctx.perception.world.items.values()
             if it.container == backpack
         )
-        if bp_items == 0 and ss.weight > 50:
+        if self._backpack_is_stuck(bp_items, ss.weight):
             now = _time.time()
             refresh_interval = 15.0 if self._backpack_refresh_fails < 8 else 120.0
             if now - self._last_backpack_request > refresh_interval:
@@ -1108,7 +1125,12 @@ class Planner:
                     )
                     await ctx.conn.send_packet(build_double_click(backpack))
                     await asyncio.sleep(0.5)
-        elif bp_items > 0:
+        else:
+            # Not in the stale-contents stall (items are visible, OR the pack
+            # emptied below the weight floor — e.g. right after a bank deposit).
+            # Reset the CONSECUTIVE-failure counter so a stale count from an
+            # earlier stall can't immediately force the slow 120s refresh
+            # interval (and the heavy re-detect path) on the next fresh stall.
             self._backpack_refresh_fails = 0
 
         from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
@@ -2311,12 +2333,17 @@ class Planner:
         from anima.procedures.craft_blacksmith import CRAFTED_ITEM_GRAPHICS
         from anima.procedures.vendor_knowledge import get_vendor_keywords_for_items
 
+        # ``crafted_count`` is already the full backpack count (computed once at
+        # the top of select_procedure). This loop only collects the distinct
+        # sell graphics for vendor routing — it must NOT re-increment the count,
+        # which double-counted every crafted item (2x the real value) into the
+        # ``_intent`` text, the ``planner_sell_crafted`` telemetry, and the
+        # ``crafted_count`` passed to ``should_return_to_mine`` below.
         sell_graphics: set[int] = set()
         if backpack:
             for it in ctx.perception.world.items.values():
                 if it.container == backpack and it.graphic in CRAFTED_ITEM_GRAPHICS:
                     sell_graphics.add(it.graphic)
-                    crafted_count += 1
 
         if crafted_count > 0:
             proc = _get_proc("sell_to_vendor")
