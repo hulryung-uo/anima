@@ -144,9 +144,24 @@ def _genome_leftovers(repo: str | Path) -> list[str]:
         if not line.strip():
             continue
         status, path = line[:2], line[3:].strip()
-        # Rename entries are "R  old -> new"; the new path is what matters.
-        # The " -> " separator is emitted UNquoted, so split before unquoting.
-        if " -> " in path:
+        # Rename/copy entries are "R  old -> new" / "C  old -> new"; the new path
+        # is what matters. Detect them by the porcelain STATUS CODE, not by a
+        # bare ``" -> " in path`` substring test: git ALWAYS quotes a path that
+        # contains the substring ``" -> "`` (it has a space), so an untracked or
+        # modified genome file literally named e.g. ``anima/a -> b.py`` is
+        # emitted as ``?? "anima/a -> b.py"`` — NOT a rename. The old substring
+        # test then mis-split that quoted name on its embedded arrow, truncating
+        # the path to ``b.py"`` (which fails the ``anima/`` prefix test), so the
+        # file was dropped from the fold and the whole eval window was wasted on
+        # a "no variant" cycle — the exact leak the quotepath / special-char
+        # fixes (55d0273, the special-chars test) close for every OTHER name.
+        # git emits ``old -> new`` with the OLD path first, so split on the
+        # FIRST separator to recover the new path: that survives a new path that
+        # is itself quoted AND contains ``" -> "`` (e.g. a rename TO
+        # ``anima/p -> q.py``, emitted ``R  anima/plain.py -> "anima/p -> q.py"``
+        # — rsplitting on the LAST separator would wrongly land inside the quoted
+        # name). _git_unquote then resolves the quoting on the recovered path.
+        if status[0] in ("R", "C") and " -> " in path:
             path = path.split(" -> ", 1)[1]
         # Resolve git's C-quoting (space/tab/special-char names stay quoted even
         # under quotepath=false) so the anima/ prefix test sees the real path.
