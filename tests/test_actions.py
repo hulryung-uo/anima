@@ -681,3 +681,95 @@ class TestWaitForJournalNoBus:
         )
         assert result.success
         await task
+
+
+class TestVendorListReadiness:
+    """wait_for_buy_list/wait_for_sell_list must require a NON-EMPTY list.
+
+    Regression: vendor_buy_list/vendor_sell_list are reset to the empty list
+    ``[]`` on death, vendor-close, Delete, and between transactions. The old
+    ``is not None`` predicate treated that cleared ``[]`` as "list ready" and
+    phantom-succeeded, so the caller fired a doomed buy/sell against a stale
+    vendor. The fix mirrors skills/trade/vendor's truthy discriminator.
+    """
+
+    @pytest.mark.asyncio
+    async def test_buy_list_empty_is_not_ready_bus(self):
+        from anima.actions.vendor import wait_for_buy_list
+
+        ctx = MagicMock()
+        ctx.bus = EventBus()
+        # Cleared trade state — empty list, NOT None (the death/close value).
+        ctx.perception.self_state.vendor_buy_list = []
+
+        result = await wait_for_buy_list(ctx, timeout=0.1)
+        assert not result.success
+        assert "timeout" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_buy_list_empty_is_not_ready_no_bus(self):
+        from anima.actions.vendor import wait_for_buy_list
+
+        ctx = MagicMock()
+        ctx.bus = None
+        ctx.perception.self_state.vendor_buy_list = []
+
+        result = await wait_for_buy_list(ctx, timeout=0.1)
+        assert not result.success
+
+    @pytest.mark.asyncio
+    async def test_buy_list_populated_is_ready_bus(self):
+        from anima.actions.vendor import wait_for_buy_list
+
+        ctx = MagicMock()
+        bus = EventBus()
+        ctx.bus = bus
+        ss = ctx.perception.self_state
+        ss.vendor_buy_list = []
+
+        async def _populate():
+            await asyncio.sleep(0.05)
+            ss.vendor_buy_list = [{"serial": 1, "amount": 5, "price": 10}]
+            bus.publish("vendor.buy_list", {})
+
+        task = asyncio.create_task(_populate())
+        result = await wait_for_buy_list(ctx, timeout=2.0)
+        assert result.success
+        assert result.data["buy_list"]
+        await task
+
+    @pytest.mark.asyncio
+    async def test_sell_list_empty_is_not_ready_bus(self):
+        from anima.actions.vendor import wait_for_sell_list
+
+        ctx = MagicMock()
+        ctx.bus = EventBus()
+        ctx.perception.self_state.vendor_sell_list = []
+
+        result = await wait_for_sell_list(ctx, timeout=0.1)
+        assert not result.success
+        assert "timeout" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_sell_list_empty_is_not_ready_no_bus(self):
+        from anima.actions.vendor import wait_for_sell_list
+
+        ctx = MagicMock()
+        ctx.bus = None
+        ctx.perception.self_state.vendor_sell_list = []
+
+        result = await wait_for_sell_list(ctx, timeout=0.1)
+        assert not result.success
+
+    @pytest.mark.asyncio
+    async def test_sell_list_populated_is_ready_no_bus(self):
+        from anima.actions.vendor import wait_for_sell_list
+
+        ctx = MagicMock()
+        ctx.bus = None
+        ss = ctx.perception.self_state
+        ss.vendor_sell_list = [{"serial": 2, "amount": 3, "price": 7}]
+
+        result = await wait_for_sell_list(ctx, timeout=0.5)
+        assert result.success
+        assert result.data["sell_list"]

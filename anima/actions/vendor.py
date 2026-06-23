@@ -62,20 +62,32 @@ async def wait_for_buy_list(
     ctx: AgentContext,
     timeout: float = 3.0,
 ) -> ActionResult:
-    """Wait for vendor buy list to appear after requesting buy."""
+    """Wait for vendor buy list to appear after requesting buy.
+
+    The readiness signal is a NON-EMPTY list, not merely ``is not None``.
+    ``vendor_buy_list`` is set to the empty list ``[]`` whenever trade state
+    is cleared — on death (self_state._GHOST transition), on a 0xBF vendor
+    close (handle_close_vendor), on a 0x1D Delete for the vendor, and by the
+    buy/sell procedures between transactions. ``[] is not None`` is True, so an
+    ``is not None`` wait returns success on a stale/cleared empty list the
+    instant it polls — the caller then fires build_buy_items at the (stale)
+    vendor_serial against no items, a doomed transaction. Mirror the proven
+    discriminator in skills/trade/vendor._wait_for_buy_list, which waits for a
+    truthy (populated) list.
+    """
     ss = ctx.perception.self_state
 
     if ctx.bus:
         ok = await ctx.bus.wait_for_condition(
-            lambda: ss.vendor_buy_list is not None,
+            lambda: bool(ss.vendor_buy_list),
             timeout=timeout,
         )
     else:
         for _ in range(int(timeout / 0.1)):
-            if ss.vendor_buy_list is not None:
+            if ss.vendor_buy_list:
                 break
             await asyncio.sleep(0.1)
-        ok = ss.vendor_buy_list is not None
+        ok = bool(ss.vendor_buy_list)
 
     if not ok:
         return ActionResult(success=False, message="Buy list timeout")
@@ -87,20 +99,27 @@ async def wait_for_sell_list(
     ctx: AgentContext,
     timeout: float = 3.0,
 ) -> ActionResult:
-    """Wait for vendor sell list to appear after requesting sell."""
+    """Wait for vendor sell list to appear after requesting sell.
+
+    Readiness is a NON-EMPTY list — see wait_for_buy_list. ``vendor_sell_list``
+    is reset to ``[]`` on death / vendor-close / Delete and between
+    transactions, and ``[] is not None`` is True, so an ``is not None`` wait
+    phantom-succeeds on a cleared list and the caller sells nothing against a
+    stale vendor. Mirror skills/trade/vendor._wait_for_sell_list (truthy wait).
+    """
     ss = ctx.perception.self_state
 
     if ctx.bus:
         ok = await ctx.bus.wait_for_condition(
-            lambda: ss.vendor_sell_list is not None,
+            lambda: bool(ss.vendor_sell_list),
             timeout=timeout,
         )
     else:
         for _ in range(int(timeout / 0.1)):
-            if ss.vendor_sell_list is not None:
+            if ss.vendor_sell_list:
                 break
             await asyncio.sleep(0.1)
-        ok = ss.vendor_sell_list is not None
+        ok = bool(ss.vendor_sell_list)
 
     if not ok:
         return ActionResult(success=False, message="Sell list timeout")
