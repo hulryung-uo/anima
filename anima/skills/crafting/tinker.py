@@ -154,7 +154,14 @@ class CraftTinker(Skill):
     name = "craft_tinker"
     category = "crafting"
     description = "Craft tools using Tinkering skill"
-    required_items = [0x1EB8]  # tinker tools (any of the graphic IDs)
+    # NOTE: intentionally NOT set as ``required_items``. A tinker tool flips its
+    # graphic between 0x1EB8 and 0x1EBC (TINKER_TOOLS_GRAPHICS) depending on its
+    # held/ground variant. ``Skill.required_items`` has AND-of-exact-graphic
+    # semantics, so listing only 0x1EB8 made the inherited base ``diagnose()``
+    # falsely emit "missing Tinker's Tools" whenever the agent actually held the
+    # 0x1EBC variant — a phantom shortage that misdirects the LLM/forum-research
+    # buy path. The real "any tool in the family + ingots" gate lives in the
+    # ``can_execute`` / ``diagnose`` overrides below.
     required_skill = (TINKERING_SKILL_ID, 0.0)
 
     async def can_execute(self, ctx: BrainContext) -> bool:
@@ -183,6 +190,43 @@ class CraftTinker(Skill):
                 return False
 
         return True
+
+    async def diagnose(self, ctx: BrainContext) -> str | None:
+        """Explain why the tinker craft can't run, family-aware like can_execute.
+
+        The inherited base ``Skill.diagnose`` reads ``required_items`` with
+        exact-graphic semantics, so it could not express the dual-graphic tinker
+        tool family (0x1EB8 / 0x1EBC) and falsely reported the 0x1EBC variant as
+        "missing Tinker's Tools". Mirror ``can_execute`` so the shortage text fed
+        to the LLM / forum-research path is truthful.
+        """
+        if await self.can_execute(ctx):
+            return None
+
+        ss = ctx.perception.self_state
+        world = ctx.perception.world
+
+        backpack = ss.equipment.get(0x15)
+        if not backpack:
+            return "no backpack"
+
+        backpack_graphics = {
+            it.graphic for it in world.items.values() if it.container == backpack
+        }
+        if not (TINKER_TOOLS_GRAPHICS & backpack_graphics):
+            return "missing tinker tools"
+        if not (INGOT_GRAPHICS & backpack_graphics):
+            return "missing ingots"
+
+        if self.required_skill is not None:
+            skill_id, min_val = self.required_skill
+            skill_info = ss.skills.get(skill_id)
+            if skill_info is None:
+                return f"missing skill #{skill_id}"
+            if skill_info.value < min_val:
+                return f"skill too low ({skill_info.value:.1f}/{min_val})"
+
+        return "preconditions not met"
 
     def _decide_craft_target(self, ctx: BrainContext) -> tuple[str, str, set[int]] | None:
         """Decide what to craft based on what's missing from backpack.
