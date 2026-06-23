@@ -380,6 +380,42 @@ class MineOre(Skill):
             ctx.blackboard.pop("_mine_consec_fail", None)
             ctx.blackboard.pop("_mine_consec_fail_bank", None)
 
+            # Track consecutive successful mines on the same *mined tile*
+            # (tx, ty), not the player's footing — the agent stands still and
+            # swings at a target up to SEARCH_RADIUS tiles away, so the player
+            # tile and the mined tile can fall into different ServUO 8x8 ore
+            # banks at a bank boundary. Keying on the mined tile lands the pause
+            # on the bank that is actually being depleted, consistent with the
+            # fail-streak path below (which keys on _bank_key(tx, ty)).
+            #
+            # After SAME_SPOT_MINE_LIMIT hits, mark the bank in
+            # _voluntary_cooldown_banks so _is_bank_depleted rotates the agent
+            # to a fresh spot — ServUO banks respawn faster than a slow,
+            # low-skill agent can naturally deplete them, so without this guard
+            # the agent mines one pool forever. This is the WRITE side of the
+            # _voluntary_cooldown_banks read already wired into _find_mineable_tile.
+            same_spot = ctx.blackboard.setdefault(
+                "_mine_same_spot", {"pos": None, "count": 0}
+            )
+            cur_pos = (tx, ty)
+            if same_spot.get("pos") == cur_pos:
+                same_spot["count"] = same_spot.get("count", 0) + 1
+            else:
+                same_spot["pos"] = cur_pos
+                same_spot["count"] = 1
+            if same_spot["count"] >= SAME_SPOT_MINE_LIMIT:
+                voluntary_cd: dict[tuple[int, int], float] = (
+                    ctx.blackboard.setdefault("_voluntary_cooldown_banks", {})
+                )
+                bk = _bank_key(tx, ty)
+                voluntary_cd[bk] = time.time()
+                logger.info(
+                    "mine_same_spot_pause",
+                    bank=f"{bk}", pos=f"({tx},{ty})", after=same_spot["count"],
+                )
+                same_spot["pos"] = None
+                same_spot["count"] = 0
+
             # Drop ore on the ground at feet — stacks with existing ore
             for item in world.items.values():
                 if item.container == backpack and item.graphic in ORE_GRAPHICS:
