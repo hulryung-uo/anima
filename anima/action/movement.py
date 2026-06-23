@@ -366,9 +366,17 @@ async def go_to(
         ctx.walker._pending_step_tile = (next_x, next_y)
         move_seq = ctx.walker.next_sequence()
         fastwalk = ctx.walker.pop_fast_walk_key()
-        await ctx.conn.send_packet(build_walk_request(
-            direction | (RUN_FLAG if use_run else 0), move_seq, fastwalk,
-        ))
+        # Reserve the outstanding-step budget BEFORE the send. send_packet()
+        # suspends on writer.drain(); while it is suspended the recv_loop
+        # coroutine can run and dispatch THIS step's ConfirmWalk (0x22),
+        # calling walker.confirm_walk() — which decrements steps_count. If we
+        # incremented only AFTER the await, that confirm's decrement lands on
+        # the PREVIOUS count (or no-ops at 0) and the post-await `+= 1` then
+        # leaves steps_count one too high. Over a fast/mounted run, where
+        # confirms routinely arrive inside the drain window, steps_count drifts
+        # up to MAX_STEP_COUNT and can_walk() wedges movement until the 5s
+        # stale auto-reset. Reserve first, mirroring how _pending_seq /
+        # _pending_step_tile are set before the await.
         ctx.walker.steps_count += 1
         ctx.walker.last_step_time = (
             asyncio.get_event_loop().time() * 1000 + (
@@ -376,6 +384,9 @@ async def go_to(
                 else ctx.cfg.movement.walk_delay_ms
             )
         )
+        await ctx.conn.send_packet(build_walk_request(
+            direction | (RUN_FLAG if use_run else 0), move_seq, fastwalk,
+        ))
         steps_taken += 1
 
         logger.debug(
@@ -755,11 +766,18 @@ async def _walk_one_step(
     )
     seq = ctx.walker.next_sequence()
     fastwalk = ctx.walker.pop_fast_walk_key()
-    await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
+    # Reserve the outstanding-step budget BEFORE the send. send_packet()
+    # suspends on writer.drain(); during that suspension the recv_loop can
+    # dispatch this step's ConfirmWalk and call walker.confirm_walk(), which
+    # decrements steps_count. Incrementing only after the await let that
+    # confirm's decrement land on the wrong (pre-increment) count, leaving
+    # steps_count one too high and eventually wedging can_walk(). Reserve
+    # first (see the matching note in go_to).
     ctx.walker.steps_count += 1
     ctx.walker.last_step_time = (
         asyncio.get_event_loop().time() * 1000 + ctx.cfg.movement.walk_delay_ms
     )
+    await ctx.conn.send_packet(build_walk_request(direction, seq, fastwalk))
     await asyncio.sleep(step_delay + 0.05)
 
     return ss.x != prev_x or ss.y != prev_y
