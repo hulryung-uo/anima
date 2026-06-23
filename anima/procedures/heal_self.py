@@ -80,6 +80,27 @@ class HealSelf(Procedure):
                 message="No heal potion to quaff",
             )
 
+        # The quaff is a single double-click with no target cursor, so the ONLY
+        # proof the potion actually drank is that the packet went out on a LIVE
+        # connection — a disconnected ``send_packet`` is a silent no-op (see
+        # connection.connected / the same guard in practice_music, combat_loop).
+        # If we send into a dead socket anyway the old code (a) stamped
+        # ``_potion_last_ts`` — parking the can_start cooldown for the full
+        # POTION_COOLDOWN_S so the agent will NOT retry the heal for ~10s — and
+        # (b) returned success=True, a phantom win written to the ActionLog
+        # reward signal. heal_self is the last-resort survival heal in the
+        # Priority-1 critical-HP ladder, so a phantom quaff there is exactly the
+        # death those branches exist to prevent: the planner is told the heal
+        # landed and the cooldown blocks the only retry. Refuse early as a
+        # retryable failure WITHOUT stamping the cooldown, so the moment the
+        # session reconnects the heal can fire.
+        if not getattr(ctx.conn, "connected", True):
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.INTERRUPTED,
+                message="Heal potion not quaffed — connection down",
+            )
+
         hp_before = ss.hits
         await ctx.conn.send_packet(build_double_click(potions[0].serial))
         ctx.blackboard["_potion_last_ts"] = time.monotonic()
