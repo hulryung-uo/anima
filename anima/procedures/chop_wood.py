@@ -156,6 +156,38 @@ class ChopWood(Procedure):
                         return s
             return None
 
+        def _skip_tree_seen() -> bool:
+            """True if ANY skip-tree line (depleted / too-far) landed this swing.
+
+            ``result_snippet`` only captures the FIRST ``_RESULT_SNIPPETS`` match
+            in journal order. On the swing that *strips* a tree ServUO emits both
+            a success line ("...logs into your backpack") AND a depletion line
+            ("not enough wood here") within the same window, in EITHER order. If
+            the success line sorts first, ``result_snippet`` is a success snippet
+            (not in ``_SKIP_TREE_SNIPPETS``) and the now-empty tree was never
+            parked — so the next loop iteration re-selects the same exhausted
+            tree and chops nothing until depletion happens to sort first. Scan
+            the whole window so parking is order-independent, mirroring
+            mine_ore's terminal-flag journal reconciliation pass.
+            """
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < chop_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in self._SKIP_TREE_SNIPPETS):
+                    return True
+            return False
+
+        def _tool_broke_seen() -> bool:
+            """True if a worn-out-hatchet line landed anywhere this swing."""
+            for entry in ctx.perception.social.journal:
+                if entry.timestamp < chop_start:
+                    continue
+                tl = entry.text.lower()
+                if any(s in tl for s in self._TOOL_BROKE_SNIPPETS):
+                    return True
+            return False
+
         def _success_seen() -> bool:
             """True if a chop-success journal line landed since the swing."""
             for entry in ctx.perception.social.journal:
@@ -208,7 +240,7 @@ class ChopWood(Procedure):
         # next_suggestion — and worse, "worn out" is NOT in _SKIP_TREE_SNIPPETS,
         # so a perfectly good tree never got parked while the agent had no
         # hatchet to swing. Check this BEFORE parking the tree as depleted.
-        if result_snippet in self._TOOL_BROKE_SNIPPETS:
+        if _tool_broke_seen():
             logger.warning("chop_tool_broke", pos=f"({tx},{ty})")
             return ProcedureResult(
                 success=False,
@@ -220,7 +252,7 @@ class ChopWood(Procedure):
         # A depleted / out-of-range tree must be parked in the shared cooldown
         # so _find_nearby_tree skips it next iteration; otherwise the loop pins
         # on the same dead tree and chops nothing for DEPLETED_COOLDOWN seconds.
-        if result_snippet in self._SKIP_TREE_SNIPPETS:
+        if _skip_tree_seen():
             depleted: dict[tuple[int, int], float] = ctx.blackboard.setdefault(
                 "depleted_trees", {}
             )
