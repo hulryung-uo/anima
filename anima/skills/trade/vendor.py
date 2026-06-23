@@ -240,6 +240,29 @@ def _bounded_buy_qty(want: int, available: int) -> int:
     return max(0, min(want, available))
 
 
+def _buy_outcome(items_received: int, gold_spent: int) -> tuple[bool, float]:
+    """Classify a buy attempt's outcome from what actually changed.
+
+    Returns ``(success, reward)``.
+
+    * ``items_received > 0`` — at least one missing tool arrived. A real win
+      whether or not we can read the exact gold spent. ``reward = 1.0 +
+      gold_spent * 0.01``.
+    * ``items_received == 0 and gold_spent == 0`` — nothing moved (caller owns
+      the no-gold cooldown/rethink path). Failure.
+    * ``items_received == 0 and gold_spent > 0`` — gold LEFT the wallet but none
+      of the needed tools arrived (full pack, a bounced/over-stock line, or a
+      wrong-graphic delivery). The agent still lacks its tools yet is poorer.
+      Reporting success here writes a phantom win into the reward signal and
+      tells the planner the restock landed. Surface it as a negative-reward
+      FAILURE, mirroring the sell path's phantom-sell guard.
+    """
+    if items_received > 0:
+        return True, 1.0 + gold_spent * 0.01
+    # Either nothing moved, or gold spent with no needed tools — both failures.
+    return False, -2.0
+
+
 class BuyFromNpc(Skill):
     """Buy essential tools from an NPC vendor via context menu."""
 
@@ -443,12 +466,30 @@ class BuyFromNpc(Skill):
                 duration_ms=elapsed,
             )
 
-        reward = 1.0 + gold_spent * 0.01
+        success, reward = _buy_outcome(items_received, gold_spent)
+        if not success:
+            # Gold left the wallet but none of the needed tools arrived (full
+            # pack / bounced line / wrong graphic). NOT a win — the agent is
+            # poorer and still missing its tools. Report failure so the planner
+            # keeps trying instead of recording a phantom restock.
+            logger.warning(
+                "vendor_buy_no_items",
+                vendor=vendor_name,
+                buying=buying_detail,
+                gold_spent=gold_spent,
+                reason="gold spent but no needed tools received",
+            )
+            return SkillResult(
+                success=False, reward=reward,
+                message=f"Buy from {vendor_name} spent {gold_spent}gp but no "
+                        f"needed tools arrived ({', '.join(buying_detail)})",
+                duration_ms=elapsed,
+            )
+
         message = (
             f"Bought {items_received} item(s) from {vendor_name} for {gold_spent}gp "
             f"({', '.join(buying_detail)})"
         )
-
         return SkillResult(
             success=True, reward=reward, message=message, duration_ms=elapsed,
         )
