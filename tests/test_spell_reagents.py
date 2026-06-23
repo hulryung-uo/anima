@@ -21,6 +21,7 @@ _GL = REAGENT_GRAPHICS["Ginseng"]
 _GS = REAGENT_GRAPHICS["Garlic"]
 _SS = REAGENT_GRAPHICS["Sulfurous Ash"]
 _SA = REAGENT_GRAPHICS["Spider's Silk"]
+_BM = REAGENT_GRAPHICS["Bloodmoss"]
 
 
 def test_reagent_costs_counts_duplicates():
@@ -95,3 +96,34 @@ def test_mana_drain_requires_spiders_silk_not_sulfurous_ash():
     full = {_BP: 1, _MR: 1, _SA: 1}
     assert missing_reagents(md, full) == []
     assert has_reagents_for(md, full)
+
+
+def test_mana_vampire_requires_bloodmoss_not_a_second_black_pearl():
+    """Mana Vampire (circle 7) consumes Black Pearl, Bloodmoss, Mandrake Root
+    and Spider's Silk per ServUO (Scripts/Spells/Seventh/ManaVampire.cs) — one
+    each, NOT two Black Pearl + Sulfurous Ash.
+
+    The earlier ("BP","BP","MR","SS") row asked for a 2nd Black Pearl and
+    Sulfurous Ash, and "BM" was mis-mapped to "Black Pearl" with no Bloodmoss
+    graphic at all — so an agent with a full real kit (incl. Bloodmoss) could
+    still be told it lacked reagents, while a Bloodmoss-less pack passed.
+    """
+    mv = get_spell_by_name("mana vampire")
+    assert mv is not None
+    assert reagent_costs(mv) == {
+        "Black Pearl": 1,
+        "Bloodmoss": 1,
+        "Mandrake Root": 1,
+        "Spider's Silk": 1,
+    }
+    # Bloodmoss must have a real, distinct inventory graphic (ServUO 0x0F7B).
+    assert REAGENT_GRAPHICS["Bloodmoss"] == 0x0F7B
+    assert REAGENT_GRAPHICS["Bloodmoss"] != REAGENT_GRAPHICS["Black Pearl"]
+    # Everything but Bloodmoss on hand → Bloodmoss reported missing.
+    have = {_BP: 5, _MR: 5, _SA: 5}
+    assert missing_reagents(mv, have) == ["Bloodmoss"]
+    assert not has_reagents_for(mv, have)
+    # The real kit (Bloodmoss present, single Black Pearl) clears it.
+    full = {_BP: 1, _BM: 1, _MR: 1, _SA: 1}
+    assert missing_reagents(mv, full) == []
+    assert has_reagents_for(mv, full)

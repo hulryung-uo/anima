@@ -36,7 +36,7 @@ class SpellSchool(str, Enum):
 
 # Reagent abbreviations
 REAGENT_NAMES: dict[str, str] = {
-    "BM": "Black Pearl",
+    "BM": "Bloodmoss",
     "BP": "Black Pearl",
     "NS": "Nightshade",
     "GL": "Ginseng",
@@ -55,6 +55,7 @@ REAGENT_NAMES: dict[str, str] = {
 # Reagent item graphic IDs (for inventory checks)
 REAGENT_GRAPHICS: dict[str, int] = {
     "Black Pearl": 0x0F7A,
+    "Bloodmoss": 0x0F7B,
     "Nightshade": 0x0F88,
     "Ginseng": 0x0F85,
     "Garlic": 0x0F84,
@@ -171,7 +172,7 @@ _RAW_SPELLS: list[tuple[str, int, int, str, str, tuple[str, ...]]] = [
     ("N", 2, 7, "Energy Field", "In Sanct Grav", ("BP", "MR", "SS", "SA")),
     ("H", 3, 7, "Flamestrike", "Kal Vas Flam", ("SS", "SA")),
     ("N", 4, 7, "Gate Travel", "Vas Rel Por", ("BP", "MR", "SA")),
-    ("H", 5, 7, "Mana Vampire", "Ort Sanct", ("BP", "BP", "MR", "SS")),
+    ("H", 5, 7, "Mana Vampire", "Ort Sanct", ("BP", "BM", "MR", "SA")),
     ("N", 6, 7, "Mass Dispel", "Vas An Ort", ("BP", "GL", "MR", "SA")),
     ("H", 7, 7, "Meteor Swarm", "Flam Kal Des Ylem", ("BP", "SS", "MR", "SA")),
     ("N", 8, 7, "Polymorph", "Vas Ylem Rel", ("BP", "MR", "SS")),
