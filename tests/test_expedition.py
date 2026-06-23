@@ -6,6 +6,7 @@ import time
 from anima.planner.expedition import (
     BATCH_CRAFT_INGOTS,
     BATCH_SMELT_ORE,
+    RETURN_INGOT_FLOOR,
     MiningExpedition,
     Phase,
     PileRecord,
@@ -251,7 +252,7 @@ class TestPhaseTransitionPredicates:
         exp = MiningExpedition()
         exp.transition_to(Phase.CRAFTING_TRIP)
         assert exp.should_return_to_mine(
-            ingot_count=8, crafted_count=0, near_home=True,
+            ingot_count=RETURN_INGOT_FLOOR, crafted_count=0, near_home=True,
         ) is False
 
     def test_should_return_to_mine_false_when_still_has_crafted(self):
@@ -295,15 +296,35 @@ class TestPhaseTransitionPredicates:
         ) is True
 
     def test_should_return_to_mine_ingot_count_at_boundary(self):
-        """ingot_count < 4: 3 returns True, 4 blocks return."""
+        """ingot_count < RETURN_INGOT_FLOOR: floor-1 returns True, floor blocks."""
         exp = MiningExpedition()
         exp.transition_to(Phase.CRAFTING_TRIP)
         assert exp.should_return_to_mine(
-            ingot_count=3, crafted_count=0, near_home=True,
+            ingot_count=RETURN_INGOT_FLOOR - 1, crafted_count=0, near_home=True,
         ) is True
         assert exp.should_return_to_mine(
-            ingot_count=4, crafted_count=0, near_home=True,
+            ingot_count=RETURN_INGOT_FLOOR, crafted_count=0, near_home=True,
         ) is False
+
+    def test_return_floor_tracks_blacksmith_craft_minimum(self):
+        """The CRAFTING_TRIP return floor must equal the craft minimum so a
+        leftover that can't start a craft can't be stranded either."""
+        from anima.procedures.craft_blacksmith import MIN_INGOTS
+        assert RETURN_INGOT_FLOOR == MIN_INGOTS
+
+    def test_leftover_ingots_below_craft_batch_do_not_strand(self):
+        """Regression: a craft session ending with 4–7 leftover iron ingots is
+        below MIN_INGOTS (can't craft) but was >= the old magic floor of 4
+        (couldn't return) — a dead band that wedged CRAFTING_TRIP until the
+        watchdog wiped the session. Such remainders must now return to MINING.
+        """
+        from anima.procedures.craft_blacksmith import MIN_INGOTS
+        exp = MiningExpedition()
+        exp.transition_to(Phase.CRAFTING_TRIP)
+        for leftover in range(4, MIN_INGOTS):  # the previously-stranding band
+            assert exp.should_return_to_mine(
+                ingot_count=leftover, crafted_count=0, near_home=True,
+            ) is True, f"{leftover} leftover ingots must not strand CRAFTING_TRIP"
 
     def test_watchdog_not_expired_at_exact_limit(self):
         """Equality (phase_started_at == now - max_phase_s) does NOT expire."""

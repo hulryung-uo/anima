@@ -41,6 +41,21 @@ BATCH_CRAFT_INGOTS = 16    # accumulate ingots before crafting (≈2 weapons)
 # growing est_amount, and counting locations would never trigger.
 AUX_COLLECT_ORE_THRESHOLD = 10
 
+# Ingot floor for CRAFTING_TRIP → MINING (see `should_return_to_mine`).
+#
+# MUST track `anima/procedures/craft_blacksmith.MIN_INGOTS` (the fewest iron
+# ingots any weapon recipe can start with). Below this floor the agent CANNOT
+# craft another item, and raw-ingot selling was removed as a general strategy
+# (planner Priority 5c), so there is no in-CRAFTING_TRIP action left to dispose
+# of the leftover ingots. The previous magic floor of 4 opened a dead band:
+# a craft session that ended with 4–7 leftover ingots could neither craft
+# (needs >= 8) nor return (needed < 4), stranding the agent in CRAFTING_TRIP
+# until the 600 s watchdog wiped the whole session — discarding the
+# `cycles_completed` credit and accumulated anchor. Anchoring the return floor
+# to the craft minimum closes the band: leftover ingots ride back to MINING and
+# accumulate toward the next batch instead of wedging the phase.
+RETURN_INGOT_FLOOR = 8
+
 
 class Phase(str, Enum):
     IDLE          = "idle"
@@ -249,7 +264,15 @@ class MiningExpedition:
         """CRAFTING_TRIP → MINING when ingots disposed and we're back at the mine."""
         if self.phase != Phase.CRAFTING_TRIP:
             return False
-        return ingot_count < 4 and crafted_count == 0 and near_home
+        # `ingot_count < RETURN_INGOT_FLOOR` (not the old magic 4): once the
+        # agent holds fewer ingots than a craft batch needs there is nothing
+        # more to do in CRAFTING_TRIP, so it must return to mining rather than
+        # idle on an un-craftable, un-sellable 4–7 ingot remainder.
+        return (
+            ingot_count < RETURN_INGOT_FLOOR
+            and crafted_count == 0
+            and near_home
+        )
 
     def watchdog_expired(self, max_phase_s: float = 600.0) -> bool:
         """True if the current phase has been active too long without progress.
