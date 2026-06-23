@@ -425,7 +425,7 @@ def seed_archive(arc: Archive, rc: RunConfig) -> Genome | None:
     print(f"[seed] evaluating current HEAD as a root genome "
           f"(persona={rc.persona}, fixed_start={rc.fixed_start or 'off'})…")
     res = run_eval_multi(_eval_cfg(rc, f"{rc.account_prefix}{rc.run_id}seed", 0, None),
-                         seeds=rc.seeds)
+                         seeds=rc.seeds, max_seeds=rc.max_seeds, cv_high=rc.cv_high)
     if not res.ok:
         print(f"[seed] FAILED: {res.error}")
         return None
