@@ -632,9 +632,21 @@ class Planner:
 
         # Starvation breaker: K consecutive failures demote the procedure
         # for a cooldown so lower-priority work gets a chance.
+        #
+        # A watchdog-cancelled run is the ONE failure path the breaker must NOT
+        # count here: the liveness watchdog already called
+        # ``self._proc_breaker.record_failure(self._last_procedure)`` at the
+        # moment it cancelled the in-flight task (``_liveness_watchdog``), and
+        # ``_last_procedure`` is exactly this ``proc.name``. Recording it a
+        # SECOND time on the CancelledError that the watchdog's ``task.cancel()``
+        # raises here double-counts a single stall — tripping the breaker
+        # (``_STARVE_FAILS`` = 3) after only TWO watchdog cancels instead of
+        # three and demoting a slow-but-legitimate procedure (a long combat
+        # leash, a far mining walk) for the whole cooldown sooner than its
+        # configured threshold. The watchdog owns that accounting; skip it here.
         if result.success:
             self._proc_breaker.record_success(proc.name)
-        else:
+        elif aborted != "watchdog_cancelled":
             self._proc_breaker.record_failure(proc.name)
 
         # Helper procedures (ad-hoc classes like _MoveToProcedure,
