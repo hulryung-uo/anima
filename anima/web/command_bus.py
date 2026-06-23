@@ -26,6 +26,10 @@ class CommandBus:
         self._override_procedure: str | None = None
         self._override_go_to: tuple[int, int] | None = None
         self._goal: str | None = None
+        # ``None`` is both a valid update (clear the goal) and the steady-state
+        # value for "no goal", so track whether a fresh set/clear command has
+        # arrived separately from the value itself.
+        self._goal_update_pending = False
 
     # --- State properties (read by Planner) ---
 
@@ -56,6 +60,20 @@ class CommandBus:
 
     def set_goal(self, goal: str | None) -> None:
         self._goal = goal
+        self._goal_update_pending = True
+
+    def consume_goal_update(self) -> tuple[bool, str | None]:
+        """Return and clear the latest companion goal update.
+
+        The boolean says whether an update was present; the value is the new
+        goal text, or ``None`` when the update is an explicit clear. This lets
+        the planner distinguish "no command this tick" from "clear the current
+        companion goal".
+        """
+        if not self._goal_update_pending:
+            return False, None
+        self._goal_update_pending = False
+        return True, self._goal
 
     # --- Push/Pop ---
 

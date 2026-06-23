@@ -100,10 +100,24 @@ class StatePublisher:
 
     # ------------------------------------------------------------------
 
+    def _goal_description(self) -> str:
+        """Human-readable goal for status snapshots.
+
+        Prefer a goal the planner has already consumed into the blackboard. If
+        the planner is busy inside a long procedure, a freshly accepted
+        companion goal may still be pending in CommandBus; surface that too so
+        external companions can verify their set-goal command landed.
+        """
+        goal = self._bb.get("current_goal")
+        if isinstance(goal, dict):
+            return str(goal.get("description", ""))[:50]
+        command_bus = self._bb.get("command_bus")
+        pending = getattr(command_bus, "goal", None) if command_bus else None
+        return str(pending or "")[:50]
+
     def _publish_status(self) -> None:
         ss = self._p.self_state
         persona = self._bb.get("persona")
-        goal = self._bb.get("current_goal")
         move_target = self._bb.get("move_target")
         procedure = self._bb.get("current_procedure")
         intent = self._bb.get("planner_intent")
@@ -117,7 +131,7 @@ class StatePublisher:
             "x": ss.x, "y": ss.y, "z": ss.z,
             "gold": ss.gold,
             "weight": ss.weight, "weight_max": ss.weight_max,
-            "goal": goal.get("description", "")[:50] if goal else "",
+            "goal": self._goal_description(),
             "move_target": list(move_target) if move_target else None,
             "procedure": procedure or "",
             "intent": intent or "",
@@ -286,7 +300,6 @@ class StatePublisher:
         """Write full state snapshot to data/state.json for external TUI."""
         ss = self._p.self_state
         persona = self._bb.get("persona")
-        goal = self._bb.get("current_goal")
         move_target = self._bb.get("move_target")
         procedure = self._bb.get("current_procedure")
         intent = self._bb.get("planner_intent")
@@ -359,7 +372,7 @@ class StatePublisher:
                 "gold": ss.gold,
                 "bank_balance": bank_balance,
                 "weight": ss.weight, "weight_max": ss.weight_max,
-                "goal": goal.get("description", "")[:50] if goal else "",
+                "goal": self._goal_description(),
                 "move_target": list(move_target) if move_target else None,
                 "procedure": procedure or "",
                 "intent": intent or "",

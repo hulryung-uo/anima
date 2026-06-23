@@ -466,6 +466,27 @@ class Planner:
         if not self.command_bus:
             return None
 
+        # Companion goal text (Hermes slow-mind / dashboard). This is not a
+        # real-time override: it updates the planner's observable intention and
+        # lets the normal priority ladder keep handling survival/reflexes.
+        goal_updated, goal = self.command_bus.consume_goal_update()
+        if goal_updated:
+            if goal:
+                ctx.blackboard["current_goal"] = {
+                    "description": goal,
+                    "source": "companion",
+                }
+                ctx.blackboard["planner_intent"] = f"Companion goal: {goal}"
+                logger.info("planner_companion_goal_set", goal=goal)
+            else:
+                current = ctx.blackboard.get("current_goal")
+                if isinstance(current, dict) and current.get("source") == "companion":
+                    ctx.blackboard.pop("current_goal", None)
+                intent = ctx.blackboard.get("planner_intent")
+                if isinstance(intent, str) and intent.startswith("Companion goal:"):
+                    ctx.blackboard.pop("planner_intent", None)
+                logger.info("planner_companion_goal_cleared")
+
         # Force go_to
         go_to = self.command_bus.override_go_to
         if go_to:
