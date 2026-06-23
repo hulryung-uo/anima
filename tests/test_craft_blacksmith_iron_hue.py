@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from anima.skills.crafting.blacksmith import (
     BLACKSMITH_SKILL_ID,
+    MIN_INGOTS_ANY,
     CraftBlacksmith,
 )
 
@@ -74,19 +75,23 @@ def test_mixed_stash_counts_only_iron(monkeypatch):
     skill = CraftBlacksmith()
     monkeypatch.setattr(skill, "_has_anvil_and_forge", lambda ctx: True)
 
-    # 7 Iron (below the 8 floor) + 100 colored. Must still be rejected: the
-    # colored metal cannot be substituted for the forced Iron material.
+    # Iron below the cheapest recipe's floor + 100 colored. Must be rejected:
+    # the colored metal cannot be substituted for the forced Iron material, so
+    # even a mountain of colored ingots can't reach the minimum. (The threshold
+    # is now the cheapest CRAFT_TARGETS recipe, MIN_INGOTS_ANY — can_execute
+    # defers to the same _pick_target selector execute uses, so 3-7 iron forging
+    # a Dagger is no longer a dead band rejected by a static 8-floor.)
     ctx = _ctx([
         _item(SMITH_HAMMER),
-        _item(IRON_INGOT, amount=7, hue=0),
+        _item(IRON_INGOT, amount=MIN_INGOTS_ANY - 1, hue=0),
         _item(IRON_INGOT, amount=100, hue=0x08A5),
     ])
     assert _run(skill.can_execute(ctx)) is False
 
-    # Bump Iron to 8 and it should pass.
+    # Bump Iron to the cheapest recipe's floor and it passes on Iron alone.
     ctx = _ctx([
         _item(SMITH_HAMMER),
-        _item(IRON_INGOT, amount=8, hue=0),
+        _item(IRON_INGOT, amount=MIN_INGOTS_ANY, hue=0),
         _item(IRON_INGOT, amount=100, hue=0x08A5),
     ])
     assert _run(skill.can_execute(ctx)) is True

@@ -148,6 +148,9 @@ CRAFT_TARGETS = [
     ("Plate Helm", 1, 4, 62.6, 15),
 ]
 
+# Cheapest recipe (Dagger) needs 3 ingots; nothing needs fewer. Used as a fast
+# pre-filter in can_execute before deferring to the real _pick_target selector.
+MIN_INGOTS_ANY = min(t[4] for t in CRAFT_TARGETS)
 # Sort by min_skill ascending
 CRAFT_TARGETS.sort(key=lambda t: t[3])
 
@@ -177,19 +180,31 @@ class CraftBlacksmith(Skill):
         if not (bp_graphics & ALL_TOOL_GRAPHICS):
             return False
 
-        # Need at least 8 IRON ingots for the cheapest recipe. We force the
-        # Iron material in execute(), so colored (non-zero hue) ingots are not
-        # usable here — counting them would gate True then loop on the server's
-        # "insufficient metal" notice without ever crafting.
+        # Confirm something is ACTUALLY forgeable with the iron + skill on hand
+        # by deferring to ``_pick_target`` — the same selector ``execute`` uses.
+        # The old static ``ingots < 8`` gate disagreed with it: the cheapest
+        # recipe a skill-0 smith qualifies for is the Dagger at 3 ingots
+        # (min_skill -0.4), so a fresh smith holding 3-7 iron at a valid
+        # anvil+forge could forge a Dagger yet can_execute rejected it (3 < 8) —
+        # a dead band that left a craftable smith perpetually "not ready"
+        # (mirrors the carpentry _pick_target single-source fix, 62e039e). We
+        # force the Iron material in execute(), so colored (non-zero hue) ingots
+        # are not usable here — only hue-0 ingots count. Keep the cheap
+        # ``MIN_INGOTS_ANY`` early-out as a fast pre-filter, then require a real
+        # target from the one shared selector.
         ingots = sum(
             it.amount for it in bp_items
             if it.graphic in INGOT_GRAPHICS and it.hue == IRON_HUE
         )
-        if ingots < 8:
+        if ingots < MIN_INGOTS_ANY:
             return False
 
         skill_info = ss.skills.get(BLACKSMITH_SKILL_ID)
         if skill_info is None or skill_info.value < 0.0:
+            return False
+
+        target = self._pick_target(skill_info.value, ingots)
+        if target is None:
             return False
 
         # Must be near both an anvil AND a forge (within 2 tiles)
@@ -197,6 +212,26 @@ class CraftBlacksmith(Skill):
             return False
 
         return True
+
+    @staticmethod
+    def _pick_target(
+        skill_val: float, ingots_available: int,
+    ) -> tuple[str, int, int, int] | None:
+        """Choose what to forge from CRAFT_TARGETS.
+
+        Returns ``(name, group_index, item_index, ingots_needed)`` for the item
+        to craft now, or ``None`` if nothing is forgeable with the iron + skill
+        on hand. CRAFT_TARGETS is sorted by ``min_skill`` ascending, so keeping
+        the last qualifying-and-affordable match selects the highest-skill item
+        the smith can both afford and is skilled enough for — identical to the
+        loop ``execute`` ran inline before this selector was extracted. Sharing
+        one selector keeps the precondition and the craft choice in lockstep.
+        """
+        target: tuple[str, int, int, int] | None = None
+        for name, grp_idx, item_idx, min_skill, ingots in CRAFT_TARGETS:
+            if skill_val >= min_skill and ingots_available >= ingots:
+                target = (name, grp_idx, item_idx, ingots)
+        return target
 
     async def execute(self, ctx: BrainContext) -> SkillResult:
         ss = ctx.perception.self_state
@@ -221,10 +256,7 @@ class CraftBlacksmith(Skill):
         skill_info = ss.skills.get(BLACKSMITH_SKILL_ID)
         skill_val = skill_info.value if skill_info else 0.0
 
-        target = None
-        for name, grp_idx, item_idx, min_skill, ingots in CRAFT_TARGETS:
-            if skill_val >= min_skill and ingots_available >= ingots:
-                target = (name, grp_idx, item_idx, ingots)
+        target = self._pick_target(skill_val, ingots_available)
 
         if not target:
             return SkillResult(
