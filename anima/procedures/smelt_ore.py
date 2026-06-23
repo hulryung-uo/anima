@@ -45,6 +45,13 @@ def _rearm_unsmelable_on_skill_gain(ctx: "AgentContext") -> None:
     The trigger ("skill too low for this hue") clears as skill grows, yet the
     latch never reset — so ore that became smeltable was discarded forever.
 
+    Re-arming the *hue* is not enough on its own: when a hue was blacklisted,
+    ``smelt_ore`` also stamps the serial of every ground pile it dropped into
+    ``_junk_ore_serials`` (a companion skip-latch read by ``can_start`` and the
+    ground-pickup loop). Lifting the hue without dropping those serials leaves
+    the now-retryable piles permanently invisible — the latch would be cleared
+    on the wrong path. Clear both together.
+
     Record the Mining value at blacklist time in ``_unsmelable_ore_hue_skill``
     and, whenever skill has climbed ``SMELT_REARM_SKILL_DELTA`` tenths past that
     mark, lift the hue off the blacklist so the next smelt attempt re-tests it.
@@ -61,9 +68,22 @@ def _rearm_unsmelable_on_skill_gain(ctx: "AgentContext") -> None:
         hue for hue in list(blacklist)
         if now_skill - recorded.get(hue, 0.0) >= SMELT_REARM_SKILL_DELTA
     ]
+    if not rearmed:
+        return
+    rearmed_hues = set(rearmed)
     for hue in rearmed:
         blacklist.discard(hue)
         recorded.pop(hue, None)
+    # Drop the companion junk-serial skip-latch for any ground pile whose
+    # current hue was just re-armed, so the retryable piles become visible
+    # again instead of staying permanently skipped (latch-on-wrong-path).
+    junk: set[int] = ctx.blackboard.get("_junk_ore_serials", set())
+    if junk:
+        world = getattr(getattr(ctx, "perception", None), "world", None)
+        items = getattr(world, "items", {}) if world is not None else {}
+        for it in list(items.values()):
+            if getattr(it, "hue", None) in rearmed_hues and it.serial in junk:
+                junk.discard(it.serial)
     if rearmed:
         logger.info(
             "smelt_unsmelable_rearmed",

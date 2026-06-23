@@ -93,3 +93,52 @@ def test_noop_when_blacklist_empty():
     # No exception, no keys created.
     _rearm_unsmelable_on_skill_gain(ctx)
     assert "_unsmelable_ore_hues" not in ctx.blackboard
+
+
+class _Item:
+    def __init__(self, serial: int, hue: int, container: int = 0) -> None:
+        self.serial = serial
+        self.hue = hue
+        self.container = container
+        self.graphic = 0x19B9  # any ORE graphic; not consulted by the re-arm
+
+
+def _ctx_with_ground(mining_tenths: float, items: dict) -> MagicMock:
+    ctx = _make_ctx(mining_tenths)
+    ctx.perception.world.items = items
+    return ctx
+
+
+def test_rearm_clears_junk_serials_of_the_rearmed_hue():
+    # A ground pile of hue 0x0501 was dropped as junk when the hue was
+    # blacklisted at low skill. Once Mining clears the re-arm delta, the hue is
+    # lifted AND its ground pile must be dropped from _junk_ore_serials — else
+    # the retryable pile stays permanently skipped (latch on the wrong path).
+    pile = _Item(serial=0xAABB, hue=0x0501)
+    other = _Item(serial=0xCCDD, hue=0x0502)  # still-blacklisted hue
+    ctx = _ctx_with_ground(
+        400.0, {pile.serial: pile, other.serial: other}
+    )
+    _blacklist(ctx, 0x0501, at_skill=400.0 - SMELT_REARM_SKILL_DELTA)  # eligible
+    _blacklist(ctx, 0x0502, at_skill=400.0 - 5.0)                      # too recent
+    ctx.blackboard["_junk_ore_serials"] = {pile.serial, other.serial}
+
+    _rearm_unsmelable_on_skill_gain(ctx)
+
+    junk = ctx.blackboard["_junk_ore_serials"]
+    assert pile.serial not in junk, (
+        "re-arming a hue must un-skip its ground piles, not just the hue"
+    )
+    assert other.serial in junk, (
+        "a pile whose hue is still blacklisted must stay in the junk skip-latch"
+    )
+
+
+def test_rearm_without_junk_set_is_safe():
+    # No _junk_ore_serials present: re-arm must still lift the hue and not crash.
+    ctx = _ctx_with_ground(400.0, {})
+    _blacklist(ctx, 0x0501, at_skill=400.0 - SMELT_REARM_SKILL_DELTA)
+
+    _rearm_unsmelable_on_skill_gain(ctx)
+
+    assert 0x0501 not in ctx.blackboard["_unsmelable_ore_hues"]
