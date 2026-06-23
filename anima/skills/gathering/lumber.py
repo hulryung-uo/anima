@@ -45,6 +45,24 @@ def _find_nearby_tree(ctx: BrainContext) -> tuple[int, int, int, int] | None:
     )
     now = time.time()
 
+    def _is_depleted(x: int, y: int) -> bool:
+        # Mirror mine.py's ``_is_bank_depleted``: a tile whose cooldown has
+        # lapsed is NOT depleted any more, so DROP its stale entry instead of
+        # merely skipping the guard. ``depleted_trees`` is keyed per exhausted
+        # tile and is only ever WRITTEN (chop_wood / the chop skill park trees
+        # here) — without an inline prune it grows for the entire lifetime of
+        # the agent process (one entry per tree ever exhausted), a pure soak
+        # leak. ``depleted_banks`` already self-prunes this exact way (and the
+        # planner's deadlock pass sweeps it too); ``depleted_trees`` had
+        # neither, so it was the lone unbounded gather-cooldown map.
+        ts = depleted.get((x, y))
+        if ts is None:
+            return False
+        if now - ts < DEPLETED_COOLDOWN:
+            return True
+        del depleted[(x, y)]
+        return False
+
     # Check map statics first (most trees are static)
     if ctx.map_reader is not None:
         best = None
@@ -56,8 +74,7 @@ def _find_nearby_tree(ctx: BrainContext) -> tuple[int, int, int, int] | None:
                     continue
                 tx, ty = sx + dx, sy + dy
                 # Skip depleted trees
-                dep_time = depleted.get((tx, ty))
-                if dep_time and now - dep_time < DEPLETED_COOLDOWN:
+                if _is_depleted(tx, ty):
                     continue
                 tile = ctx.map_reader.get_tile(tx, ty)
                 for s in tile.statics:
@@ -73,8 +90,7 @@ def _find_nearby_tree(ctx: BrainContext) -> tuple[int, int, int, int] | None:
         if it.container != 0:
             continue
         if it.graphic in TREE_GRAPHICS:
-            dep_time = depleted.get((it.x, it.y))
-            if dep_time and now - dep_time < DEPLETED_COOLDOWN:
+            if _is_depleted(it.x, it.y):
                 continue
             dist = max(abs(it.x - sx), abs(it.y - sy))
             if dist <= SEARCH_RADIUS:
