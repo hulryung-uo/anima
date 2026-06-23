@@ -220,6 +220,7 @@ class BankDeposit(Procedure):
 
         deposited_count = 0
         colored_ingots_deposited = 0
+        gold_deposited_attempted = False
 
         # Deposit gold
         for item in list(world.items.values()):
@@ -229,6 +230,7 @@ class BankDeposit(Procedure):
                 await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))
                 await asyncio.sleep(0.2)
                 deposited_count += 1
+                gold_deposited_attempted = True
 
         # Always deposit colored (non-iron) ingots — they're useless for
         # basic crafting and would otherwise accumulate indefinitely.
@@ -271,6 +273,26 @@ class BankDeposit(Procedure):
             )
 
         await asyncio.sleep(0.5)
+
+        # The gold-debit echo (a 0x2E/status push that lowers ss.gold) is a
+        # SEPARATE packet from the drop ack, and on a loaded link it can lag the
+        # flat 0.5s settle above — exactly the late-container-update race the
+        # mine/smelt/chop swings grace-poll for. If a gold stack WAS dropped into
+        # the bank but ss.gold has not dropped yet, ``actual_deposited`` reads 0,
+        # so ``_reconcile_bank_after_deposit`` is handed 0 and does NOTHING: the
+        # bank_balance cache is left lagging reality by everything just banked and
+        # the buy-disable latch is never lifted — re-introducing the precise
+        # gather->sell->bank->restock stall that reconcile was written to prevent
+        # (a still-fresh small pre-deposit reading keeps the planner from buying).
+        # Briefly poll for the echo before computing the deposited amount so the
+        # reconcile sees the real figure. Only the gold path needs this — item
+        # deposits don't feed the gold cache.
+        if gold_deposited_attempted and ss.gold >= gold_before:
+            grace_deadline = time.time() + 1.5
+            while time.time() < grace_deadline:
+                await asyncio.sleep(0.1)
+                if ss.gold < gold_before:
+                    break
 
         if deposited_count > 0:
             actual_deposited = max(0, gold_before - ss.gold)
