@@ -477,6 +477,18 @@ class CraftBlacksmith(Procedure):
                         message=f"walked to ({target[0]},{target[1]}) but still"
                                 " no anvil/forge within 2 tiles",
                     )
+                # Reached a usable forge/anvil. The walk-to-forge trigger that
+                # arms ``_craft_bs_location_fails`` has cleared, so reset the
+                # counter HERE — not only on a later full craft success (line
+                # ~617). Without this the counter only ever GROWS across
+                # location attempts: a couple of transient pathfinding misses
+                # park it at 1-2, the agent then reaches the forge but the
+                # batch fails for an unrelated reason (skill check / gump) and
+                # produces no item, so the success reset never runs, and the
+                # NEXT single walk miss trips the 120s ``_craft_bs_location_cooldown``
+                # (gated in can_start + the planner profession gate) after ONE
+                # failure instead of three — a latch cleared on the wrong path.
+                ctx.blackboard["_craft_bs_location_fails"] = 0
                 logger.info("craft_bs_walked_to_forge", target=f"({target[0]},{target[1]})")
             else:
                 return ProcedureResult(
