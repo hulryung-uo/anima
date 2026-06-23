@@ -234,6 +234,20 @@ STATUS_REQUEST_CACHE_MAX = 512
 # over the cap), far above any plausible in-view corpse count.
 LOOTED_CORPSES_CACHE_MAX = 512
 
+# Cap on the per-session empty-open retry counter (``_loot_attempts``).
+# ``_loot_fresh_corpses`` adds one entry (keyed by corpse serial) the first
+# time a body opens empty and only pops it on a successful lift, a weight-gated
+# open, or once it reaches LOOT_MAX_ATTEMPTS empty opens. A corpse that opens
+# empty ONCE (count below LOOT_MAX_ATTEMPTS) and then DESPAWNS before it is
+# re-opened — the common case on a pure-combat soak, where every Spawner mob
+# dies, drops a fresh-serial corpse, and the body times out — is never popped,
+# never recurs (despawned serials are not reused in a session), and so leaks
+# one dict entry per kill for the whole eval. This is the same growth path the
+# sibling ``_looted_corpses`` reaper above was added to plug; the companion
+# dict was missed. Bound it identically (drop the oldest, longest-stranded
+# half once over the cap; dict insertion order makes the oldest the front).
+LOOT_ATTEMPTS_CACHE_MAX = 512
+
 # Emergency heal-potion quaff. A bandage and a potion run on two *independent*
 # timers in UO — drinking a heal potion gives an instant HP bump while a
 # bandage is still applying. The interleaved bandage (above) takes ~8s to
@@ -602,6 +616,16 @@ async def _loot_fresh_corpses(ctx: AgentContext) -> int:
     if len(looted) > LOOTED_CORPSES_CACHE_MAX:
         for serial in list(looted)[: len(looted) - LOOTED_CORPSES_CACHE_MAX // 2]:
             looted.discard(serial)
+    # Reap the empty-open retry counter the same way. A corpse that opened empty
+    # once but despawned before reaching LOOT_MAX_ATTEMPTS never gets popped, so
+    # this dict leaks one entry per such kill across a whole combat soak. Drop
+    # the oldest (front of the insertion-ordered dict) half down toward the cap;
+    # an evicted serial belongs to a long-despawned corpse whose few stale empty
+    # opens no longer matter (it will not stream again), so forgetting it is
+    # harmless.
+    if len(attempts) > LOOT_ATTEMPTS_CACHE_MAX:
+        for serial in list(attempts)[: len(attempts) - LOOT_ATTEMPTS_CACHE_MAX // 2]:
+            attempts.pop(serial, None)
     return gold
 
 
