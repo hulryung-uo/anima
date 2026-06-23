@@ -153,7 +153,15 @@ class WebServer:
 
             case "run_procedure":
                 name = data.get("name", "")
-                if not name:
+                # ``name`` comes straight off the wire from an external client.
+                # A bare ``if not name`` only rejects the falsy cases; a non-empty
+                # *non-string* value (``{"cmd":"run_procedure","name":["mine_ore"]}``
+                # or ``"name":123``) slips through and is stored verbatim as the
+                # override. The planner then does ``registry.get(name)`` — a dict
+                # lookup — and an unhashable name (list/dict) raises
+                # ``TypeError: unhashable type`` deep inside the planner tick,
+                # exactly the kind of crash the go_to / say guards already prevent.
+                if not isinstance(name, str) or not name.strip():
                     return _err(cmd, "procedure name required")
                 self._cmd_bus._override_procedure = name
                 self._cmd_bus.set_paused(False)  # auto-resume
