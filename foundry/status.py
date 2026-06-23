@@ -14,6 +14,27 @@ from foundry.select import SOC_BINS, _selection_quality, all_active_cells, targe
 SOC_LABELS = ("low", "mid", "high")
 
 
+def _round_seeds(per_seed: list) -> list[float]:
+    """Render-safe rounding of per-seed fitness values.
+
+    The kernel's reliability_score() coerces each per-seed entry with float()
+    before use, so a JSON-loaded genome can legitimately carry a float-accepted
+    STRING like "50.0" in per_seed_fitness and still survive promotion. The
+    status report, however, fed those raw values straight to round(), and
+    round("50.0", 2) raises 'type str doesn't define __round__' -- crashing the
+    whole report on one stray string. Coerce to float first (the same contract
+    the kernel already uses), skipping anything genuinely non-numeric so a
+    malformed entry degrades one seed instead of the entire report.
+    """
+    out: list[float] = []
+    for v in per_seed:
+        try:
+            out.append(round(float(v), 2))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def render(arc: Archive) -> str:
     lines: list[str] = []
     s = arc.summary()
@@ -114,7 +135,7 @@ def render(arc: Archive) -> str:
             chain.append(cur.id)
             cur = arc.get(cur.parent) if cur.parent else None
         per_seed = g.eval.get("per_seed_fitness") or []
-        seeds = f" seeds={[round(v, 2) for v in per_seed]}" if len(per_seed) > 1 else ""
+        seeds = f" seeds={_round_seeds(per_seed)}" if len(per_seed) > 1 else ""
         lines.append(f"  q{_selection_quality(g):8.3f}  (mean {g.fitness:8.3f})  "
                      f"{' ← '.join(chain)}{seeds}")
         if g.hypothesis:
