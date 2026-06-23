@@ -212,18 +212,29 @@ class MineOre(Procedure):
             return False
 
         deadline = mine_start + 3.5
-        while _time.time() < deadline:
-            await asyncio.sleep(0.2)
-            if (
-                _ore_in_pack() > ore_before
-                or any(_mine_flags.values())
-                or _journal_result_seen()
-            ):
-                break
-
-        if sub and ctx.bus:
-            ctx.bus.unsubscribe(sub)
-            ctx.bus.unsubscribe(sub2)  # type: ignore[possibly-undefined]
+        # The wait loop suspends on asyncio.sleep — a cancellation point. The
+        # planner runs this procedure as a bare create_task and cancels it
+        # routinely (liveness watchdog, override/survival preemption), so a
+        # cancel mid-sleep used to skip the plain unsubscribe below and leak
+        # BOTH bus subscriptions permanently. mine_ore is the dominant loop
+        # and cancellation is routine, so _subs grew without bound across a
+        # session — and every publish() (driven by every packet handler)
+        # iterates _subs, so the leak also slowed dispatch O(n). Tear the
+        # subscriptions down in a finally so EVERY exit path (normal break,
+        # deadline, exception, CancelledError) reclaims them.
+        try:
+            while _time.time() < deadline:
+                await asyncio.sleep(0.2)
+                if (
+                    _ore_in_pack() > ore_before
+                    or any(_mine_flags.values())
+                    or _journal_result_seen()
+                ):
+                    break
+        finally:
+            if sub and ctx.bus:
+                ctx.bus.unsubscribe(sub)
+                ctx.bus.unsubscribe(sub2)  # type: ignore[possibly-undefined]
 
         # EVERY terminal swing outcome can arrive on the journal even when no
         # bus is wired (the bus is optional, and a cliloc can route to the
