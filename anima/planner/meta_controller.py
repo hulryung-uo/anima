@@ -185,7 +185,18 @@ class HeuristicModePolicy:
     # principle 4) says relocate/offload rather than keep grinding it. Pure
     # skill-grinds (magery/bard/thief) are excluded: a flat gold rate there is
     # expected and is NOT a signal to abandon the stint.
-    _GOLD_EARNING: frozenset[str] = frozenset({"mining", "smithing", "combat"})
+    #
+    # ``combat`` is excluded for the SAME reason the skill-grinds are: its
+    # economy is item-based, not gold-per-minute. A warrior earns *loot* from
+    # kills and converts it to gold in batches (the ``sell_to_vendor`` step of
+    # the combat loop). While it is productively fighting and accumulating gear
+    # its net-worth gold-rate is flat by construction — the very same property
+    # that justifies excluding magery/bard/thief. Counting combat here fired
+    # the relocate/offload branch (c) on a winning warrior the moment its
+    # sell-rate went flat (mid-phase, carrying looted gear), steering it OFF
+    # combat — the combat-uptime anti-pattern the balance-risk gate (branch d)
+    # already excludes combat from. Only the direct-gold loops belong here.
+    _GOLD_EARNING: frozenset[str] = frozenset({"mining", "smithing"})
     # How many identical recent stints trigger a balance rotation.
     _BALANCE_STINTS = 3
     # Mid-phase "economy" day-phase routine (docs/meta-controller.md §5
