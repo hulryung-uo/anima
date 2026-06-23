@@ -100,6 +100,19 @@ def _resolve_cliloc_text(cliloc_num: int, args: str) -> str:
     arg)`` against the BASE string; ClassicUO only treats a leading ``#`` on an
     *arg value* as a nested-cliloc ref, never the base text, so that line could
     only mangle literal ``#N`` art names. Both are dropped here.
+
+    Substitution and unfilled-placeholder cleanup happen in a SINGLE pass over
+    the BASE text — never a second ``re.sub`` over the already-substituted
+    result. ClassicUO's Translate only walks the base string once and copies
+    each arg value through verbatim; it never re-scans a substituted value for
+    more ``~N~`` tokens. The old two-pass form (substitute, then a trailing
+    ``re.sub(r"~\\d+[^~]*~", "", text)``) re-examined the substituted text, so
+    any arg VALUE that legitimately contained a ``~N~``-shaped token (a nested /
+    server-formatted string, an item/runebook description, etc.) was silently
+    deleted — e.g. base ``"You see ~1~ here."`` + arg ``"~2~ goblins"`` rendered
+    as ``"You see  goblins here."``. Resolving an out-of-range index to ``""``
+    inside the same pass strips the unfilled placeholder without ever touching
+    arg content.
     """
     base_text = cliloc_text(cliloc_num)
     if base_text and args:
@@ -107,14 +120,16 @@ def _resolve_cliloc_text(cliloc_num: int, args: str) -> str:
 
         def _sub(m: "re.Match[str]") -> str:
             idx = int(m.group(1)) - 1
-            return parts[idx] if 0 <= idx < len(parts) else m.group(0)
+            # Out-of-range index: drop the placeholder (matches the old trailing
+            # cleanup) instead of leaking literal ``~N~`` text downstream.
+            return parts[idx] if 0 <= idx < len(parts) else ""
 
-        text = re.sub(r"~(\d+)(?:_[^~]*)?~", _sub, base_text)
+        return re.sub(r"~(\d+)(?:_[^~]*)?~", _sub, base_text).strip()
     elif base_text:
-        text = base_text
+        # No args supplied: strip any unfilled placeholders from the base text.
+        return re.sub(r"~\d+[^~]*~", "", base_text).strip()
     else:
-        text = f"[cliloc {cliloc_num}]"
-    return re.sub(r"~\d+[^~]*~", "", text).strip()
+        return f"[cliloc {cliloc_num}]"
 
 
 def _decode_notoriety(raw: int) -> NotorietyFlag:
@@ -502,6 +517,22 @@ def register_handlers(
         item.container = 0
         item.is_multi = is_multi
 
+        # An item that re-appears on the GROUND (container == 0) is no longer
+        # worn. When a worn weapon/shield leaves the paperdoll onto the ground
+        # — a server-side Disarm special move, or the agent dropping a hand
+        # item to the floor rather than into a bag — ServUO reports it via THIS
+        # 0x1A WorldItem (the item still exists, so no 0x1D Delete arrives).
+        # self_state.equipment is layer->serial on SelfState, so updating only
+        # item.container leaves equipment[layer] pointing at the now-on-ground
+        # serial. The combat re-arm guards (ss.equipment.get(1)/.get(2)) and
+        # equip_weapon_from_pack then see a phantom worn weapon and never
+        # re-arm — the agent fights bare-handed. The 0x25 / 0x2E / 0x3C / 0x1D
+        # handlers already drop a stranded slot for the bag-move / reparent /
+        # delete cases; the ground-drop sibling silently did not. Mirror them.
+        for worn_layer, worn in list(p.self_state.equipment.items()):
+            if worn == serial:
+                del p.self_state.equipment[worn_layer]
+
         p.emit(GameEventType.ITEM_APPEARED, {"serial": serial, "x": x, "y": y})
 
     handler.register(0x1A, handle_world_item)
@@ -540,6 +571,17 @@ def register_handlers(
         item.amount = amount if amount else 1
         item.container = 0
         item.is_multi = data_type == 0x02
+
+        # Same stranded-equipment guard as the 0x1A WorldItem sibling above: an
+        # item re-parented onto the GROUND (container == 0) is no longer worn,
+        # so drop any self_state.equipment slot still pointing at it. ServUO
+        # emits 0xF3 (the modern WorldItemHS) for ground items on EC/HS-flagged
+        # sessions, so a worn item force-disarmed to the floor lands here
+        # instead of 0x1A — without this clear the combat re-arm guards see a
+        # phantom worn weapon and never re-equip.
+        for worn_layer, worn in list(p.self_state.equipment.items()):
+            if worn == serial:
+                del p.self_state.equipment[worn_layer]
 
         p.emit(GameEventType.ITEM_APPEARED, {"serial": serial, "x": x, "y": y})
 
