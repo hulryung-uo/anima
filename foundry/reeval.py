@@ -341,7 +341,22 @@ def _main(argv: list[str]) -> int:
         cfg = g.config or {}
         print(f"[reeval] {g.id} cell={g.cell} recorded={g.fitness:.3f} "
               f"persona={cfg.get('persona')}/{cfg.get('fixed_start')} …")
-        r = reeval_genome(arc, g, seeds=args.seeds, window_s=args.window)
+        # One genome's live re-eval must not abort the WHOLE --elites demotion
+        # pass. reeval_genome runs real I/O that can raise on a single record:
+        # _prepare_worktree does `git worktree add/reset --hard <code_ref>` and
+        # raises RuntimeError when that ref is unresolvable (a pinned
+        # refs/foundry/<id> commit garbage-collected, or a stale/hand-edited
+        # code_ref no longer reachable), and the eval runner can surface its own
+        # exception. With no guard, that one genome aborts the loop mid-run and
+        # silently drops every genome queued after it — the demotion-evidence
+        # median included. This is the same one-bad-record-aborts-the-batch class
+        # score.py's loop, _summarize_ratios, and the null-config print above were
+        # all hardened against; report the failure and keep re-eval'ing the rest.
+        try:
+            r = reeval_genome(arc, g, seeds=args.seeds, window_s=args.window)
+        except Exception as e:  # noqa: BLE001 — batch tool: one bad genome must not abort the rest
+            print(f"[reeval] {g.id}: SKIPPED ({type(e).__name__}: {e})")
+            continue
         if r["ok"]:
             print(f"[reeval] {g.id}: held-out {r['held_out']:.3f} "
                   f"(seeds {[round(v, 2) for v in r['held_out_seeds']]}) "
