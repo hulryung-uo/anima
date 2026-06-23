@@ -217,6 +217,14 @@ class SelfState:
             self.vendor_serial = 0
             self.vendor_buy_list = []
             self.vendor_sell_list = []
+            # A target cursor (0x6C) outstanding at the moment of death never
+            # gets its matching cancel for our own char — ServUO drops the
+            # cursor in the death sequence without echoing a 0x6C cancel. A
+            # stale pending_target then survives into the ghost/resurrect period,
+            # so the next skill/spell that polls it fires at a serial captured
+            # before death (a now-dead foe, a despawned ore tile). Clear it on
+            # the death transition alongside the other UI pointers.
+            self.pending_target = None
 
     @property
     def hp_percent(self) -> float:
