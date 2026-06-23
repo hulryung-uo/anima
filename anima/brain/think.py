@@ -847,7 +847,17 @@ def _parse_action(text: str) -> dict | None:
         parsed = _coerce_action_dict(json.loads(text))
         if parsed is not None:
             return parsed
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # ``json.loads`` raises more than ``JSONDecodeError`` on adversarial /
+        # hallucinated LLM output, and the narrow ``except json.JSONDecodeError``
+        # let those escape — crashing the whole THINK tick (the documented
+        # contract is ``dict | None``; the caller at line ~420 already degrades
+        # gracefully on None). A JSON value that is one long unbroken integer
+        # (e.g. a hallucinated id/coordinate/price) trips CPython's
+        # int-string-conversion limit with a bare ``ValueError`` (NOT a
+        # JSONDecodeError) since 3.11, and a deeply nested ``[[[…]]]`` blob trips
+        # ``RecursionError``. JSONDecodeError SUBCLASSES ValueError, so widening
+        # the catch is strictly broader and changes nothing on the happy path.
         pass
 
     # Find JSON in text
@@ -896,7 +906,10 @@ def _parse_action(text: str) -> dict | None:
                             )
                             if parsed is not None:
                                 return parsed
-                        except json.JSONDecodeError:
+                        except (ValueError, RecursionError):
+                            # See the top-level guard: long-int / deep-nest blobs
+                            # raise a bare ValueError/RecursionError, not only
+                            # JSONDecodeError — don't let one abort the tick.
                             pass
                         # Not a usable object — keep scanning for a later one.
         else:
@@ -911,7 +924,9 @@ def _parse_action(text: str) -> dict | None:
                     if parsed is not None:
                         return parsed
                     continue
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):
+                    # As above: a fenced block carrying a long-int / deeply
+                    # nested value must keep scanning, not crash the tick.
                     continue
     return None
 
