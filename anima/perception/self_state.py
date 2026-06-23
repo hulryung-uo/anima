@@ -205,6 +205,20 @@ class SelfState:
         ready the instant it polls and fires build_buy_items/build_sell_items at
         the stale ``vendor_serial`` — a doomed transaction against a vendor whose
         gump the death sequence already closed. Clear all three on death too.
+
+        Finally, ``last_damage_taken_at`` (set by the combat-loop / 0x2C-2E swing
+        handlers on every hit we take) is the "we were recently attacked" clock the
+        defensive-disposition melee gate reads: AttackSkill.can_execute only fights
+        back when ``now - last_damage_taken_at <= DEFENSIVE_WINDOW`` (10s). Death
+        itself carries no event that resets it, and ServUO clears combat in the
+        death sequence without echoing anything that would touch this stamp. So an
+        agent that dies mid-fight and is resurrected quickly — exactly the
+        co-located Healer-NPC arena Foundry evaluates — revives at full HP with a
+        damage clock still inside the 10s window, and the defensive gate
+        immediately re-engages the swarm that just killed it instead of assessing.
+        Reset the clock on the genuine death transition (a living→living body
+        change leaves it alone; a real new hit after resurrect re-stamps it on its
+        own fresh swing packet), mirroring the other death-transition clears above.
         """
         was_ghost = self.body in _GHOST_BODIES
         self.body = body
@@ -225,6 +239,7 @@ class SelfState:
             # before death (a now-dead foe, a despawned ore tile). Clear it on
             # the death transition alongside the other UI pointers.
             self.pending_target = None
+            self.last_damage_taken_at = 0.0
 
     @property
     def hp_percent(self) -> float:
