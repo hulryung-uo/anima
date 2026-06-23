@@ -28,6 +28,36 @@ logger = structlog.get_logger()
 # points — enough that a "not enough metal" (skill-too-low) verdict can flip.
 SMELT_REARM_SKILL_DELTA = 50.0
 
+# Upper bound on the shared ``_junk_ore_serials`` set. Every time a colored-ore
+# hue is blacklisted, the unsmelable stacks are dropped on the ground and their
+# item serials are recorded here so the planner's pickup loops skip them. Ore
+# item serials are DISTINCT per stack and stream unboundedly over a long
+# mining/smelting soak (each freshly-mined pile gets a new serial, and a dropped
+# pile despawns/decays without re-streaming), so this de-dup set grew one entry
+# per dropped junk stack for the whole session — and ``_junk_ore_serials`` is
+# persisted in the planner snapshot (state.py), so the leak survived reconnects
+# and compounded. Mirrors the LOOTED_CORPSES_CACHE_MAX bound in combat_loop.
+JUNK_ORE_CACHE_MAX = 512
+
+
+def _mark_junk_ore(blackboard: dict, serials) -> set[int]:
+    """Record dropped junk-ore serials and keep the de-dup set bounded.
+
+    Adds ``serials`` to the shared ``_junk_ore_serials`` set and, once it
+    exceeds ``JUNK_ORE_CACHE_MAX``, drops the oldest (arbitrary — sets are
+    unordered) half down toward the cap. An evicted serial belongs to a
+    long-dropped pile that has decayed/despawned and will not stream again, so
+    re-admitting it (the planner momentarily re-eyeing a stale serial that is no
+    longer on the ground) is harmless. Returns the set for convenience.
+    """
+    junk: set[int] = blackboard.setdefault("_junk_ore_serials", set())
+    junk.update(serials)
+    if len(junk) > JUNK_ORE_CACHE_MAX:
+        overflow = len(junk) - JUNK_ORE_CACHE_MAX // 2
+        for serial in list(junk)[:overflow]:
+            junk.discard(serial)
+    return junk
+
 
 def _mining_skill_tenths(ctx: "AgentContext") -> float:
     """Current Mining skill value in tenths (0.0 if not streamed yet)."""
@@ -485,12 +515,13 @@ class SmeltOre(Procedure):
                     await asyncio.sleep(0.3)
                     dropped += 1
             # Mark dropped ore as junk so planner won't pick them up
-            junk = ctx.blackboard.setdefault("_junk_ore_serials", set())
-            for item in world.items.values():
-                if (item.container == 0 and item.graphic in ORE_GRAPHICS
-                        and item.hue == ore_hue
-                        and max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2):
-                    junk.add(item.serial)
+            _mark_junk_ore(
+                ctx.blackboard,
+                (item.serial for item in world.items.values()
+                 if item.container == 0 and item.graphic in ORE_GRAPHICS
+                 and item.hue == ore_hue
+                 and max(abs(item.x - ss.x), abs(item.y - ss.y)) <= 2),
+            )
 
             reason_str = "not enough metal" if immediate_blacklist else f"{fail_count} failures"
             logger.info(
