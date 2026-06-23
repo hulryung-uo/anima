@@ -97,7 +97,24 @@ async def wait_for_target(
     if not ok:
         return ActionResult(success=False, message="Target cursor timeout")
 
-    pt = ss.pending_target or {}
+    # Snapshot the cursor ONCE. ``ok`` reflects the predicate at the instant the
+    # bus wait resolved, but ``ss.pending_target`` is mutated by packet handlers
+    # running concurrently on the same event loop: a server WITHDRAW cursor
+    # (0x6C with ``cursor_flag == 3``, handlers.py) and the living->ghost death
+    # transition both null ``pending_target`` (commit 47c4a82). One landing in
+    # the window between the wait waking and this coroutine resuming leaves
+    # ``pending_target`` None by read time. The old ``ss.pending_target or {}``
+    # then silently became an empty dict, so ``cursor_id`` defaulted to 0 and
+    # this returned ``success=True`` with a ZERO cursor — every caller
+    # (cast_spell / use_on_object / use_on_target / use_skill_on) then fired a
+    # target response against a cursor id the server already retired, a no-op
+    # the server drops while the action layer reported the targeted action
+    # succeeded. Degrade to the normal "Target cursor timeout" failure (which
+    # every caller already handles) instead. Mirrors wait_for_gump's TOCTOU
+    # guard (commit 20a6943).
+    pt = ss.pending_target
+    if pt is None:
+        return ActionResult(success=False, message="Target cursor timeout")
     cursor_id = pt.get("cursor_id", 0)
     # The 0x6C handler stores "target_type" (0=object, 1=ground) and
     # "cursor_flag" (0=neutral, 1=harmful, 2=helpful). Read those exact
