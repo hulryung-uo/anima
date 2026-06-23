@@ -65,6 +65,17 @@ def _rearm_gave_up_on_skill_gain(ctx: AgentContext) -> None:
     craft (e.g.) tongs. Record the Tinkering value at give-up time and re-arm
     the latch once skill has climbed ``TINKERING_REARM_SKILL_DELTA`` tenths past
     that mark, mirroring smelt_ore's ``_rearm_unsmelable_on_skill_gain``.
+
+    The give-up boolean is armed TOGETHER with the 300s ``_tinkering_blocked_until``
+    time-latch on a "required skill" refusal (``execute`` sets both in one shot),
+    and BOTH planner gates (4b craft-for-tools, 5e Tinkering-training) AND-gate on
+    ``not _make_tools_gave_up`` *and* ``time.time() >= _tinkering_blocked_until``.
+    Lifting only the boolean here leaves the time-latch live, so the planner keeps
+    refusing make_tools for the remainder of the 300s window — re-blocking the very
+    path this re-arm exists to re-open, on the exact skill gain that proved the
+    smith can now craft. Two latches armed together for one verdict must clear
+    together (mirrors e6ba499: re-arming an unsmelable ore hue also drops its group
+    entry). Drop the time-latch in the same branch that lifts the boolean.
     """
     if not ctx.blackboard.get("_make_tools_gave_up"):
         return
@@ -80,6 +91,10 @@ def _rearm_gave_up_on_skill_gain(ctx: AgentContext) -> None:
     if now_skill - recorded >= TINKERING_REARM_SKILL_DELTA:
         ctx.blackboard.pop("_make_tools_gave_up", None)
         ctx.blackboard.pop("_make_tools_gave_up_skill", None)
+        # The skill-too-low verdict is over — drop the sibling time-latch the
+        # same refusal armed, or the planner's _tinkering_blocked_until gate
+        # keeps the craft path closed for the rest of the 300s window.
+        ctx.blackboard.pop("_tinkering_blocked_until", None)
         logger.info(
             "make_tools_gave_up_rearmed",
             tinkering=round(now_skill / 10.0, 1),

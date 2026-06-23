@@ -102,3 +102,47 @@ def test_noop_when_latch_not_set():
     _rearm_gave_up_on_skill_gain(ctx)
     assert "_make_tools_gave_up" not in ctx.blackboard
     assert "_make_tools_gave_up_skill" not in ctx.blackboard
+
+
+def test_rearm_also_clears_blocked_until_time_latch():
+    # make_tools.execute arms BOTH latches together on a "required skill" refusal:
+    # the _make_tools_gave_up boolean AND the 300s _tinkering_blocked_until clock.
+    # Both planner gates (4b craft-for-tools, 5e Tinkering-training) AND-gate on
+    # `not _make_tools_gave_up` *and* `time.time() >= _tinkering_blocked_until`.
+    # When skill climbs enough to lift the boolean, the time-latch must clear too —
+    # otherwise the planner keeps refusing make_tools for the rest of the 300s
+    # window, re-blocking the path this re-arm exists to re-open.
+    import time
+
+    ctx = _make_ctx(200.0 + TINKERING_REARM_SKILL_DELTA)
+    _arm(ctx, at_skill=200.0)
+    # Sibling time-latch armed in the same refusal, still well in the future.
+    ctx.blackboard["_tinkering_blocked_until"] = time.time() + 300.0
+
+    _rearm_gave_up_on_skill_gain(ctx)
+
+    assert "_make_tools_gave_up" not in ctx.blackboard
+    assert "_tinkering_blocked_until" not in ctx.blackboard, (
+        "the 300s block-until time-latch armed together with the give-up boolean "
+        "must clear together with it — leaving it live re-blocks the planner's "
+        "make_tools gate for the rest of the window on the same skill gain that "
+        "just lifted the boolean verdict"
+    )
+
+
+def test_blocked_until_preserved_while_latch_stays_armed():
+    # Below the re-arm threshold: the give-up verdict still holds, so the sibling
+    # time-latch must NOT be cleared early (it still gates the planner correctly).
+    import time
+
+    ctx = _make_ctx(200.0 + TINKERING_REARM_SKILL_DELTA - 1.0)
+    _arm(ctx, at_skill=200.0)
+    future = time.time() + 300.0
+    ctx.blackboard["_tinkering_blocked_until"] = future
+
+    _rearm_gave_up_on_skill_gain(ctx)
+
+    assert ctx.blackboard.get("_make_tools_gave_up") is True
+    assert ctx.blackboard.get("_tinkering_blocked_until") == future, (
+        "while the give-up latch stays armed the time-latch must be left intact"
+    )
