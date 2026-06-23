@@ -490,6 +490,21 @@ class Planner:
         # re-freezing the very agent the watchdog just tried to free.
         force_fallback = _time.time() < self._force_fallback_until
 
+        # Survival is non-negotiable and OUTRANKS BOTH the health break and the
+        # liveness watchdog's forced-fallback window. The whole flee/heal/cure/
+        # resurrect ladder lives inside select_procedure; the health-break
+        # early-return already lets it through, but the forced-fallback branch
+        # below used to bypass it entirely. That is the dangerous case: a
+        # wounded/poisoned agent pinned by a swarm cannot path away, so its
+        # (x,y) stays static — exactly the no-progress signal that opens a 60s
+        # force_fallback window. Running the liveness-only fallback
+        # (mine_ore/chop_wood/wander) for that whole window marches the dying
+        # agent off to "mine" while the swarm beats it to death, never reaching
+        # flee/heal/cure. Compute the survival need once and let it pierce both
+        # gates; fleeing/healing themselves emit wire actions, so the watchdog's
+        # liveness guarantee is still honoured.
+        survival_pending = self._survival_pending(ctx)
+
         # Planner health break — after a loop was detected we pause
         # selection briefly so the environment has a chance to change. Survival
         # OUTRANKS the break the same way the forced fallback does: the entire
@@ -499,15 +514,18 @@ class Planner:
         # healthy agent still pauses as designed.
         if (
             not force_fallback
-            and not self._survival_pending(ctx)
+            and not survival_pending
             and _time.time() < self._health_break_until
         ):
             return None
 
         # During a forced-fallback window (set by the liveness watchdog)
-        # prefer a guaranteed-liveness activity over normal selection.
+        # prefer a guaranteed-liveness activity over normal selection — UNLESS
+        # survival is pending, in which case select_procedure's survival ladder
+        # (flee/heal/cure/resurrect) must run first so the agent does not "mine"
+        # itself to death inside the fallback window.
         proc = None
-        if force_fallback:
+        if force_fallback and not survival_pending:
             proc = await self._fallback_procedure(ctx)
             if proc is not None:
                 logger.info("planner_fallback_selected", procedure=proc.name)
@@ -855,6 +873,10 @@ class Planner:
             )
             self._expedition.piles.clear()
             self._expedition.transition_to(Phase.IDLE)
+
+        # Self-expire repeat-failure skips so a busy agent that never trips the
+        # idle-only deadlock resolver still recovers the latched-out procedure.
+        self._prune_expired_skips(ctx)
 
         # Skip procedures flagged by supervisor or repeat-failure blackboard
         skip_bb = ctx.blackboard.get("_skip_procedures", set())
@@ -2551,6 +2573,16 @@ class Planner:
     _IDLE_ESCALATE = 150  # ~30s → try deadlock resolution
     _IDLE_FORUM = 600     # ~2min → post to forum for help + pause
     _REPEAT_FAIL_LIMIT = 10  # same procedure failing 10x → stop trying
+    # How long a repeat-failure skip stays armed before it self-expires.
+    # The _skip_procedures set is otherwise cleared ONLY by the deadlock
+    # resolver, which fires solely on a fully-IDLE planner — so a busy agent
+    # (smelting/crafting/selling after one procedure latched out) never clears
+    # it and the procedure stays skipped FOREVER. This is the exact asymmetric
+    # latch the mine_ore branch dodges with its bounded _mine_exhausted_until
+    # cooldown; the generic set needs the same self-clearing escape hatch. 5 min
+    # matches the mining regen cooldown so a transient failure cause (no station
+    # in range, a vendor that walked off, a depleted vein) gets re-tried.
+    _SKIP_PROC_TTL_S = 300.0
 
     def _is_productive_grind(
         self,
@@ -2688,10 +2720,14 @@ class Planner:
                     # one of which self-clears, is the asymmetric latch; let the
                     # bounded cooldown own mining exclusively.
                 else:
-                    # Temporarily skip this procedure (cleared by the deadlock
-                    # resolver once the planner goes idle).
+                    # Temporarily skip this procedure. Cleared by the deadlock
+                    # resolver once the planner goes idle OR, for a busy agent
+                    # that never idles, by the _SKIP_PROC_TTL_S self-expiry
+                    # pruned at the top of every tick (see _prune_expired_skips).
                     skip = ctx.blackboard.setdefault("_skip_procedures", set())
                     skip.add(proc_name)
+                    skip_at = ctx.blackboard.setdefault("_skip_procedures_at", {})
+                    skip_at[proc_name] = _time.time()
                 ctx.blackboard["planner_intent"] = (
                     f"{proc_name} {count}회 연속 실패 → 일시 스킵"
                 )
@@ -2700,6 +2736,55 @@ class Planner:
                         "message": f"{proc_name} failed {count}x consecutively — skipping",
                         "importance": 2,
                     })
+
+    def _prune_expired_skips(self, ctx: AgentContext) -> int:
+        """Drop repeat-failure skips older than ``_SKIP_PROC_TTL_S``.
+
+        ``_check_stuck`` adds a procedure to the ``_skip_procedures`` set after a
+        ``_REPEAT_FAIL_LIMIT`` failure streak. That set is otherwise cleared ONLY
+        by the deadlock resolver, which fires solely when the planner goes fully
+        IDLE. An agent that keeps busy with other work after one procedure
+        latched out never goes idle, so the resolver never runs and the
+        procedure stays skipped forever — the asymmetric latch the ``mine_ore``
+        branch sidesteps with its bounded ``_mine_exhausted_until`` cooldown.
+        This gives every other skip the same self-clearing escape hatch: a skip
+        whose stamp is older than the TTL is re-armed so the procedure can be
+        re-tried (its failure cause — a vendor that walked off, a station out of
+        range — is usually transient). Returns the number of entries dropped.
+
+        An entry without a recorded stamp (e.g. legacy state from before this
+        field existed) is stamped ``now`` on first sight rather than expired
+        immediately, so it gets a full TTL window before pruning.
+        """
+        skip = ctx.blackboard.get("_skip_procedures") or set()
+        skip_at = ctx.blackboard.get("_skip_procedures_at")
+        if not skip:
+            # The set was cleared/popped (e.g. by the deadlock resolver) — drop
+            # any leftover stamps so the stamp dict can't outlive the set.
+            if skip_at:
+                ctx.blackboard["_skip_procedures_at"] = {}
+            return 0
+        skip_at = ctx.blackboard.setdefault("_skip_procedures_at", {})
+        now = _time.time()
+        dropped = 0
+        for name in list(skip):
+            stamp = skip_at.get(name)
+            if stamp is None:
+                skip_at[name] = now  # adopt: give it a full TTL window
+                continue
+            if now - stamp >= self._SKIP_PROC_TTL_S:
+                skip.discard(name)
+                skip_at.pop(name, None)
+                dropped += 1
+        # Drop orphan stamps (procedure already cleared from the set elsewhere,
+        # e.g. by the deadlock resolver's in-place .clear()) so the stamp dict
+        # can't grow unbounded across a long session.
+        for name in list(skip_at):
+            if name not in skip:
+                skip_at.pop(name, None)
+        if dropped:
+            logger.info("planner_skip_self_expired", dropped=dropped)
+        return dropped
 
     def _scan_has_mineable_bank(self, ctx) -> bool:
         """True if at least one un-depleted mineable bank is within MOVE_RADIUS."""

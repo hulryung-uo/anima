@@ -155,3 +155,50 @@ async def test_health_break_still_pauses_a_poisoned_then_cured_agent():
 
     assert result is None
     assert calls["select"] == 0
+
+
+@pytest.mark.asyncio
+async def test_forced_fallback_yields_to_survival():
+    """A wounded agent inside a forced-fallback window must reach the survival
+    ladder, NOT the liveness-only fallback.
+
+    Regression: the liveness watchdog opens a 60s forced-fallback window after
+    _WATCHDOG_STALL_S of no positional progress. A wounded/poisoned agent pinned
+    by a swarm cannot move, so its (x,y) is static — the exact no-progress
+    signal that opens the window. tick() used to run _fallback_procedure
+    (mine_ore/chop_wood/wander) for the whole window, bypassing the
+    flee/heal/cure ladder inside select_procedure, so the dying agent walked off
+    to "mine" while the swarm killed it. Survival must pierce the forced
+    fallback the same way it pierces the health break.
+    """
+    planner, calls = _make_planner()
+    ctx = _ctx_hp(hits=25)  # below the 40% heal-in-place floor → survival pending
+
+    now = _time.time()
+    planner._force_fallback_until = now + 30.0  # watchdog window open
+    planner._health_break_until = 0.0
+
+    await planner.tick(ctx)
+
+    # The survival ladder ran...
+    assert calls["select"] == 1
+    # ...and the liveness-only fallback was NOT used while the agent was dying.
+    assert calls["fallback"] == 0
+
+
+@pytest.mark.asyncio
+async def test_forced_fallback_still_used_when_healthy():
+    """Control: a healthy agent inside a forced-fallback window still gets the
+    liveness-only fallback (the watchdog's freeze-recovery is preserved)."""
+    planner, calls = _make_planner()
+    ctx = _ctx_hp(hits=100, poisoned=False)  # no survival need
+
+    now = _time.time()
+    planner._force_fallback_until = now + 30.0
+    planner._health_break_until = 0.0
+
+    await planner.tick(ctx)
+
+    # Fallback was tried (returns None in the stub) and then select ran.
+    assert calls["fallback"] == 1
+    assert calls["select"] == 1
