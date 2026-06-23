@@ -37,6 +37,14 @@ SKILL_STEALTH = 47
 # ServUO Mobile skill-use lockout (seconds between active skill uses)
 SKILL_USE_COOLDOWN_S = 10.0
 
+# Consecutive 1s mana polls with zero gain that mark a broken meditation
+# trance. A working trance regenerates mana every few seconds even at low
+# Meditation/Focus, so this window sits safely above the slowest in-trance
+# regen interval yet well below the typical 20-30s meditate() timeout — long
+# enough not to abort a slow-but-live trance, short enough not to waste the
+# rest of the grind window on a dead one.
+_MEDITATE_STALL_TICKS = 8
+
 # Meditation journal strings (Scripts/Skills/Meditation.cs OnUse).
 # A trance — and the mana-regen boost — is ONLY entered on 501851. Every
 # other branch leaves m.Meditating false, so mana will NOT climb: returning
@@ -139,6 +147,19 @@ async def meditate(
                 success=False, message="Meditation blocked (hands/armor/body)"
             )
 
+    # Poll mana, but bail early when the trance has clearly broken. ServUO
+    # only regenerates mana while ``m.Meditating`` holds; the trance ends the
+    # moment the mobile moves, takes damage, or otherwise loses concentration,
+    # and the server sends NO journal line for that silent break. Without a
+    # stagnation guard the loop kept sleeping 1s ticks for the WHOLE timeout
+    # (up to 30s) after a 1-tick trance collapsed, then still reported success
+    # — burning a large slice of a magery-grind window doing nothing. A trance
+    # that is genuinely working ticks mana up every few seconds even at low
+    # Meditation/Focus, so a run of ``_MEDITATE_STALL_TICKS`` consecutive 1s
+    # polls with zero mana gain means the trance is gone: stop and return the
+    # partial progress so the caller can recast / re-meditate immediately.
+    best_mana = ss.mana
+    stall_ticks = 0
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         await asyncio.sleep(1.0)
@@ -148,6 +169,22 @@ async def meditate(
                 message=f"Meditated to {ss.mana}/{ss.mana_max} mana",
                 data={"mana": ss.mana},
             )
+        if ss.mana > best_mana:
+            best_mana = ss.mana
+            stall_ticks = 0
+        else:
+            stall_ticks += 1
+            if stall_ticks >= _MEDITATE_STALL_TICKS:
+                # No regen for the stall window — the trance broke. Report the
+                # mana actually accrued (partial progress is still a success).
+                return ActionResult(
+                    success=True,
+                    message=(
+                        f"Meditation stalled — trance broke at "
+                        f"{ss.mana}/{ss.mana_max} mana"
+                    ),
+                    data={"mana": ss.mana, "stalled": True},
+                )
     # Timed out — partial regen still counts as progress
     return ActionResult(
         success=True,

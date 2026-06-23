@@ -128,3 +128,63 @@ async def test_trance_then_mana_climb_still_succeeds(monkeypatch):
 
     assert result.success is True
     assert (ss.mana / ss.mana_max) * 100.0 >= 90.0
+
+
+@pytest.mark.asyncio
+async def test_trance_breaks_mid_poll_bails_on_stall(monkeypatch):
+    # 501851 trance entered, but the trance BREAKS immediately (movement /
+    # damage — ServUO sends no journal line for the silent break) so mana
+    # never climbs. The action must NOT spin the full 30s timeout: a run of
+    # _MEDITATE_STALL_TICKS consecutive zero-gain polls means the trance is
+    # dead, so it returns the partial result early.
+    ctx = _ctx("You enter a meditative trance.", mana=5, mana_max=50)
+    ss = ctx.perception.self_state
+
+    ticks = {"n": 0}
+    real_sleep = sk.asyncio.sleep
+
+    async def counting_sleep(d):
+        if d >= 1.0:
+            ticks["n"] += 1  # mana stays at 5 — never regenerates
+        return await real_sleep(d)
+
+    monkeypatch.setattr(sk.asyncio, "sleep", counting_sleep)
+
+    result = await meditate(ctx, target_pct=90.0, timeout=30.0)
+
+    # Bailed on the stall window, not at the 30s deadline.
+    assert ticks["n"] == sk._MEDITATE_STALL_TICKS
+    assert result.success is True
+    assert result.data.get("stalled") is True
+    assert "stall" in result.message.lower()
+    assert ss.mana == 5  # reported the (unchanged) partial mana
+
+
+@pytest.mark.asyncio
+async def test_slow_trance_with_gap_is_not_falsely_aborted(monkeypatch):
+    # A genuinely-working but SLOW trance ticks mana up only every few seconds.
+    # As long as a gain lands within the stall window the counter resets and
+    # the climb continues — the guard must not abort a live-but-slow trance.
+    ctx = _ctx("You enter a meditative trance.", mana=5, mana_max=50)
+    ss = ctx.perception.self_state
+
+    ticks = {"n": 0}
+    real_sleep = sk.asyncio.sleep
+    # Gain only every (_MEDITATE_STALL_TICKS - 1) ticks — inside the window, so
+    # the stall counter resets just before it would trip.
+    gain_every = sk._MEDITATE_STALL_TICKS - 1
+
+    async def slow_climb_sleep(d):
+        if d >= 1.0:
+            ticks["n"] += 1
+            if ticks["n"] % gain_every == 0:
+                ss.mana = min(ss.mana_max, ss.mana + 20)
+        return await real_sleep(d)
+
+    monkeypatch.setattr(sk.asyncio, "sleep", slow_climb_sleep)
+
+    result = await meditate(ctx, target_pct=90.0, timeout=30.0)
+
+    assert result.success is True
+    assert result.data.get("stalled") is not True
+    assert (ss.mana / ss.mana_max) * 100.0 >= 90.0
