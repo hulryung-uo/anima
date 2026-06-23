@@ -220,6 +220,7 @@ class BankDeposit(Procedure):
 
         deposited_count = 0
         colored_ingots_deposited = 0
+        non_gold_count = 0
         gold_deposited_attempted = False
 
         # Deposit gold
@@ -241,6 +242,7 @@ class BankDeposit(Procedure):
                 await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))
                 await asyncio.sleep(0.2)
                 deposited_count += 1
+                non_gold_count += 1
                 colored_ingots_deposited += item.amount
 
         # Deposit heavy materials if overweight (skip iron ingots — needed
@@ -265,6 +267,7 @@ class BankDeposit(Procedure):
                     await ctx.conn.send_packet(build_drop_item(item.serial, container=bank_serial))
                     await asyncio.sleep(0.2)
                     deposited_count += 1
+                    non_gold_count += 1
 
         if colored_ingots_deposited:
             logger.info(
@@ -294,8 +297,31 @@ class BankDeposit(Procedure):
                 if ss.gold < gold_before:
                     break
 
+        actual_deposited = max(0, gold_before - ss.gold)
+
+        # A run whose ONLY action was a gold drop that never moved is a phantom
+        # success. ``deposited_count`` counts every pick_up/drop packet we SENT,
+        # gold included — so a gold-only attempt that the server silently
+        # rejected (bank box drifted out of range, the box closed, a transient
+        # drop denial) still leaves ``deposited_count > 0`` while ``ss.gold`` is
+        # unchanged even after the grace-poll above. The old code then returned
+        # ``success=True`` with ``gold_changed=0``: a win written to the
+        # ActionLog reward signal, ``_reconcile_bank_after_deposit`` handed 0 (a
+        # no-op), and the planner told the gold is banked so it never retries —
+        # the agent stays over the GOLD_THRESHOLD / overweight that triggered the
+        # trip. Mirror sell_to_vendor's gold-sent-but-gold-did-not-change branch
+        # (a retryable BLOCKED failure, not a phantom success). Only fail when
+        # NOTHING non-gold was banked either: a colored-ingot / heavy-material
+        # deposit legitimately moves no gold (``actual_deposited == 0``) and is a
+        # real success, so it must still pass.
+        if non_gold_count == 0 and gold_deposited_attempted and actual_deposited == 0:
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.BLOCKED,
+                message="gold drop sent but bank gold did not change (rejected?)",
+            )
+
         if deposited_count > 0:
-            actual_deposited = max(0, gold_before - ss.gold)
             _reconcile_bank_after_deposit(ctx, deposited=actual_deposited)
             return ProcedureResult(
                 success=True,
