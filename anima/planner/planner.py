@@ -3863,6 +3863,43 @@ class _HuntForGold:
     # ladder can escalate past Lv0. Mirrors `_BegNpcForCoin`; cleared on
     # successful kills and on any deadlock gold progress.
     MAX_CONSECUTIVE_FAILS = 3
+    # After this many DISTINCT unreachable serials of the same body type, the
+    # whole body is blacklisted (see `_record_unreachable_body`).
+    UNREACHABLE_BODY_THRESHOLD = 2
+
+    @classmethod
+    def _record_unreachable_body(
+        cls, blackboard: dict, body: int, serial: int, now: float
+    ) -> bool:
+        """Track distinct unreachable serials per body; blacklist on threshold.
+
+        Returns ``True`` when this call tripped the body blacklist.
+
+        Bound: ``_hunt_unreachable_serials_by_body[body]`` is a set of distinct
+        serials. Fast-fleeing prey (cats, rats) spawn a continuous stream of
+        fresh serials — each one previously accumulated into this set forever,
+        so across a long combat soak the set grew without bound (the only read
+        was ``len(...) >= threshold``, so older serials were pure dead weight).
+        Once the threshold trips and the body lands in ``_hunt_unreachable_bodies``
+        (which has its own 300 s expiry), the per-body serial set has served its
+        purpose and is cleared, so it can never grow past the threshold per body.
+        """
+        fails: dict[int, set[int]] = blackboard.setdefault(
+            "_hunt_unreachable_serials_by_body", {},
+        )
+        body_serials = fails.setdefault(body, set())
+        body_serials.add(serial)
+        if len(body_serials) >= cls.UNREACHABLE_BODY_THRESHOLD:
+            ub: dict[int, float] = blackboard.setdefault(
+                "_hunt_unreachable_bodies", {},
+            )
+            ub[body] = now
+            # The serial set has done its job; drop it so it cannot accumulate
+            # one entry per distinct spawn for the rest of the session. It
+            # re-accumulates from scratch if the body blacklist later expires.
+            fails.pop(body, None)
+            return True
+        return False
 
     def __init__(self, target, ss) -> None:
         self.name = "hunt_for_gold"
@@ -3974,22 +4011,14 @@ class _HuntForGold:
                 # agent, each fresh serial passes the per-serial filter, and
                 # the opportunistic hunt never escalates.
                 if self._target_body:
-                    fails: dict[int, set[int]] = ctx.blackboard.setdefault(
-                        "_hunt_unreachable_serials_by_body", {},
-                    )
-                    fails.setdefault(
-                        self._target_body, set(),
-                    ).add(self._target_serial)
-                    if len(fails[self._target_body]) >= 2:
-                        ub: dict[int, float] = ctx.blackboard.setdefault(
-                            "_hunt_unreachable_bodies", {},
-                        )
-                        ub[self._target_body] = _t.time()
+                    if self._record_unreachable_body(
+                        ctx.blackboard, self._target_body,
+                        self._target_serial, _t.time(),
+                    ):
                         logger.warning(
                             "hunt_unreachable_body",
                             body=hex(self._target_body),
                             name=self._target_name,
-                            fails=len(fails[self._target_body]),
                         )
                 logger.info(
                     "hunt_target_unreachable",
