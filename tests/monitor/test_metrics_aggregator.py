@@ -8,6 +8,7 @@ import aiosqlite
 import pytest
 
 from anima.monitor.metrics_pipeline.aggregator import MetricsAggregator
+from anima.monitor.metrics_pipeline.aggregator import _read_hourly_rows_for_date
 from anima.monitor.metrics_pipeline.aggregator import _aggregate_skill_deltas
 
 
@@ -665,3 +666,61 @@ class TestSkillDeltaAggregation:
         row = await agg.build_hourly(window_start=0.0, window_end=3600.0)
         assert row["skills"]["45"]["from"] == pytest.approx(50.0)
         assert row["skills"]["45"]["to"] == pytest.approx(50.9)
+
+
+class TestMalformedHourlyRows:
+    def test_reader_skips_non_object_and_non_string_hour(self, tmp_path):
+        # A torn/foreign write to the hourly JSONL can leave a bare-number,
+        # string, list or null line, or a dict whose "hour" is not a string.
+        # The reader must skip each malformed line (not raise AttributeError)
+        # while still returning the good row for the requested date.
+        hourly_file = tmp_path / "metrics_hourly.jsonl"
+        hourly_file.write_text(
+            "\n".join([
+                "42",                                   # bare number -> no .get
+                '"just a string"',                      # bare string
+                "[1, 2, 3]",                            # bare list
+                "null",                                 # null
+                '{"hour": null}',                       # dict, non-string hour
+                '{"hour": 5}',                          # dict, int hour
+                "{not valid json",                      # undecodable
+                json.dumps({"hour": "2026-04-17T00:00:00+00:00",
+                            "cycles_completed": 1}),    # the one good row
+            ]) + "\n"
+        )
+        rows = _read_hourly_rows_for_date(hourly_file, "2026-04-17")
+        assert len(rows) == 1
+        assert rows[0]["cycles_completed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_build_daily_survives_malformed_hourly_line(
+        self, events_file, hourly_file, daily_file, tmp_path,
+    ):
+        # End-to-end: build_daily reads the hourly file off disk. A malformed
+        # line beside a good one must not crash the daily rollup (which would
+        # also skip the 30-day retention trim that runs right after it).
+        db = tmp_path / "t.db"
+        await _make_db(db)
+        good = {
+            "hour": "2026-04-17T00:00:00+00:00",
+            "uptime_s": 3600,
+            "procedures": {"mine_ore": {"ok": 10, "fail": 2, "avg_ms": 3500}},
+            "cycles_completed": 3,
+            "phase_transitions": {},
+            "gold": {"earned": 50, "spent": 20, "delta": 30},
+            "deaths": 1,
+            "stuck_events": 0,
+            "skills": {"7": {"from": 63.0, "to": 63.5}},
+        }
+        hourly_file.write_text("123\n" + json.dumps(good) + "\n")
+        agg = MetricsAggregator(
+            events_file=events_file,
+            hourly_file=hourly_file,
+            daily_file=daily_file,
+            db_path=db,
+        )
+        row = await agg.build_daily(date_iso="2026-04-17")
+        assert row["date"] == "2026-04-17"
+        assert row["cycles_total"] == 3
+        assert row["deaths"] == 1
+        assert row["skills_gained"]["7"] == pytest.approx(0.5, rel=0.01)

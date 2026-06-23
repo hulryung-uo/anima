@@ -431,8 +431,22 @@ def _read_hourly_rows_for_date(path: Path, date_iso: str) -> list[dict]:
             obj = json.loads(line)
         except Exception:
             continue
+        # The hourly JSONL is read off disk and can contain a torn concurrent
+        # write or a line shaped by a foreign/future producer, so a line is NOT
+        # guaranteed to decode to a ``{"hour": "..."}`` dict. The old
+        # ``obj.get("hour", "")`` raised AttributeError on a non-object line
+        # (a bare number / string / list / null -> "... has no attribute
+        # 'get'"), and ``hour.startswith`` raised on a non-string ``hour``
+        # (``"hour": null`` / ``"hour": 5``). build_daily caught the exception
+        # in run_once's try/except and retried against the SAME unchanged file
+        # every 60s, so one bad line permanently blacked out BOTH the daily
+        # rollup AND the 30-day retention trim that runs after it. Skip the
+        # malformed line the same way the rest of the pipeline skips a torn
+        # event (``_read_events_in_window`` / ``trim_events`` / ``_skill_map``).
+        if not isinstance(obj, dict):
+            continue
         hour = obj.get("hour", "")
-        if hour.startswith(date_iso):
+        if isinstance(hour, str) and hour.startswith(date_iso):
             out.append(obj)
     return out
 
