@@ -166,6 +166,22 @@ class PracticeMagery(Procedure):
         # (and surfaces the stall).
         stalled_meditations = 0
         MAX_STALLED_MEDITATIONS = 2
+        # Disruption guard (sibling of the meditation guard): a cast hit by
+        # damage before the target cursor arrives is reported by cast_spell as
+        # ``disrupted`` — the spell ruined, NO Magery CheckSkill rolled, and the
+        # mana was NOT spent (spells.py CastResult docstring: "the caller should
+        # just recast"). Counting that toward ``casts_done`` would burn one of
+        # the CASTS_PER_RUN *guaranteed* Magery checks on a roll that never
+        # happened — the exact slot-consumption the g_00101 "count only RESOLVED
+        # casts" win removed for meditations, but left in place for the equally
+        # roll-less disrupted case. A warrior-mage / combat-adjacent seed eats
+        # disruptions constantly, so this silently under-rolls the MAGIC loop.
+        # Recast instead (mana is intact), bounded so perpetual (consecutive)
+        # disruption can't spin the loop past the procedure window with zero
+        # resolved casts. The counter resets on any cast that rolls, so a long
+        # run that merely takes occasional hits still resolves CASTS_PER_RUN.
+        disruptions = 0
+        MAX_DISRUPTIONS = CASTS_PER_RUN
         # Meditate to a target that actually COVERS the spell cost. A fixed 60%
         # stranded mid-Int starters: mana_max≈15 → 60% ≈ 9 < GREATER_HEAL_MANA
         # (11), so meditation never lifted mana over the cast gate and the run
@@ -197,7 +213,6 @@ class PracticeMagery(Procedure):
                 target_serial=ss.serial,
                 mana_cost=GREATER_HEAL_MANA,
             )
-            casts_done += 1
             if result.no_reagents:
                 return ProcedureResult(
                     success=False,
@@ -206,6 +221,20 @@ class PracticeMagery(Procedure):
                     skill_gains=_collect_gains(),
                     details={"casts": casts, "fizzles": fizzles},
                 )
+            # A disrupted cast rolled NO Magery check and kept its mana — do not
+            # let it consume a guaranteed cast slot; recast (bounded) so the run
+            # still resolves CASTS_PER_RUN real checks even under combat damage.
+            if getattr(result, "disrupted", False):
+                disruptions += 1
+                if disruptions >= MAX_DISRUPTIONS:
+                    break
+                await asyncio.sleep(CAST_INTERVAL_S)
+                continue
+            # A cast that rolled (resolved or a non-disruption failure) breaks
+            # any disruption streak — the guard only bounds *consecutive*
+            # perpetual disruption, never the total over a long run.
+            disruptions = 0
+            casts_done += 1
             if result.success:
                 casts += 1
                 fizzles += int(result.fizzled)
