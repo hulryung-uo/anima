@@ -196,7 +196,18 @@ class PingTracker:
     def __init__(self) -> None:
         self._pings: list[float] = [0.0] * 5
         self._idx: int = 0
-        self._send_time: float = 0.0
+        # Send time PER seq slot, not one shared scalar. ping_loop sends a 0x73
+        # every 5s and recv_loop records the echoed pong out-of-band; the two
+        # coroutines interleave, so more than one ping can be in flight (a pong
+        # arriving after the next ping was already sent — a slow round trip, a
+        # reorder, or a duplicate echo). With a single shared _send_time the
+        # later on_send clobbered the value the in-flight pong needed, so on_recv
+        # measured that pong against the WRONG (newer) send instant — reporting a
+        # far-too-small or even negative latency and making the per-seq ring
+        # meaningless. Key the send instant by the seq actually put on the wire so
+        # each pong is differenced against its own ping. 0.0 == no ping
+        # outstanding for this slot.
+        self._send_times: list[float] = [0.0] * 5
 
     @property
     def latency_ms(self) -> float:
@@ -206,16 +217,26 @@ class PingTracker:
 
     def on_send(self) -> int:
         """Record send time, return seq to use."""
-        self._send_time = asyncio.get_event_loop().time()
         seq = self._idx % 5
+        self._send_times[seq] = asyncio.get_event_loop().time()
         self._idx = (self._idx + 1) % 5
         return seq
 
     def on_recv(self, seq: int) -> None:
         """Record received pong."""
-        if self._send_time > 0:
-            ms = (asyncio.get_event_loop().time() - self._send_time) * 1000
-            self._pings[seq % 5] = ms
+        slot = seq % 5
+        sent_at = self._send_times[slot]
+        # Only credit a pong that pairs with a ping we have a send time for; a
+        # stray/duplicate echo (no outstanding ping for this slot) is dropped
+        # rather than differenced against a stale or zero instant.
+        if sent_at <= 0:
+            return
+        ms = (asyncio.get_event_loop().time() - sent_at) * 1000
+        if ms < 0:
+            return
+        self._pings[slot] = ms
+        # Consume the outstanding ping so a duplicate echo can't re-credit it.
+        self._send_times[slot] = 0.0
 
 
 _ping_tracker = PingTracker()
