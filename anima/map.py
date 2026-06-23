@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +25,14 @@ MAP_HEIGHT = 4096
 BLOCK_SIZE = 8
 BLOCKS_PER_UOP_CHUNK = 4096
 MAP_BLOCK_BYTES = 196  # 4 header + 64 × 3 cells
+
+# Block-cache cap. The agent roams across hundreds of thousands of distinct
+# 8×8 blocks over a soak; with only ``cache[key]=...`` writes and no eviction
+# both _land_cache and _statics_cache grew without bound. Movement has strong
+# spatial locality (recently-visited blocks recur), so a generous LRU cap keeps
+# the hot working set resident while bounding resident memory. ~4096 blocks ≈ a
+# 512×512-tile window, far larger than any single A* expansion or render_area.
+MAP_BLOCK_CACHE_MAX = 4096
 
 
 @dataclass(slots=True)
@@ -159,9 +168,29 @@ class MapReader:
         self._land_flags: dict[str, int] | None = None
         self._item_data: dict[str, dict] | None = None
 
-        # Block cache
-        self._land_cache: dict[int, list[tuple[int, int]]] = {}  # block_key → [(graphic, z) × 64]
-        self._statics_cache: dict[int, list[StaticItem]] = {}
+        # Block cache (LRU-bounded — see MAP_BLOCK_CACHE_MAX). OrderedDict keeps
+        # insertion/access order so the least-recently-used block is evicted once
+        # the cap is exceeded. block_key = (bx << 16) | by.
+        self._land_cache: OrderedDict[int, list[tuple[int, int]]] = OrderedDict()
+        self._statics_cache: OrderedDict[int, list[StaticItem]] = OrderedDict()
+
+    @staticmethod
+    def _cache_get(cache: OrderedDict, key: int):
+        """LRU read: return the cached value (marking it recently used) or None."""
+        value = cache.get(key)
+        if value is not None or key in cache:
+            # Refresh recency even for falsy values (empty statics list, etc.).
+            cache.move_to_end(key)
+            return value
+        return None
+
+    @staticmethod
+    def _cache_put(cache: OrderedDict, key: int, value) -> None:
+        """LRU write: insert as most-recent, evicting the oldest past the cap."""
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > MAP_BLOCK_CACHE_MAX:
+            cache.popitem(last=False)  # drop least-recently-used
 
     def _ensure_uop(self) -> UopReader:
         if self._uop is None:
@@ -233,8 +262,9 @@ class MapReader:
         block_num = bx * (MAP_HEIGHT // BLOCK_SIZE) + by
 
         key = (bx << 16) | by
-        if key in self._land_cache:
-            return self._land_cache[key]
+        cached = self._cache_get(self._land_cache, key)
+        if cached is not None:
+            return cached
 
         uop = self._ensure_uop()
         chunk_idx = block_num // BLOCKS_PER_UOP_CHUNK
@@ -243,7 +273,7 @@ class MapReader:
         chunk_data = uop.get_by_pattern(self._uop_pattern, chunk_idx)
         if chunk_data is None:
             cells = [(0, 0)] * 64
-            self._land_cache[key] = cells
+            self._cache_put(self._land_cache, key, cells)
             return cells
 
         offset = block_in_chunk * MAP_BLOCK_BYTES + 4  # skip 4-byte header
@@ -261,14 +291,15 @@ class MapReader:
             else:
                 cells.append((0, 0))
 
-        self._land_cache[key] = cells
+        self._cache_put(self._land_cache, key, cells)
         return cells
 
     def _load_statics_block(self, bx: int, by: int) -> list[StaticItem]:
         """Load statics for an 8×8 block."""
         key = (bx << 16) | by
-        if key in self._statics_cache:
-            return self._statics_cache[key]
+        cached = self._cache_get(self._statics_cache, key)
+        if cached is not None:
+            return cached
 
         staidx, statics = self._ensure_statics()
         blocks_y = MAP_HEIGHT // BLOCK_SIZE
@@ -276,14 +307,14 @@ class MapReader:
 
         idx_offset = block_num * 12
         if idx_offset + 12 > len(staidx):
-            self._statics_cache[key] = []
+            self._cache_put(self._statics_cache, key, [])
             return []
 
         data_offset = struct.unpack_from("<I", staidx, idx_offset)[0]
         data_length = struct.unpack_from("<I", staidx, idx_offset + 4)[0]
 
         if data_offset == 0xFFFFFFFF or data_length == 0:
-            self._statics_cache[key] = []
+            self._cache_put(self._statics_cache, key, [])
             return []
 
         items: list[StaticItem] = []
@@ -305,7 +336,7 @@ class MapReader:
                 hue=hue, flags=flags, name=name, height=height,
             ))
 
-        self._statics_cache[key] = items
+        self._cache_put(self._statics_cache, key, items)
         return items
 
     def get_tile(self, x: int, y: int) -> TileInfo:
