@@ -55,6 +55,27 @@ def _get_button_id(btn_type: int, index: int) -> int:
     return 1 + btn_type + (index * 7)
 
 
+def _count_iron_ingots(world, backpack: int) -> int:
+    """Sum the Iron (hue-0) ingots in ``backpack``.
+
+    ``can_execute`` already gates on Iron-only ingots (the skill forces the Iron
+    material in ``execute``), but the in-craft ``ingots_before``/``ingots_after``
+    delta used to sum EVERY ``INGOT_GRAPHICS`` stack regardless of hue. Iron and
+    every colored metal (Dull Copper, Gold, Verite, …) share the same graphic
+    IDs, so a backpack also holding colored ingots over-counted the pool: any
+    independent change to a colored stack (a separate craft/sale/deposit settling
+    mid-window) registered as ``consumed > 0`` and let
+    ``_classify_blacksmith_result`` promote an UNRECOGNIZED journal result to a
+    phantom +5.0 ``success`` with a fake skill gain. Keying the delta on the same
+    hue-0 pool ``can_execute`` requires makes the consumed signal honest.
+    """
+    return sum(
+        it.amount for it in world.items.values()
+        if it.container == backpack and it.graphic in INGOT_GRAPHICS
+        and it.hue == IRON_HUE
+    )
+
+
 def _classify_blacksmith_result(result_msg: str, consumed: int) -> str:
     """Decide the craft outcome from the journal token and ingot delta.
 
@@ -194,11 +215,7 @@ class CraftBlacksmith(Skill):
 
         # Count only Iron ingots (hue 0) — execute() forces the Iron material,
         # so colored-metal stacks cannot satisfy a recipe.
-        ingots_available = sum(
-            it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic in INGOT_GRAPHICS
-            and it.hue == IRON_HUE
-        )
+        ingots_available = _count_iron_ingots(world, backpack)
 
         # Pick what to craft
         skill_info = ss.skills.get(BLACKSMITH_SKILL_ID)
@@ -291,10 +308,7 @@ class CraftBlacksmith(Skill):
         # Step 3: Click create item
         create_btn_id = _get_button_id(1, item_idx)
 
-        ingots_before = sum(
-            it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic in INGOT_GRAPHICS
-        )
+        ingots_before = _count_iron_ingots(world, backpack)
 
         prev_serial = gump.serial
         switches = [sw.switch_id for sw in gump.switches if sw.initial_state]
@@ -329,10 +343,7 @@ class CraftBlacksmith(Skill):
 
         elapsed = (time.monotonic() - start) * 1000
 
-        ingots_after = sum(
-            it.amount for it in world.items.values()
-            if it.container == backpack and it.graphic in INGOT_GRAPHICS
-        )
+        ingots_after = _count_iron_ingots(world, backpack)
         consumed = ingots_before - ingots_after
 
         # Close remaining gump
