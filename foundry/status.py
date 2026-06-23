@@ -94,7 +94,18 @@ def render(arc: Archive) -> str:
         row = prof.ljust(14)
         for b in range(SOC_BINS):
             g = arc.get_elite((prof, b))
-            cellt = f"{g.id} {g.fitness:7.2f}" if g else "·"
+            # Show the SAME variance-aware trust signal the headline ``best`` and
+            # the lineage listing use (_selection_quality = min(fitness,
+            # reliability)), NOT the raw fitness mean. The grid is the spatial map
+            # of the run, and the file's own consistency invariant says a lucky
+            # high-variance elite must not advertise a number "the headline AND
+            # GRID both deny". A cell still rendering g.fitness floats a coin-flip
+            # elite (per_seed [400, 0] -> mean 200 but reliability/quality 0) as a
+            # "200.00" cell while the headline best (50) and the lineage (q 0.00)
+            # both rank it last -- the exact display-vs-trust contradiction the
+            # headline/lineage fixes removed, leaking through the table. Display
+            # the quality so every face of the report describes one universe.
+            cellt = f"{g.id} {_selection_quality(g):7.2f}" if g else "·"
             row += cellt.ljust(colw)
         lines.append(row)
     lines.append("")
