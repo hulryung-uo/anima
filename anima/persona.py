@@ -6,7 +6,30 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import structlog
 import yaml
+
+logger = structlog.get_logger()
+
+# Enum-like persona fields whose values are consumed *deep* in the planner /
+# combat path by exact-string comparison. A typo here never crashes — it just
+# silently does the wrong thing, which is hard to spot:
+#
+#   * combat_disposition: the planner's proactive-combat gate
+#     (procedures/combat_loop.py:_initiates_combat) treats anything that is not
+#     exactly "pacifist" as "may start fights". So "pacafist"/"Pacifist" turns a
+#     persona the author meant to never fight into a hunter.
+#   * profession: the planner picks its primary procedure chain via
+#     PROFESSION_LOOPS.get(profession, ()). A typo'd profession ("blacksmth")
+#     misses every key and silently falls through to the mining loop, dropping
+#     the intended trade entirely.
+#
+# Validate at load time: an unknown value is reset to the documented default
+# and surfaced via a warning, so the bad value is caught at the boundary
+# instead of propagating.
+VALID_COMBAT_DISPOSITIONS = frozenset({"aggressive", "defensive", "pacifist"})
+# "" is valid: it means "no trade — use the generic mining fallback chain".
+VALID_PROFESSIONS = frozenset({"", "mage", "bard", "thief", "adventurer", "blacksmith"})
 
 
 @dataclass
@@ -84,7 +107,38 @@ def load_persona(path: str | Path) -> Persona:
     ):
         if key in raw:
             setattr(p, key, raw[key])
+    _validate_enum_fields(p, source=str(path))
     return p
+
+
+def _validate_enum_fields(p: Persona, *, source: str = "<persona>") -> None:
+    """Reset typo'd enum-like fields to their documented default + warn.
+
+    Keeps an unknown ``combat_disposition`` / ``profession`` from silently
+    propagating into the planner (see module docstring on the valid-value
+    sets). Mutates ``p`` in place.
+    """
+    disp = p.combat_disposition
+    if disp not in VALID_COMBAT_DISPOSITIONS:
+        logger.warning(
+            "persona.invalid_combat_disposition",
+            source=source,
+            value=disp,
+            valid=sorted(VALID_COMBAT_DISPOSITIONS),
+            fallback="defensive",
+        )
+        p.combat_disposition = "defensive"
+
+    prof = p.profession
+    if prof not in VALID_PROFESSIONS:
+        logger.warning(
+            "persona.invalid_profession",
+            source=source,
+            value=prof,
+            valid=sorted(VALID_PROFESSIONS),
+            fallback="",
+        )
+        p.profession = ""
 
 
 def load_persona_by_name(name: str, personas_dir: str | Path | None = None) -> Persona:
