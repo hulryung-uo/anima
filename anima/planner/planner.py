@@ -966,10 +966,21 @@ class Planner:
             # heal_self quaffs an on-hand potion and needs no backpack; gating
             # it on the same 0.40 floor lets a wounded agent top up across the
             # whole band instead of bleeding from 39% down to 29% untreated.
+            #
+            # Fetch heal_self DIRECTLY — the anti-thrash starvation breaker must
+            # never silence a last-resort survival heal, exactly as the full
+            # Priority-1 heal-in-place / poison-cure blocks below already do.
+            # This truncated branch runs in the post-resurrection NAKED state
+            # (gear not yet re-detected) where heal_self is the ONLY heal that
+            # can fire (bandages live in the undetected backpack). Under
+            # sustained pressure heal_self's can_start fails a few times in a
+            # row (no free hand, watchdog-cancelled tick), tripping _proc_breaker
+            # after _STARVE_FAILS; if the breaker were honoured here the
+            # critically-wounded agent would get NO heal and bleed out — the
+            # exact non-negotiable death the direct fetch elsewhere prevents.
             if self._should_heal_in_place(ss):
                 proc = self.registry.get("heal_self")
-                if (proc and not self._proc_breaker.is_open("heal_self")
-                        and await proc.can_start(ctx)):
+                if proc and await proc.can_start(ctx):
                     return proc
 
             # Try to buy tools if we have gold — purchase works server-side
