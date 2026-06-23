@@ -268,17 +268,30 @@ class HeuristicModePolicy:
         # combat loop (``wander_for_combat`` re-engage) was built to avoid. A
         # combat/thief persona's day-phase default (branch e) keeps its own mode;
         # only the genuinely-interchangeable low-risk grinds get balance-rotated.
+        #
+        # Key the streak on the mode the controller has actually been REPEATING
+        # (``recent[0]`` once they are all equal), NOT on the fixed profession
+        # ``actual``. Once branch (d) rotates mining->smithing, branch (e) below
+        # persists that smithing stint (see its sticky-rotation guard), so after
+        # ``_BALANCE_STINTS`` smithing decisions ``recent`` is all *smithing* —
+        # while ``actual`` is still mining. Gating re-rotation on ``== actual``
+        # would then never fire again, freezing the resident in the first
+        # rotated trade forever. Rotating off whatever low-risk mode is being
+        # repeated lets the resident cycle mining->smithing->magery->bard, the
+        # actual "vary your work" balance lever.
         recent = state.last_modes[-self._BALANCE_STINTS :]
+        repeated = recent[0] if recent else None
         if (
             len(recent) >= self._BALANCE_STINTS
-            and all(m == actual for m in recent)
-            and actual in self._LOW_RISK_PRODUCTIVE
+            and repeated is not None
+            and all(m == repeated for m in recent)
+            and repeated in self._LOW_RISK_PRODUCTIVE
         ):
-            rotated = self._next_low_risk(actual)
-            if rotated != actual:
+            rotated = self._next_low_risk(repeated)
+            if rotated != repeated:
                 return ModeDecision(
                     mode=rotated,
-                    rationale=f"balance: rotated off {actual} after {self._BALANCE_STINTS} stints",
+                    rationale=f"balance: rotated off {repeated} after {self._BALANCE_STINTS} stints",
                     goal=None,
                 )
 
@@ -303,6 +316,26 @@ class HeuristicModePolicy:
                 ),
                 goal=None,
             )
+        # Sustain an in-progress balance rotation. When the most recent choice
+        # was a low-risk productive mode DIFFERENT from the profession default,
+        # branch (d) has rotated the resident onto it — keep that mode for the
+        # rest of the stint instead of snapping straight back to ``actual``.
+        # Without this the early/mid day-phase default below unconditionally
+        # returns ``actual``, so a rotation lasts a SINGLE decision and the
+        # controller flip-flops ``actual -> rotated -> actual -> rotated`` every
+        # other tick — the balance lever (vary the work) is defeated and the
+        # resident never actually spends a stint in the rotated trade. Only
+        # low-risk productive modes are persisted: a non-grind last choice
+        # (combat / travel / rest / socialize) still falls through to ``actual``
+        # exactly as before, so a warrior's day-phase default is unchanged.
+        if state.phase in {"early", "mid"} and state.last_modes:
+            last_choice = state.last_modes[-1]
+            if last_choice != actual and last_choice in self._LOW_RISK_PRODUCTIVE:
+                return ModeDecision(
+                    mode=last_choice,
+                    rationale=f"balance: continuing {last_choice} stint",
+                    goal=None,
+                )
         phase_mode = {"early": actual, "mid": actual, "late": "socialize"}.get(
             state.phase, actual
         )
