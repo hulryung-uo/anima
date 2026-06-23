@@ -166,6 +166,22 @@ def _find_mineable_tile(
     now = time.time()
     _blocked = blocked or set()
 
+    # Soak-leak sweep: both cooldown maps self-prune in ``_is_bank_depleted``,
+    # but ONLY for the bank keys that fall within MOVE_RADIUS of the agent's
+    # current footing (the only keys ``_check_tile`` ever queries). A bank the
+    # agent paused on (``_voluntary_cooldown_banks``) or that reported depleted
+    # (``depleted_banks``) and then ROAMED AWAY from is never re-queried, so its
+    # entry never expires — the dicts grow one entry per distinct bank ever
+    # touched across the whole session as the agent rotates mining areas.
+    # ``_voluntary_cooldown_banks`` is the worse offender: the planner deadlock
+    # pass sweeps ``depleted_banks`` (+ the breaker) but NOT the voluntary map,
+    # so nothing else ever reaps it. Drop every entry whose cooldown has lapsed
+    # so both maps stay bounded by the count of banks on an ACTIVE cooldown.
+    for key in [k for k, ts in depleted_banks.items() if now - ts >= DEPLETED_COOLDOWN]:
+        del depleted_banks[key]
+    for key in [k for k, ts in voluntary_cd.items() if now - ts >= VOLUNTARY_COOLDOWN_S]:
+        del voluntary_cd[key]
+
     def _is_bank_depleted(x: int, y: int) -> bool:
         key = _bank_key(x, y)
         if breaker is not None and breaker.is_open(key):
