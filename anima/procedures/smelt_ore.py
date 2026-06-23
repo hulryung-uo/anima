@@ -239,18 +239,32 @@ class SmeltOre(Procedure):
             "not enough metal",                 # 501987 too small a pile
             "no idea how to smelt",             # 501986 unsmelable type
         )
-        # Success lines specifically. Like MineOre / ChopWood, ServUO sends the
-        # smelt-success cliloc ("...put the metal in your backpack.") and the
-        # container-content update (0x25/0x1A) that actually adds the ingots as
-        # two separate packets whose relative order is NOT guaranteed — the
-        # message is frequently processed first. If the wait loop breaks on the
-        # success line before the ingot item has landed in world.items,
+        # Success lines specifically — ONLY a real ingot-producing outcome
+        # belongs here. Like MineOre / ChopWood, ServUO sends the smelt-success
+        # cliloc ("...put the metal in your backpack.") and the container-content
+        # update (0x25/0x1A) that actually adds the ingots as two separate
+        # packets whose relative order is NOT guaranteed — the message is
+        # frequently processed first. If the wait loop breaks on the success
+        # line before the ingot item has landed in world.items,
         # ingots_after == ingots_before and a genuinely successful smelt is
-        # mis-booked as a failure with zero yield credited. Track it so we can
-        # grace-poll for the item update before declaring failure.
+        # mis-booked as a failure with zero yield credited. The grace-poll below
+        # is gated on these snippets to recover that race.
+        #
+        # 501990 ("You burn away the impurities but are left with less useable
+        # metal.") is NOT a success: it is the skill-check FAILURE branch of
+        # ServUO Ore.cs (the ``else`` at Ore.cs ~L422 that just halves the ore
+        # amount / downgrades the small-pile ItemID and calls AddToBackpack on
+        # NOTHING). No ingot is ever produced. Listing it here made every failed
+        # colored-ore smelt — the single most common low-skill outcome — pass the
+        # ``_journal_success_seen()`` gate while ``ingots_gained == 0``, burning a
+        # full 1s grace-poll waiting for an ingot item that can never arrive
+        # before falling through to the (correct) failure path. In the tight
+        # mine->smelt loop (this procedure re-suggests itself) that dead second
+        # compounds across every miss. 501990 stays in ``_result_snippets`` —
+        # it DOES resolve the swing, so the main poll should break on it — but it
+        # must never gate the success-only grace-poll.
         _success_snippets = (
-            "put the metal in your backpack",   # 501988 success
-            "burn away the impurities",         # 501990 partial success
+            "put the metal in your backpack",   # 501988 success (ingots added)
         )
 
         def _journal_result_seen() -> bool:
