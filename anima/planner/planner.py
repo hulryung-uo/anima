@@ -460,7 +460,7 @@ class Planner:
                     "importance": 2,
                 })
             proc = _MoveToProcedure(f"override({x},{y})", x, y)
-            return await proc.run(ctx)
+            return await self._run_tracked(proc, ctx)
 
         # Force procedure
         proc_name = self.command_bus.override_procedure
@@ -473,11 +473,46 @@ class Planner:
                         "message": f"▶ Override: {proc_name}",
                         "importance": 2,
                     })
-                return await proc.run(ctx)
+                return await self._run_tracked(proc, ctx)
             else:
                 logger.warning("planner_override_unknown", name=proc_name)
 
         return None
+
+    async def _run_tracked(self, proc: Procedure, ctx: AgentContext) -> ProcedureResult:
+        """Run a procedure registered as ``self._current_proc_task``.
+
+        Override procedures (the dashboard ``go_to`` / ``run_procedure``
+        commands handled in ``_handle_overrides``) used to call
+        ``proc.run(ctx)`` directly, leaving ``self._current_proc_task``
+        untouched. That made a frozen override INVISIBLE to
+        ``_liveness_watchdog``: a ``_MoveToProcedure`` pathing toward an
+        unreachable tile, or a forced procedure awaiting a server packet that
+        never arrives (the exact "blocked procedure" the anti-freeze comment in
+        ``tick()`` names), would hang the planner loop while the watchdog read a
+        ``None`` (or stale, already-done) ``_current_proc_task`` and its
+        ``task.cancel()`` never reached the actually-running override — so the
+        override ran with NO anti-freeze cover at all. Register the task here so
+        the watchdog's cancel path applies to overrides exactly as it does to a
+        normal ``tick()`` execution. Mirrors ``tick()``'s watchdog-cancel
+        semantics; ``finally`` clears the slot so a stale task can never be
+        cancelled on a later poll.
+        """
+        self._watchdog_cancelled = False
+        self._current_proc_task = asyncio.create_task(proc.run(ctx))
+        try:
+            return await self._current_proc_task
+        except asyncio.CancelledError:
+            if not self._watchdog_cancelled:
+                raise  # real shutdown — propagate
+            logger.warning("override_watchdog_cancelled", procedure=proc.name)
+            return ProcedureResult(
+                success=False,
+                reason=FailureReason.INTERRUPTED,
+                message="override cancelled by liveness watchdog",
+            )
+        finally:
+            self._current_proc_task = None
 
     async def tick(self, ctx: AgentContext) -> ProcedureResult | None:
         """One planner cycle: select procedure → run it → return result."""
@@ -871,8 +906,11 @@ class Planner:
                 phase=self._expedition.phase.value,
                 stuck_s=stuck_s,
             )
-            self._expedition.piles.clear()
-            self._expedition.transition_to(Phase.IDLE)
+            # Clear the stale home_base anchor too, not just the piles —
+            # otherwise the next mine in a new area can't re-anchor and the
+            # agent strands itself in CRAFTING_TRIP against the old anchor
+            # (see MiningExpedition.reset_session docstring).
+            self._expedition.reset_session()
 
         # Self-expire repeat-failure skips so a busy agent that never trips the
         # idle-only deadlock resolver still recovers the latched-out procedure.

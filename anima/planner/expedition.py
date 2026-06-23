@@ -141,6 +141,33 @@ class MiningExpedition:
         except ValueError:
             pass
 
+    def reset_session(self) -> None:
+        """Wipe per-session anchor state and return the machine to IDLE.
+
+        The watchdog calls this when a phase has stalled past its budget.
+        Clearing ``piles`` alone is NOT enough: ``home_base`` is the
+        expedition's anchor, and ``note_ore_mined`` only sets it on the
+        *first* mine of a session (``if self.home_base is None``). If a
+        stalled session is wiped but ``home_base`` survives, the agent's
+        NEXT mine — which may be in a completely different area after it
+        relocated/wandered — does NOT re-anchor; ``home_base`` stays pinned
+        to the abandoned spot. The collect→craft chain then drives the agent
+        into CRAFTING_TRIP, whose only exit (``should_return_to_mine``)
+        requires ``near_home`` against that now far-away anchor. With nothing
+        left to craft or sell, the agent can never satisfy ``near_home`` and
+        is stranded in CRAFTING_TRIP until the watchdog fires *again* — a
+        permanent wipe→strand→wipe loop. Resetting ``home_base`` to None lets
+        the next mine establish a fresh anchor at the agent's real location.
+
+        ``cycles_completed`` is intentionally preserved (it is a lifetime
+        counter, not session state).
+        """
+        self.piles.clear()
+        self.home_base = None
+        self.phase = Phase.IDLE
+        self.phase_started_at = time.time()
+        self.last_progress_at = 0.0
+
     def prune_stale_piles(self, decay_s: float = 1200.0) -> None:
         """Drop piles older than decay_s seconds.
 

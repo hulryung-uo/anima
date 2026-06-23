@@ -426,3 +426,39 @@ class TestWatchdogTracksProgress:
         exp.phase_started_at = time.time() - 700.0
         # last_progress_at was correctly armed by the mine -> phase is alive.
         assert exp.watchdog_expired(max_phase_s=600.0) is False
+
+
+class TestWatchdogResetClearsAnchor:
+    def test_reset_session_clears_home_base_and_piles(self):
+        exp = MiningExpedition()
+        exp.note_ore_mined(2460, 558, bank_key=(76, 17))
+        assert exp.home_base == (2460, 558)
+        assert exp.piles
+
+        exp.reset_session()
+        assert exp.home_base is None
+        assert exp.piles == []
+        assert exp.phase == Phase.IDLE
+
+    def test_reset_session_preserves_lifetime_cycle_counter(self):
+        exp = MiningExpedition()
+        exp.cycles_completed = 3
+        exp.note_ore_mined(100, 100, bank_key=(3, 3))
+        exp.reset_session()
+        assert exp.cycles_completed == 3
+
+    def test_next_mine_reanchors_after_reset(self):
+        """A wiped session must re-anchor at the NEW mining location, not stay
+        pinned to the abandoned one. Before the fix the watchdog cleared only
+        `piles`, leaving `home_base` set; `note_ore_mined` then refused to
+        overwrite it (sets only when None), so a relocated agent ran
+        CRAFTING_TRIP against a far-away anchor it could never reach."""
+        exp = MiningExpedition()
+        exp.note_ore_mined(2460, 558, bank_key=(76, 17))
+        assert exp.home_base == (2460, 558)
+
+        exp.reset_session()
+
+        exp.note_ore_mined(5000, 1200, bank_key=(156, 37))
+        assert exp.home_base == (5000, 1200)  # re-anchored at B, not A
+        assert exp.phase == Phase.MINING
