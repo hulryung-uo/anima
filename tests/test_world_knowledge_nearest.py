@@ -1,8 +1,10 @@
 """Tests for nearest-location distance using the navigable point."""
+
 from unittest.mock import patch
 
 from anima.world_knowledge import (
     Location,
+    find_location,
     format_locations_for_llm,
     nearest_locations,
 )
@@ -16,8 +18,12 @@ def test_nearest_uses_approach_point_for_distance():
     to the approach point, so ``indoor`` must rank as nearest.
     """
     indoor = Location(
-        "Deep Indoor Shop", x=5000, y=5000, description="inside a building",
-        approach_x=105, approach_y=105,
+        "Deep Indoor Shop",
+        x=5000,
+        y=5000,
+        description="inside a building",
+        approach_x=105,
+        approach_y=105,
     )
     outdoor = Location("Outdoor Plaza", x=200, y=200, description="open square")
 
@@ -43,8 +49,12 @@ def test_outdoor_location_distance_unchanged():
 def test_llm_format_reports_travel_distance_for_indoor():
     """The LLM summary reports the real travel distance, not the indoor one."""
     indoor = Location(
-        "Hidden Vault", x=9000, y=9000, description="deep inside",
-        approach_x=110, approach_y=100,
+        "Hidden Vault",
+        x=9000,
+        y=9000,
+        description="deep inside",
+        approach_x=110,
+        approach_y=100,
     )
     with patch("anima.world_knowledge.ALL_LOCATIONS", [indoor]):
         text = format_locations_for_llm(100, 100, count=1)
@@ -62,3 +72,18 @@ def test_count_limits_results():
     # Strictly non-decreasing distances (sorted).
     dists = [d for _, d in results]
     assert dists == sorted(dists)
+
+
+def test_minoc_tanner_uses_reachable_exterior_approach_point():
+    """Observed live loop: walking to raw Minoc Tanner coords stops at the exterior.
+
+    Grimm repeatedly failed with ``Could not reach Walk to Minoc Tanner`` while
+    ending at (2517,518), seven tiles from the raw shop coordinate (2524,524).
+    Treat that exterior tile as the navigable point so waypoint routing does
+    not path into the blocked interior/tight shop coordinate again.
+    """
+    tanner = find_location("Minoc Tanner")
+
+    assert tanner is not None
+    assert (tanner.x, tanner.y) == (2524, 524)
+    assert (tanner.nav_x, tanner.nav_y) == (2517, 518)

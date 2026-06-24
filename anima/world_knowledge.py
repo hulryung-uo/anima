@@ -74,13 +74,22 @@ MINOC_LOCATIONS: list[Location] = [
     Location("Minoc Bank", 2503, 552, "Bank of Minoc."),
     # --- Shops (from ServUO Common.map) ---
     Location("Minoc Blacksmith", 2471, 564, "The Forgery. Forge and anvil. Buys ingots/weapons."),
-    Location("Minoc Tinker", 2461, 457, "Gears and Gadgets. Sells pickaxes, shovels, tinker tools."),
+    Location(
+        "Minoc Tinker", 2461, 457, "Gears and Gadgets. Sells pickaxes, shovels, tinker tools."
+    ),
     Location("Minoc Provisioner", 2456, 428, "The Old Miners' Supplies."),
     Location("Minoc Provisioner South", 2530, 551, "The Survival Shop."),
     Location("Minoc Healer", 2577, 599, "The Healing Hand."),
     Location("Minoc Carpenter", 2513, 477, "The Oak Throne."),
     Location("Minoc Arms", 2533, 576, "Warrior's Battle Gear."),
-    Location("Minoc Tanner", 2524, 524, "The Stretched Hide."),
+    Location(
+        "Minoc Tanner",
+        2524,
+        524,
+        "The Stretched Hide.",
+        approach_x=2517,
+        approach_y=518,
+    ),
     Location("Minoc Butcher", 2438, 410, "The Slaughtered Cow."),
     Location("Minoc Bard", 2424, 555, "The Mystical Lute."),
     # --- Guilds ---
