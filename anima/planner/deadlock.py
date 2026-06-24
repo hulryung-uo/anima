@@ -27,13 +27,16 @@ logger = structlog.get_logger()
 class DeadlockResolver:
     """Runs deadlock recovery strategies and forum escalation for a Planner."""
 
+    HELP_WAIT_CHECK_INTERVAL_S = 5.0
+    HELP_WAIT_CHECKS = 6
+
     def __init__(self, planner: "Planner") -> None:
         self._planner = planner
 
     async def resolve(self, ctx: "AgentContext") -> None:
         """Try to break out of a deadlock state."""
-        from anima.actions.inventory import find_in_backpack, count_items
-        from anima.skills.gathering.mine import PICKAXE_GRAPHICS, ORE_GRAPHICS
+        from anima.actions.inventory import count_items, find_in_backpack
+        from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
 
         ss = ctx.perception.self_state
         has_pickaxe = bool(find_in_backpack(ctx, PICKAXE_GRAPHICS | {0x0F39}))
@@ -216,23 +219,27 @@ class DeadlockResolver:
         # Say something in-game too
         try:
             from anima.client.packets import build_unicode_speech
-            await ctx.conn.send_packet(
-                build_unicode_speech(f"I'm stuck and need help. No tools or gold. At ({ss.x},{ss.y})")
-            )
+            await ctx.conn.send_packet(build_unicode_speech(
+                "I'm stuck and need help. "
+                f"No tools or gold. At ({ss.x},{ss.y})"
+            ))
         except Exception:
             pass
 
-        # Pause and wait — maybe someone will help, or supervisor will intervene
-        ctx.blackboard["planner_intent"] = "Waiting for help (paused 5 min)"
+        # Pause briefly and wait — maybe someone will help, or supervisor will intervene.
+        # Keep this short: Anima is expected to keep improving autonomously, and
+        # a 5-minute hard pause leaves the avatar idle after every failed
+        # movement/vendor recovery loop.
+        ctx.blackboard["planner_intent"] = "Waiting for help (short retry window)"
         if ctx.bus:
             ctx.bus.publish("system.deadlock", {
-                "message": "Forum help request posted. Waiting 5 min before retry.",
+                "message": "Help request posted. Waiting briefly before retry.",
                 "importance": 3,
             })
 
-        # Wait 5 minutes, checking periodically if something changed
-        for _ in range(30):  # 30 × 10s = 5min
-            await asyncio.sleep(10.0)
+        # Wait briefly, checking periodically if something changed.
+        for _ in range(self.HELP_WAIT_CHECKS):
+            await asyncio.sleep(self.HELP_WAIT_CHECK_INTERVAL_S)
             # Check if someone gave us tools or gold
             ss = ctx.perception.self_state
             if ss.gold >= 10:
@@ -255,7 +262,7 @@ class DeadlockResolver:
             except Exception:
                 pass
 
-        # After 5 min wait with no help, force relocation on the next
+        # After the short wait with no help, force relocation on the next
         # deadlock entry.  Without this, the full-reset below drops the
         # agent back to Level 0 in the same stranded position and the
         # exact same Level 0→6 cycle replays forever.  The flag and
@@ -268,7 +275,7 @@ class DeadlockResolver:
             pos=f"({ss.x},{ss.y})",
         )
 
-        # After 5 min wait, reset and try again
+        # After the short wait, reset and try again
         self._planner._idle_ticks = 0
         self._planner._failed_destinations.clear()
         ctx.blackboard.pop("depleted_banks", None)
@@ -276,8 +283,8 @@ class DeadlockResolver:
         ctx.blackboard.pop("refused_vendors", None)
         ctx.blackboard.pop("_skip_procedures", None)
         ctx.blackboard.pop("_make_tools_gave_up", None)
-        logger.info("planner_full_reset_after_wait")
-        ctx.blackboard["planner_intent"] = "Full reset after wait — retrying"
+        logger.info("planner_full_reset_after_short_wait")
+        ctx.blackboard["planner_intent"] = "Full reset after short help wait — retrying"
 
     async def _compose_help_post(
         self, ctx: "AgentContext", persona_name: str,
@@ -336,11 +343,11 @@ Write ONLY the post body, nothing else."""
         Used for deadlock recovery — scavenges gold, ore, ingots, tools,
         and crafted items within pickup range.
         """
-        from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
-        from anima.skills.gathering.lumber import HATCHET_GRAPHICS, LOG_GRAPHICS
+        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
         from anima.skills.crafting.smelt import INGOT_GRAPHICS
         from anima.skills.crafting.tinker import TINKER_TOOLS_GRAPHICS
-        from anima.procedures.craft_blacksmith import TONGS_GRAPHICS
+        from anima.skills.gathering.lumber import HATCHET_GRAPHICS, LOG_GRAPHICS
+        from anima.skills.gathering.mine import ORE_GRAPHICS, PICKAXE_GRAPHICS
 
         GOLD_GRAPHIC = 0x0EED
         SHOVEL_GRAPHICS = {0x0F39}
