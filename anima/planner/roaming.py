@@ -186,6 +186,8 @@ class RoamingHelper:
         try:
             from anima.pathfinding import find_path
             ss = ctx.perception.self_state
+            walker = getattr(ctx, "walker", None)
+            walker_denied = set(getattr(walker, "denied_tiles", {}).keys())
             path = find_path(
                 map_reader,
                 ss.x,
@@ -193,6 +195,7 @@ class RoamingHelper:
                 loc.nav_x,
                 loc.nav_y,
                 max_steps=max(500, dist * 30),
+                denied_tiles=walker_denied,
                 current_z=getattr(ss, "z", 0),
                 adjacent=True,
             )
@@ -207,6 +210,7 @@ class RoamingHelper:
             target=f"({loc.nav_x},{loc.nav_y})",
             dist=dist,
         )
+        self._planner._failed_destinations[(loc.nav_x, loc.nav_y)] = _time.time()
         return False
 
     async def move_to_location(

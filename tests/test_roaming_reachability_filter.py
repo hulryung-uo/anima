@@ -28,7 +28,7 @@ def _make_helper() -> RoamingHelper:
     return RoamingHelper(planner)  # type: ignore[arg-type]
 
 
-def _ctx(x: int, y: int):
+def _ctx(x: int, y: int, denied_tiles: dict[tuple[int, int], object] | None = None):
     self_state = SimpleNamespace(x=x, y=y, z=0)
     perception = SimpleNamespace(self_state=self_state)
     return SimpleNamespace(
@@ -36,6 +36,7 @@ def _ctx(x: int, y: int):
         bus=None,
         blackboard={},
         map_reader=object(),
+        walker=SimpleNamespace(denied_tiles=denied_tiles or {}),
     )
 
 
@@ -81,4 +82,37 @@ async def test_move_to_location_skips_static_no_path_candidate(monkeypatch) -> N
 
     assert isinstance(result, _MoveToProcedure)
     assert result.name == "move_to_Good Arms"
+    assert (result._x, result._y) == (reachable.nav_x, reachable.nav_y)
+
+
+@pytest.mark.asyncio
+async def test_activity_roaming_respects_walker_denied_tiles(monkeypatch) -> None:
+    """Server walk denials must feed the pre-selection reachability probe.
+
+    Live symptom after the first no-path filter: the static map found a route to
+    Minoc East Mine, but the server repeatedly denied the first NE step at
+    (2528,547). If the probe ignores ``ctx.walker.denied_tiles``, it still
+    selects that mine and only fails inside go_to; passing denied tiles into the
+    probe lets roaming pick a different reachable mine before launching a walk.
+    """
+    blocked = Location("Blocked Mine", x=110, y=100, description="server-denied first step")
+    reachable = Location("Reachable Mine", x=140, y=100, description="clear")
+    monkeypatch.setattr(world_knowledge, "ALL_LOCATIONS", [blocked, reachable])
+
+    def fake_find_path(_map_reader, _sx, _sy, tx, ty, **kwargs):
+        denied = kwargs.get("denied_tiles") or set()
+        if (tx, ty) == (blocked.nav_x, blocked.nav_y):
+            return None if (101, 100) in denied else [(101, 100), (blocked.nav_x, blocked.nav_y)]
+        if (tx, ty) == (reachable.nav_x, reachable.nav_y):
+            return [(100, 101), (reachable.nav_x, reachable.nav_y)]
+        raise AssertionError(f"unexpected target {(tx, ty)}")
+
+    monkeypatch.setattr("anima.pathfinding.find_path", fake_find_path)
+
+    result = await _make_helper().try_move_to_activity(
+        _ctx(100, 100, denied_tiles={(101, 100): object()}),
+    )
+
+    assert isinstance(result, _MoveToProcedure)
+    assert result.name == "move_to_Reachable Mine"
     assert (result._x, result._y) == (reachable.nav_x, reachable.nav_y)
