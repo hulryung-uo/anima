@@ -3904,6 +3904,12 @@ class _WanderAndScavenge:
     WANDER_STEPS = 20
     STEP_DELAY = 0.6  # seconds between wander steps
     WANDER_RADIUS = 20  # tiles — keep the sweep "near town", never drift away
+    MAX_FAILED_MOVES = 2
+
+    @staticmethod
+    def _too_many_failed_moves(failed_moves: int) -> bool:
+        """True when deadlock wandering should yield to the planner."""
+        return failed_moves >= _WanderAndScavenge.MAX_FAILED_MOVES
 
     def __init__(self, ss) -> None:
         self.name = "wander_and_scavenge"
@@ -3956,6 +3962,7 @@ class _WanderAndScavenge:
 
         picked = 0
         spots_visited = 0
+        failed_moves = 0
 
         start_x, start_y = self._start_pos
         for _ in range(self.WANDER_STEPS):
@@ -3965,8 +3972,22 @@ class _WanderAndScavenge:
                 start_x, start_y, ss.x, ss.y, random,
             )
 
-            await go_to(ctx, target_x, target_y)
+            arrived = await go_to(ctx, target_x, target_y)
             spots_visited += 1
+            if arrived:
+                failed_moves = 0
+            else:
+                failed_moves += 1
+                if self._too_many_failed_moves(failed_moves):
+                    return ProcedureResult(
+                        success=False,
+                        reason=FailureReason.BLOCKED,
+                        message=(
+                            f"Wandered {spots_visited} spots; "
+                            f"{failed_moves} unreachable wander targets"
+                        ),
+                    )
+                continue
 
             # Scan for valuable items at new position
             ss = ctx.perception.self_state
