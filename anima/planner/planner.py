@@ -220,6 +220,8 @@ class Planner:
     _WATCHDOG_POLL_S = 5.0        # watchdog sampling interval
     _WATCHDOG_STALL_S = 90.0      # no progress for this long → intervene
     _FALLBACK_WINDOW_S = 60.0     # forced-fallback selection window
+    _MOVE_TO_BLOCKED_LIMIT = 3
+    _MOVE_TO_AGGREGATE_COOLDOWN_S = 120.0
     _STARVE_FAILS = 3             # consecutive failures → temp demotion
     _STARVE_COOLDOWN_S = 120.0    # demotion duration (auto-expires)
     # Weight (stones) above which an EMPTY visible backpack is treated as a
@@ -258,6 +260,53 @@ class Planner:
                 if now - v < ttl
             }
         self._failed_destinations[(x, y)] = now
+
+    def _record_move_to_outcome(
+        self,
+        ctx: AgentContext,
+        proc: _MoveToProcedure,
+        result: ProcedureResult,
+    ) -> None:
+        """Record one ad-hoc move_to outcome, including aggregate failures.
+
+        Exact procedure names are too granular for stuck recovery: a trapped
+        avatar can fail Bank, Blacksmith, East Mine, and random waypoints in the
+        same small blocked cluster. Track the family-level blocked streak so a
+        stream of different move_to names still escalates instead of evading the
+        repeat counters.
+        """
+        loc_name = proc.name.removeprefix("move_to_")
+        if result.success:
+            self._roaming._location_stats.record_visit(loc_name, success=True)
+            ctx.blackboard["_move_to_blocked_streak"] = 0
+            return
+
+        self._roaming._location_stats.record_visit(loc_name, success=False)
+        self._roaming._location_stats.record_failure(loc_name)
+        self._record_failed_destination(proc._x, proc._y)
+        ctx.blackboard["planner_intent"] = (
+            f"이동 실패: {proc.description} ({proc._x},{proc._y}) — "
+            f"{result.message or '경로 없음'}"
+        )
+
+        if result.reason is not FailureReason.BLOCKED:
+            return
+        streak = ctx.blackboard.get("_move_to_blocked_streak", 0) + 1
+        ctx.blackboard["_move_to_blocked_streak"] = streak
+        if streak >= self._MOVE_TO_BLOCKED_LIMIT:
+            self._move_fail_until = _time.time() + self._MOVE_TO_AGGREGATE_COOLDOWN_S
+            ctx.blackboard["_deadlock_recovery_level"] = max(
+                ctx.blackboard.get("_deadlock_recovery_level", 0),
+                4,
+            )
+            ctx.blackboard["_deadlock_attempt_count"] = 0
+            logger.warning(
+                "planner_move_to_aggregate_blocked",
+                streak=streak,
+                cooldown_s=self._MOVE_TO_AGGREGATE_COOLDOWN_S,
+                procedure=proc.name,
+                target=f"({proc._x},{proc._y})",
+            )
 
     def stop(self) -> None:
         self._running = False
@@ -712,17 +761,7 @@ class Planner:
         # Track move outcomes in location stats so the scoring
         # system learns which destinations are reachable.
         if result and isinstance(proc, _MoveToProcedure):
-            loc_name = proc.name.removeprefix("move_to_")
-            if result.success:
-                self._roaming._location_stats.record_visit(loc_name, success=True)
-            else:
-                self._roaming._location_stats.record_visit(loc_name, success=False)
-                self._roaming._location_stats.record_failure(loc_name)
-                self._record_failed_destination(proc._x, proc._y)
-                ctx.blackboard["planner_intent"] = (
-                    f"이동 실패: {proc.description} ({proc._x},{proc._y}) — "
-                    f"{result.message or '경로 없음'}"
-                )
+            self._record_move_to_outcome(ctx, proc, result)
 
         # Log and publish result
         if result:
