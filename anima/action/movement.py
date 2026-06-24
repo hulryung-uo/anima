@@ -29,6 +29,12 @@ _DIR_NAMES = {
 RUN_FLAG = 0x80
 RUN_MIN_REMAINING = 8     # tiles left — below this, walk for precision
 RUN_MIN_STAM_PCT = 30.0   # don't run toward the stam==0 walk lockout
+MAX_TERRAIN_DENIALS_PER_GO_TO = 8
+
+
+def _too_many_terrain_denials(denials: int) -> bool:
+    """True when one go_to leg should yield after repeated server denials."""
+    return denials >= MAX_TERRAIN_DENIALS_PER_GO_TO
 
 
 def _arrived(sx: int, sy: int, tx: int, ty: int, exact: bool) -> bool:
@@ -67,7 +73,10 @@ async def go_to(
 ) -> bool:
     """Pathfind and walk step-by-step to (target_x, target_y).
 
-    Returns True if destination reached (within 1 tile, or exact tile if exact=True), False if failed.
+    Returns True if destination reached, False if failed.
+
+    Non-exact walks succeed within 1 Chebyshev tile; exact walks must stand on
+    the destination tile.
 
     Features:
     - Recalculates path around permanently denied tiles
@@ -101,6 +110,7 @@ async def go_to(
     _opened_door_positions: set[tuple[int, int]] = set()  # positions where opened doors moved TO
     _mobile_waits: dict[tuple[int, int], int] = {}  # tiles waited on due to NPC blocking
     consecutive_denials_without_progress = 0
+    terrain_denials_total = 0
     consecutive_turn_failures = 0  # server kept rejecting our turn (e.g. Frozen)
     last_progress_pos: tuple[int, int] = (ss.x, ss.y)
 
@@ -309,7 +319,9 @@ async def go_to(
         door_serial = _find_closed_door_at(ctx, next_x, next_y, _opened_door_positions)
         if door_serial is not None and (next_x, next_y) not in _door_tried:
             _door_tried.add((next_x, next_y))
-            ok, opened_new_pos = await _traverse_door(ctx, door_serial, sx, sy, next_x, next_y, step_delay)
+            ok, opened_new_pos = await _traverse_door(
+                ctx, door_serial, sx, sy, next_x, next_y, step_delay,
+            )
             if opened_new_pos:
                 _opened_door_positions.add(opened_new_pos)
                 doors_opened += 1
@@ -483,6 +495,17 @@ async def go_to(
                 permanent_denied=len(permanent_denied),
                 stuck_count=consecutive_denials_without_progress,
             )
+
+            terrain_denials_total += 1
+            if _too_many_terrain_denials(terrain_denials_total):
+                logger.info(
+                    "go_to_too_many_denials",
+                    pos=f"({sx},{sy})",
+                    target=f"({target_x},{target_y})",
+                    denials=terrain_denials_total,
+                    permanent_denied=len(permanent_denied),
+                )
+                return False
 
             # If stuck in same area for 3+ denials, try escaping:
             # 1. Try opening ALL nearby doors (might be trapped in a building)
@@ -844,7 +867,11 @@ async def _traverse_door(  # noqa: C901
     dy_to_door = abs(ss.y - door_y)
     # Must be exactly 1 tile away in a cardinal direction (not diagonal)
     if not ((dx_to_door == 1 and dy_to_door == 0) or (dx_to_door == 0 and dy_to_door == 1)):
-        logger.info("door_not_adjacent_cardinal", pos=f"({ss.x},{ss.y})", door=f"({door_x},{door_y})")
+        logger.info(
+            "door_not_adjacent_cardinal",
+            pos=f"({ss.x},{ss.y})",
+            door=f"({door_x},{door_y})",
+        )
         return False, None
 
     # Step 2: Open the door

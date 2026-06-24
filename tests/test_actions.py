@@ -363,6 +363,22 @@ class TestInventoryPrimitives:
 
 
 class TestGoToInterrupt:
+    def test_denial_budget_aborts_before_watchdog_loop(self):
+        """Regression: server-denied routes should yield quickly.
+
+        Live Minoc recovery repeatedly printed ``I can't reach that`` while the
+        same go_to leg kept recalculating/detouring until the liveness watchdog
+        cancelled it. Cap per-leg terrain denials so the planner can record the
+        failed destination and select another target promptly.
+        """
+        from anima.action.movement import (
+            MAX_TERRAIN_DENIALS_PER_GO_TO,
+            _too_many_terrain_denials,
+        )
+
+        assert not _too_many_terrain_denials(MAX_TERRAIN_DENIALS_PER_GO_TO - 1)
+        assert _too_many_terrain_denials(MAX_TERRAIN_DENIALS_PER_GO_TO)
+
     @pytest.mark.asyncio
     async def test_interrupt_callback(self):
         """go_to should return False when interrupt_check returns True."""
