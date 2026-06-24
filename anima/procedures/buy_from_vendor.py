@@ -22,9 +22,9 @@ from anima.actions.inventory import count_items, find_in_backpack
 from anima.procedures.base import FailureReason, Procedure, ProcedureResult
 from anima.skills.trade.vendor import (
     _CLILOC_VENDOR_BUY,
+    _find_vendor,
     _mark_refused,
     _request_context_menu_entry,
-    _find_vendor,
 )
 
 if TYPE_CHECKING:
@@ -257,7 +257,14 @@ class BuyFromVendor(Procedure):
     name = "buy_from_vendor"
     description = "Buy tools from a nearby NPC vendor."
 
-    _TOOL_VENDOR_TYPES: set[str] = {"tinker", "provisioner", "miner"}
+    # ServUO tool vendors for the restock set below:
+    # - SBTinker: tongs, tinker tools, pickaxe, shovel
+    # - SBBlacksmith/SBWeaponSmith: tongs, smith hammer, pickaxe
+    # - SBMiner: pickaxe, shovel
+    # SBProvisioner sells candles/containers/books, not mining/smithing tools;
+    # routing Grimm there with bank gold available caused repeated greetings
+    # without a purchase.  Keep provisioners out of the buy path.
+    _TOOL_VENDOR_TYPES: set[str] = {"tinker", "blacksmith", "arms", "miner"}
 
     async def can_start(self, ctx: AgentContext) -> bool:
         ss = ctx.perception.self_state

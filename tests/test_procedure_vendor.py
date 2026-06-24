@@ -67,6 +67,32 @@ class TestBuyFromVendor:
             assert await proc.can_start(ctx)
 
     @pytest.mark.asyncio
+    async def test_tool_buy_routes_to_real_tool_vendors_not_provisioner(self):
+        """Tool restock must not route a no-pickaxe miner to a provisioner.
+
+        Live regression: Grimm had 25k bank gold and no mining tool, but after
+        a miner guildmistress lacked a Buy entry the planner walked toward
+        Minoc Provisioner. ServUO's SBProvisioner does not sell pickaxes,
+        tongs, tinker tools, or shovels; SBBlacksmith/SBWeaponSmith do.
+        """
+        import time
+        proc = BuyFromVendor()
+        ctx = _make_ctx()
+        ctx.perception.self_state.gold = 0
+        ctx.blackboard["bank_balance"] = {"amount": 25479, "ts": time.time()}
+
+        with patch(
+            "anima.procedures.buy_from_vendor._find_vendor",
+            return_value=MagicMock(),
+        ) as find_vendor:
+            assert await proc.can_start(ctx)
+
+        routed_types = find_vendor.call_args.kwargs["vendor_types"]
+        assert "blacksmith" in routed_types
+        assert "arms" in routed_types
+        assert "provisioner" not in routed_types
+
+    @pytest.mark.asyncio
     async def test_empty_pouch_stale_bank_rejects(self):
         """Backpack=0 with only a stale bank reading must NOT start."""
         import time
