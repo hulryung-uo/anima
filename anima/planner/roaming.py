@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import time as _time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
@@ -170,6 +170,45 @@ class RoamingHelper:
         del self._planner._failed_destinations[(x, y)]
         return False
 
+    def _has_static_path_to(self, ctx: "AgentContext", loc: "Location", dist: int) -> bool:
+        """True when the current map has a path to ``loc``'s nav point.
+
+        Recent live failures showed semantic landmarks (mines/vendors) that were
+        close enough to be selected but had no static route from the agent's
+        side of town. Launching a _MoveToProcedure anyway led to repeated
+        ``I can't reach that`` / watchdog-cancel loops. Treat a no-path
+        candidate as unavailable for this selection pass so roaming can try a
+        farther but reachable alternative.
+        """
+        map_reader = getattr(ctx, "map_reader", None)
+        if map_reader is None:
+            return True
+        try:
+            from anima.pathfinding import find_path
+            ss = ctx.perception.self_state
+            path = find_path(
+                map_reader,
+                ss.x,
+                ss.y,
+                loc.nav_x,
+                loc.nav_y,
+                max_steps=max(500, dist * 30),
+                current_z=getattr(ss, "z", 0),
+                adjacent=True,
+            )
+        except Exception as e:
+            logger.debug("planner_static_path_probe_failed", location=loc.name, error=str(e))
+            return True
+        if path:
+            return True
+        logger.info(
+            "planner_static_no_path_skip",
+            location=loc.name,
+            target=f"({loc.nav_x},{loc.nav_y})",
+            dist=dist,
+        )
+        return False
+
     async def move_to_location(
         self, ctx: "AgentContext", *keywords: str, max_dist: int = 300,
     ):
@@ -226,6 +265,8 @@ class RoamingHelper:
                     continue  # already here (handled above as temporarily failed)
                 if self.is_destination_failed(loc.nav_x, loc.nav_y):
                     continue
+                if not self._has_static_path_to(ctx, loc, dist):
+                    continue
                 candidates.append(self._location_stats.get_score(loc, dist))
 
         if not candidates:
@@ -242,7 +283,11 @@ class RoamingHelper:
         if best_dist > 20:
             from anima.world_knowledge import ALL_LOCATIONS as _all_locs
             waypoint = _find_waypoint_toward(ss.x, ss.y, best.x, best.y, _all_locs)
-            if waypoint and not self.is_destination_failed(waypoint.nav_x, waypoint.nav_y):
+            if (
+                waypoint
+                and not self.is_destination_failed(waypoint.nav_x, waypoint.nav_y)
+                and self._has_static_path_to(ctx, waypoint, best_dist)
+            ):
                 logger.info(
                     "planner_waypoint_routing",
                     via=waypoint.name,
@@ -320,11 +365,13 @@ class RoamingHelper:
                     continue
                 if loc.name in exhausted:
                     continue  # recently exhausted — pick a different mine
-                dist = max(abs(loc.x - ss.x), abs(loc.y - ss.y))
+                dist = max(abs(loc.nav_x - ss.x), abs(loc.nav_y - ss.y))
                 if dist <= 5:
                     continue  # Already here — skip to find next location
                 if dist > max_activity_dist:
                     continue  # Skip locations in other cities
+                if not self._has_static_path_to(ctx, loc, dist):
+                    continue
                 candidates.append(self._location_stats.get_score(loc, dist))
 
         if not candidates:
@@ -338,8 +385,14 @@ class RoamingHelper:
         # Pick the waypoint closest to the line between current pos and target
         target = mine_loc
         if best_dist > 30:
-            waypoint = _find_waypoint_toward(ss.x, ss.y, target.x, target.y, ALL_LOCATIONS)
-            if waypoint and not self.is_destination_failed(waypoint.nav_x, waypoint.nav_y):
+            waypoint = _find_waypoint_toward(
+                ss.x, ss.y, target.nav_x, target.nav_y, ALL_LOCATIONS,
+            )
+            if (
+                waypoint
+                and not self.is_destination_failed(waypoint.nav_x, waypoint.nav_y)
+                and self._has_static_path_to(ctx, waypoint, best_dist)
+            ):
                 logger.info(
                     "planner_waypoint_routing",
                     via=waypoint.name,
