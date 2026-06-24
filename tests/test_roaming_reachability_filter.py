@@ -86,6 +86,33 @@ async def test_move_to_location_skips_static_no_path_candidate(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_denied_only_no_path_is_not_long_cooldowned(monkeypatch) -> None:
+    """Transient denied-tile skips must not blacklist the landmark for 5 minutes."""
+    blocked = Location("Blocked Mine", x=110, y=100, description="server-denied first step")
+    reachable = Location("Reachable Mine", x=140, y=100, description="clear")
+    monkeypatch.setattr(world_knowledge, "ALL_LOCATIONS", [blocked, reachable])
+
+    def fake_find_path(_map_reader, _sx, _sy, tx, ty, **kwargs):
+        denied = kwargs.get("denied_tiles") or set()
+        if (tx, ty) == (blocked.nav_x, blocked.nav_y):
+            return None if (101, 100) in denied else [(101, 100), (blocked.nav_x, blocked.nav_y)]
+        if (tx, ty) == (reachable.nav_x, reachable.nav_y):
+            return [(100, 101), (reachable.nav_x, reachable.nav_y)]
+        raise AssertionError(f"unexpected target {(tx, ty)}")
+
+    monkeypatch.setattr("anima.pathfinding.find_path", fake_find_path)
+
+    helper = _make_helper()
+    result = await helper.try_move_to_activity(
+        _ctx(100, 100, denied_tiles={(101, 100): object()}),
+    )
+
+    assert isinstance(result, _MoveToProcedure)
+    assert result.name == "move_to_Reachable Mine"
+    assert (blocked.nav_x, blocked.nav_y) not in helper._planner._failed_destinations
+
+
+@pytest.mark.asyncio
 async def test_activity_roaming_respects_walker_denied_tiles(monkeypatch) -> None:
     """Server walk denials must feed the pre-selection reachability probe.
 

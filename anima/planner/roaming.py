@@ -199,6 +199,20 @@ class RoamingHelper:
                 current_z=getattr(ss, "z", 0),
                 adjacent=True,
             )
+            denied_only_block = False
+            if not path and walker_denied:
+                path_without_denied = find_path(
+                    map_reader,
+                    ss.x,
+                    ss.y,
+                    loc.nav_x,
+                    loc.nav_y,
+                    max_steps=max(500, dist * 30),
+                    denied_tiles=set(),
+                    current_z=getattr(ss, "z", 0),
+                    adjacent=True,
+                )
+                denied_only_block = bool(path_without_denied)
         except Exception as e:
             logger.debug("planner_static_path_probe_failed", location=loc.name, error=str(e))
             return True
@@ -209,8 +223,10 @@ class RoamingHelper:
             location=loc.name,
             target=f"({loc.nav_x},{loc.nav_y})",
             dist=dist,
+            denied_only=denied_only_block,
         )
-        self._planner._failed_destinations[(loc.nav_x, loc.nav_y)] = _time.time()
+        if not denied_only_block:
+            self._planner._failed_destinations[(loc.nav_x, loc.nav_y)] = _time.time()
         return False
 
     async def move_to_location(
